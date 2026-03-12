@@ -41,7 +41,7 @@ innr = { version = "0.1.8", optional = true }
 simsimd = { version = "6.5.12", optional = true }
 
 # ID compression primitives (ecosystem crate)
-cnk = { version = "0.1.0", optional = true }
+cnk = { version = "0.1.2", optional = true }
 
 # Succinct data structures (ecosystem crate)
 sbits = { version = "0.1.0", optional = true }
