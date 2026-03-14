@@ -288,7 +288,7 @@ impl HNSWSegmentReader {
             layers.push(Layer::new_uncompressed(neighbors_list));
         }
 
-        // Reconstruct index
+        // Reconstruct index (validates structural invariants)
         Ok(HNSWIndex::from_parts(
             vectors,
             self.dimension,
@@ -298,7 +298,7 @@ impl HNSWSegmentReader {
             self.params.clone(),
             self.built,
             doc_ids,
-        ))
+        )?)
     }
 }
 

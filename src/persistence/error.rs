@@ -73,6 +73,12 @@ impl From<hiqlite::Error> for PersistenceError {
     }
 }
 
+impl From<crate::RetrieveError> for PersistenceError {
+    fn from(e: crate::RetrieveError) -> Self {
+        Self::Format(e.to_string())
+    }
+}
+
 /// Result type for persistence operations.
 pub type PersistenceResult<T> = Result<T, PersistenceError>;
 

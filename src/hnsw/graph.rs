@@ -501,6 +501,8 @@ impl HNSWIndex {
     /// Reconstruct an index from persisted parts (internal use only).
     ///
     /// This is used by the persistence layer to reconstruct an index from disk.
+    /// Validates structural invariants to prevent silent corruption from
+    /// malformed or adversarial persistence data.
     #[allow(dead_code)]
     pub(crate) fn from_parts(
         vectors: Vec<f32>,
@@ -511,16 +513,68 @@ impl HNSWIndex {
         params: HNSWParams,
         built: bool,
         doc_ids: Vec<u32>,
-    ) -> Self {
-        // Best-effort reconstruction of the reverse map.
-        // If `doc_ids` contains duplicates, later entries will overwrite earlier ones.
-        // This should be treated as corrupted persistence input.
-        let mut doc_id_to_internal = HashMap::with_capacity(doc_ids.len());
-        for (i, doc_id) in doc_ids.iter().copied().enumerate() {
-            doc_id_to_internal.insert(doc_id, i as u32);
+    ) -> Result<Self, RetrieveError> {
+        // Validate vector/dimension alignment
+        if dimension == 0 {
+            return Err(RetrieveError::InvalidParameter(
+                "dimension must be > 0".into(),
+            ));
+        }
+        if vectors.len() != num_vectors * dimension {
+            return Err(RetrieveError::InvalidParameter(format!(
+                "vectors.len() ({}) != num_vectors ({}) * dimension ({})",
+                vectors.len(),
+                num_vectors,
+                dimension
+            )));
         }
 
-        Self {
+        // Validate doc_ids length
+        if doc_ids.len() != num_vectors {
+            return Err(RetrieveError::InvalidParameter(format!(
+                "doc_ids.len() ({}) != num_vectors ({})",
+                doc_ids.len(),
+                num_vectors
+            )));
+        }
+
+        // Validate layer_assignments length
+        if layer_assignments.len() != num_vectors {
+            return Err(RetrieveError::InvalidParameter(format!(
+                "layer_assignments.len() ({}) != num_vectors ({})",
+                layer_assignments.len(),
+                num_vectors
+            )));
+        }
+
+        // Build reverse map and check for duplicate doc_ids
+        let mut doc_id_to_internal = HashMap::with_capacity(doc_ids.len());
+        for (i, doc_id) in doc_ids.iter().copied().enumerate() {
+            if doc_id_to_internal.insert(doc_id, i as u32).is_some() {
+                return Err(RetrieveError::InvalidParameter(format!(
+                    "duplicate doc_id: {}",
+                    doc_id
+                )));
+            }
+        }
+
+        // Validate neighbor IDs are in bounds
+        for (layer_idx, layer) in layers.iter().enumerate() {
+            let layer_len = layer.len();
+            for node in 0..layer_len {
+                let neighbors = layer.get_neighbors(node as u32);
+                for &neighbor in &neighbors {
+                    if neighbor as usize >= num_vectors {
+                        return Err(RetrieveError::InvalidParameter(format!(
+                            "layer {} node {} has out-of-bounds neighbor {} (num_vectors={})",
+                            layer_idx, node, neighbor, num_vectors
+                        )));
+                    }
+                }
+            }
+        }
+
+        Ok(Self {
             vectors,
             doc_ids,
             doc_id_to_internal,
@@ -533,7 +587,7 @@ impl HNSWIndex {
             metadata: None,
             filter_field: None,
             category_assignments: Vec::new(),
-        }
+        })
     }
 
     /// Add metadata for a document (required for filtering).
