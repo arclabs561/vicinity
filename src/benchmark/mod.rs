@@ -27,8 +27,11 @@ pub mod metrics;
 pub use datasets::{compute_ground_truth, create_benchmark_dataset, Dataset};
 pub use evaluation::{
     cosine_distance, evaluate, generate_clustered_dataset, generate_normalized_clustered_dataset,
-    generate_uniform_dataset, l2_distance, mrr, normalize, recall_at_k as eval_recall_at_k,
-    DistanceMetric, EvalDataset, EvalResults,
+    generate_uniform_dataset, l2_distance, mrr, normalize, DistanceMetric, EvalDataset,
+    EvalResults,
 };
 pub use memory::{IndexMemoryStats, MemoryTracker};
 pub use metrics::{precision_at_k, recall_at_k};
+
+/// Alias for backward compatibility (same as [`recall_at_k`]).
+pub use evaluation::recall_at_k as eval_recall_at_k;

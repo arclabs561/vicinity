@@ -190,23 +190,9 @@ impl EvalResults {
 
 /// Compute recall@k for a single query.
 ///
-/// # Arguments
-/// * `approx` - Approximate neighbors returned by the algorithm
-/// * `true_neighbors` - Ground truth neighbors
-/// * `k` - Number of neighbors to consider
+/// Delegates to [`crate::benchmark::metrics::recall_at_k`].
 pub fn recall_at_k(approx: &[u32], true_neighbors: &[u32], k: usize) -> f32 {
-    let k = k.min(true_neighbors.len()).min(approx.len());
-    if k == 0 {
-        return 0.0;
-    }
-
-    let true_set: HashSet<u32> = true_neighbors.iter().take(k).copied().collect();
-    let found = approx
-        .iter()
-        .take(k)
-        .filter(|&id| true_set.contains(id))
-        .count();
-    found as f32 / k as f32
+    crate::benchmark::metrics::recall_at_k(true_neighbors, approx, k)
 }
 
 /// Compute mean reciprocal rank for a single query.
