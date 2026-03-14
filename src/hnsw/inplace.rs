@@ -8,7 +8,7 @@
 //! - **In-neighbor tracking**: Each node knows which nodes point to it
 //! - **Per-operation updates**: No batch consolidation needed
 //! - **Stable recall**: Maintains graph quality after many updates
-//! - **Concurrent-safe**: Lock-free reads with fine-grained write locks
+//! - **Single-writer**: All mutations require `&mut self`
 //!
 //! # Algorithm (from IP-DiskANN 2025)
 //!

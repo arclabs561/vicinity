@@ -41,7 +41,7 @@ pub struct ANNStats {
     pub num_vectors: usize,
     pub dimension: usize,
     pub size_bytes: usize,
-    pub algorithm: String,
+    pub algorithm: &'static str,
 }
 
 // Implement ANNIndex for HNSW
@@ -78,7 +78,7 @@ impl ANNIndex for crate::hnsw::HNSWIndex {
             num_vectors: self.num_vectors,
             dimension: self.dimension,
             size_bytes: self.size_bytes(),
-            algorithm: "HNSW".to_string(),
+            algorithm: "HNSW",
         }
     }
 
@@ -125,7 +125,7 @@ impl ANNIndex for crate::scann::search::SCANNIndex {
             num_vectors: self.num_vectors,
             dimension: self.dimension,
             size_bytes: self.size_bytes(),
-            algorithm: "AnisotropicVQ-kmeans".to_string(), // Technical name (vendor: SCANN)
+            algorithm: "AnisotropicVQ-kmeans", // Technical name (vendor: SCANN)
         }
     }
 
@@ -172,7 +172,7 @@ impl ANNIndex for crate::ivf_pq::search::IVFPQIndex {
             num_vectors: self.num_vectors,
             dimension: self.dimension,
             size_bytes: self.size_bytes(),
-            algorithm: "IVF-PQ".to_string(),
+            algorithm: "IVF-PQ",
         }
     }
 
@@ -209,7 +209,7 @@ impl ANNIndex for crate::classic::trees::kdtree::KDTreeIndex {
             num_vectors: self.num_vectors,
             dimension: self.dimension,
             size_bytes: self.size_bytes(),
-            algorithm: "KD-Tree".to_string(),
+            algorithm: "KD-Tree",
         }
     }
 
@@ -246,7 +246,7 @@ impl ANNIndex for crate::classic::trees::balltree::BallTreeIndex {
             num_vectors: self.num_vectors,
             dimension: self.dimension,
             size_bytes: self.size_bytes(),
-            algorithm: "Ball-Tree".to_string(),
+            algorithm: "Ball-Tree",
         }
     }
 
@@ -283,7 +283,7 @@ impl ANNIndex for crate::classic::trees::kmeans_tree::KMeansTreeIndex {
             num_vectors: self.num_vectors,
             dimension: self.dimension,
             size_bytes: self.size_bytes(),
-            algorithm: "K-Means-Tree".to_string(),
+            algorithm: "K-Means-Tree",
         }
     }
 
@@ -320,7 +320,7 @@ impl ANNIndex for crate::classic::trees::random_projection::RPTreeIndex {
             num_vectors: self.num_vectors,
             dimension: self.dimension,
             size_bytes: self.size_bytes(),
-            algorithm: "RP-Tree".to_string(),
+            algorithm: "RP-Tree",
         }
     }
 
@@ -362,7 +362,7 @@ impl ANNIndex for crate::sng::SNGIndex {
             num_vectors: self.num_vectors,
             dimension: self.dimension,
             size_bytes: self.size_bytes(),
-            algorithm: "OPT-SNG".to_string(),
+            algorithm: "OPT-SNG",
         }
     }
 
@@ -403,7 +403,7 @@ impl ANNIndex for crate::diskann::graph::DiskANNIndex {
             num_vectors: self.num_vectors(),
             dimension: self.dimension(),
             size_bytes: self.size_bytes(),
-            algorithm: "DiskANN".to_string(),
+            algorithm: "DiskANN",
         }
     }
 
@@ -452,7 +452,7 @@ impl ANNIndex for crate::nsw::NSWIndex {
             num_vectors: self.num_vectors,
             dimension: self.dimension,
             size_bytes: self.size_bytes(),
-            algorithm: "NSW".to_string(),
+            algorithm: "NSW",
         }
     }
 
