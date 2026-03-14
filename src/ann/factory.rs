@@ -129,16 +129,36 @@ impl ANNIndex for AnyANNIndex {
     fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, RetrieveError> {
         match self {
             #[cfg(feature = "hnsw")]
-            AnyANNIndex::HNSW(idx) => {
-                // Use default ef_search (50) - HNSW search requires ef_search parameter
-                // Note: We use a reasonable default. For custom ef_search, use HNSWIndex directly
-                // or implement a method to get default ef_search from params
-                idx.search(query, k, 50) // Default ef_search
-            }
+            AnyANNIndex::HNSW(idx) => idx.search(query, k, idx.params.ef_search),
 
             #[cfg(feature = "nsw")]
             AnyANNIndex::NSW(idx) => idx.search(query, k, idx.params.ef_search),
 
+            #[cfg(feature = "ivf_pq")]
+            AnyANNIndex::IVFPQ(idx) => idx.search(query, k),
+
+            #[cfg(feature = "scann")]
+            AnyANNIndex::SCANN(idx) => idx.search(query, k),
+
+            #[cfg(feature = "kmeans_tree")]
+            AnyANNIndex::KMeansTree(idx) => idx.search(query, k),
+        }
+    }
+
+    fn search_ef(
+        &self,
+        query: &[f32],
+        k: usize,
+        ef: usize,
+    ) -> Result<Vec<(u32, f32)>, RetrieveError> {
+        match self {
+            #[cfg(feature = "hnsw")]
+            AnyANNIndex::HNSW(idx) => idx.search(query, k, ef),
+
+            #[cfg(feature = "nsw")]
+            AnyANNIndex::NSW(idx) => idx.search(query, k, ef),
+
+            // IVF-PQ, ScaNN, KMeansTree don't have ef_search -- delegate to search()
             #[cfg(feature = "ivf_pq")]
             AnyANNIndex::IVFPQ(idx) => idx.search(query, k),
 

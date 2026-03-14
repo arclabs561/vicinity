@@ -22,6 +22,20 @@ pub trait ANNIndex {
     /// Search for k nearest neighbors.
     fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, RetrieveError>;
 
+    /// Search with per-query effort parameter.
+    ///
+    /// `ef` controls the search effort (higher = better recall, slower).
+    /// Default implementation ignores `ef` and delegates to [`search`](ANNIndex::search).
+    /// Index types that support tunable search effort (HNSW, NSW, DiskANN) override this.
+    fn search_ef(
+        &self,
+        query: &[f32],
+        k: usize,
+        _ef: usize,
+    ) -> Result<Vec<(u32, f32)>, RetrieveError> {
+        self.search(query, k)
+    }
+
     /// Get index size in bytes (approximate).
     fn size_bytes(&self) -> usize;
 
@@ -61,6 +75,15 @@ impl ANNIndex for crate::hnsw::HNSWIndex {
 
     fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, RetrieveError> {
         self.search(query, k, self.params.ef_search)
+    }
+
+    fn search_ef(
+        &self,
+        query: &[f32],
+        k: usize,
+        ef: usize,
+    ) -> Result<Vec<(u32, f32)>, RetrieveError> {
+        self.search(query, k, ef)
     }
 
     fn size_bytes(&self) -> usize {
@@ -394,6 +417,15 @@ impl ANNIndex for crate::diskann::graph::DiskANNIndex {
         self.search(query, k, self.ef_search())
     }
 
+    fn search_ef(
+        &self,
+        query: &[f32],
+        k: usize,
+        ef: usize,
+    ) -> Result<Vec<(u32, f32)>, RetrieveError> {
+        self.search(query, k, ef)
+    }
+
     fn size_bytes(&self) -> usize {
         self.size_bytes()
     }
@@ -436,6 +468,15 @@ impl ANNIndex for crate::nsw::NSWIndex {
 
     fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, RetrieveError> {
         self.search(query, k, self.params.ef_search)
+    }
+
+    fn search_ef(
+        &self,
+        query: &[f32],
+        k: usize,
+        ef: usize,
+    ) -> Result<Vec<(u32, f32)>, RetrieveError> {
+        self.search(query, k, ef)
     }
 
     fn size_bytes(&self) -> usize {

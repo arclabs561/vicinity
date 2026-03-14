@@ -239,7 +239,7 @@ fn demo_when_to_use() -> vicinity::Result<()> {
     println!("   See also:");
     println!("     - `innr/ternary_demo.rs`: 1.58-bit extreme compression");
     println!("     - `02_measure_recall.rs`: HNSW recall benchmarking");
-    println!("     - (hash/LSH demos moved to `sketchir`)");
+    println!("     - `05_normalization_matters.rs`: L2-normalization contract");
 
     Ok(())
 }

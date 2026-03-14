@@ -15,6 +15,8 @@ pub struct StreamBufferConfig {
     pub max_pending_deletes: usize,
     /// Buffer memory limit in bytes (approximate).
     pub max_memory_bytes: usize,
+    /// Distance metric for brute-force buffer search.
+    pub distance_metric: crate::distance::DistanceMetric,
 }
 
 impl Default for StreamBufferConfig {
@@ -23,6 +25,7 @@ impl Default for StreamBufferConfig {
             max_buffer_size: 10_000,
             max_pending_deletes: 1_000,
             max_memory_bytes: 100 * 1024 * 1024, // 100 MB
+            distance_metric: crate::distance::DistanceMetric::L2,
         }
     }
 }
@@ -151,12 +154,13 @@ impl StreamBuffer {
     ///
     /// Returns (id, distance) pairs sorted by distance ascending.
     pub fn search(&self, query: &[f32], k: usize) -> Vec<(u32, f32)> {
+        let metric = self.config.distance_metric;
         let mut results: Vec<(u32, f32)> = self
             .inserts
             .iter()
             .filter(|(id, _)| !self.deletes.contains(id))
             .map(|(&id, vec)| {
-                let dist = crate::distance::l2_distance(query, vec);
+                let dist = metric.distance(query, vec);
                 (id, dist)
             })
             .collect();

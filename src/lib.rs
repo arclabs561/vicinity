@@ -1,7 +1,4 @@
 // Crate-level lint configuration
-// Allow dead code in feature-gated modules that may not be compiled.
-// Individual modules that are always compiled should NOT rely on this.
-#![allow(dead_code)]
 #![warn(missing_docs)]
 
 //! vicinity: Approximate Nearest Neighbor Search primitives.
