@@ -1,7 +1,7 @@
 //! Vamana graph construction algorithm (two-pass with RRND + RND).
 
+use crate::distance as hnsw_distance;
 use crate::hnsw::construction::select_neighbors;
-use crate::hnsw::distance as hnsw_distance;
 use crate::hnsw::graph::NeighborhoodDiversification;
 use crate::vamana::graph::VamanaIndex;
 use crate::RetrieveError;
@@ -63,7 +63,7 @@ fn refine_with_rrnd(index: &mut VamanaIndex) -> Result<(), RetrieveError> {
         let mut candidates: Vec<(u32, f32)> = Vec::with_capacity(index.params.ef_construction);
         for &neighbor_id in &index.neighbors[current_id] {
             let neighbor_vec = index.get_vector(neighbor_id as usize);
-            let dist = hnsw_distance::cosine_distance(current_vector, neighbor_vec);
+            let dist = hnsw_distance::cosine_distance_normalized(current_vector, neighbor_vec);
             candidates.push((neighbor_id, dist));
         }
 
@@ -85,7 +85,7 @@ fn refine_with_rrnd(index: &mut VamanaIndex) -> Result<(), RetrieveError> {
             }
 
             let explore_vec = index.get_vector(explore_id as usize);
-            let dist = hnsw_distance::cosine_distance(current_vector, explore_vec);
+            let dist = hnsw_distance::cosine_distance_normalized(current_vector, explore_vec);
             candidates.push((explore_id, dist));
 
             // Add neighbors to explore
@@ -134,7 +134,7 @@ fn refine_with_rnd(index: &mut VamanaIndex) -> Result<(), RetrieveError> {
         let mut candidates: Vec<(u32, f32)> = Vec::with_capacity(index.params.ef_construction);
         for &neighbor_id in &index.neighbors[current_id] {
             let neighbor_vec = index.get_vector(neighbor_id as usize);
-            let dist = hnsw_distance::cosine_distance(current_vector, neighbor_vec);
+            let dist = hnsw_distance::cosine_distance_normalized(current_vector, neighbor_vec);
             candidates.push((neighbor_id, dist));
         }
 
@@ -156,7 +156,7 @@ fn refine_with_rnd(index: &mut VamanaIndex) -> Result<(), RetrieveError> {
             }
 
             let explore_vec = index.get_vector(explore_id as usize);
-            let dist = hnsw_distance::cosine_distance(current_vector, explore_vec);
+            let dist = hnsw_distance::cosine_distance_normalized(current_vector, explore_vec);
             candidates.push((explore_id, dist));
 
             // Add neighbors to explore (avoid clone: use reference)

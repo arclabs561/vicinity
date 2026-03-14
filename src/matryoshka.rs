@@ -432,32 +432,21 @@ impl AdaptiveDimensionSelector {
     }
 }
 
-// Helper functions
+// Delegate to crate-level distance functions (SIMD-accelerated).
 
 #[inline]
 fn l2_distance(a: &[f32], b: &[f32]) -> f32 {
-    a.iter()
-        .zip(b.iter())
-        .map(|(x, y)| (x - y).powi(2))
-        .sum::<f32>()
-        .sqrt()
+    crate::distance::l2_distance(a, b)
 }
 
 #[inline]
 fn inner_product(a: &[f32], b: &[f32]) -> f32 {
-    a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
+    crate::simd::dot(a, b)
 }
 
 #[inline]
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    let dot = inner_product(a, b);
-    let norm_a = a.iter().map(|x| x.powi(2)).sum::<f32>().sqrt();
-    let norm_b = b.iter().map(|x| x.powi(2)).sum::<f32>().sqrt();
-    if norm_a > 0.0 && norm_b > 0.0 {
-        dot / (norm_a * norm_b)
-    } else {
-        0.0
-    }
+    crate::simd::cosine(a, b)
 }
 
 #[cfg(test)]

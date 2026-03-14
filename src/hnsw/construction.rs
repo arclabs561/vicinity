@@ -1,6 +1,6 @@
 //! HNSW graph construction algorithm.
 
-use crate::hnsw::distance;
+use crate::distance;
 use crate::hnsw::graph::{HNSWIndex, Layer};
 use crate::hnsw::search::greedy_search_layer;
 use crate::RetrieveError;
@@ -44,7 +44,7 @@ fn select_neighbors_rnd(
         // Check RND condition: dist(X_q, X_j) < dist(X_i, X_j) for all X_i in selected
         for &selected_id in &selected {
             let selected_vec = get_vector(vectors, dimension, selected_id as usize);
-            let inter_distance = distance::cosine_distance(selected_vec, candidate_vec);
+            let inter_distance = distance::cosine_distance_normalized(selected_vec, candidate_vec);
 
             // RND formula: query_to_candidate_dist must be < inter_distance
             if *query_to_candidate_dist >= inter_distance {
@@ -202,7 +202,7 @@ fn select_neighbors_rrnd(
 
         for &selected_id in &selected {
             let selected_vec = get_vector(vectors, dimension, selected_id as usize);
-            let inter_distance = distance::cosine_distance(selected_vec, candidate_vec);
+            let inter_distance = distance::cosine_distance_normalized(selected_vec, candidate_vec);
 
             // RRND formula: query_to_candidate_dist < alpha * inter_distance
             if *query_to_candidate_dist >= alpha * inter_distance {
@@ -375,7 +375,7 @@ pub fn construct_graph(index: &mut HNSWIndex) -> Result<(), RetrieveError> {
                 .iter()
                 .map(|&id| {
                     let vec = index.get_vector(id as usize);
-                    let dist = distance::cosine_distance(&current_vector, vec);
+                    let dist = distance::cosine_distance_normalized(&current_vector, vec);
                     (id, vec.to_vec(), dist) // Copy vector to avoid borrowing
                 })
                 .collect();
@@ -401,7 +401,7 @@ pub fn construct_graph(index: &mut HNSWIndex) -> Result<(), RetrieveError> {
             // Add distances to existing neighbors
             for &id in &current_existing_neighbors {
                 let vec = index.get_vector(id as usize);
-                let dist = distance::cosine_distance(&current_vector, vec);
+                let dist = distance::cosine_distance_normalized(&current_vector, vec);
                 all_current_distances.insert(id, dist);
             }
 
@@ -439,7 +439,7 @@ pub fn construct_graph(index: &mut HNSWIndex) -> Result<(), RetrieveError> {
                 // Distances to existing neighbors
                 for &existing_id in &existing_neighbor_lists[idx] {
                     let existing_vec = index.get_vector(existing_id as usize);
-                    let dist = distance::cosine_distance(neighbor_vec, existing_vec);
+                    let dist = distance::cosine_distance_normalized(neighbor_vec, existing_vec);
                     distances.insert(existing_id, dist);
                 }
 
@@ -475,7 +475,7 @@ pub fn construct_graph(index: &mut HNSWIndex) -> Result<(), RetrieveError> {
                                     // Compute distance on the fly if somehow missing
                                     let vec =
                                         get_vector(&index.vectors, index.dimension, id as usize);
-                                    distance::cosine_distance(&current_vector, vec)
+                                    distance::cosine_distance_normalized(&current_vector, vec)
                                 });
                             (id, dist)
                         })
@@ -500,7 +500,7 @@ pub fn construct_graph(index: &mut HNSWIndex) -> Result<(), RetrieveError> {
                             let dist = distances.get(&id).copied().unwrap_or_else(|| {
                                 // Compute distance on the fly if somehow missing
                                 let vec = get_vector(&index.vectors, index.dimension, id as usize);
-                                distance::cosine_distance(neighbor_vec, vec)
+                                distance::cosine_distance_normalized(neighbor_vec, vec)
                             });
                             (id, dist)
                         })

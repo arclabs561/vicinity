@@ -1,7 +1,7 @@
 //! Vamana search algorithm using beam search.
 
 #[cfg(feature = "vamana")]
-use crate::hnsw::distance as hnsw_distance;
+use crate::distance as hnsw_distance;
 #[cfg(feature = "vamana")]
 use crate::vamana::graph::VamanaIndex;
 #[cfg(feature = "vamana")]
@@ -63,7 +63,7 @@ pub fn search(
     let entry_point = rng.random_range(0..index.num_vectors as u32);
 
     let entry_vec = index.get_vector(entry_point as usize);
-    let entry_dist = hnsw_distance::cosine_distance(query, entry_vec);
+    let entry_dist = hnsw_distance::cosine_distance_normalized(query, entry_vec);
 
     // Filter out NaN and Infinity
     if entry_dist.is_finite() {
@@ -104,7 +104,7 @@ pub fn search(
             }
 
             let neighbor_vec = index.get_vector(neighbor_id as usize);
-            let dist = hnsw_distance::cosine_distance(query, neighbor_vec);
+            let dist = hnsw_distance::cosine_distance_normalized(query, neighbor_vec);
 
             // Filter out NaN and Infinity
             if !dist.is_finite() {

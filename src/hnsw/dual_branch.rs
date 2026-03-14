@@ -35,7 +35,7 @@
 //! - "Dual-Branch HNSW with Skip Bridges" (arXiv:2501.13992) `https://arxiv.org/abs/2501.13992`
 //! - Levina & Bickel (2004). "Maximum likelihood estimation of intrinsic dimension." `https://doi.org/10.48550/arXiv.math/0410372`
 
-use crate::hnsw::distance;
+use crate::distance;
 use crate::lid::{estimate_lid_for_hnsw, LidEstimate, LidStats};
 use crate::RetrieveError;
 use rand::prelude::*;

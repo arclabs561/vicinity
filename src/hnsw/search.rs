@@ -3,13 +3,7 @@
 use std::collections::{BinaryHeap, HashSet};
 
 #[cfg(feature = "hnsw")]
-mod distance_impl {
-    use crate::hnsw::distance;
-    pub use distance::cosine_distance;
-}
-
-#[cfg(feature = "hnsw")]
-use distance_impl::cosine_distance;
+use crate::distance::cosine_distance_normalized as cosine_distance;
 
 /// Candidate node during search.
 #[derive(Clone, PartialEq)]
