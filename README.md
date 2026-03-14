@@ -183,6 +183,7 @@ JIN_DATASET=hard cargo run --example 03_quick_benchmark --release
 | `02_measure_recall` | `hnsw` (default) | Recall@k measurement against brute force |
 | `03_quick_benchmark` | `hnsw` (default) | Benchmark with bundled sample data (no downloads) |
 | `04_rigorous_benchmark` | `hnsw` (default) | Multi-run benchmark with confidence intervals |
+| `05_normalization_matters` | `hnsw` (default) | Why L2-normalization is required for HNSW cosine search |
 | `hnsw_benchmark` | `hnsw` (default) | HNSW vs brute-force speed and recall |
 | `semantic_search_demo` | `hnsw` (default) | End-to-end semantic search pipeline |
 | `ivf_pq_demo` | `ivf_pq` | IVF-PQ index construction and querying |
