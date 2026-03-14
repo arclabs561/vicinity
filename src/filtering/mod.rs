@@ -131,6 +131,219 @@ impl Default for MetadataStore {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_metadata() -> DocumentMetadata {
+        let mut m = DocumentMetadata::new();
+        m.insert("color".to_string(), 1);
+        m.insert("size".to_string(), 42);
+        m
+    }
+
+    // --- FilterPredicate ---
+
+    #[test]
+    fn equals_matches_correct_field_value() {
+        let meta = sample_metadata();
+        let pred = FilterPredicate::equals("color", 1);
+        assert!(pred.matches(&meta));
+    }
+
+    #[test]
+    fn equals_rejects_wrong_value() {
+        let meta = sample_metadata();
+        let pred = FilterPredicate::equals("color", 99);
+        assert!(!pred.matches(&meta));
+    }
+
+    #[test]
+    fn equals_rejects_missing_field() {
+        let meta = sample_metadata();
+        let pred = FilterPredicate::equals("weight", 1);
+        assert!(!pred.matches(&meta));
+    }
+
+    #[test]
+    fn and_all_true() {
+        let meta = sample_metadata();
+        let pred = FilterPredicate::And(vec![
+            FilterPredicate::equals("color", 1),
+            FilterPredicate::equals("size", 42),
+        ]);
+        assert!(pred.matches(&meta));
+    }
+
+    #[test]
+    fn and_one_false() {
+        let meta = sample_metadata();
+        let pred = FilterPredicate::And(vec![
+            FilterPredicate::equals("color", 1),
+            FilterPredicate::equals("size", 99),
+        ]);
+        assert!(!pred.matches(&meta));
+    }
+
+    #[test]
+    fn and_empty_is_vacuously_true() {
+        let meta = sample_metadata();
+        let pred = FilterPredicate::And(vec![]);
+        assert!(pred.matches(&meta));
+    }
+
+    #[test]
+    fn or_one_true() {
+        let meta = sample_metadata();
+        let pred = FilterPredicate::Or(vec![
+            FilterPredicate::equals("color", 99),
+            FilterPredicate::equals("size", 42),
+        ]);
+        assert!(pred.matches(&meta));
+    }
+
+    #[test]
+    fn or_none_true() {
+        let meta = sample_metadata();
+        let pred = FilterPredicate::Or(vec![
+            FilterPredicate::equals("color", 99),
+            FilterPredicate::equals("size", 99),
+        ]);
+        assert!(!pred.matches(&meta));
+    }
+
+    #[test]
+    fn or_empty_is_false() {
+        let meta = sample_metadata();
+        let pred = FilterPredicate::Or(vec![]);
+        assert!(!pred.matches(&meta));
+    }
+
+    // --- MetadataStore ---
+
+    #[test]
+    fn metadata_store_add_get_roundtrip() {
+        let mut store = MetadataStore::new();
+        let meta = sample_metadata();
+        store.add(0, meta.clone());
+        let retrieved = store.get(0).unwrap();
+        assert_eq!(retrieved.get("color"), Some(&1));
+        assert_eq!(retrieved.get("size"), Some(&42));
+    }
+
+    #[test]
+    fn metadata_store_get_missing_returns_none() {
+        let store = MetadataStore::new();
+        assert!(store.get(999).is_none());
+    }
+
+    #[test]
+    fn metadata_store_matches_delegates_to_predicate() {
+        let mut store = MetadataStore::new();
+        store.add(0, sample_metadata());
+        assert!(store.matches(0, &FilterPredicate::equals("color", 1)));
+        assert!(!store.matches(0, &FilterPredicate::equals("color", 99)));
+        assert!(!store.matches(999, &FilterPredicate::equals("color", 1)));
+    }
+
+    #[test]
+    fn estimate_selectivity_empty_store_returns_none() {
+        let store = MetadataStore::new();
+        assert!(store
+            .estimate_selectivity(&FilterPredicate::equals("x", 1))
+            .is_none());
+    }
+
+    #[test]
+    fn estimate_selectivity_all_match() {
+        let mut store = MetadataStore::new();
+        for i in 0..10 {
+            let mut m = DocumentMetadata::new();
+            m.insert("x".to_string(), 1);
+            store.add(i, m);
+        }
+        let sel = store
+            .estimate_selectivity(&FilterPredicate::equals("x", 1))
+            .unwrap();
+        assert!((sel - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn estimate_selectivity_half_match() {
+        let mut store = MetadataStore::new();
+        for i in 0..10 {
+            let mut m = DocumentMetadata::new();
+            m.insert("x".to_string(), if i < 5 { 1 } else { 2 });
+            store.add(i, m);
+        }
+        let sel = store
+            .estimate_selectivity(&FilterPredicate::equals("x", 1))
+            .unwrap();
+        assert!((sel - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn estimate_selectivity_none_match() {
+        let mut store = MetadataStore::new();
+        let mut m = DocumentMetadata::new();
+        m.insert("x".to_string(), 1);
+        store.add(0, m);
+        let sel = store
+            .estimate_selectivity(&FilterPredicate::equals("x", 99))
+            .unwrap();
+        assert!((sel - 0.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn get_all_values_sorted() {
+        let mut store = MetadataStore::new();
+        for (i, val) in [5, 3, 1, 3, 5].iter().enumerate() {
+            let mut m = DocumentMetadata::new();
+            m.insert("x".to_string(), *val);
+            store.add(i as u32, m);
+        }
+        assert_eq!(store.get_all_values("x"), vec![1, 3, 5]);
+    }
+
+    #[test]
+    fn get_value_counts_descending() {
+        let mut store = MetadataStore::new();
+        for (i, val) in [1, 2, 2, 3, 3, 3].iter().enumerate() {
+            let mut m = DocumentMetadata::new();
+            m.insert("x".to_string(), *val);
+            store.add(i as u32, m);
+        }
+        let counts = store.get_value_counts("x");
+        // Descending by count
+        assert_eq!(counts[0], (3, 3));
+        assert_eq!(counts[1], (2, 2));
+        assert_eq!(counts[2], (1, 1));
+    }
+
+    // --- fusion ---
+
+    #[test]
+    fn augment_embedding_appends_one_hot() {
+        let emb = vec![0.1, 0.2, 0.3];
+        let aug = fusion::augment_embedding(&emb, 1, 3, 0.5).unwrap();
+        assert_eq!(aug.len(), 6);
+        assert_eq!(&aug[..3], &[0.1, 0.2, 0.3]);
+        assert_eq!(&aug[3..], &[0.0, 0.5, 0.0]);
+    }
+
+    #[test]
+    fn augment_embedding_out_of_range_category() {
+        let emb = vec![0.1];
+        assert!(fusion::augment_embedding(&emb, 5, 3, 1.0).is_err());
+    }
+
+    #[test]
+    fn extract_original_strips_augmentation() {
+        let aug = vec![0.1, 0.2, 0.3, 0.0, 1.0, 0.0];
+        assert_eq!(fusion::extract_original(&aug, 3), vec![0.1, 0.2, 0.3]);
+    }
+}
+
 pub mod fusion {
     use super::*;
 

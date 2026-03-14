@@ -188,3 +188,210 @@ pub fn calculate_oversearch_k(
     let with_factor = (base_oversearch as f32 * oversearch_factor).ceil() as usize;
     with_factor.max(k).min(k * 100)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn make_store() -> MetadataStore {
+        let mut store = MetadataStore::new();
+        for i in 0..100 {
+            let mut m = HashMap::new();
+            m.insert("color".to_string(), i % 5); // 5 categories, 20 each
+            m.insert("size".to_string(), i % 2); // 2 categories, 50 each
+            store.add(i, m);
+        }
+        store
+    }
+
+    // --- FilterStrategySelector ---
+
+    #[test]
+    fn selector_low_selectivity_prefilter() {
+        let sel = FilterStrategySelector::new();
+        // selectivity 0.01 < pre_filter_threshold 0.05
+        assert_eq!(sel.select(0.01, 10, 10000), FilterStrategy::PreFilter);
+    }
+
+    #[test]
+    fn selector_high_selectivity_postfilter() {
+        let sel = FilterStrategySelector::new();
+        // selectivity 0.8 > post_filter_threshold 0.5
+        assert_eq!(sel.select(0.8, 10, 10000), FilterStrategy::PostFilter);
+    }
+
+    #[test]
+    fn selector_mid_selectivity_inline() {
+        let sel = FilterStrategySelector::new();
+        // selectivity 0.1: between thresholds, k*10=100 not < expected_matches=1000
+        // Actually k*10=100 < 1000, so PostFilter
+        // Let's pick k=200, expected=1000, k*10=2000 >= 1000 -> Inline
+        assert_eq!(sel.select(0.1, 200, 10000), FilterStrategy::Inline);
+    }
+
+    #[test]
+    fn selector_estimate_selectivity_zero_docs() {
+        let sel = FilterStrategySelector::new();
+        let store = MetadataStore::new();
+        let pred = FilterPredicate::equals("x", 1);
+        let s = sel.estimate_selectivity(&pred, &store, 0);
+        assert!((s - 1.0).abs() < 1e-6, "zero docs -> selectivity 1.0");
+    }
+
+    #[test]
+    fn selector_estimate_selectivity_equals() {
+        let sel = FilterStrategySelector::new();
+        let store = make_store();
+        // color=0 matches 20 out of 100
+        let pred = FilterPredicate::equals("color", 0);
+        let s = sel.estimate_selectivity(&pred, &store, 100);
+        assert!(
+            (s - 0.2).abs() < 1e-6,
+            "expected selectivity ~0.2, got {}",
+            s
+        );
+    }
+
+    #[test]
+    fn selector_estimate_selectivity_and() {
+        let sel = FilterStrategySelector::new();
+        let store = make_store();
+        // AND(color=0, size=0): independence assumption -> 0.2 * 0.5 = 0.1
+        let pred = FilterPredicate::And(vec![
+            FilterPredicate::equals("color", 0),
+            FilterPredicate::equals("size", 0),
+        ]);
+        let s = sel.estimate_selectivity(&pred, &store, 100);
+        assert!(
+            (s - 0.1).abs() < 1e-6,
+            "expected AND selectivity ~0.1, got {}",
+            s
+        );
+    }
+
+    #[test]
+    fn selector_estimate_selectivity_or() {
+        let sel = FilterStrategySelector::new();
+        let store = make_store();
+        // OR(color=0, color=1): P(A or B) = 1 - (1-0.2)*(1-0.2) = 0.36
+        let pred = FilterPredicate::Or(vec![
+            FilterPredicate::equals("color", 0),
+            FilterPredicate::equals("color", 1),
+        ]);
+        let s = sel.estimate_selectivity(&pred, &store, 100);
+        assert!(
+            (s - 0.36).abs() < 1e-6,
+            "expected OR selectivity ~0.36, got {}",
+            s
+        );
+    }
+
+    #[test]
+    fn selector_estimate_selectivity_or_empty() {
+        let sel = FilterStrategySelector::new();
+        let store = make_store();
+        let pred = FilterPredicate::Or(vec![]);
+        let s = sel.estimate_selectivity(&pred, &store, 100);
+        assert!((s - 0.0).abs() < 1e-6);
+    }
+
+    // --- InlineFilter ---
+
+    #[test]
+    fn inline_filter_tracks_selectivity() {
+        let store = make_store();
+        let pred = FilterPredicate::equals("color", 0);
+        let mut filter = InlineFilter::new(&pred, &store);
+
+        // Evaluate all 100 docs
+        let mut passed_count = 0;
+        for i in 0..100 {
+            if filter.matches(i) {
+                passed_count += 1;
+            }
+        }
+
+        let stats = filter.stats();
+        assert_eq!(stats.evaluated, 100);
+        assert_eq!(stats.passed, 20);
+        assert_eq!(passed_count, 20);
+        assert!((stats.selectivity - 0.2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn inline_filter_no_evaluations_selectivity_one() {
+        let store = MetadataStore::new();
+        let pred = FilterPredicate::equals("x", 1);
+        let filter = InlineFilter::new(&pred, &store);
+        assert!((filter.observed_selectivity() - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn inline_filter_missing_doc_does_not_match() {
+        let store = MetadataStore::new();
+        let pred = FilterPredicate::equals("x", 1);
+        let mut filter = InlineFilter::new(&pred, &store);
+        assert!(!filter.matches(999));
+        assert_eq!(filter.stats().passed, 0);
+        assert_eq!(filter.stats().evaluated, 1);
+    }
+
+    // --- post_filter_results ---
+
+    #[test]
+    fn post_filter_keeps_matching_results() {
+        let store = make_store();
+        let pred = FilterPredicate::equals("color", 0);
+        let results: Vec<(u32, f32)> = (0..20).map(|i| (i, i as f32 * 0.1)).collect();
+        let filtered = post_filter_results(results, &pred, &store, 5);
+        // Only ids where color=0 (i.e. i%5==0: 0, 5, 10, 15) pass, take 5
+        assert!(filtered.len() <= 5);
+        for (id, _) in &filtered {
+            assert_eq!(id % 5, 0, "doc {} should have color=0", id);
+        }
+    }
+
+    // --- calculate_oversearch_k ---
+
+    #[test]
+    fn oversearch_k_zero_selectivity() {
+        assert_eq!(calculate_oversearch_k(10, 0.0, 2.0), 1000);
+    }
+
+    #[test]
+    fn oversearch_k_full_selectivity() {
+        let result = calculate_oversearch_k(10, 1.0, 1.0);
+        assert_eq!(result, 10);
+    }
+
+    #[test]
+    fn oversearch_k_bounded_by_max() {
+        // Very low selectivity -> capped at k*100
+        let result = calculate_oversearch_k(10, 0.001, 4.0);
+        assert_eq!(result, 1000);
+    }
+
+    // --- InlineFilterConfig ---
+
+    #[test]
+    fn default_config_values() {
+        let cfg = InlineFilterConfig::default();
+        assert!((cfg.post_filter_oversearch - 4.0).abs() < 1e-6);
+        assert_eq!(cfg.inline_max_candidates, 10_000);
+        assert!((cfg.pre_filter_threshold - 0.05).abs() < 1e-6);
+        assert!((cfg.post_filter_threshold - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn custom_config_thresholds() {
+        let cfg = InlineFilterConfig {
+            pre_filter_threshold: 0.1,
+            post_filter_threshold: 0.9,
+            ..Default::default()
+        };
+        let sel = FilterStrategySelector::with_config(cfg);
+        // 0.2 is between 0.1 and 0.9, large k -> inline
+        assert_eq!(sel.select(0.2, 500, 10000), FilterStrategy::Inline);
+    }
+}

@@ -279,3 +279,179 @@ fn get_vector(vectors: &[f32], dimension: usize, idx: usize) -> &[f32] {
     let end = start + dimension;
     &vectors[start..end]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// L2-normalize a vector in place, returning the original norm.
+    fn normalize(v: &mut [f32]) -> f32 {
+        let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm > 0.0 {
+            for x in v.iter_mut() {
+                *x /= norm;
+            }
+        }
+        norm
+    }
+
+    /// Build a set of L2-normalized training vectors (SoA layout).
+    fn make_training_data(num_vectors: usize, dim: usize) -> Vec<f32> {
+        use rand::Rng;
+        let mut rng = rand::rng();
+        let mut data = Vec::with_capacity(num_vectors * dim);
+        for _ in 0..num_vectors {
+            let mut v: Vec<f32> = (0..dim).map(|_| rng.random::<f32>() * 2.0 - 1.0).collect();
+            normalize(&mut v);
+            data.extend_from_slice(&v);
+        }
+        data
+    }
+
+    #[test]
+    fn saq_new_valid_params() {
+        let q = SAQQuantizer::new(16, 4, 8);
+        assert!(q.is_ok());
+        let q = q.unwrap();
+        assert_eq!(q.dimension, 16);
+        assert_eq!(q.num_segments, 4);
+        assert_eq!(q.segment_bounds.len(), 4);
+    }
+
+    #[test]
+    fn saq_new_rejects_zero_params() {
+        assert!(SAQQuantizer::new(0, 4, 8).is_err());
+        assert!(SAQQuantizer::new(16, 0, 8).is_err());
+        assert!(SAQQuantizer::new(16, 4, 0).is_err());
+    }
+
+    #[test]
+    fn saq_new_rejects_indivisible_dimension() {
+        // 15 is not divisible by 4
+        assert!(SAQQuantizer::new(15, 4, 8).is_err());
+    }
+
+    #[test]
+    fn saq_encode_decode_roundtrip_finite() {
+        let dim = 16;
+        let num_segments = 4;
+        let total_bits = 16;
+        let num_train = 50;
+
+        let data = make_training_data(num_train, dim);
+        let mut quantizer = SAQQuantizer::new(dim, num_segments, total_bits).unwrap();
+        quantizer.fit(&data, num_train).unwrap();
+
+        // Quantize each training vector and verify the approximate distance
+        // is finite and non-negative. (The codebooks are random centroids,
+        // not proper k-means clusters, so we cannot guarantee tight bounds.)
+        for i in 0..num_train {
+            let vec = get_vector(&data, dim, i);
+            let codes = quantizer.quantize(vec);
+            assert_eq!(
+                codes.len(),
+                num_segments,
+                "code count must equal num_segments"
+            );
+            let self_dist = quantizer.approximate_distance(vec, &codes);
+            assert!(
+                self_dist.is_finite() && self_dist >= 0.0,
+                "Self-distance must be finite and non-negative, got {} for vector {}",
+                self_dist,
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn saq_approximate_distance_closer_for_similar_vectors() {
+        let dim = 8;
+        let num_segments = 2;
+        let total_bits = 8;
+        let num_train = 30;
+
+        let data = make_training_data(num_train, dim);
+        let mut quantizer = SAQQuantizer::new(dim, num_segments, total_bits).unwrap();
+        quantizer.fit(&data, num_train).unwrap();
+
+        // Take first vector as query, quantize all, check that self-distance
+        // is <= distance to a random other vector (on average).
+        let query = get_vector(&data, dim, 0);
+        let self_codes = quantizer.quantize(query);
+        let self_dist = quantizer.approximate_distance(query, &self_codes);
+
+        let mut other_dists = Vec::new();
+        for i in 1..num_train {
+            let v = get_vector(&data, dim, i);
+            let codes = quantizer.quantize(v);
+            other_dists.push(quantizer.approximate_distance(query, &codes));
+        }
+        let avg_other: f32 = other_dists.iter().sum::<f32>() / other_dists.len() as f32;
+        // Self-distance should generally be less than or equal to average distance
+        // to other vectors.
+        assert!(
+            self_dist <= avg_other + 0.5,
+            "Self-distance {} should be <= avg other distance {} (with margin)",
+            self_dist,
+            avg_other
+        );
+    }
+
+    #[test]
+    fn saq_single_vector() {
+        let dim = 8;
+        let num_segments = 2;
+        let total_bits = 4;
+
+        let mut v = vec![0.5, -0.3, 0.1, 0.7, -0.2, 0.4, -0.6, 0.8];
+        normalize(&mut v);
+        let data = v.clone();
+
+        let mut quantizer = SAQQuantizer::new(dim, num_segments, total_bits).unwrap();
+        quantizer.fit(&data, 1).unwrap();
+
+        let codes = quantizer.quantize(&v);
+        assert_eq!(codes.len(), num_segments);
+        for code_vec in &codes {
+            assert!(!code_vec.is_empty());
+        }
+    }
+
+    #[test]
+    fn saq_segment_bounds_correct() {
+        let q = SAQQuantizer::new(12, 3, 6).unwrap();
+        assert_eq!(q.segment_bounds, vec![(0, 4), (4, 8), (8, 12)]);
+    }
+
+    #[test]
+    fn cosine_distance_fn_identical_vectors() {
+        let v = vec![0.6, 0.8]; // already L2-normalized (0.36+0.64=1)
+        let d = cosine_distance(&v, &v);
+        assert!(
+            d.abs() < 1e-5,
+            "cosine distance to self should be ~0, got {}",
+            d
+        );
+    }
+
+    #[test]
+    fn cosine_distance_fn_opposite_vectors() {
+        let a = vec![1.0, 0.0];
+        let b = vec![-1.0, 0.0];
+        let d = cosine_distance(&a, &b);
+        // Cosine distance for opposite vectors = 1 - (-1) = 2
+        assert!(
+            (d - 2.0).abs() < 1e-5,
+            "cosine distance for opposite vectors should be ~2.0, got {}",
+            d
+        );
+    }
+
+    #[test]
+    fn get_vector_fn() {
+        let data = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        assert_eq!(get_vector(&data, 3, 0), &[1.0, 2.0, 3.0]);
+        assert_eq!(get_vector(&data, 3, 1), &[4.0, 5.0, 6.0]);
+        assert_eq!(get_vector(&data, 2, 2), &[5.0, 6.0]);
+    }
+}
