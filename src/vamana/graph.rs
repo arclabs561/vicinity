@@ -55,6 +55,10 @@ pub struct VamanaIndex {
 
     /// Whether index has been built
     built: bool,
+
+    /// Medoid (closest point to centroid), used as search entry point.
+    /// Computed during build.
+    pub(crate) medoid: u32,
 }
 
 #[cfg(feature = "vamana")]
@@ -74,6 +78,7 @@ impl VamanaIndex {
             params,
             num_vectors: 0,
             built: false,
+            medoid: 0,
         })
     }
 
@@ -146,6 +151,7 @@ impl VamanaIndex {
 #[cfg(all(test, feature = "vamana"))]
 mod tests {
     use super::*;
+    use crate::distance;
 
     #[test]
     fn test_vamana_create() {
@@ -162,5 +168,115 @@ mod tests {
         let vector = vec![0.1; 128];
         assert!(index.add(0, vector).is_ok());
         assert_eq!(index.num_vectors, 1);
+    }
+
+    /// Generate `n` random normalized vectors of given dimension using a simple LCG.
+    fn generate_normalized_vectors(n: usize, dim: usize, seed: u64) -> Vec<Vec<f32>> {
+        let mut state = seed;
+        (0..n)
+            .map(|_| {
+                let raw: Vec<f32> = (0..dim)
+                    .map(|_| {
+                        // Simple LCG for reproducibility without extra deps
+                        state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+                        // Map to [-1, 1]
+                        ((state >> 33) as f32 / (u32::MAX as f32 / 2.0)) - 1.0
+                    })
+                    .collect();
+                distance::normalize(&raw)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_vamana_build_does_not_panic() {
+        let dim = 32;
+        let n = 60;
+        let vectors = generate_normalized_vectors(n, dim, 42);
+
+        let params = VamanaParams {
+            max_degree: 16,
+            alpha: 1.3,
+            ef_construction: 40,
+            ef_search: 20,
+        };
+        let mut index = VamanaIndex::new(dim, params).unwrap();
+        for (i, v) in vectors.iter().enumerate() {
+            index.add(i as u32, v.clone()).unwrap();
+        }
+        // Must not panic
+        index.build().unwrap();
+
+        // Medoid should be within valid range
+        assert!((index.medoid as usize) < n);
+    }
+
+    #[test]
+    fn test_vamana_search_self_query() {
+        let dim = 32;
+        let n = 80;
+        let vectors = generate_normalized_vectors(n, dim, 99);
+
+        let params = VamanaParams {
+            max_degree: 32,
+            alpha: 1.5,
+            ef_construction: 100,
+            ef_search: 80,
+        };
+        let mut index = VamanaIndex::new(dim, params).unwrap();
+        for (i, v) in vectors.iter().enumerate() {
+            index.add(i as u32, v.clone()).unwrap();
+        }
+        index.build().unwrap();
+
+        // For each of a sample of vectors, the self-query should appear in the
+        // top-k results with distance close to zero.
+        let k = 5;
+        let ef = 80;
+        let sample_indices = [0, 1, n / 2, n - 1];
+        for &idx in &sample_indices {
+            let results = index.search(&vectors[idx], k, ef).unwrap();
+            assert!(
+                !results.is_empty(),
+                "search returned empty results for query {}",
+                idx
+            );
+            let found = results
+                .iter()
+                .any(|&(id, dist)| id == idx as u32 && dist < 1e-4);
+            assert!(
+                found,
+                "self-query for vector {} not found in top-{} results: {:?}",
+                idx, k, results
+            );
+        }
+    }
+
+    #[test]
+    fn test_vamana_search_deterministic() {
+        let dim = 32;
+        let n = 60;
+        let vectors = generate_normalized_vectors(n, dim, 77);
+
+        let params = VamanaParams {
+            max_degree: 16,
+            alpha: 1.3,
+            ef_construction: 40,
+            ef_search: 30,
+        };
+        let mut index = VamanaIndex::new(dim, params).unwrap();
+        for (i, v) in vectors.iter().enumerate() {
+            index.add(i as u32, v.clone()).unwrap();
+        }
+        index.build().unwrap();
+
+        // Same query should return same results (medoid entry point is deterministic)
+        let query = &vectors[5];
+        let r1 = index.search(query, 5, 30).unwrap();
+        let r2 = index.search(query, 5, 30).unwrap();
+        assert_eq!(
+            r1, r2,
+            "search should be deterministic with medoid entry point"
+        );
     }
 }

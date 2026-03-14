@@ -185,15 +185,62 @@ fn refine_with_rnd(index: &mut VamanaIndex) -> Result<(), RetrieveError> {
     Ok(())
 }
 
+/// Compute the medoid: the vector closest to the centroid of all vectors.
+///
+/// Returns the index of the medoid vector.
+fn compute_medoid(index: &VamanaIndex) -> u32 {
+    let n = index.num_vectors;
+    let dim = index.dimension;
+
+    // Compute centroid
+    let mut centroid = vec![0.0_f32; dim];
+    for i in 0..n {
+        let vec = index.get_vector(i);
+        for (c, &v) in centroid.iter_mut().zip(vec.iter()) {
+            *c += v;
+        }
+    }
+    let inv_n = 1.0 / n as f32;
+    for c in centroid.iter_mut() {
+        *c *= inv_n;
+    }
+
+    // Normalize centroid so cosine_distance_normalized is valid
+    let norm = centroid.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm > 1e-10 {
+        for c in centroid.iter_mut() {
+            *c /= norm;
+        }
+    }
+
+    // Find vector closest to centroid
+    let mut best_id: u32 = 0;
+    let mut best_dist = f32::INFINITY;
+    for i in 0..n {
+        let vec = index.get_vector(i);
+        let dist = hnsw_distance::cosine_distance_normalized(&centroid, vec);
+        if dist < best_dist {
+            best_dist = dist;
+            best_id = i as u32;
+        }
+    }
+
+    best_id
+}
+
 /// Construct Vamana graph using two-pass algorithm.
 ///
-/// 1. Initialize random graph with degree >= log(n)
-/// 2. First pass: Refine using RRND
-/// 3. Second pass: Further refine using RND
+/// 1. Compute medoid (entry point for search)
+/// 2. Initialize random graph with degree >= log(n)
+/// 3. First pass: Refine using RRND
+/// 4. Second pass: Further refine using RND
 pub fn construct_graph(index: &mut VamanaIndex) -> Result<(), RetrieveError> {
     if index.num_vectors == 0 {
         return Err(RetrieveError::EmptyIndex);
     }
+
+    // Step 0: Compute medoid entry point
+    index.medoid = compute_medoid(index);
 
     // Step 1: Initialize random graph
     initialize_random_graph(index)?;

@@ -57,10 +57,8 @@ pub fn search(
     let mut distance_cache: HashMap<u32, f32> = HashMap::with_capacity(ef);
     let mut candidates: BinaryHeap<Candidate> = BinaryHeap::with_capacity(ef);
 
-    // Start from random entry point (optimized: use random_range instead of collecting Vec)
-    use rand::Rng;
-    let mut rng = rand::rng();
-    let entry_point = rng.random_range(0..index.num_vectors as u32);
+    // Start from medoid (closest point to centroid), computed during build.
+    let entry_point = index.medoid;
 
     let entry_vec = index.get_vector(entry_point as usize);
     let entry_dist = hnsw_distance::cosine_distance_normalized(query, entry_vec);
