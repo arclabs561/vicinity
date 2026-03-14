@@ -26,6 +26,9 @@ pub(crate) fn map_clump_error(e: clump::Error) -> RetrieveError {
         clump::Error::DimensionMismatch { expected, found } => RetrieveError::InvalidParameter(
             format!("dimension mismatch: expected {expected}, found {found}"),
         ),
+        clump::Error::ConstraintViolation(msg) => {
+            RetrieveError::InvalidParameter(format!("constraint violation: {msg}"))
+        }
         clump::Error::Other(msg) => RetrieveError::Other(msg),
     }
 }
