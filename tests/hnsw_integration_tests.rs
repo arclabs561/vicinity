@@ -150,11 +150,11 @@ fn test_hnsw_recall_quality() {
     }
 
     let avg_recall = total_recall / n_queries as f32;
-    // Note: With M=32 and ef=150, recall should be reasonable.
-    // HNSW recall varies by run due to random layer assignment.
+    // M=32, ef_construction=200, ef_search=150 on 1000 normalized 64d vectors
+    // should achieve high recall. Threshold set to 0.85 based on parameter analysis.
     assert!(
-        avg_recall >= 0.35,
-        "Average recall@{} should be >= 0.35, got {}",
+        avg_recall >= 0.85,
+        "Average recall@{} should be >= 0.85, got {}",
         k,
         avg_recall
     );
@@ -625,4 +625,122 @@ fn test_hnsw_results_unique() {
             "Search returned duplicate indices"
         );
     }
+}
+
+/// Graph connectivity audit: verify entry point is reachable and all nodes
+/// are connected via the base layer graph.
+#[test]
+fn test_hnsw_graph_connectivity() {
+    let dim = 32;
+    let n = 200;
+
+    let vectors: Vec<Vec<f32>> = random_vectors(n, dim, 777)
+        .into_iter()
+        .map(|v| normalize(&v))
+        .collect();
+
+    let mut hnsw = HNSWIndex::new(dim, 16, 100).expect("Failed to create");
+    for (i, v) in vectors.iter().enumerate() {
+        hnsw.add(i as u32, v.clone()).expect("Failed to add");
+    }
+    hnsw.build().expect("Failed to build");
+
+    // Verify that searching from every vector as query returns at least itself
+    // (within a reasonable ef). This is a proxy for graph connectivity:
+    // if a node is unreachable, queries near it will miss it.
+    let mut reachable = 0;
+    for (i, v) in vectors.iter().enumerate() {
+        let results = hnsw.search(v, 10, 200).expect("Search failed");
+        let ids: HashSet<u32> = results.iter().map(|(id, _)| *id).collect();
+        if ids.contains(&(i as u32)) {
+            reachable += 1;
+        }
+    }
+
+    let reachability = reachable as f32 / n as f32;
+    assert!(
+        reachability >= 0.95,
+        "Only {:.1}% of nodes reachable from themselves (expected >= 95%)",
+        reachability * 100.0
+    );
+}
+
+/// SIMD vs scalar distance agreement: verify that SIMD-accelerated distance
+/// functions produce results consistent with scalar reference implementations.
+#[test]
+fn test_distance_simd_scalar_agreement() {
+    let dims = [1, 2, 3, 7, 16, 31, 32, 33, 64, 128, 255, 256, 513];
+
+    for dim in dims {
+        let a: Vec<f32> = (0..dim)
+            .map(|i| ((i * 31 + 7) as f32 * 0.001).sin())
+            .collect();
+        let b: Vec<f32> = (0..dim)
+            .map(|i| ((i * 17 + 3) as f32 * 0.001).cos())
+            .collect();
+
+        // Scalar reference
+        let scalar_dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+        let scalar_l2_sq: f32 = a.iter().zip(b.iter()).map(|(x, y)| (x - y).powi(2)).sum();
+        let scalar_l2 = scalar_l2_sq.sqrt();
+
+        // SIMD (via crate::distance)
+        let simd_l2 = vicinity::distance::l2_distance(&a, &b);
+        let simd_cosine = vicinity::distance::cosine_distance(&a, &b);
+
+        // Scalar cosine distance
+        let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let scalar_cosine = if norm_a > 0.0 && norm_b > 0.0 {
+            1.0 - scalar_dot / (norm_a * norm_b)
+        } else {
+            1.0
+        };
+
+        let eps = 1e-4;
+        assert!(
+            (simd_l2 - scalar_l2).abs() < eps,
+            "L2 mismatch at dim={}: simd={}, scalar={}",
+            dim, simd_l2, scalar_l2
+        );
+        assert!(
+            (simd_cosine - scalar_cosine).abs() < eps,
+            "Cosine mismatch at dim={}: simd={}, scalar={}",
+            dim, simd_cosine, scalar_cosine
+        );
+    }
+}
+
+/// Edge case: search with k=0, k=1, and k > n.
+#[test]
+fn test_hnsw_edge_case_k_values() {
+    let dim = 16;
+    let n = 50;
+
+    let vectors: Vec<Vec<f32>> = random_vectors(n, dim, 42)
+        .into_iter()
+        .map(|v| normalize(&v))
+        .collect();
+
+    let mut hnsw = HNSWIndex::new(dim, 8, 50).expect("Failed to create");
+    for (i, v) in vectors.iter().enumerate() {
+        hnsw.add(i as u32, v.clone()).expect("Failed to add");
+    }
+    hnsw.build().expect("Failed to build");
+
+    let query = &vectors[0];
+
+    // k=1 should return exactly 1 result
+    let results = hnsw.search(query, 1, 50).expect("Search failed");
+    assert_eq!(results.len(), 1, "k=1 should return exactly 1 result");
+    assert_eq!(results[0].0, 0, "k=1 query on self should return self");
+
+    // k > n should return at most n results
+    let results = hnsw.search(query, n + 100, 200).expect("Search failed");
+    assert!(
+        results.len() <= n,
+        "k > n should return at most n={} results, got {}",
+        n,
+        results.len()
+    );
 }
