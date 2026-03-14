@@ -11,21 +11,13 @@
 //! - **Performance**: Memory mapping, SIMD-accelerated compression, efficient formats
 //! - **Flexibility**: Support for all retrieval methods, configurable trade-offs
 //!
-//! # Future Improvements (Blob Storage)
-//!
-//! Large metadata and content blobs can cause write amplification and cache thrashing in standard storage engines (like Postgres).
-//! Wilson Lin's 3B search engine found success using **RocksDB's BlobDB** feature:
-//! - Store small metadata/pointers in LSM tree.
-//! - Store large blobs in separate log files.
-//! - Avoids rewriting large blobs during compaction.
-//!
-//! TODO: Investigate adding a `BlobStore` trait or wrapper here to support this pattern.
-//!
 //! See `docs/PERSISTENCE_DESIGN.md` for comprehensive design documentation.
 //! See `docs/PERSISTENCE_DESIGN_DENSE.md` for dense retrieval specifics.
 
 pub mod directory;
 pub mod error;
+
+#[cfg(feature = "persistence")]
 pub mod format;
 
 #[cfg(feature = "persistence")]
