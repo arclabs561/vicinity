@@ -6,8 +6,6 @@
 
 #![allow(dead_code)]
 
-// Note: hash/LSH methods live in `sketchir`.
-
 #[cfg(any(
     feature = "kdtree",
     feature = "balltree",

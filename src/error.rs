@@ -21,10 +21,6 @@ pub enum RetrieveError {
     #[error("dimension mismatch: query has {query_dim} dimensions, document has {doc_dim}")]
     DimensionMismatch { query_dim: usize, doc_dim: usize },
 
-    /// Invalid sparse vector (empty or malformed).
-    #[error("invalid sparse vector: {0}")]
-    InvalidSparseVector(String),
-
     /// I/O error (wrapped)
     #[error("I/O error: {0}")]
     Io(String), // RetrieveError needs to be Clone, std::io::Error isn't. Store string representation.

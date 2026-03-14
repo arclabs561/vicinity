@@ -192,7 +192,7 @@ pub(crate) struct Layer {
     storage: NeighborStorage,
     /// Cache for decompressed neighbors (temporary, cleared after use)
     #[cfg(feature = "id-compression")]
-    decompressed_cache: parking_lot::Mutex<std::collections::HashMap<u32, SmallVec<[u32; 16]>>>,
+    decompressed_cache: std::sync::Mutex<std::collections::HashMap<u32, SmallVec<[u32; 16]>>>,
 }
 
 impl Layer {
@@ -201,7 +201,7 @@ impl Layer {
         Self {
             storage: NeighborStorage::Uncompressed(neighbors),
             #[cfg(feature = "id-compression")]
-            decompressed_cache: parking_lot::Mutex::new(std::collections::HashMap::new()),
+            decompressed_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -283,7 +283,7 @@ impl Layer {
                 data: compressed_lists,
                 universe_size,
             },
-            decompressed_cache: parking_lot::Mutex::new(std::collections::HashMap::new()),
+            decompressed_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
         })
     }
 
@@ -301,7 +301,10 @@ impl Layer {
             } => {
                 // Check cache first
                 {
-                    let cache = self.decompressed_cache.lock();
+                    let cache = self
+                        .decompressed_cache
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
                     if let Some(cached) = cache.get(&node) {
                         return cached.clone();
                     }
@@ -329,7 +332,10 @@ impl Layer {
 
                 // Cache
                 {
-                    let mut cache = self.decompressed_cache.lock();
+                    let mut cache = self
+                        .decompressed_cache
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
                     cache.insert(node, neighbors.clone());
                 }
 
@@ -341,7 +347,10 @@ impl Layer {
     /// Clear decompression cache (call after search).
     #[cfg(feature = "id-compression")]
     pub(crate) fn clear_cache(&self) {
-        let mut cache = self.decompressed_cache.lock();
+        let mut cache = self
+            .decompressed_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         cache.clear();
     }
 

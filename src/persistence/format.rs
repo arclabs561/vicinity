@@ -1,8 +1,8 @@
-//! Unified persistence format for Tekne Stack.
+//! Unified persistence format for vicinity indexes.
 //!
 //! # Design Goals
 //!
-//! 1. **Cross-crate compatibility**: vicinity and cerno-retrieve share format
+//! 1. **Cross-crate compatibility**: shared format across dense and sparse indexes
 //! 2. **Incremental writes**: WAL-based for crash recovery
 //! 3. **Memory-mapped reads**: Zero-copy for large indices
 //! 4. **Versioned**: Forward/backward compatible with magic bytes

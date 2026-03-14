@@ -1,7 +1,7 @@
 //! Filtering and lightweight faceting support for vector search.
 //!
-//! This moved from ordino-retrieve to prox because filtered ANN traversal is an
-//! index concern (it changes how graph search proceeds), not a pipeline concern.
+//! Filtered ANN traversal is an index concern (it changes how graph search
+//! proceeds), not a pipeline concern.
 
 pub mod inline;
 

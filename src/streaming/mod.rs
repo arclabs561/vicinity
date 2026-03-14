@@ -89,23 +89,6 @@ pub use buffer::{StreamBuffer, StreamBufferConfig};
 pub use coordinator::{IndexOps, StreamingConfig, StreamingCoordinator};
 pub use ops::{UpdateBatch, UpdateOp, UpdateStats};
 
-use crate::error::Result;
-
-/// Trait for indices that support streaming updates.
-pub trait StreamingIndex {
-    /// Apply a single update operation.
-    fn apply(&mut self, op: UpdateOp) -> Result<()>;
-
-    /// Apply a batch of updates atomically.
-    fn apply_batch(&mut self, batch: UpdateBatch) -> Result<UpdateStats>;
-
-    /// Compact/merge buffered updates into main index.
-    fn compact(&mut self) -> Result<UpdateStats>;
-
-    /// Get streaming statistics.
-    fn stats(&self) -> StreamingStats;
-}
-
 /// Statistics about streaming index state.
 #[derive(Debug, Clone, Default)]
 pub struct StreamingStats {

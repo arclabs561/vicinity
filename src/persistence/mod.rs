@@ -1,9 +1,7 @@
 //! Disk persistence for `vicinity` indexes.
 //!
-//! This module provides crash-safe, concurrent persistence for all retrieval methods:
-//! - Sparse retrieval (BM25, TF-IDF): Inverted indexes with compressed postings
-//! - Dense retrieval: Vector storage with ANN indexes (HNSW, IVF-PQ, DiskANN)
-//! - Hybrid retrieval: Unified persistence for combined sparse + dense systems
+//! This module provides crash-safe, concurrent persistence for dense vector indexes
+//! (HNSW, IVF-PQ, DiskANN).
 //!
 //! # Design Philosophy
 //!
