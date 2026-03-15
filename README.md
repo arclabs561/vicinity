@@ -162,17 +162,26 @@ Practical guidance in `vicinity`:
 
 ## Running benchmarks / examples
 
-Benchmarks:
-
-```sh
-cargo bench
-```
-
-Example benchmark driver:
+Quick benchmark (generates synthetic data if no pre-built files exist):
 
 ```sh
 cargo run --example 03_quick_benchmark --release
-JIN_DATASET=hard cargo run --example 03_quick_benchmark --release
+```
+
+With real ann-benchmarks datasets:
+
+```sh
+# Download and convert (requires Python + h5py)
+uv run scripts/download_ann_benchmarks.py sift-128-euclidean
+
+# List available datasets
+uv run scripts/download_ann_benchmarks.py --list
+```
+
+Criterion microbenchmarks:
+
+```sh
+cargo bench
 ```
 
 ### Examples quick reference
@@ -181,7 +190,7 @@ JIN_DATASET=hard cargo run --example 03_quick_benchmark --release
 |---|---|---|
 | `01_basic_search` | `hnsw` (default) | Minimal build-and-search workflow |
 | `02_measure_recall` | `hnsw` (default) | Recall@k measurement against brute force |
-| `03_quick_benchmark` | `hnsw` (default) | Benchmark with bundled sample data (no downloads) |
+| `03_quick_benchmark` | `hnsw` (default) | Benchmark with synthetic or bundled data (no downloads) |
 | `04_rigorous_benchmark` | `hnsw` (default) | Multi-run benchmark with confidence intervals |
 | `05_normalization_matters` | `hnsw` (default) | Why L2-normalization is required for HNSW cosine search |
 | `hnsw_benchmark` | `hnsw` (default) | HNSW vs brute-force speed and recall |
