@@ -749,3 +749,112 @@ fn test_hnsw_edge_case_k_values() {
         results.len()
     );
 }
+
+/// Filtered search oracle: build a k-NN graph from 200 normalized vectors,
+/// assign each vector to category 0 or 1, run ACORN filtered search, and
+/// compare against brute-force filtered ground truth.
+#[test]
+fn test_filtered_search_oracle() {
+    let dim = 32;
+    let n = 200;
+    let k = 10;
+    let n_queries = 20;
+    let neighbors_per_node = 32; // Dense graph for reliable navigation.
+
+    // Generate and normalize vectors.
+    let vectors: Vec<Vec<f32>> = random_vectors(n, dim, 7777)
+        .into_iter()
+        .map(|v| normalize(&v))
+        .collect();
+
+    // Assign metadata: category = id % 2 (half the vectors in each group).
+    let category_of = |id: u32| -> u32 { id % 2 };
+
+    // Build a mutual k-NN graph: each node connects to its nearest neighbors,
+    // and reverse edges are added for navigability.
+    let mut graph: Vec<HashSet<u32>> = (0..n).map(|_| HashSet::new()).collect();
+    for i in 0..n {
+        let mut dists: Vec<(u32, f32)> = (0..n)
+            .filter(|&j| j != i)
+            .map(|j| (j as u32, cosine_distance(&vectors[i], &vectors[j])))
+            .collect();
+        dists.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        for &(j, _) in dists.iter().take(neighbors_per_node) {
+            graph[i].insert(j);
+            graph[j as usize].insert(i as u32); // reverse edge
+        }
+    }
+    let graph: Vec<Vec<u32>> = graph.into_iter().map(|s| s.into_iter().collect()).collect();
+
+    let queries: Vec<Vec<f32>> = random_vectors(n_queries, dim, 8888)
+        .into_iter()
+        .map(|v| normalize(&v))
+        .collect();
+
+    let target_category: u32 = 0;
+
+    let mut total_overlap = 0usize;
+    let mut total_expected = 0usize;
+
+    for query in &queries {
+        // Brute-force filtered ground truth: exact k-NN among vectors with target category.
+        let mut gt: Vec<(u32, f32)> = (0..n as u32)
+            .filter(|&id| category_of(id) == target_category)
+            .map(|id| (id, cosine_distance(&vectors[id as usize], query)))
+            .collect();
+        gt.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        gt.truncate(k);
+
+        let gt_ids: HashSet<u32> = gt.iter().map(|(id, _)| *id).collect();
+
+        // Pick the entry point closest to the query (simulates HNSW upper-layer routing).
+        let entry_point = (0..n as u32)
+            .min_by(|&a, &b| {
+                let da = cosine_distance(&vectors[a as usize], query);
+                let db = cosine_distance(&vectors[b as usize], query);
+                da.partial_cmp(&db).unwrap()
+            })
+            .unwrap();
+
+        // ACORN filtered search.
+        let filter = FnFilter(|id: u32| category_of(id) == target_category);
+        let config = AcornConfig {
+            enable_two_hop: true,
+            two_hop_threshold: 0.5,
+            max_two_hop_neighbors: 64,
+            ef_search: 200,
+        };
+
+        let results = acorn_search(
+            k,
+            &config,
+            &filter,
+            |id| graph[id as usize].clone(),
+            |id| cosine_distance(&vectors[id as usize], query),
+            entry_point,
+        )
+        .expect("acorn_search failed");
+
+        // All returned results must pass the filter.
+        for (id, _) in &results {
+            assert_eq!(
+                category_of(*id),
+                target_category,
+                "Filtered result {} has wrong category",
+                id
+            );
+        }
+
+        let result_ids: HashSet<u32> = results.iter().map(|(id, _)| *id).collect();
+        let overlap = gt_ids.intersection(&result_ids).count();
+        total_overlap += overlap;
+        total_expected += gt_ids.len();
+    }
+
+    let avg_recall = total_overlap as f32 / total_expected as f32;
+    assert!(
+        avg_recall >= 0.5,
+        "Filtered search recall too low: {:.2} (expected >= 0.50)",
+        avg_recall
+    );
+}

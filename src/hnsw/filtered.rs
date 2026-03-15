@@ -132,9 +132,11 @@ impl PartialOrd for Candidate {
 
 impl Ord for Candidate {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        // Min-heap: smaller distance = higher priority
-        // Use total_cmp for IEEE 754 total ordering (NaN-safe)
-        self.distance.total_cmp(&other.distance).reverse()
+        // Max-heap: larger distance = higher priority (pops largest first).
+        // The frontier stores negated distances so pop() returns the closest node.
+        // The results heap stores positive distances so pop() evicts the farthest.
+        // Use total_cmp for IEEE 754 total ordering (NaN-safe).
+        self.distance.total_cmp(&other.distance)
     }
 }
 
