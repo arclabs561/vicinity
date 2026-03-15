@@ -47,6 +47,16 @@ pub trait ANNIndex {
 
     /// Get number of vectors.
     fn num_vectors(&self) -> usize;
+
+    /// Distance metric used by this index.
+    ///
+    /// Returns the metric that search results are ranked by. This allows
+    /// cross-index operations (e.g., streaming coordinator) to verify
+    /// metric compatibility at runtime.
+    fn distance_metric(&self) -> crate::distance::DistanceMetric {
+        // Default: cosine (matches HNSW, the most common index)
+        crate::distance::DistanceMetric::Cosine
+    }
 }
 
 /// Statistics about an ANN index.
@@ -284,6 +294,10 @@ impl ANNIndex for crate::classic::trees::balltree::BallTreeIndex {
     fn num_vectors(&self) -> usize {
         self.num_vectors
     }
+
+    fn distance_metric(&self) -> crate::distance::DistanceMetric {
+        crate::distance::DistanceMetric::L2
+    }
 }
 
 // Implement ANNIndex for K-Means Tree
@@ -449,6 +463,10 @@ impl ANNIndex for crate::diskann::graph::DiskANNIndex {
 
     fn num_vectors(&self) -> usize {
         self.num_vectors()
+    }
+
+    fn distance_metric(&self) -> crate::distance::DistanceMetric {
+        crate::distance::DistanceMetric::L2
     }
 }
 
