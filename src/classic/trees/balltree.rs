@@ -156,8 +156,8 @@ impl BallTreeIndex {
 
         for &idx in indices {
             let vec = self.get_vector(idx as usize);
-            let dist1 = self.euclidean_distance(vec, self.get_vector(seed1_idx as usize));
-            let dist2 = self.euclidean_distance(vec, self.get_vector(seed2_idx as usize));
+            let dist1 = crate::distance::l2_distance(vec, self.get_vector(seed1_idx as usize));
+            let dist2 = crate::distance::l2_distance(vec, self.get_vector(seed2_idx as usize));
 
             if dist1 < dist2 {
                 left_indices.push(idx);
@@ -215,7 +215,7 @@ impl BallTreeIndex {
 
         for &idx in indices {
             let vec = self.get_vector(idx as usize);
-            let dist = self.euclidean_distance(vec, center);
+            let dist = crate::distance::l2_distance(vec, center);
             max_radius = max_radius.max(dist);
         }
 
@@ -231,7 +231,7 @@ impl BallTreeIndex {
             for j in (i + 1)..indices.len() {
                 let vec1 = self.get_vector(indices[i] as usize);
                 let vec2 = self.get_vector(indices[j] as usize);
-                let dist = self.euclidean_distance(vec1, vec2);
+                let dist = crate::distance::l2_distance(vec1, vec2);
 
                 if dist > max_dist {
                     max_dist = dist;
@@ -299,7 +299,7 @@ impl BallTreeIndex {
                 radius,
             } => {
                 // Pruning check for leaf: can this leaf contain better results?
-                let dist_to_center = self.euclidean_distance(query, center);
+                let dist_to_center = crate::distance::l2_distance(query, center);
                 let min_possible_dist = (dist_to_center - radius).max(0.0);
 
                 if min_possible_dist > *best_dist {
@@ -310,7 +310,7 @@ impl BallTreeIndex {
                 // Process all vectors in leaf
                 for &idx in indices {
                     let vec = self.get_vector(idx as usize);
-                    let dist = self.cosine_distance(query, vec);
+                    let dist = crate::distance::cosine_distance_normalized(query, vec);
 
                     if best_k.len() < k {
                         // Not yet k results, add unconditionally
@@ -347,7 +347,7 @@ impl BallTreeIndex {
                 right,
             } => {
                 // Compute distance from query to ball center
-                let dist_to_center = self.euclidean_distance(query, center);
+                let dist_to_center = crate::distance::l2_distance(query, center);
 
                 // Pruning: minimum possible distance to any point in this ball
                 let min_possible_dist = (dist_to_center - radius).max(0.0);
@@ -367,8 +367,8 @@ impl BallTreeIndex {
                     BallNode::Leaf { center, radius, .. } => (center, *radius),
                 };
 
-                let left_dist = self.euclidean_distance(query, left_center);
-                let right_dist = self.euclidean_distance(query, right_center);
+                let left_dist = crate::distance::l2_distance(query, left_center);
+                let right_dist = crate::distance::l2_distance(query, right_center);
 
                 // Visit closer child first (more likely to find good results early)
                 let left_min = (left_dist - left_radius).max(0.0);
@@ -392,21 +392,5 @@ impl BallTreeIndex {
         let start = idx * self.dimension;
         let end = start + self.dimension;
         &self.vectors[start..end]
-    }
-
-    /// Compute Euclidean distance.
-    /// Optimized to use SIMD-accelerated operations.
-    fn euclidean_distance(&self, a: &[f32], b: &[f32]) -> f32 {
-        use crate::simd;
-        // Compute squared distance: sum((a[i] - b[i])^2) = sum(a[i]^2) + sum(b[i]^2) - 2*sum(a[i]*b[i])
-        let a_squared = simd::dot(a, a);
-        let b_squared = simd::dot(b, b);
-        let ab_dot = simd::dot(a, b);
-        (a_squared + b_squared - 2.0 * ab_dot).sqrt()
-    }
-
-    /// Compute cosine distance for **L2-normalized** vectors.
-    fn cosine_distance(&self, a: &[f32], b: &[f32]) -> f32 {
-        crate::distance::cosine_distance_normalized(a, b)
     }
 }

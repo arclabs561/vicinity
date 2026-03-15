@@ -282,8 +282,8 @@ impl DEGIndex {
     pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if query.len() != self.dim {
             return Err(RetrieveError::DimensionMismatch {
-                query_dim: self.dim,
-                doc_dim: query.len(),
+                query_dim: query.len(),
+                doc_dim: self.dim,
             });
         }
 

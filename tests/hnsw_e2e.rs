@@ -239,7 +239,7 @@ fn test_hnsw_search_returns_sorted_results() {
 #[test]
 fn test_hnsw_handles_single_vector() {
     let dim = 8;
-    let vec = vec![1.0; dim];
+    let vec = normalize(&vec![1.0; dim]);
 
     let mut index = HNSWIndex::new(dim, 8, 8).expect("Failed to create index");
     index.add(0, vec.clone()).expect("Failed to add vector");

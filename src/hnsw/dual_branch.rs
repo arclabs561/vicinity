@@ -457,8 +457,8 @@ impl DualBranchHNSW {
 
         if query.len() != self.dimension {
             return Err(RetrieveError::DimensionMismatch {
-                query_dim: self.dimension,
-                doc_dim: query.len(),
+                query_dim: query.len(),
+                doc_dim: self.dimension,
             });
         }
 

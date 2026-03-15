@@ -32,6 +32,3 @@ pub use evaluation::{
 };
 pub use memory::{IndexMemoryStats, MemoryTracker};
 pub use metrics::{precision_at_k, recall_at_k};
-
-/// Alias for backward compatibility (same as [`recall_at_k`]).
-pub use evaluation::recall_at_k as eval_recall_at_k;

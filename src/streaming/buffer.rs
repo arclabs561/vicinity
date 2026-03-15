@@ -25,7 +25,10 @@ impl Default for StreamBufferConfig {
             max_buffer_size: 10_000,
             max_pending_deletes: 1_000,
             max_memory_bytes: 100 * 1024 * 1024, // 100 MB
-            distance_metric: crate::distance::DistanceMetric::L2,
+            // Default to Cosine to match HNSW (the primary index type).
+            // Must match the distance metric of the main index to produce
+            // consistent merged rankings in StreamingCoordinator::search.
+            distance_metric: crate::distance::DistanceMetric::Cosine,
         }
     }
 }
@@ -211,7 +214,9 @@ mod tests {
 
     #[test]
     fn test_search() {
-        let mut buffer = StreamBuffer::new();
+        let mut config = StreamBufferConfig::default();
+        config.distance_metric = crate::distance::DistanceMetric::L2;
+        let mut buffer = StreamBuffer::with_config(config);
 
         buffer.insert(0, vec![0.0, 0.0]).unwrap();
         buffer.insert(1, vec![1.0, 0.0]).unwrap();

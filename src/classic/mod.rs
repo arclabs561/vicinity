@@ -4,8 +4,6 @@
 //!
 //! Classic tree-based methods for comparison with modern graph methods.
 
-#![allow(dead_code)]
-
 #[cfg(any(
     feature = "kdtree",
     feature = "balltree",

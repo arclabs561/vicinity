@@ -31,7 +31,6 @@
 
 use crate::RetrieveError;
 use std::collections::{BinaryHeap, HashSet};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 /// Configuration for in-place updates.
 #[derive(Clone, Debug)]
@@ -69,7 +68,7 @@ struct InPlaceNode {
     /// In-neighbors (who points to us)
     in_neighbors: Vec<u32>,
     /// Is this node deleted?
-    deleted: AtomicBool,
+    deleted: bool,
 }
 
 impl InPlaceNode {
@@ -78,16 +77,16 @@ impl InPlaceNode {
             vector,
             out_neighbors: Vec::new(),
             in_neighbors: Vec::new(),
-            deleted: AtomicBool::new(false),
+            deleted: false,
         }
     }
 
     fn is_deleted(&self) -> bool {
-        self.deleted.load(Ordering::Acquire)
+        self.deleted
     }
 
-    fn mark_deleted(&self) {
-        self.deleted.store(true, Ordering::Release);
+    fn mark_deleted(&mut self) {
+        self.deleted = true;
     }
 }
 
@@ -100,9 +99,9 @@ pub struct InPlaceIndex {
     /// Free slots for reuse
     free_slots: Vec<u32>,
     /// Entry point for search
-    entry_point: AtomicU32,
+    entry_point: u32,
     /// Active node count
-    active_count: AtomicU32,
+    active_count: u32,
 }
 
 impl InPlaceIndex {
@@ -113,8 +112,8 @@ impl InPlaceIndex {
             dim,
             nodes: Vec::new(),
             free_slots: Vec::new(),
-            entry_point: AtomicU32::new(u32::MAX),
-            active_count: AtomicU32::new(0),
+            entry_point: u32::MAX,
+            active_count: 0,
         }
     }
 
@@ -137,11 +136,11 @@ impl InPlaceIndex {
             id
         };
 
-        self.active_count.fetch_add(1, Ordering::Relaxed);
+        self.active_count += 1;
 
         // Set entry point if first node
-        if self.entry_point.load(Ordering::Acquire) == u32::MAX {
-            self.entry_point.store(id, Ordering::Release);
+        if self.entry_point == u32::MAX {
+            self.entry_point = id;
             return Ok(id);
         }
 
@@ -225,7 +224,7 @@ impl InPlaceIndex {
         }
 
         let node = self.nodes[id as usize]
-            .as_ref()
+            .as_mut()
             .ok_or(RetrieveError::OutOfBounds(id as usize))?;
 
         if node.is_deleted() {
@@ -239,10 +238,10 @@ impl InPlaceIndex {
 
         // Mark as deleted
         node.mark_deleted();
-        self.active_count.fetch_sub(1, Ordering::Relaxed);
+        self.active_count -= 1;
 
         // Update entry point if necessary
-        if self.entry_point.load(Ordering::Acquire) == id {
+        if self.entry_point == id {
             // Find new entry point from neighbors
             let new_entry = out_neighbors
                 .iter()
@@ -256,7 +255,7 @@ impl InPlaceIndex {
                 })
                 .copied()
                 .unwrap_or(u32::MAX);
-            self.entry_point.store(new_entry, Ordering::Release);
+            self.entry_point = new_entry;
         }
 
         // For each in-neighbor, remove edge and find replacement
@@ -320,12 +319,12 @@ impl InPlaceIndex {
     pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if query.len() != self.dim {
             return Err(RetrieveError::DimensionMismatch {
-                query_dim: self.dim,
-                doc_dim: query.len(),
+                query_dim: query.len(),
+                doc_dim: self.dim,
             });
         }
 
-        let entry = self.entry_point.load(Ordering::Acquire);
+        let entry = self.entry_point;
         if entry == u32::MAX {
             return Ok(Vec::new());
         }
@@ -405,7 +404,7 @@ impl InPlaceIndex {
 
     /// Search for candidate neighbors during insertion.
     fn search_for_candidates(&self, query: &[f32]) -> Vec<(u32, f32)> {
-        let entry = self.entry_point.load(Ordering::Acquire);
+        let entry = self.entry_point;
         if entry == u32::MAX {
             return Vec::new();
         }
@@ -530,7 +529,7 @@ impl InPlaceIndex {
 
     /// Number of active nodes.
     pub fn len(&self) -> usize {
-        self.active_count.load(Ordering::Relaxed) as usize
+        self.active_count as usize
     }
 
     /// Check if index is empty.

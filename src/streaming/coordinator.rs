@@ -205,7 +205,22 @@ impl<I: IndexOps> StreamingCoordinator<I> {
     }
 
     /// Search the index, merging buffer and main index results.
+    ///
+    /// The buffer's `distance_metric` must match the main index's distance
+    /// function for merged rankings to be meaningful. By default, both use
+    /// cosine distance (matching HNSW). If you use a different index type
+    /// or metric, set `StreamBufferConfig::distance_metric` accordingly.
     pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>> {
+        // Detect metric mismatch between buffer and main index
+        debug_assert_eq!(
+            self.config.buffer.distance_metric,
+            self.index.distance_metric(),
+            "Buffer distance metric ({:?}) does not match index metric ({:?}). \
+             Merged search results will have inconsistent rankings.",
+            self.config.buffer.distance_metric,
+            self.index.distance_metric()
+        );
+
         if !self.config.merge_search_results || self.buffer.insert_count() == 0 {
             // Just search main index, filter deletes
             let results = self.index.search(query, k)?;
@@ -246,6 +261,15 @@ pub trait IndexOps {
 
     /// Search the index.
     fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>>;
+
+    /// Distance metric used by the index.
+    ///
+    /// The streaming coordinator checks this against the buffer's metric
+    /// to prevent silently merging results from incompatible distance functions.
+    fn distance_metric(&self) -> crate::distance::DistanceMetric {
+        // Default to Cosine since HNSW (the primary index) uses cosine.
+        crate::distance::DistanceMetric::Cosine
+    }
 }
 
 #[cfg(test)]
@@ -295,12 +319,23 @@ mod tests {
             results.truncate(k);
             Ok(results)
         }
+
+        fn distance_metric(&self) -> crate::distance::DistanceMetric {
+            crate::distance::DistanceMetric::L2
+        }
+    }
+
+    /// Create a StreamingConfig with L2 buffer metric to match MockIndex.
+    fn mock_config() -> StreamingConfig {
+        let mut config = StreamingConfig::default();
+        config.buffer.distance_metric = crate::distance::DistanceMetric::L2;
+        config
     }
 
     #[test]
     fn test_streaming_insert_search() {
         let index = MockIndex::new();
-        let mut streaming = StreamingCoordinator::new(index);
+        let mut streaming = StreamingCoordinator::with_config(index, mock_config());
 
         streaming.insert(0, vec![0.0, 0.0]).unwrap();
         streaming.insert(1, vec![1.0, 0.0]).unwrap();
@@ -313,7 +348,7 @@ mod tests {
     #[test]
     fn test_streaming_delete() {
         let index = MockIndex::new();
-        let mut streaming = StreamingCoordinator::new(index);
+        let mut streaming = StreamingCoordinator::with_config(index, mock_config());
 
         streaming.insert(0, vec![0.0, 0.0]).unwrap();
         streaming.insert(1, vec![1.0, 0.0]).unwrap();
@@ -328,7 +363,7 @@ mod tests {
     #[test]
     fn test_compaction() {
         let index = MockIndex::new();
-        let mut streaming = StreamingCoordinator::new(index);
+        let mut streaming = StreamingCoordinator::with_config(index, mock_config());
 
         streaming.insert(0, vec![0.0, 0.0]).unwrap();
         streaming.insert(1, vec![1.0, 0.0]).unwrap();

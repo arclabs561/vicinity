@@ -140,6 +140,15 @@ impl NSWIndex {
             });
         }
 
+        debug_assert!(
+            {
+                let norm_sq: f32 = vector.iter().map(|x| x * x).sum();
+                (norm_sq - 1.0).abs() < 0.1
+            },
+            "NSW cosine distance requires L2-normalized vectors (got norm^2 = {})",
+            vector.iter().map(|x| x * x).sum::<f32>()
+        );
+
         // Store vector in SoA format
         self.vectors.extend_from_slice(vector);
         self.doc_ids.push(doc_id);
@@ -182,8 +191,8 @@ impl NSWIndex {
 
         if query.len() != self.dimension {
             return Err(RetrieveError::DimensionMismatch {
-                query_dim: self.dimension,
-                doc_dim: query.len(),
+                query_dim: query.len(),
+                doc_dim: self.dimension,
             });
         }
 
@@ -242,21 +251,31 @@ mod tests {
     fn test_add_and_search() {
         let mut index = NSWIndex::new(4, 8, 8).unwrap();
 
-        // Add 10 vectors
-        for i in 0..10u32 {
-            let v = vec![i as f32, (i as f32) * 0.5, 1.0, 0.0];
-            index.add(i, v).unwrap();
+        // Add 10 L2-normalized vectors (NSW requires normalized input)
+        let raw: Vec<[f32; 4]> = (0..10)
+            .map(|i| {
+                let v = [i as f32, (i as f32) * 0.5, 1.0, 0.0];
+                let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2] + v[3] * v[3]).sqrt();
+                if n > 1e-9 {
+                    [v[0] / n, v[1] / n, v[2] / n, v[3] / n]
+                } else {
+                    [1.0, 0.0, 0.0, 0.0]
+                }
+            })
+            .collect();
+        for (i, v) in raw.iter().enumerate() {
+            index.add(i as u32, v.to_vec()).unwrap();
         }
 
         index.build().unwrap();
 
-        // Search for the vector closest to [0.0, 0.0, 1.0, 0.0]
+        // Search for a normalized query close to raw[0] = normalize([0, 0, 1, 0]) = [0, 0, 1, 0]
         let query = vec![0.0, 0.0, 1.0, 0.0];
         let results = index.search(&query, 3, 50).unwrap();
 
         assert!(!results.is_empty());
         assert!(results.len() <= 3);
-        // The closest vector should be doc_id 0 (vector [0, 0, 1, 0])
+        // The closest vector should be doc_id 0 (its normalized form is [0, 0, 1, 0])
         assert_eq!(results[0].0, 0);
     }
 

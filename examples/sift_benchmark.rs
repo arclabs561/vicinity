@@ -1,17 +1,11 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
-//! SIFT-128 Benchmark - Real ANN Benchmark Dataset
+//! SIFT-128 Benchmark
 //!
-//! Downloads and benchmarks against the SIFT-128-euclidean dataset from ann-benchmarks.
-//!
-//! Dataset: 1M 128-dimensional vectors with 10K test queries and ground truth.
-//! Source: http://ann-benchmarks.com/sift-128-euclidean.hdf5
+//! Benchmarks HNSW against brute-force on synthetic 128-dimensional data.
+//! Runs automatically with no external data download.
 //!
 //! ```bash
-//! # Download dataset first (501MB)
-//! curl -o data/sift-128-euclidean.hdf5 http://ann-benchmarks.com/sift-128-euclidean.hdf5
-//!
-//! # Run benchmark
-//! cargo run --example sift_benchmark --release --features hdf5
+//! cargo run --example sift_benchmark --release --features hnsw
 //! ```
 
 use std::path::Path;
@@ -48,18 +42,11 @@ fn main() {
         return;
     }
 
-    // When HDF5 support is available:
-    #[cfg(feature = "hdf5")]
-    {
-        run_real_benchmark(dataset_path);
-    }
-
-    #[cfg(not(feature = "hdf5"))]
-    {
-        println!("HDF5 feature not enabled. Compile with --features hdf5");
-        println!("Running synthetic demo instead...\n");
-        run_synthetic_demo();
-    }
+    // HDF5 loading is not yet supported (no hdf5 dependency).
+    // Run the synthetic demo instead.
+    let _ = dataset_path;
+    println!("HDF5 loading not available. Running synthetic demo instead...\n");
+    run_synthetic_demo();
 }
 
 fn run_synthetic_demo() {
@@ -148,80 +135,6 @@ fn run_synthetic_demo() {
         brute_time.as_secs_f64() / hnsw_time.as_secs_f64()
     );
     println!("Recall@{}:   {:.1}%", k, avg_recall * 100.0);
-}
-
-#[cfg(feature = "hdf5")]
-fn run_real_benchmark(path: &str) {
-    use hdf5::File;
-    use vicinity::hnsw::HNSWIndex;
-
-    println!("Loading SIFT-128 dataset from {}...", path);
-
-    let file = File::open(path).expect("Failed to open HDF5 file");
-
-    // Load train vectors
-    let train = file.dataset("train").expect("No 'train' dataset");
-    let train_data: ndarray::Array2<f32> = train.read().expect("Failed to read train data");
-    let (n, dim) = train_data.dim();
-    println!("Train: {} vectors, {} dimensions", n, dim);
-
-    // Load test vectors
-    let test = file.dataset("test").expect("No 'test' dataset");
-    let test_data: ndarray::Array2<f32> = test.read().expect("Failed to read test data");
-    let n_queries = test_data.nrows();
-    println!("Test: {} queries", n_queries);
-
-    // Load ground truth (neighbors)
-    let neighbors = file.dataset("neighbors").expect("No 'neighbors' dataset");
-    let gt_data: ndarray::Array2<i32> = neighbors.read().expect("Failed to read neighbors");
-
-    // Build index
-    let build_start = Instant::now();
-    let mut index = HNSWIndex::new(dim, 16, 200).unwrap();
-    for (i, row) in train_data.rows().into_iter().enumerate() {
-        let vec: Vec<f32> = row.to_vec();
-        index.add(i as u32, vec).unwrap();
-    }
-    let build_time = build_start.elapsed();
-    println!("Build time: {:?}", build_time);
-
-    // Search and evaluate
-    let k = 10;
-    let ef_values = [50, 100, 200, 400];
-
-    println!(
-        "\n{:>8} {:>12} {:>12} {:>10}",
-        "ef", "QPS", "Latency", "Recall@10"
-    );
-    println!("{}", "-".repeat(50));
-
-    for ef in ef_values {
-        let search_start = Instant::now();
-        let mut total_recall = 0.0;
-
-        for (i, query_row) in test_data.rows().into_iter().enumerate() {
-            let query: Vec<f32> = query_row.to_vec();
-            let results = index.search(&query, k, ef).unwrap();
-
-            // Calculate recall against ground truth
-            let gt: std::collections::HashSet<i32> =
-                gt_data.row(i).iter().take(k).copied().collect();
-            let found: std::collections::HashSet<i32> =
-                results.iter().map(|r| r.0 as i32).collect();
-            let intersection = gt.intersection(&found).count();
-            total_recall += intersection as f64 / k as f64;
-        }
-
-        let search_time = search_start.elapsed();
-        let qps = n_queries as f64 / search_time.as_secs_f64();
-        let latency_us = search_time.as_micros() as f64 / n_queries as f64;
-        let recall = total_recall / n_queries as f64 * 100.0;
-
-        println!(
-            "{:>8} {:>12.1} {:>10.1}us {:>9.1}%",
-            ef, qps, latency_us, recall
-        );
-    }
 }
 
 fn generate_vector(seed: usize, dim: usize) -> Vec<f32> {

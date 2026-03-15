@@ -45,8 +45,8 @@ pub fn search(
 
     if query.len() != index.dimension {
         return Err(RetrieveError::DimensionMismatch {
-            query_dim: index.dimension,
-            doc_dim: query.len(),
+            query_dim: query.len(),
+            doc_dim: index.dimension,
         });
     }
 

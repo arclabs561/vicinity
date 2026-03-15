@@ -110,14 +110,14 @@ pub mod sng;
 #[cfg(feature = "vamana")]
 pub mod vamana;
 
-pub mod adaptive;
-pub mod matryoshka;
+pub(crate) mod adaptive;
+pub(crate) mod matryoshka;
 pub mod partitioning;
+pub(crate) mod pq_simd;
 
 pub mod distance;
 pub mod filtering;
 pub mod lid;
-pub mod pq_simd;
 pub mod simd;
 
 // Spectral sanity helpers (feature-gated).
@@ -125,7 +125,6 @@ pub mod simd;
 pub mod spectral;
 
 // Re-exports
-pub use ann::traits::ANNIndex;
 pub use distance::DistanceMetric;
 pub use error::{Result, RetrieveError};
 

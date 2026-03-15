@@ -37,7 +37,6 @@
 //! This adapts the graph structure to actual query patterns.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Configuration for incremental learning.
 #[derive(Debug, Clone)]
@@ -264,7 +263,7 @@ pub struct RecencyWeighting {
     /// Insertion timestamps (or sequence numbers) per node.
     insertion_times: Vec<u64>,
     /// Current timestamp.
-    current_time: AtomicU64,
+    current_time: u64,
     /// Decay factor (higher = faster decay of recency bonus).
     decay: f32,
     /// Maximum recency bonus (as fraction of distance).
@@ -276,7 +275,7 @@ impl RecencyWeighting {
     pub fn new(initial_capacity: usize, decay: f32, max_bonus: f32) -> Self {
         Self {
             insertion_times: vec![0; initial_capacity],
-            current_time: AtomicU64::new(0),
+            current_time: 0,
             decay,
             max_bonus,
         }
@@ -284,7 +283,8 @@ impl RecencyWeighting {
 
     /// Record insertion of a node.
     pub fn record_insertion(&mut self, node: usize) {
-        let time = self.current_time.fetch_add(1, Ordering::Relaxed);
+        let time = self.current_time;
+        self.current_time += 1;
         if node >= self.insertion_times.len() {
             self.insertion_times.resize(node + 1, 0);
         }
@@ -293,7 +293,7 @@ impl RecencyWeighting {
 
     /// Get recency bonus for a node (0.0 to max_bonus).
     pub fn recency_bonus(&self, node: usize) -> f32 {
-        let current = self.current_time.load(Ordering::Relaxed);
+        let current = self.current_time;
         let inserted = self.insertion_times.get(node).copied().unwrap_or(0);
 
         if current <= inserted {

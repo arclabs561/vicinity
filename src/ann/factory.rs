@@ -37,15 +37,6 @@
 use crate::ann::ANNIndex;
 use crate::RetrieveError;
 
-// Make sure AnyANNIndex is visible
-#[cfg(any(
-    feature = "hnsw",
-    feature = "nsw",
-    feature = "ivf_pq",
-    feature = "scann",
-))]
-pub use self::AnyANNIndex as ANNIndexEnum;
-
 /// Type-erased ANN index container.
 ///
 /// This enum allows storing different index types in a single variable,
@@ -290,7 +281,7 @@ impl ANNIndex for AnyANNIndex {
 pub fn index_factory(dimension: usize, factory_string: &str) -> Result<AnyANNIndex, RetrieveError> {
     // Validate dimension
     if dimension == 0 {
-        return Err(RetrieveError::Other(
+        return Err(RetrieveError::InvalidParameter(
             "Dimension must be greater than 0".to_string(),
         ));
     }
@@ -299,7 +290,7 @@ pub fn index_factory(dimension: usize, factory_string: &str) -> Result<AnyANNInd
 
     // Validate empty string
     if factory_string.is_empty() {
-        return Err(RetrieveError::Other(
+        return Err(RetrieveError::InvalidParameter(
             "Factory string cannot be empty".to_string(),
         ));
     }
@@ -309,7 +300,7 @@ pub fn index_factory(dimension: usize, factory_string: &str) -> Result<AnyANNInd
         #[cfg(not(feature = "hnsw"))]
         {
             let _ = rest; // Suppress unused warning
-            return Err(RetrieveError::Other(
+            return Err(RetrieveError::InvalidParameter(
                 "HNSW feature not enabled. Add 'hnsw' feature to Cargo.toml".to_string(),
             ));
         }
@@ -317,7 +308,7 @@ pub fn index_factory(dimension: usize, factory_string: &str) -> Result<AnyANNInd
         #[cfg(feature = "hnsw")]
         {
             if rest.is_empty() {
-                return Err(RetrieveError::Other(
+                return Err(RetrieveError::InvalidParameter(
                     "HNSW format: HNSW{m} or HNSW{m},{m_max}".to_string(),
                 ));
             }
@@ -325,27 +316,27 @@ pub fn index_factory(dimension: usize, factory_string: &str) -> Result<AnyANNInd
             let parts: Vec<&str> = rest.split(',').collect();
 
             let m = parts[0].parse::<usize>().map_err(|_| {
-                RetrieveError::Other(format!(
+                RetrieveError::InvalidParameter(format!(
                     "Invalid HNSW parameter: '{}'. Expected number.",
                     parts[0]
                 ))
             })?;
 
             if m == 0 {
-                return Err(RetrieveError::Other(
+                return Err(RetrieveError::InvalidParameter(
                     "HNSW m parameter must be greater than 0".to_string(),
                 ));
             }
 
             let m_max = if parts.len() > 1 {
                 let m_max_val = parts[1].parse::<usize>().map_err(|_| {
-                    RetrieveError::Other(format!(
+                    RetrieveError::InvalidParameter(format!(
                         "Invalid HNSW m_max parameter: '{}'. Expected number.",
                         parts[1]
                     ))
                 })?;
                 if m_max_val == 0 {
-                    return Err(RetrieveError::Other(
+                    return Err(RetrieveError::InvalidParameter(
                         "HNSW m_max parameter must be greater than 0".to_string(),
                     ));
                 }
@@ -364,7 +355,7 @@ pub fn index_factory(dimension: usize, factory_string: &str) -> Result<AnyANNInd
         #[cfg(not(feature = "nsw"))]
         {
             let _ = rest; // Suppress unused warning
-            return Err(RetrieveError::Other(
+            return Err(RetrieveError::InvalidParameter(
                 "NSW feature not enabled. Add 'nsw' feature to Cargo.toml".to_string(),
             ));
         }
@@ -372,18 +363,20 @@ pub fn index_factory(dimension: usize, factory_string: &str) -> Result<AnyANNInd
         #[cfg(feature = "nsw")]
         {
             if rest.is_empty() {
-                return Err(RetrieveError::Other("NSW format: NSW{m}".to_string()));
+                return Err(RetrieveError::InvalidParameter(
+                    "NSW format: NSW{m}".to_string(),
+                ));
             }
 
             let m = rest.parse::<usize>().map_err(|_| {
-                RetrieveError::Other(format!(
+                RetrieveError::InvalidParameter(format!(
                     "Invalid NSW parameter: '{}'. Expected number.",
                     rest
                 ))
             })?;
 
             if m == 0 {
-                return Err(RetrieveError::Other(
+                return Err(RetrieveError::InvalidParameter(
                     "NSW m parameter must be greater than 0".to_string(),
                 ));
             }
@@ -396,7 +389,7 @@ pub fn index_factory(dimension: usize, factory_string: &str) -> Result<AnyANNInd
     // Parse IVF-PQ: "IVF{n},PQ{m}" or "IVF{n},PQ{m}x{b}" (m codebooks, b bits)
     if factory_string.starts_with("IVF") {
         #[cfg(not(feature = "ivf_pq"))]
-        return Err(RetrieveError::Other(
+        return Err(RetrieveError::InvalidParameter(
             "IVF-PQ feature not enabled. Add 'ivf_pq' feature to Cargo.toml".to_string(),
         ));
 
@@ -404,7 +397,7 @@ pub fn index_factory(dimension: usize, factory_string: &str) -> Result<AnyANNInd
         {
             let parts: Vec<&str> = factory_string.split(',').collect();
             if parts.len() < 2 {
-                return Err(RetrieveError::Other(
+                return Err(RetrieveError::InvalidParameter(
                     "IVF-PQ format: IVF{n},PQ{m} or IVF{n},PQ{m}x{b}".to_string(),
                 ));
             }
@@ -412,27 +405,27 @@ pub fn index_factory(dimension: usize, factory_string: &str) -> Result<AnyANNInd
             // Parse IVF{n}
             let ivf_part = parts[0].trim();
             if !ivf_part.starts_with("IVF") {
-                return Err(RetrieveError::Other(format!(
+                return Err(RetrieveError::InvalidParameter(format!(
                     "Invalid IVF format: '{}'. Expected IVF{{n}}.",
                     ivf_part
                 )));
             }
 
             if ivf_part.len() == 3 {
-                return Err(RetrieveError::Other(
+                return Err(RetrieveError::InvalidParameter(
                     "IVF format: IVF{n} where n is number of clusters".to_string(),
                 ));
             }
 
             let num_clusters = ivf_part[3..].parse::<usize>().map_err(|_| {
-                RetrieveError::Other(format!(
+                RetrieveError::InvalidParameter(format!(
                     "Invalid IVF cluster count: '{}'. Expected number.",
                     &ivf_part[3..]
                 ))
             })?;
 
             if num_clusters == 0 {
-                return Err(RetrieveError::Other(
+                return Err(RetrieveError::InvalidParameter(
                     "IVF num_clusters must be greater than 0".to_string(),
                 ));
             }
@@ -440,14 +433,14 @@ pub fn index_factory(dimension: usize, factory_string: &str) -> Result<AnyANNInd
             // Parse PQ{m} or PQ{m}x{b}
             let pq_part = parts[1].trim();
             if !pq_part.starts_with("PQ") {
-                return Err(RetrieveError::Other(format!(
+                return Err(RetrieveError::InvalidParameter(format!(
                     "Invalid PQ format: '{}'. Expected PQ{{m}} or PQ{{m}}x{{b}}.",
                     pq_part
                 )));
             }
 
             if pq_part.len() == 2 {
-                return Err(RetrieveError::Other(
+                return Err(RetrieveError::InvalidParameter(
                     "PQ format: PQ{m} or PQ{m}x{b}".to_string(),
                 ));
             }
@@ -456,30 +449,30 @@ pub fn index_factory(dimension: usize, factory_string: &str) -> Result<AnyANNInd
             let (num_codebooks, codebook_size) = if pq_rest.contains('x') {
                 let pq_parts: Vec<&str> = pq_rest.split('x').collect();
                 if pq_parts.len() != 2 {
-                    return Err(RetrieveError::Other(format!(
+                    return Err(RetrieveError::InvalidParameter(format!(
                         "Invalid PQ format: '{}'. Expected PQ{{m}}x{{b}}.",
                         pq_part
                     )));
                 }
                 let num_codebooks = pq_parts[0].trim().parse::<usize>().map_err(|_| {
-                    RetrieveError::Other(format!(
+                    RetrieveError::InvalidParameter(format!(
                         "Invalid PQ codebook count: '{}'. Expected number.",
                         pq_parts[0]
                     ))
                 })?;
                 if num_codebooks == 0 {
-                    return Err(RetrieveError::Other(
+                    return Err(RetrieveError::InvalidParameter(
                         "PQ num_codebooks must be greater than 0".to_string(),
                     ));
                 }
                 let bits = pq_parts[1].trim().parse::<usize>().map_err(|_| {
-                    RetrieveError::Other(format!(
+                    RetrieveError::InvalidParameter(format!(
                         "Invalid PQ bits: '{}'. Expected number.",
                         pq_parts[1]
                     ))
                 })?;
                 if bits > 16 {
-                    return Err(RetrieveError::Other(format!(
+                    return Err(RetrieveError::InvalidParameter(format!(
                         "PQ bits ({}) exceeds maximum (16)",
                         bits
                     )));
@@ -489,13 +482,13 @@ pub fn index_factory(dimension: usize, factory_string: &str) -> Result<AnyANNInd
             } else {
                 // Default: PQ8 means 8 codebooks, 256 size (8 bits)
                 let num_codebooks = pq_rest.trim().parse::<usize>().map_err(|_| {
-                    RetrieveError::Other(format!(
+                    RetrieveError::InvalidParameter(format!(
                         "Invalid PQ codebook count: '{}'. Expected number.",
                         pq_rest
                     ))
                 })?;
                 if num_codebooks == 0 {
-                    return Err(RetrieveError::Other(
+                    return Err(RetrieveError::InvalidParameter(
                         "PQ num_codebooks must be greater than 0".to_string(),
                     ));
                 }
@@ -504,7 +497,7 @@ pub fn index_factory(dimension: usize, factory_string: &str) -> Result<AnyANNInd
 
             // Validate dimension is divisible by num_codebooks for PQ
             if dimension % num_codebooks != 0 {
-                return Err(RetrieveError::Other(format!(
+                return Err(RetrieveError::InvalidParameter(format!(
                     "Dimension ({}) must be divisible by num_codebooks ({}) for PQ",
                     dimension, num_codebooks
                 )));
@@ -533,7 +526,7 @@ pub fn index_factory(dimension: usize, factory_string: &str) -> Result<AnyANNInd
         #[cfg(not(feature = "scann"))]
         {
             let _ = rest; // Suppress unused warning
-            return Err(RetrieveError::Other(
+            return Err(RetrieveError::InvalidParameter(
                 "SCANN feature not enabled. Add 'scann' feature to Cargo.toml".to_string(),
             ));
         }
@@ -541,18 +534,20 @@ pub fn index_factory(dimension: usize, factory_string: &str) -> Result<AnyANNInd
         #[cfg(feature = "scann")]
         {
             if rest.is_empty() {
-                return Err(RetrieveError::Other("SCANN format: SCANN{n}".to_string()));
+                return Err(RetrieveError::InvalidParameter(
+                    "SCANN format: SCANN{n}".to_string(),
+                ));
             }
 
             let num_partitions = rest.trim().parse::<usize>().map_err(|_| {
-                RetrieveError::Other(format!(
+                RetrieveError::InvalidParameter(format!(
                     "Invalid SCANN parameter: '{}'. Expected number.",
                     rest
                 ))
             })?;
 
             if num_partitions == 0 {
-                return Err(RetrieveError::Other(
+                return Err(RetrieveError::InvalidParameter(
                     "SCANN num_partitions must be greater than 0".to_string(),
                 ));
             }
@@ -571,7 +566,7 @@ pub fn index_factory(dimension: usize, factory_string: &str) -> Result<AnyANNInd
         }
     }
 
-    Err(RetrieveError::Other(format!(
+    Err(RetrieveError::InvalidParameter(format!(
         "Unsupported index factory string: '{}'. Supported: HNSW{{m}}, NSW{{m}}, IVF{{n}},PQ{{m}}, SCANN{{n}}",
         factory_string
     )))
@@ -698,17 +693,19 @@ mod tests {
         {
             let mut index = index_factory(128, "HNSW32").unwrap();
 
-            // Add vectors
+            // Add L2-normalized vectors (unit basis vectors)
             for i in 0..10 {
-                let vec = vec![0.1; 128];
+                let mut vec = vec![0.0f32; 128];
+                vec[i as usize % 128] = 1.0;
                 assert!(index.add(i, vec).is_ok());
             }
 
             // Build
             assert!(index.build().is_ok());
 
-            // Search
-            let query = vec![0.15; 128];
+            // Search with normalized query
+            let mut query = vec![0.0f32; 128];
+            query[0] = 1.0;
             let results = index.search(&query, 5);
             assert!(results.is_ok());
             let results = results.unwrap();

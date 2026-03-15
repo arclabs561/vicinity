@@ -6,8 +6,6 @@
 //! - Crash during WAL write
 //! - Crash during ID generation
 //! - Crash during metadata update
-//!
-//! See `docs/PERSISTENCE_DESIGN.md` for detailed recovery procedures.
 
 use crate::persistence::checkpoint::{CheckpointReader, SegmentMetadata};
 use crate::persistence::directory::Directory;
@@ -53,7 +51,7 @@ impl RecoveryManager {
 
     /// Perform startup recovery.
     ///
-    /// This implements the 10-step recovery procedure from PERSISTENCE_DESIGN.md:
+    /// This implements a 10-step recovery procedure:
     /// 1. Check for checkpoint
     /// 2. Load checkpoint if available
     /// 3. Replay WAL entries since checkpoint

@@ -90,8 +90,3 @@ pub fn prune_candidates_martingale(
 
     Ok(pruned)
 }
-
-/// Compute cosine distance for **L2-normalized** vectors.
-fn cosine_distance(a: &[f32], b: &[f32]) -> f32 {
-    crate::distance::cosine_distance_normalized(a, b)
-}

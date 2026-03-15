@@ -49,7 +49,9 @@ fn high_dimension() {
 
     let vectors: Vec<Vec<f32>> = (0..20)
         .map(|i| {
-            let v: Vec<f32> = (0..dim).map(|d| ((i * d) as f32).sin()).collect();
+            let v: Vec<f32> = (0..dim)
+                .map(|d| ((i + 1) as f32 * (d + 1) as f32 * 0.1).sin())
+                .collect();
             normalize(&v)
         })
         .collect();
@@ -73,7 +75,9 @@ fn small_index() {
     let mut hnsw = HNSWIndex::new(dim, 16, 16).expect("Failed to create");
 
     // Only 3 vectors (less than M)
-    let vectors: Vec<Vec<f32>> = (0..3).map(|i| normalize(&vec![i as f32; dim])).collect();
+    let vectors: Vec<Vec<f32>> = (0..3)
+        .map(|i| normalize(&vec![(i + 1) as f32; dim]))
+        .collect();
 
     for (i, v) in vectors.iter().enumerate() {
         hnsw.add(i as u32, v.clone()).expect("Failed to add");
@@ -275,7 +279,7 @@ fn small_ef_search() {
     let mut hnsw = HNSWIndex::new(dim, 16, 16).expect("Failed to create");
 
     let vectors: Vec<Vec<f32>> = (0..50)
-        .map(|i| normalize(&vec![i as f32 * 0.1; dim]))
+        .map(|i| normalize(&vec![(i + 1) as f32 * 0.1; dim]))
         .collect();
 
     for (i, v) in vectors.iter().enumerate() {
@@ -297,7 +301,7 @@ fn large_ef_search() {
     let mut hnsw = HNSWIndex::new(dim, 16, 16).expect("Failed to create");
 
     let vectors: Vec<Vec<f32>> = (0..n)
-        .map(|i| normalize(&vec![i as f32 * 0.1; dim]))
+        .map(|i| normalize(&vec![(i + 1) as f32 * 0.1; dim]))
         .collect();
 
     for (i, v) in vectors.iter().enumerate() {

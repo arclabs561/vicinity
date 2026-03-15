@@ -35,7 +35,6 @@
 //! - Xu et al. (2025). "IP-DiskANN: In-Place Graph Index Updates for Streaming ANN."
 
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Manages tombstones for soft deletion in HNSW.
 ///
@@ -46,7 +45,7 @@ pub struct TombstoneSet {
     /// Set of deleted internal node IDs
     deleted: HashSet<usize>,
     /// Count of deleted nodes (for metrics)
-    delete_count: AtomicUsize,
+    delete_count: usize,
     /// Threshold for triggering compaction (fraction of total nodes)
     compaction_threshold: f32,
 }
@@ -61,7 +60,7 @@ impl TombstoneSet {
     pub fn new(compaction_threshold: f32) -> Self {
         TombstoneSet {
             deleted: HashSet::new(),
-            delete_count: AtomicUsize::new(0),
+            delete_count: 0,
             compaction_threshold: compaction_threshold.clamp(0.01, 0.5),
         }
     }
@@ -72,7 +71,7 @@ impl TombstoneSet {
     pub fn delete(&mut self, internal_id: usize) -> bool {
         let inserted = self.deleted.insert(internal_id);
         if inserted {
-            self.delete_count.fetch_add(1, Ordering::Relaxed);
+            self.delete_count += 1;
         }
         inserted
     }
@@ -114,7 +113,7 @@ impl TombstoneSet {
     /// Clear all tombstones (call after compaction).
     pub fn clear(&mut self) {
         self.deleted.clear();
-        self.delete_count.store(0, Ordering::Relaxed);
+        self.delete_count = 0;
     }
 
     /// Filter tombstones from search results.

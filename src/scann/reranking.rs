@@ -1,5 +1,7 @@
 //! Re-ranking stage for SCANN.
 
+use crate::distance::cosine_distance_normalized;
+
 /// Re-rank candidates using exact distance computation.
 ///
 /// Takes approximate results from quantization stage and re-computes
@@ -16,7 +18,7 @@ pub fn rerank(
         .iter()
         .map(|(id, _approx_dist)| {
             let vec = get_vector(vectors, dimension, *id as usize);
-            let exact_dist = cosine_distance(query, vec);
+            let exact_dist = cosine_distance_normalized(query, vec);
             (*id, exact_dist)
         })
         .collect();
@@ -26,11 +28,6 @@ pub fn rerank(
 
     // Return top k
     reranked.into_iter().take(k).collect()
-}
-
-/// Compute cosine distance for **L2-normalized** vectors.
-fn cosine_distance(a: &[f32], b: &[f32]) -> f32 {
-    crate::distance::cosine_distance_normalized(a, b)
 }
 
 /// Get vector from SoA storage.

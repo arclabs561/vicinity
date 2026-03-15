@@ -1,5 +1,6 @@
 //! Product Quantization (PQ) implementation.
 
+use crate::distance::cosine_distance_normalized;
 use crate::partitioning::kmeans::KMeans;
 use crate::RetrieveError;
 
@@ -99,7 +100,7 @@ impl ProductQuantizer {
             let mut best_dist = f32::INFINITY;
 
             for (code, codeword) in self.codebooks[codebook_idx].iter().enumerate() {
-                let dist = cosine_distance(subvector, codeword);
+                let dist = cosine_distance_normalized(subvector, codeword);
                 if dist < best_dist {
                     best_dist = dist;
                     best_code = code.min(255) as u8;
@@ -124,7 +125,7 @@ impl ProductQuantizer {
             let query_subvector = &query[start_dim..end_dim];
             let codeword = &self.codebooks[codebook_idx][code as usize];
 
-            total_dist += cosine_distance(query_subvector, codeword);
+            total_dist += cosine_distance_normalized(query_subvector, codeword);
         }
 
         total_dist
@@ -139,8 +140,8 @@ impl ProductQuantizer {
     pub fn compute_adc_table(&self, query: &[f32]) -> Result<Vec<f32>, RetrieveError> {
         if query.len() != self.dimension {
             return Err(RetrieveError::DimensionMismatch {
-                query_dim: self.dimension,
-                doc_dim: query.len(),
+                query_dim: query.len(),
+                doc_dim: self.dimension,
             });
         }
 
@@ -154,7 +155,7 @@ impl ProductQuantizer {
             for codeword in &self.codebooks[codebook_idx] {
                 // Compute distance (typically squared Euclidean or dot product depending on metric)
                 // For now, assuming cosine/dot product as used elsewhere
-                let dist = cosine_distance(query_subvector, codeword);
+                let dist = cosine_distance_normalized(query_subvector, codeword);
                 table.push(dist);
             }
         }
@@ -187,11 +188,6 @@ impl ProductQuantizer {
     pub fn codebooks_mut(&mut self) -> &mut [Vec<Vec<f32>>] {
         &mut self.codebooks
     }
-}
-
-/// Compute cosine distance for **L2-normalized** vectors.
-fn cosine_distance(a: &[f32], b: &[f32]) -> f32 {
-    crate::distance::cosine_distance_normalized(a, b)
 }
 
 /// Get vector from SoA storage.

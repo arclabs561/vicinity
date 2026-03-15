@@ -100,6 +100,52 @@ It is intended to backstop claims in module docs and to give you a starting poin
 - Nguyen et al. (2025). *Dual-Branch HNSW Approach with Skip Bridges and LID-Driven Optimization.*
   `https://arxiv.org/abs/2501.13992`
 
+## Streaming / dynamic updates
+
+- Singh, Subramanya, Krishnaswamy, Simhadri (2021). *FreshDiskANN: A Fast and Accurate Graph-Based ANN Index for Streaming Similarity Search.* (streaming insert/delete with merge)
+  `https://arxiv.org/abs/2105.09613`
+
+- Xu, Dobson Manohar, Bernstein, Chandramouli, Wen, Simhadri (2025). *In-Place Updates of a Graph Index for Streaming Approximate Nearest Neighbor Search.* (IP-DiskANN)
+  `https://arxiv.org/abs/2502.13826`
+
+- Liu et al. (2025). *Wolverine: Highly Efficient Monotonic Search Path Repair for Graph-Based ANN Index Updates.* (PVLDB 18; 11x deletion throughput via 2-hop in-edge repair)
+
+- Yu et al. (2025). *A Topology-Aware Localized Update Strategy for Graph-Based ANN Index.* (batch updates without topology degradation)
+  `https://arxiv.org/abs/2503.00402`
+
+- Mohoney et al. (2024). *Incremental IVF Index Maintenance for Streaming Vector Search.* (Ada-IVF; incremental codebook updates)
+  `https://arxiv.org/abs/2411.00970`
+
+## Filtered / hybrid search
+
+- Li et al. (2025). *Attribute Filtering in Approximate Nearest Neighbor Search: An In-depth Experimental Study.* (no single method dominates across selectivity ratios)
+  `https://arxiv.org/abs/2508.16263`
+
+- Xu et al. (2026). *JAG: Joint Attribute Graphs for Filtered Nearest Neighbor Search.* (single graph encoding similarity + predicates)
+  `https://arxiv.org/abs/2602.10258`
+
+## Quantization-graph fusion
+
+- Gou, Gao, Xu, Long (2025). *SymphonyQG: Towards Symphonious Integration of Quantization and Graph for Approximate Nearest Neighbor Search.* (SIGMOD 2025; RaBitQ-style distance during graph traversal)
+
+## SNG theory
+
+- Ma et al. (2025). *Sparse Neighborhood Graph-Based Approximate Nearest Neighbor Search Revisited: Theoretical Analysis and Optimization.* (first rigorous SNG bounds)
+  `https://arxiv.org/abs/2509.15531`
+
+- Conway et al. (2025). *Efficiently Constructing Sparse Navigable Graphs.* (proves greedy-insert + alpha-pruning produces navigable graphs)
+  `https://arxiv.org/abs/2507.13296`
+
+## Robustness
+
+- Hua et al. (2025). *Dynamically Detect and Fix Hardness for Efficient Approximate Nearest Neighbor Search.* (OOD query detection + adaptive effort)
+  `https://arxiv.org/abs/2510.22316`
+
+## Inverted multi-index
+
+- Baranchuk, Babenko, Malkov (2018). *Revisiting the Inverted Indices for Billion-Scale Approximate Nearest Neighbors.* (improved IVF coarse quantization)
+  `https://arxiv.org/abs/1802.02422`
+
 ## Practical benchmarking references
 
 - Aumueller, Bernhardsson, Faithfull (2020). *ANN-Benchmarks: A Benchmarking Tool for Approximate Nearest Neighbor Algorithms.* (Information Systems, 87)

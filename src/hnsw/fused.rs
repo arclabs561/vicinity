@@ -344,8 +344,8 @@ impl FusedIndex {
     ) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if query_content.len() != self.content_dim {
             return Err(RetrieveError::DimensionMismatch {
-                query_dim: self.content_dim,
-                doc_dim: query_content.len(),
+                query_dim: query_content.len(),
+                doc_dim: self.content_dim,
             });
         }
 

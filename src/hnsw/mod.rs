@@ -105,9 +105,6 @@
 //!
 //! - [`filtered`]: ACORN-style attribute filtering
 //! - [`dual_branch`]: LID-based insertion with skip bridges (see arXiv:2501.13992)
-//! - [`fused`]: Attribute-vector fusion for filtered search
-//! - [`merge`]: Index merging algorithms (NGM, IGTM, CGTM)
-//! - [`tombstones`]: Soft deletion for streaming workloads (FreshDiskANN-style)
 //!
 //! # Historical Lineage
 //!
@@ -136,16 +133,10 @@
 //!   search using Hierarchical Navigable Small World graphs." IEEE TPAMI.
 //! - Munyampirwa et al. (2024). "Down with the Hierarchy: The 'H' in HNSW Stands for 'Hubs'." (arXiv:2412.01940)
 
-#![allow(dead_code)] // Compression fields are placeholders
-
 #[cfg(feature = "hnsw")]
 pub(crate) mod construction;
 #[cfg(feature = "hnsw")]
-pub(crate) mod distance;
-#[cfg(feature = "hnsw")]
 pub(crate) mod graph;
-#[cfg(feature = "hnsw")]
-mod memory;
 #[cfg(feature = "hnsw")]
 mod search;
 
@@ -186,11 +177,6 @@ pub use fused::{
 // Random Walk-based graph repair (alternative to MN-RU)
 #[cfg(feature = "hnsw")]
 pub mod random_walk_repair;
-#[cfg(feature = "hnsw")]
-pub use random_walk_repair::{
-    estimate_hitting_time_change, random_walk_repair, ImportanceScores, RandomWalkConfig,
-    RandomWalkRepairer, RandomWalkStats,
-};
 
 // Dynamic Edge Navigation Graph (DEG) for bimodal data
 #[cfg(feature = "hnsw")]
@@ -207,20 +193,10 @@ pub use inplace::{InPlaceConfig, InPlaceIndex, InPlaceStats, MappedInPlaceIndex}
 // Incremental learning patterns (edge refinement, temporal locality)
 #[cfg(feature = "hnsw")]
 pub mod incremental;
-#[cfg(feature = "hnsw")]
-pub use incremental::{
-    DriftTracker, EdgeStats, IncrementalConfig, RecencyWeighting, RefinementAnalyzer,
-    RefinementSuggestions,
-};
 
 // Probabilistic edge routing (PEOs) for QPS improvement
 #[cfg(feature = "hnsw")]
 pub mod probabilistic_routing;
-#[cfg(feature = "hnsw")]
-pub use probabilistic_routing::{
-    EdgeProbabilityEstimator, ProbabilisticEdgeSelector, ProbabilisticRouter,
-    ProbabilisticRoutingConfig, ProbabilisticStats,
-};
 
 // HNSW index merging algorithms (NGM, IGTM, CGTM)
 #[cfg(feature = "hnsw")]
@@ -242,28 +218,3 @@ pub use dual_branch::{DualBranchConfig, DualBranchHNSW, DualBranchStats, SkipBri
 pub mod tombstones;
 #[cfg(feature = "hnsw")]
 pub use tombstones::{TombstoneSet, TombstoneStats};
-
-// =============================================================================
-// Note on Streaming Updates
-// =============================================================================
-//
-// For streaming workloads, combine HNSWIndex with TombstoneSet:
-//
-// ```rust,ignore
-// let mut index = HNSWIndex::new(dim, m, ef)?;
-// let mut tombstones = TombstoneSet::new(0.1); // 10% compaction threshold
-//
-// // Soft delete
-// tombstones.delete(internal_id);
-//
-// // Filter search results
-// let results = index.search(&query, k, ef)?;
-// let filtered: Vec<_> = tombstones
-//     .filter_results(results.into_iter().map(|(id, d)| (id as usize, d)))
-//     .collect();
-//
-// // Periodic compaction when threshold reached
-// if tombstones.should_compact(index.len()) {
-//     // Rebuild index without tombstoned nodes
-// }
-// ```

@@ -11,20 +11,12 @@
 //! - **Performance**: Memory mapping, SIMD-accelerated compression, efficient formats
 //! - **Flexibility**: Support for all retrieval methods, configurable trade-offs
 //!
-//! See `docs/PERSISTENCE_DESIGN.md` for comprehensive design documentation.
-//! See `docs/PERSISTENCE_DESIGN_DENSE.md` for dense retrieval specifics.
 
 pub mod directory;
 pub mod error;
 
 #[cfg(feature = "persistence")]
 pub mod format;
-
-#[cfg(feature = "persistence")]
-pub mod codec;
-
-#[cfg(feature = "persistence")]
-pub mod segment;
 
 #[cfg(feature = "persistence")]
 pub mod wal;

@@ -2,8 +2,6 @@
 //!
 //! Checkpoints are full snapshots of the index state, enabling fast recovery
 //! and efficient backups.
-//!
-//! See `docs/PERSISTENCE_DESIGN.md` for checkpoint format.
 
 use crate::persistence::directory::Directory;
 use crate::persistence::error::{PersistenceError, PersistenceResult};

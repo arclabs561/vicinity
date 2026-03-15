@@ -30,8 +30,6 @@
 //! let decompressed = compressor.decompress_set(&compressed, universe_size)?;
 //! ```
 
-#![allow(dead_code)]
-
 // When id-compression feature is enabled, re-export everything from cnk
 #[cfg(feature = "id-compression")]
 pub use cnk::{

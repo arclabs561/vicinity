@@ -31,10 +31,6 @@
 //! }
 //! ```
 
-// Autotune for automatic parameter optimization
-#[cfg(any(feature = "hnsw", feature = "ivf_pq",))]
-pub mod autotune;
-
 #[cfg(any(
     feature = "hnsw",
     feature = "nsw",

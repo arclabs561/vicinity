@@ -127,13 +127,14 @@ fn layer0_uses_correct_connectivity() {
         let vec: Vec<f32> = (0..dim)
             .map(|d| ((i as usize * dim + d) as f32 * 0.1).sin())
             .collect();
-        index.add(i, vec).unwrap();
+        index.add(i, normalize(&vec)).unwrap();
     }
     index.build().unwrap();
 
     // Verify layer 0 connectivity is at least M (could be up to M_max)
     // This is a sanity check - the actual invariant is tested in property tests
-    let results = index.search(&vec![0.0; dim], 20, 100).unwrap();
+    let query = normalize(&vec![1.0; dim]);
+    let results = index.search(&query, 20, 100).unwrap();
     assert!(results.len() >= m, "Should return at least M results");
 }
 
@@ -282,9 +283,10 @@ fn recall_is_measurable() {
 // --- Helpers ---
 
 fn random_vec(dim: usize, seed: usize) -> Vec<f32> {
-    (0..dim)
+    let raw: Vec<f32> = (0..dim)
         .map(|i| ((seed * 31 + i * 17) as f32 * 0.001).sin())
-        .collect()
+        .collect();
+    normalize(&raw)
 }
 
 fn normalize(v: &[f32]) -> Vec<f32> {

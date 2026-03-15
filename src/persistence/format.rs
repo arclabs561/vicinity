@@ -2,7 +2,7 @@
 //!
 //! # Design Goals
 //!
-//! 1. **Cross-crate compatibility**: shared format across dense and sparse indexes
+//! 1. **Cross-crate compatibility**: shared format across dense vector indexes
 //! 2. **Incremental writes**: WAL-based for crash recovery
 //! 3. **Memory-mapped reads**: Zero-copy for large indices
 //! 4. **Versioned**: Forward/backward compatible with magic bytes
@@ -83,19 +83,11 @@
 //! # Usage
 //!
 //! ```rust,ignore
-//! use vicinity::persistence::{IndexPersistence, SegmentWriter, SegmentReader};
+//! use vicinity::persistence::format::IndexPersistence;
 //!
-//! // Write
-//! let mut writer = SegmentWriter::create("segment.seg", config)?;
-//! writer.write_header(&header)?;
-//! writer.write_vectors(&vectors)?;
-//! writer.write_graph(&graph)?;
-//! writer.finalize()?;
-//!
-//! // Read (memory-mapped)
-//! let reader = SegmentReader::open("segment.seg")?;
-//! let vectors = reader.mmap_vectors()?;
-//! let graph = reader.read_graph()?;
+//! // Save/load via IndexPersistence trait
+//! index.save(path)?;
+//! let index = MyIndex::load(path)?;
 //! ```
 
 use serde::{Deserialize, Serialize};
@@ -121,12 +113,10 @@ pub enum IndexType {
     DiskAnn,
     /// Inverted File with Product Quantization
     IvfPq,
-    /// Scalar Quantized NSW
+    /// Anisotropic Vector Quantization with k-means (ScaNN)
     ScaNN,
     /// Simple Neighborhood Graph
     Sng,
-    /// Learned sparse (SPLADE)
-    LearnedSparse,
     /// Flat (brute force)
     Flat,
 }
@@ -218,27 +208,6 @@ pub struct IndexManifest {
     pub modified_at: u64,
 }
 
-/// Section offsets for segment construction.
-#[derive(Debug, Clone, Default)]
-pub struct SegmentOffsets {
-    /// Term dictionary offset
-    pub term_dict_offset: u64,
-    /// Term dictionary length
-    pub term_dict_len: u64,
-    /// Term info offset
-    pub term_info_offset: u64,
-    /// Term info length
-    pub term_info_len: u64,
-    /// Postings offset
-    pub postings_offset: u64,
-    /// Postings length
-    pub postings_len: u64,
-    /// Document lengths offset
-    pub doc_lengths_offset: u64,
-    /// Document lengths length
-    pub doc_lengths_len: u64,
-}
-
 /// Section offsets in a segment file.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SegmentFooter {
@@ -254,25 +223,13 @@ pub struct SegmentFooter {
     pub graph_offset: u64,
     /// ID mapping section offset
     pub ids_offset: u64,
-    /// Term dictionary offset
-    pub term_dict_offset: u64,
-    /// Term dictionary length
-    pub term_dict_len: u64,
-    /// Postings offset
-    pub postings_offset: u64,
-    /// Postings length
-    pub postings_len: u64,
-    /// Document count
-    pub doc_count: u32,
-    /// Maximum document ID
-    pub max_doc_id: u32,
     /// CRC32 of entire segment (excluding footer)
     pub checksum: u32,
 }
 
 impl SegmentFooter {
     /// Create a new segment footer.
-    pub fn new(doc_count: u32, max_doc_id: u32, offsets: SegmentOffsets) -> Self {
+    pub fn new() -> Self {
         Self {
             magic: *SEGMENT_MAGIC,
             format_version: FORMAT_VERSION,
@@ -280,19 +237,13 @@ impl SegmentFooter {
             vectors_offset: 0,
             graph_offset: 0,
             ids_offset: 0,
-            term_dict_offset: offsets.term_dict_offset,
-            term_dict_len: offsets.term_dict_len,
-            postings_offset: offsets.postings_offset,
-            postings_len: offsets.postings_len,
-            doc_count,
-            max_doc_id,
             checksum: 0,
         }
     }
 
     /// Serialized size in bytes (not mem::size_of due to padding).
-    /// 4 (magic) + 4 (version) + 8*8 (u64 fields) + 4*3 (u32 fields) = 84
-    const SERIALIZED_SIZE: usize = 84;
+    /// 4 (magic) + 4 (version) + 8*4 (u64 fields) + 4 (checksum) = 44
+    const SERIALIZED_SIZE: usize = 44;
 
     /// Read a segment footer from a reader.
     pub fn read<R: std::io::Read>(reader: &mut R) -> super::error::PersistenceResult<Self> {
@@ -323,24 +274,6 @@ impl SegmentFooter {
         cursor.read_exact(&mut u64_buf)?;
         let ids_offset = u64::from_le_bytes(u64_buf);
 
-        cursor.read_exact(&mut u64_buf)?;
-        let term_dict_offset = u64::from_le_bytes(u64_buf);
-
-        cursor.read_exact(&mut u64_buf)?;
-        let term_dict_len = u64::from_le_bytes(u64_buf);
-
-        cursor.read_exact(&mut u64_buf)?;
-        let postings_offset = u64::from_le_bytes(u64_buf);
-
-        cursor.read_exact(&mut u64_buf)?;
-        let postings_len = u64::from_le_bytes(u64_buf);
-
-        cursor.read_exact(&mut u32_buf)?;
-        let doc_count = u32::from_le_bytes(u32_buf);
-
-        cursor.read_exact(&mut u32_buf)?;
-        let max_doc_id = u32::from_le_bytes(u32_buf);
-
         cursor.read_exact(&mut u32_buf)?;
         let checksum = u32::from_le_bytes(u32_buf);
 
@@ -351,12 +284,6 @@ impl SegmentFooter {
             vectors_offset,
             graph_offset,
             ids_offset,
-            term_dict_offset,
-            term_dict_len,
-            postings_offset,
-            postings_len,
-            doc_count,
-            max_doc_id,
             checksum,
         })
     }
@@ -369,12 +296,6 @@ impl SegmentFooter {
         writer.write_all(&self.vectors_offset.to_le_bytes())?;
         writer.write_all(&self.graph_offset.to_le_bytes())?;
         writer.write_all(&self.ids_offset.to_le_bytes())?;
-        writer.write_all(&self.term_dict_offset.to_le_bytes())?;
-        writer.write_all(&self.term_dict_len.to_le_bytes())?;
-        writer.write_all(&self.postings_offset.to_le_bytes())?;
-        writer.write_all(&self.postings_len.to_le_bytes())?;
-        writer.write_all(&self.doc_count.to_le_bytes())?;
-        writer.write_all(&self.max_doc_id.to_le_bytes())?;
         writer.write_all(&self.checksum.to_le_bytes())?;
         Ok(())
     }

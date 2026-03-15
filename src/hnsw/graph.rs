@@ -20,8 +20,6 @@ use std::collections::HashMap;
 /// - Move vector storage and graph structure to disk (SSD).
 /// - Support live updates without full rebuilds.
 /// - Use sharding (e.g., 64 shards by xxHash) to distribute load.
-///
-/// See `docs/WILSON_LIN_CASE_STUDY.md` for architectural details.
 #[derive(Debug)]
 pub struct HNSWIndex {
     /// Vectors stored in Structure of Arrays (SoA) format for cache efficiency
@@ -644,6 +642,15 @@ impl HNSWIndex {
             });
         }
 
+        debug_assert!(
+            {
+                let norm_sq: f32 = vector.iter().map(|x| x * x).sum();
+                (norm_sq - 1.0).abs() < 0.1
+            },
+            "HNSW cosine distance requires L2-normalized vectors (got norm^2 = {})",
+            vector.iter().map(|x| x * x).sum::<f32>()
+        );
+
         // Assign internal ID (stable: insertion order)
         let internal_id = self.num_vectors as u32;
 
@@ -667,6 +674,30 @@ impl HNSWIndex {
         } else {
             self.category_assignments.push(None);
         }
+
+        // Post-condition: parallel arrays must stay in sync
+        debug_assert_eq!(
+            self.vectors.len(),
+            self.num_vectors * self.dimension,
+            "vectors buffer out of sync: expected {} floats, got {}",
+            self.num_vectors * self.dimension,
+            self.vectors.len()
+        );
+        debug_assert_eq!(
+            self.doc_ids.len(),
+            self.num_vectors,
+            "doc_ids out of sync with num_vectors"
+        );
+        debug_assert_eq!(
+            self.layer_assignments.len(),
+            self.num_vectors,
+            "layer_assignments out of sync with num_vectors"
+        );
+        debug_assert_eq!(
+            self.category_assignments.len(),
+            self.num_vectors,
+            "category_assignments out of sync with num_vectors"
+        );
 
         Ok(())
     }
@@ -837,8 +868,8 @@ impl HNSWIndex {
 
         if query.len() != self.dimension {
             return Err(RetrieveError::DimensionMismatch {
-                query_dim: self.dimension,
-                doc_dim: query.len(),
+                query_dim: query.len(),
+                doc_dim: self.dimension,
             });
         }
 
@@ -1029,7 +1060,7 @@ impl HNSWIndex {
         query: &[f32],
         k: usize,
         ef: usize,
-        filter: &crate::filtering::FilterPredicate,
+        filter: &crate::filtering::MetadataFilter,
     ) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
             return Err(RetrieveError::InvalidParameter(
@@ -1039,8 +1070,8 @@ impl HNSWIndex {
 
         if query.len() != self.dimension {
             return Err(RetrieveError::DimensionMismatch {
-                query_dim: self.dimension,
-                doc_dim: query.len(),
+                query_dim: query.len(),
+                doc_dim: self.dimension,
             });
         }
 
@@ -1052,7 +1083,7 @@ impl HNSWIndex {
 
         // Extract category ID from filter
         let desired_category = match filter {
-            crate::filtering::FilterPredicate::Equals { field, value } => {
+            crate::filtering::MetadataFilter::Equals { field, value } => {
                 if Some(field) != self.filter_field.as_ref() {
                     return Err(RetrieveError::InvalidParameter(format!(
                         "filter field '{}' doesn't match index filter field '{:?}'",
@@ -1177,6 +1208,112 @@ impl HNSWIndex {
         Ok(results.into_iter().take(k).collect())
     }
 
+    /// Search with adaptive early termination.
+    ///
+    /// Behaves like [`HNSWIndex::search`] but uses an `EarlyTerminationOracle` on the
+    /// base layer to skip distance computations once the oracle is confident
+    /// the top-k has converged. Upper layers use the standard greedy search
+    /// (they visit few nodes and don't benefit from early termination).
+    ///
+    /// Returns `Ok((results, num_evaluated))` where `num_evaluated` is the
+    /// number of distance computations performed on the base layer.
+    pub fn search_adaptive(
+        &self,
+        query: &[f32],
+        k: usize,
+        ef: usize,
+        config: &crate::adaptive::AdaptiveConfig,
+    ) -> Result<(Vec<(u32, f32)>, usize), RetrieveError> {
+        if !self.built {
+            return Err(RetrieveError::InvalidParameter(
+                "index must be built before search".into(),
+            ));
+        }
+
+        if query.len() != self.dimension {
+            return Err(RetrieveError::DimensionMismatch {
+                query_dim: query.len(),
+                doc_dim: self.dimension,
+            });
+        }
+
+        if self.num_vectors == 0 {
+            return Err(RetrieveError::EmptyIndex);
+        }
+
+        // Upper-layer navigation (identical to `search`)
+        let ep = self.get_entry_point().ok_or(RetrieveError::EmptyIndex)?;
+        let entry_layer = self.layer_assignments[ep as usize] as usize;
+
+        let mut current_closest = ep;
+        let mut current_dist = f32::INFINITY;
+
+        for layer_idx in (1..=entry_layer).rev() {
+            if layer_idx >= self.layers.len() {
+                continue;
+            }
+            let layer = &self.layers[layer_idx];
+            let mut changed = true;
+            let mut visited = std::collections::HashSet::with_capacity(ef.min(100));
+
+            while changed {
+                changed = false;
+                visited.insert(current_closest);
+
+                let neighbors = layer.get_neighbors(current_closest);
+                for &neighbor_id in neighbors.iter() {
+                    if visited.contains(&neighbor_id) {
+                        continue;
+                    }
+                    let neighbor_vec = self.get_vector(neighbor_id as usize);
+                    let dist = crate::distance::cosine_distance_normalized(query, neighbor_vec);
+                    if dist < current_dist {
+                        current_dist = dist;
+                        current_closest = neighbor_id;
+                        changed = true;
+                    }
+                }
+            }
+        }
+
+        // Base layer: adaptive search
+        let num_evaluated;
+        if !self.layers.is_empty() {
+            let (mut base_results, evaluated) = crate::hnsw::search::greedy_search_layer_adaptive(
+                query,
+                current_closest,
+                &self.layers[0],
+                &self.vectors,
+                self.dimension,
+                ef.max(k),
+                k,
+                config,
+            );
+            num_evaluated = evaluated;
+
+            base_results.sort_by(|a, b| a.1.total_cmp(&b.1));
+
+            #[cfg(feature = "id-compression")]
+            {
+                for layer in &self.layers {
+                    layer.clear_cache();
+                }
+            }
+
+            let results = base_results
+                .into_iter()
+                .take(k)
+                .filter_map(|(internal_id, dist)| {
+                    let doc_id = self.doc_ids.get(internal_id as usize).copied()?;
+                    Some((doc_id, dist))
+                })
+                .collect();
+            Ok((results, num_evaluated))
+        } else {
+            Ok((Vec::new(), 0))
+        }
+    }
+
     /// Assign layer for a new vector using exponential distribution.
     ///
     /// Returns the maximum layer where this vector will appear.
@@ -1287,5 +1424,76 @@ mod tests {
 
         let result = index.add(0, vec![1.0, 0.0]); // Wrong dimension
         assert!(result.is_err());
+    }
+
+    /// Build a small index for adaptive search tests.
+    /// Returns (index, query_vector).
+    fn build_test_index() -> (HNSWIndex, Vec<f32>) {
+        let dim = 32;
+        let n = 200;
+        let mut index = HNSWIndex::new(dim, 16, 32).unwrap();
+
+        // Deterministic pseudo-random vectors using LCG
+        let mut seed: u64 = 42;
+        let mut next = || -> f32 {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            ((seed >> 33) as f32) / (u32::MAX as f32) - 0.5
+        };
+
+        for i in 0..n {
+            let mut v: Vec<f32> = (0..dim).map(|_| next()).collect();
+            // L2-normalize for cosine distance
+            let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+            if norm > 0.0 {
+                v.iter_mut().for_each(|x| *x /= norm);
+            }
+            index.add(i as u32, v).unwrap();
+        }
+        index.build().unwrap();
+
+        let mut q: Vec<f32> = (0..dim).map(|_| next()).collect();
+        let norm = q.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm > 0.0 {
+            q.iter_mut().for_each(|x| *x /= norm);
+        }
+
+        (index, q)
+    }
+
+    #[test]
+    fn test_search_adaptive_conservative_matches_search() {
+        let (index, q) = build_test_index();
+        let k = 5;
+        let ef = 64;
+
+        let baseline = index.search(&q, k, ef).unwrap();
+        let config = crate::adaptive::AdaptiveConfig::conservative();
+        let (adaptive, _evaluated) = index.search_adaptive(&q, k, ef, &config).unwrap();
+
+        // Conservative config should return the same top-k (or very close)
+        assert_eq!(adaptive.len(), baseline.len());
+        // At minimum the nearest neighbor should match
+        assert_eq!(adaptive[0].0, baseline[0].0);
+    }
+
+    #[test]
+    fn test_search_adaptive_aggressive_fewer_evaluations() {
+        let (index, q) = build_test_index();
+        let k = 5;
+        let ef = 64;
+
+        let conservative = crate::adaptive::AdaptiveConfig::conservative();
+        let aggressive = crate::adaptive::AdaptiveConfig::aggressive();
+
+        let (_results_c, evaluated_c) = index.search_adaptive(&q, k, ef, &conservative).unwrap();
+        let (_results_a, evaluated_a) = index.search_adaptive(&q, k, ef, &aggressive).unwrap();
+
+        // Aggressive config should evaluate fewer (or equal) candidates
+        assert!(
+            evaluated_a <= evaluated_c,
+            "aggressive ({}) should evaluate <= conservative ({})",
+            evaluated_a,
+            evaluated_c,
+        );
     }
 }

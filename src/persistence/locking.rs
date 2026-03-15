@@ -4,8 +4,6 @@
 //! - Transaction log (single writer, multiple readers)
 //! - Merge coordination (prevent concurrent merges)
 //! - Reader handle tracking (detect stale readers)
-//!
-//! See `docs/PERSISTENCE_DESIGN.md` for locking strategy details.
 
 use crate::persistence::error::{PersistenceError, PersistenceResult};
 use std::fs::File;

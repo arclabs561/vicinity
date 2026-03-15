@@ -219,7 +219,7 @@ impl KDTreeIndex {
             .iter()
             .map(|&idx| {
                 let vec = self.get_vector(idx as usize);
-                let dist = self.cosine_distance(query, vec);
+                let dist = crate::distance::cosine_distance_normalized(query, vec);
                 (idx, dist)
             })
             .collect();
@@ -269,10 +269,5 @@ impl KDTreeIndex {
         let start = idx * self.dimension;
         let end = start + self.dimension;
         &self.vectors[start..end]
-    }
-
-    /// Compute cosine distance for **L2-normalized** vectors.
-    fn cosine_distance(&self, a: &[f32], b: &[f32]) -> f32 {
-        crate::distance::cosine_distance_normalized(a, b)
     }
 }

@@ -106,6 +106,7 @@
 //! - (ScaNN overview page) `https://github.com/google-research/google-research/tree/master/scann`
 //! - Sun et al. (2023). "SOAR: Improved Indexing for Approximate Nearest Neighbor Search."
 
+/// K-means partitioning for ScaNN coarse quantization.
 pub mod partitioning;
 mod quantization;
 mod reranking;

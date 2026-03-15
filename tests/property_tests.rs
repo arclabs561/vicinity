@@ -1019,12 +1019,21 @@ mod hnsw_props {
     use super::*;
     use vicinity::hnsw::HNSWIndex;
 
+    fn normalize(v: &[f32]) -> Vec<f32> {
+        let n: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if n < 1e-10 {
+            v.to_vec()
+        } else {
+            v.iter().map(|x| x / n).collect()
+        }
+    }
+
     fn random_vectors(n: usize, dim: usize, seed: u64) -> Vec<Vec<f32>> {
         use std::hash::{Hash, Hasher};
 
         (0..n)
             .map(|i| {
-                (0..dim)
+                let raw: Vec<f32> = (0..dim)
                     .map(|j| {
                         let mut hasher = std::collections::hash_map::DefaultHasher::new();
                         seed.hash(&mut hasher);
@@ -1033,7 +1042,8 @@ mod hnsw_props {
                         let h = hasher.finish();
                         (h as f64 / u64::MAX as f64 * 2.0 - 1.0) as f32
                     })
-                    .collect()
+                    .collect();
+                normalize(&raw)
             })
             .collect()
     }
@@ -1180,12 +1190,21 @@ mod persistence_props {
     use vicinity::persistence::directory::MemoryDirectory;
     use vicinity::persistence::hnsw::{HNSWSegmentReader, HNSWSegmentWriter};
 
+    fn normalize(v: &[f32]) -> Vec<f32> {
+        let n: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if n < 1e-10 {
+            v.to_vec()
+        } else {
+            v.iter().map(|x| x / n).collect()
+        }
+    }
+
     fn random_vectors(n: usize, dim: usize, seed: u64) -> Vec<Vec<f32>> {
         use std::hash::{Hash, Hasher};
 
         (0..n)
             .map(|i| {
-                (0..dim)
+                let raw: Vec<f32> = (0..dim)
                     .map(|j| {
                         let mut hasher = std::collections::hash_map::DefaultHasher::new();
                         seed.hash(&mut hasher);
@@ -1194,7 +1213,8 @@ mod persistence_props {
                         let h = hasher.finish();
                         (h as f64 / u64::MAX as f64 * 2.0 - 1.0) as f32
                     })
-                    .collect()
+                    .collect();
+                normalize(&raw)
             })
             .collect()
     }
@@ -1432,7 +1452,7 @@ mod persistence_props {
             let loaded = reader.load_index().expect("load_index");
 
             // Verify search still works with correct dimensions
-            let query = vec![0.0f32; dim];
+            let query = normalize(&vectors[0]);
             let results = loaded.search(&query, 5.min(n), 50);
             prop_assert!(results.is_ok(), "Search failed on loaded index");
             prop_assert_eq!(

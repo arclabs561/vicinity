@@ -14,8 +14,6 @@
 //! 1. `BlobStore` trait for abstraction
 //! 2. `FileBlobStore` implementation (simple, file-based)
 //! 3. Future: `RocksBlobStore` implementation (production-scale)
-//!
-//! See `docs/WILSON_LIN_CASE_STUDY.md` for architectural details.
 
 use crate::persistence::error::{PersistenceError, PersistenceResult};
 use std::path::{Path, PathBuf};

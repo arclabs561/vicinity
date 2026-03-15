@@ -15,6 +15,7 @@ pub enum Quantizer {
 }
 
 impl Quantizer {
+    /// Quantize a vector into PQ codes.
     pub fn quantize(&self, vector: &[f32]) -> Vec<u8> {
         match self {
             Self::Product(pq) => pq.quantize(vector),
@@ -22,6 +23,7 @@ impl Quantizer {
         }
     }
 
+    /// Compute an asymmetric distance computation (ADC) lookup table for a query.
     pub fn compute_adc_table(&self, query: &[f32]) -> Result<Vec<f32>, RetrieveError> {
         match self {
             Self::Product(pq) => pq.compute_adc_table(query),
@@ -29,6 +31,7 @@ impl Quantizer {
         }
     }
 
+    /// Compute approximate distance using a pre-computed ADC table and PQ codes.
     pub fn distance_with_table(&self, table: &[f32], codes: &[u8]) -> f32 {
         match self {
             Self::Product(pq) => pq.distance_with_table(table, codes),
@@ -481,8 +484,8 @@ impl IVFPQIndex {
 
         if query.len() != self.dimension {
             return Err(RetrieveError::DimensionMismatch {
-                query_dim: self.dimension,
-                doc_dim: query.len(),
+                query_dim: query.len(),
+                doc_dim: self.dimension,
             });
         }
 
@@ -553,7 +556,7 @@ impl IVFPQIndex {
         &self,
         query: &[f32],
         k: usize,
-        filter: &crate::filtering::FilterPredicate,
+        filter: &crate::filtering::MetadataFilter,
     ) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
             return Err(RetrieveError::InvalidParameter(
@@ -563,14 +566,14 @@ impl IVFPQIndex {
 
         if query.len() != self.dimension {
             return Err(RetrieveError::DimensionMismatch {
-                query_dim: self.dimension,
-                doc_dim: query.len(),
+                query_dim: query.len(),
+                doc_dim: self.dimension,
             });
         }
 
         // Extract category ID from filter (only supports equality on filter_field)
         let desired_category = match filter {
-            crate::filtering::FilterPredicate::Equals { field, value } => {
+            crate::filtering::MetadataFilter::Equals { field, value } => {
                 if Some(field) != self.filter_field.as_ref() {
                     return Err(RetrieveError::InvalidParameter(format!(
                         "filter field '{}' doesn't match index filter field '{:?}'",

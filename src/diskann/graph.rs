@@ -641,8 +641,8 @@ impl DiskANNIndex {
 
         if query.len() != self.dimension {
             return Err(RetrieveError::DimensionMismatch {
-                query_dim: self.dimension,
-                doc_dim: query.len(),
+                query_dim: query.len(),
+                doc_dim: self.dimension,
             });
         }
 
@@ -667,10 +667,9 @@ impl DiskANNIndex {
         &self.vectors[start..start + self.dimension]
     }
 
-    // Euclidean distance (squared)
+    // Euclidean distance (squared), using SIMD when available.
     fn dist(&self, a: &[f32], b: &[f32]) -> f32 {
-        // In full impl, use SIMD from crate::simd
-        a.iter().zip(b.iter()).map(|(x, y)| (x - y) * (x - y)).sum()
+        crate::simd::l2_distance_squared(a, b)
     }
 }
 

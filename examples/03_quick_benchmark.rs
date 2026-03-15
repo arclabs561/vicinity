@@ -136,7 +136,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for (i, query) in test.iter().enumerate() {
             let results = if is_filter {
                 let topic = filter_topics.as_ref().expect("filter topics loaded")[i];
-                let filter = vicinity::filtering::FilterPredicate::equals("topic", topic);
+                let filter = vicinity::filtering::MetadataFilter::equals("topic", topic);
                 index.search_with_filter(query, k, ef, &filter)?
             } else {
                 index.search(query, k, ef)?

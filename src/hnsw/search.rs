@@ -28,6 +28,42 @@ impl PartialOrd for Candidate {
     }
 }
 
+/// Candidate for min-heap (explore closest first).
+#[derive(PartialEq)]
+struct MinCandidate {
+    id: u32,
+    distance: f32,
+}
+impl Eq for MinCandidate {}
+impl Ord for MinCandidate {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        other.distance.total_cmp(&self.distance)
+    }
+}
+impl PartialOrd for MinCandidate {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// Result for max-heap (track worst result for pruning).
+#[derive(PartialEq)]
+struct MaxResult {
+    id: u32,
+    distance: f32,
+}
+impl Eq for MaxResult {}
+impl Ord for MaxResult {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.distance.total_cmp(&other.distance)
+    }
+}
+impl PartialOrd for MaxResult {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 /// Search state for HNSW search algorithm.
 pub(crate) struct SearchState {
     /// Candidate queue (min-heap by distance)
@@ -104,49 +140,9 @@ pub fn greedy_search_layer(
     dimension: usize,
     ef: usize,
 ) -> Vec<(u32, f32)> {
-    use std::collections::BinaryHeap;
-
-    // Candidate for min-heap (explore closest first)
-    #[derive(PartialEq)]
-    struct MinCandidate {
-        id: u32,
-        distance: f32,
-    }
-    impl Eq for MinCandidate {}
-    impl Ord for MinCandidate {
-        fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-            // Min-heap: smaller distance = higher priority
-            other.distance.total_cmp(&self.distance)
-        }
-    }
-    impl PartialOrd for MinCandidate {
-        fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-            Some(self.cmp(other))
-        }
-    }
-
-    // Result for max-heap (track worst result for pruning)
-    #[derive(PartialEq)]
-    struct MaxResult {
-        id: u32,
-        distance: f32,
-    }
-    impl Eq for MaxResult {}
-    impl Ord for MaxResult {
-        fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-            // Max-heap: larger distance = higher priority
-            self.distance.total_cmp(&other.distance)
-        }
-    }
-    impl PartialOrd for MaxResult {
-        fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-            Some(self.cmp(other))
-        }
-    }
-
     let mut candidates: BinaryHeap<MinCandidate> = BinaryHeap::with_capacity(ef * 2);
     let mut results: BinaryHeap<MaxResult> = BinaryHeap::with_capacity(ef + 1);
-    let mut visited = std::collections::HashSet::with_capacity(ef * 2);
+    let mut visited = HashSet::with_capacity(ef * 2);
 
     // Start from entry point
     let entry_vector = get_vector(vectors, dimension, entry_point as usize);
@@ -203,6 +199,91 @@ pub fn greedy_search_layer(
     let mut output: Vec<(u32, f32)> = results.into_iter().map(|r| (r.id, r.distance)).collect();
     output.sort_by(|a, b| a.1.total_cmp(&b.1));
     output
+}
+
+/// Greedy search with adaptive early termination.
+///
+/// Same beam search as [`greedy_search_layer`], but uses an
+/// [`crate::adaptive::EarlyTerminationOracle`] to stop once the distance
+/// distribution suggests further exploration is unlikely to improve the top-k.
+///
+/// Returns `(results, num_evaluated)` so callers can inspect how many
+/// distance computations were performed.
+#[cfg(feature = "hnsw")]
+pub fn greedy_search_layer_adaptive(
+    query: &[f32],
+    entry_point: u32,
+    layer: &crate::hnsw::graph::Layer,
+    vectors: &[f32],
+    dimension: usize,
+    ef: usize,
+    k: usize,
+    config: &crate::adaptive::AdaptiveConfig,
+) -> (Vec<(u32, f32)>, usize) {
+    use crate::adaptive::EarlyTerminationOracle;
+
+    let mut candidates: BinaryHeap<MinCandidate> = BinaryHeap::with_capacity(ef * 2);
+    let mut results: BinaryHeap<MaxResult> = BinaryHeap::with_capacity(ef + 1);
+    let mut visited = HashSet::with_capacity(ef * 2);
+    let mut oracle = EarlyTerminationOracle::new(k, config.clone());
+
+    // Start from entry point
+    let entry_vector = get_vector(vectors, dimension, entry_point as usize);
+    let entry_distance = cosine_distance(query, entry_vector);
+    oracle.observe(entry_distance);
+
+    candidates.push(MinCandidate {
+        id: entry_point,
+        distance: entry_distance,
+    });
+    results.push(MaxResult {
+        id: entry_point,
+        distance: entry_distance,
+    });
+    visited.insert(entry_point);
+
+    while let Some(candidate) = candidates.pop() {
+        let worst_dist = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
+        if candidate.distance > worst_dist && results.len() >= ef {
+            break;
+        }
+
+        // Explore neighbors
+        let neighbors = layer.get_neighbors(candidate.id);
+        for &neighbor_id in neighbors.iter() {
+            if visited.insert(neighbor_id) {
+                let neighbor_vector = get_vector(vectors, dimension, neighbor_id as usize);
+                let neighbor_distance = cosine_distance(query, neighbor_vector);
+                oracle.observe(neighbor_distance);
+
+                let worst_dist = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
+                if results.len() < ef || neighbor_distance < worst_dist {
+                    candidates.push(MinCandidate {
+                        id: neighbor_id,
+                        distance: neighbor_distance,
+                    });
+                    results.push(MaxResult {
+                        id: neighbor_id,
+                        distance: neighbor_distance,
+                    });
+
+                    if results.len() > ef {
+                        results.pop();
+                    }
+                }
+            }
+        }
+
+        // After exploring this candidate's neighbors, check early termination
+        if oracle.should_terminate() && results.len() >= k {
+            break;
+        }
+    }
+
+    let num_evaluated = oracle.num_evaluated();
+    let mut output: Vec<(u32, f32)> = results.into_iter().map(|r| (r.id, r.distance)).collect();
+    output.sort_by(|a, b| a.1.total_cmp(&b.1));
+    (output, num_evaluated)
 }
 
 /// Get vector from SoA storage.

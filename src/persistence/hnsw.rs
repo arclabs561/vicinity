@@ -5,8 +5,6 @@
 //! - Vector storage (reuses dense segment format)
 //! - Layer assignments
 //! - Parameters
-//!
-//! See `docs/PERSISTENCE_DESIGN_DENSE.md` for format specifications.
 
 use crate::persistence::directory::Directory;
 use crate::persistence::error::PersistenceResult;
@@ -169,6 +167,33 @@ impl HNSWSegmentReader {
         let num_vectors = u32::from_le_bytes(num_vec_bytes) as usize;
         let built = built_byte[0] != 0;
 
+        // Guard against crafted files that claim enormous sizes.
+        const MAX_VECTORS: usize = 100_000_000; // 100M vectors
+        const MAX_DIMENSION: usize = 65_536; // 64K dimensions
+        const MAX_ALLOC_BYTES: usize = 8 * 1024 * 1024 * 1024; // 8 GB
+
+        if num_vectors > MAX_VECTORS || dimension > MAX_DIMENSION {
+            return Err(crate::persistence::error::PersistenceError::Format(
+                format!(
+                    "unreasonable index size: {} vectors x {} dimensions",
+                    num_vectors, dimension
+                ),
+            ));
+        }
+        let alloc_size = num_vectors
+            .checked_mul(dimension)
+            .and_then(|n| n.checked_mul(std::mem::size_of::<f32>()))
+            .ok_or_else(|| {
+                crate::persistence::error::PersistenceError::Format(
+                    "allocation size overflow".into(),
+                )
+            })?;
+        if alloc_size > MAX_ALLOC_BYTES {
+            return Err(crate::persistence::error::PersistenceError::Format(
+                format!("index too large for memory: {} bytes", alloc_size),
+            ));
+        }
+
         // Load parameters
         let params_path = format!("{}/params.bin", segment_dir);
         let mut params_file = directory.open_file(&params_path)?;
@@ -263,17 +288,43 @@ impl HNSWSegmentReader {
         layers_file.read_exact(&mut num_layers_bytes)?;
         let num_layers = u32::from_le_bytes(num_layers_bytes) as usize;
 
+        // HNSW layers are logarithmic; even very large indexes rarely exceed ~40.
+        const MAX_LAYERS: usize = 256;
+        if num_layers > MAX_LAYERS {
+            return Err(crate::persistence::error::PersistenceError::Format(
+                format!("unreasonable layer count: {}", num_layers),
+            ));
+        }
+
         let mut layers = Vec::with_capacity(num_layers);
         for _ in 0..num_layers {
             let mut num_lists_bytes = [0u8; 4];
             layers_file.read_exact(&mut num_lists_bytes)?;
             let num_lists = u32::from_le_bytes(num_lists_bytes) as usize;
 
+            if num_lists > self.num_vectors {
+                return Err(crate::persistence::error::PersistenceError::Format(
+                    format!(
+                        "layer has {} neighbor lists but index has {} vectors",
+                        num_lists, self.num_vectors
+                    ),
+                ));
+            }
+
             let mut neighbors_list = Vec::with_capacity(num_lists);
             for _ in 0..num_lists {
                 let mut num_neighbors_bytes = [0u8; 4];
                 layers_file.read_exact(&mut num_neighbors_bytes)?;
                 let num_neighbors = u32::from_le_bytes(num_neighbors_bytes) as usize;
+
+                // Each node can have at most m_max * 2 neighbors (bottom layer).
+                // Use a generous ceiling to catch corruption without false positives.
+                const MAX_NEIGHBORS: usize = 65_536;
+                if num_neighbors > MAX_NEIGHBORS {
+                    return Err(crate::persistence::error::PersistenceError::Format(
+                        format!("unreasonable neighbor count: {}", num_neighbors),
+                    ));
+                }
 
                 let mut neighbors: SmallVec<[u32; 16]> = SmallVec::new();
                 for _ in 0..num_neighbors {

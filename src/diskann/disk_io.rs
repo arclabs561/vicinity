@@ -99,8 +99,11 @@ impl DiskGraphWriter {
 /// Can be upgraded to mmap later.
 pub struct DiskGraphReader {
     file: File,
+    /// Total number of nodes in the graph.
     pub num_nodes: usize,
+    /// Maximum out-degree per node.
     pub max_degree: usize,
+    /// Entry point for graph search.
     pub start_node: u32,
     header_size: u64,
     record_size: u64,
@@ -134,8 +137,29 @@ impl DiskGraphReader {
         // Skip padding
         file.seek(SeekFrom::Current(32))?;
 
+        // Guard against crafted files that claim enormous graph sizes.
+        const MAX_NODES: usize = 100_000_000; // 100M nodes
+        const MAX_DEGREE: usize = 65_536; // 64K degree
+
+        if num_nodes > MAX_NODES {
+            return Err(PersistenceError::Format(format!(
+                "unreasonable node count: {}",
+                num_nodes
+            )));
+        }
+        if max_degree > MAX_DEGREE {
+            return Err(PersistenceError::Format(format!(
+                "unreasonable max degree: {}",
+                max_degree
+            )));
+        }
+
         let header_size = 8 + 8 + 8 + 8 + 32;
-        let record_size = 4 + (max_degree as u64 * 4); // degree (4) + neighbors (max * 4)
+        // record_size = 4 + max_degree * 4; check for overflow.
+        let record_size = (max_degree as u64)
+            .checked_mul(4)
+            .and_then(|n| n.checked_add(4))
+            .ok_or_else(|| PersistenceError::Format("record size overflow".into()))?;
 
         Ok(Self {
             file,

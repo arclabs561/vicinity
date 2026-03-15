@@ -324,17 +324,17 @@ fn test_m_parameter_tradeoff() {
 #[test]
 fn test_evaluation_metrics() {
     // Test that our evaluation metrics are computed correctly
-    use vicinity::benchmark::{eval_recall_at_k, mrr};
+    use vicinity::benchmark::{mrr, recall_at_k};
 
     // Perfect match
     let approx = vec![0, 1, 2, 3, 4];
     let truth = vec![0, 1, 2, 3, 4];
-    assert!((eval_recall_at_k(&approx, &truth, 5) - 1.0).abs() < 0.001);
+    assert!((recall_at_k(&approx, &truth, 5) - 1.0).abs() < 0.001);
 
     // Half match
     let approx = vec![0, 1, 5, 6, 7];
     let truth = vec![0, 1, 2, 3, 4];
-    assert!((eval_recall_at_k(&approx, &truth, 5) - 0.4).abs() < 0.001);
+    assert!((recall_at_k(&approx, &truth, 5) - 0.4).abs() < 0.001);
 
     // MRR: first match at position 1
     assert!((mrr(&[0], &[0]) - 1.0).abs() < 0.001);

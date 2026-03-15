@@ -23,12 +23,17 @@ pub struct SCANNIndex {
     quantizer: Option<AnisotropicQuantizer>,
 }
 
+/// Parameters for ScaNN index construction and search.
 #[derive(Clone, Debug)]
 pub struct SCANNParams {
+    /// Number of k-means partitions for coarse quantization.
     pub num_partitions: usize,
+    /// Number of candidates to re-rank with exact distances.
     pub num_reorder: usize,
-    pub num_codebooks: usize, // M (subspaces)
-    pub codebook_size: usize, // 256 (8-bit) usually
+    /// Number of PQ subspaces (M).
+    pub num_codebooks: usize,
+    /// Number of centroids per codebook (typically 256 for 8-bit codes).
+    pub codebook_size: usize,
     /// Random seed for deterministic training (k-means + PQ codebooks).
     pub seed: u64,
 }
@@ -56,6 +61,7 @@ struct Partition {
 }
 
 impl SCANNIndex {
+    /// Create a new ScaNN index with the given vector dimension and parameters.
     pub fn new(dimension: usize, params: SCANNParams) -> Result<Self, RetrieveError> {
         if dimension == 0 {
             return Err(RetrieveError::InvalidParameter(
@@ -74,6 +80,7 @@ impl SCANNIndex {
         })
     }
 
+    /// Add a vector to the index.
     pub fn add(&mut self, _doc_id: u32, vector: Vec<f32>) -> Result<(), RetrieveError> {
         self.add_slice(_doc_id, &vector)
     }
@@ -100,6 +107,7 @@ impl SCANNIndex {
         Ok(())
     }
 
+    /// Build the index (partitioning + quantization). Required before search.
     pub fn build(&mut self) -> Result<(), RetrieveError> {
         if self.built {
             return Ok(());
@@ -181,6 +189,7 @@ impl SCANNIndex {
         Ok(())
     }
 
+    /// Search for the k nearest neighbors of the query vector.
     pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
             return Err(RetrieveError::InvalidParameter(

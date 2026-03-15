@@ -2,8 +2,6 @@
 //!
 //! Provides disk persistence for IVF-PQ (Inverted File Index with Product Quantization) indexes.
 //!
-//! See `docs/PERSISTENCE_DESIGN_DENSE.md` for format specifications.
-//!
 //! # Status: Placeholder
 //!
 //! The reader fields are placeholders for future implementation.
