@@ -55,8 +55,56 @@ It is intended to backstop claims in module docs and to give you a starting poin
 - Beyer, Goldstein, Ramakrishnan, Shaft (1999). *When Is “Nearest Neighbor” Meaningful?* (distance concentration)  
   `https://doi.org/10.1007/s007780050006`
 
+## Graph-based ANN surveys and theory
+
+- Wang, Xu, Yue, Wang (2021). *A Comprehensive Survey and Experimental Comparison of Graph-Based Approximate Nearest Neighbor Search.*
+  `https://arxiv.org/abs/2101.12631`
+
+- Lin, Zhao (2019). *Graph-based Nearest Neighbor Search: Promises and Failures.*
+  `https://arxiv.org/abs/1904.02077`
+
+- Prokhorenkova, Shekhovtsov (2019). *Graph-based Nearest Neighbor Search: From Practice to Theory.*
+  `https://arxiv.org/abs/1907.00845`
+
+- Laarhoven (2017). *Graph-based Time-Space Trade-offs for Approximate Near Neighbors.*
+  `https://arxiv.org/abs/1712.03158`
+
+## Construction improvements
+
+- Yang et al. (2024). *Revisiting the Index Construction of Proximity Graph-Based Approximate Nearest Neighbor Search.* (alpha-pruning, 5.6x construction speedup)
+  `https://arxiv.org/abs/2410.01231`
+
+- Dehghankar, Asudeh (2025). *HENN: A Hierarchical Epsilon Net Navigation Graph for Approximate Nearest Neighbor Search.* (provable bounds)
+  `https://arxiv.org/abs/2505.17368`
+
+- Ponomarenko (2025). *Three Algorithms for Merging Hierarchical Navigable Small World Graphs.* (distributed indexing)
+  `https://arxiv.org/abs/2505.16064`
+
+## Routing and search
+
+- Baranchuk, Persiyanov, Sinitsin, Babenko (2019). *Learning to Route in Similarity Graphs.* (ICML 2019, learned routing)
+  `https://arxiv.org/abs/1905.10987`
+
+## RaBitQ and quantization advances
+
+- Gao, Long (2024). *RaBitQ: Quantizing High-Dimensional Vectors with a Theoretical Error Bound.* (SIGMOD 2024)
+  `https://arxiv.org/abs/2405.12497`
+
+- Gao et al. (2025). *Practical and Asymptotically Optimal Quantization of High-Dimensional Vectors in Euclidean Space.* (multi-bit RaBitQ, SIGMOD 2025)
+  `https://arxiv.org/abs/2409.09913`
+
+## Hubness and intrinsic dimensionality
+
+- Angiulli (2018). *On the Behavior of Intrinsically High-Dimensional Spaces: Distances, Direct and Reverse Nearest Neighbors, and Hubness.* (JMLR 18)
+
+- Nguyen et al. (2025). *Dual-Branch HNSW Approach with Skip Bridges and LID-Driven Optimization.*
+  `https://arxiv.org/abs/2501.13992`
+
 ## Practical benchmarking references
 
-- `ann-benchmarks`: dataset formats + evaluation harness used widely for ANN comparisons  
+- Aumueller, Bernhardsson, Faithfull (2020). *ANN-Benchmarks: A Benchmarking Tool for Approximate Nearest Neighbor Algorithms.* (Information Systems, 87)
   `http://ann-benchmarks.com/`
+
+- Simhadri et al. (2024). *Results of the Big ANN: NeurIPS'23 Competition.* (billion-scale baselines)
+  `https://arxiv.org/abs/2409.17424`
 
