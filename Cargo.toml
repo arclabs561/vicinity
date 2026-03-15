@@ -51,9 +51,6 @@ rmt = { version = "0.1.2", optional = true }
 # Vector quantization primitives (extracted from `vicinity`)
 qntz = { package = "qntz", version = "0.1.1", optional = true }
 
-# Distributed Coordination (persistence-only)
-hiqlite = { version = "0.12", features = ["full"], optional = true }
-
 # Persistence & IO (all optional, gated behind `persistence`)
 byteorder = { version = "1.5", optional = true }
 crc32fast = { version = "1.4", optional = true }
@@ -73,7 +70,7 @@ default = ["hnsw", "innr"]
 persistence = [
     "dep:serde", "dep:serde_json", "smallvec/serde",
     "dep:postcard", "dep:bytemuck", "dep:memmap2", "dep:durability",
-    "dep:hiqlite", "dep:byteorder", "dep:crc32fast", "dep:libc",
+    "dep:byteorder", "dep:crc32fast", "dep:libc",
     "dep:hex", "dep:fst",
 ]
 hnsw = []

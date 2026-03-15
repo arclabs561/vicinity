@@ -47,7 +47,7 @@ pub enum PersistenceError {
     #[error("operation not supported: {0}")]
     NotSupported(String),
 
-    /// Distributed coordination error (hiqlite)
+    /// Distributed coordination error.
     #[error("distributed error: {0}")]
     Distributed(String),
 }
@@ -63,13 +63,6 @@ impl From<postcard::Error> for PersistenceError {
 impl From<bincode::Error> for PersistenceError {
     fn from(e: bincode::Error) -> Self {
         Self::Serialization(format!("bincode error (legacy): {}", e))
-    }
-}
-
-#[cfg(feature = "persistence")]
-impl From<hiqlite::Error> for PersistenceError {
-    fn from(e: hiqlite::Error) -> Self {
-        Self::Distributed(e.to_string())
     }
 }
 

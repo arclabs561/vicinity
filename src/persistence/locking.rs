@@ -32,30 +32,6 @@ pub struct FileLock {
     lock_type: LockType,
 }
 
-/// Cluster-wide distributed lock.
-///
-/// Automatically unlocks on drop (uses hiqlite distributed lock).
-pub struct DistributedLock {
-    _inner: hiqlite::Lock,
-    key: &'static str,
-}
-
-impl DistributedLock {
-    /// Acquire a distributed lock.
-    ///
-    /// Note: hiqlite's lock API currently requires a `'static` key. This method reflects
-    /// that constraint directly to avoid hidden leaks (e.g. `Box::leak`).
-    pub async fn acquire(client: &hiqlite::Client, key: &'static str) -> PersistenceResult<Self> {
-        let lock = client.lock(key).await?;
-        Ok(Self { _inner: lock, key })
-    }
-
-    /// Get the lock key.
-    pub fn key(&self) -> &str {
-        self.key
-    }
-}
-
 impl FileLock {
     /// Acquire a file lock.
     ///
