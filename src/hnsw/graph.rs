@@ -771,28 +771,54 @@ impl HNSWIndex {
         // Collect all candidate edges first (immutable borrows)
         let mut edges_to_add: Vec<(u32, Vec<u32>)> = Vec::new();
 
+        // Cap per-vector comparisons to avoid O(C^2) in large categories.
+        // 64 random samples suffice to find good intra-category neighbors
+        // when we only keep max_intra_edges (typically m/4 = 4).
+        const MAX_CANDIDATES: usize = 64;
+
         for (_category, vector_ids) in category_vectors.iter() {
             if vector_ids.len() < 2 {
-                continue; // Need at least 2 vectors in category
+                continue;
             }
 
-            // For each vector in category, find nearest neighbors within same category
+            let use_sampling = vector_ids.len() > MAX_CANDIDATES;
+
             for &vector_id in vector_ids.iter() {
                 let vector = self.get_vector(vector_id as usize);
                 let mut candidates = Vec::new();
 
-                // Find distances to other vectors in same category
-                for &other_id in vector_ids.iter() {
-                    if other_id == vector_id {
-                        continue;
+                if use_sampling {
+                    // Sample up to MAX_CANDIDATES random peers
+                    use rand::Rng;
+                    let mut rng = rand::rng();
+                    let mut sampled = 0;
+                    let mut attempts = 0;
+                    while sampled < MAX_CANDIDATES && attempts < MAX_CANDIDATES * 2 {
+                        let idx = rng.random_range(0..vector_ids.len());
+                        let other_id = vector_ids[idx];
+                        attempts += 1;
+                        if other_id == vector_id {
+                            continue;
+                        }
+                        let other_vector = self.get_vector(other_id as usize);
+                        let dist =
+                            crate::distance::cosine_distance_normalized(vector, other_vector);
+                        candidates.push((other_id, dist));
+                        sampled += 1;
                     }
-
-                    let other_vector = self.get_vector(other_id as usize);
-                    let dist = crate::distance::cosine_distance_normalized(vector, other_vector);
-                    candidates.push((other_id, dist));
+                } else {
+                    // Small category: brute-force all pairs
+                    for &other_id in vector_ids.iter() {
+                        if other_id == vector_id {
+                            continue;
+                        }
+                        let other_vector = self.get_vector(other_id as usize);
+                        let dist =
+                            crate::distance::cosine_distance_normalized(vector, other_vector);
+                        candidates.push((other_id, dist));
+                    }
                 }
 
-                // Sort by distance and collect top candidates
                 candidates.sort_by(|a, b| a.1.total_cmp(&b.1));
                 let selected_neighbors: Vec<u32> = candidates
                     .iter()
