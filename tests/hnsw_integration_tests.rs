@@ -701,12 +701,16 @@ fn test_distance_simd_scalar_agreement() {
         assert!(
             (simd_l2 - scalar_l2).abs() < eps,
             "L2 mismatch at dim={}: simd={}, scalar={}",
-            dim, simd_l2, scalar_l2
+            dim,
+            simd_l2,
+            scalar_l2
         );
         assert!(
             (simd_cosine - scalar_cosine).abs() < eps,
             "Cosine mismatch at dim={}: simd={}, scalar={}",
-            dim, simd_cosine, scalar_cosine
+            dim,
+            simd_cosine,
+            scalar_cosine
         );
     }
 }
