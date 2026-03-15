@@ -1,16 +1,17 @@
 #![allow(clippy::expect_used)]
-//! Quick Benchmark with Bundled Data
+//! Quick Benchmark with Bundled or Synthetic Data
 //!
-//! Runs a benchmark using pre-generated sample data (no downloads required).
+//! Runs a benchmark using pre-generated sample data if available,
+//! otherwise generates synthetic data inline (no downloads required).
 //!
 //! ```bash
-//! cargo run --example 03_quick_benchmark --release           # bench: 10K x 384
-//! JIN_DATASET=quick cargo run --example 03_quick_benchmark --release  # CI: 2K x 128
+//! cargo run --example 03_quick_benchmark --release
+//! JIN_DATASET=quick cargo run --example 03_quick_benchmark --release
 //! ```
 //!
 //! Datasets:
-//! - `bench` (default): 10K vectors x 384 dims - matches MiniLM, GTE-small
-//! - `quick`: 2K vectors x 128 dims - fast CI tests
+//! - `bench` (default): 10K x 384 dims (from pre-generated files, or synthetic fallback)
+//! - `quick`: 2K x 128 dims (always synthetic, for CI)
 
 use std::collections::HashSet;
 use std::fs::File;
@@ -23,35 +24,56 @@ use vicinity::hnsw::HNSWIndex;
 use vicinity::hnsw::HNSWParams;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Select dataset: JIN_DATASET=quick for CI, otherwise bench
     let dataset = std::env::var("JIN_DATASET").unwrap_or_else(|_| "bench".to_string());
-    let variant = std::env::var("JIN_TEST_VARIANT").unwrap_or_default(); // "", "drift", "filter"
+    let variant = std::env::var("JIN_TEST_VARIANT").unwrap_or_default();
 
-    println!("Quick Benchmark (Bundled Data)");
-    println!("==============================\n");
+    println!("Quick Benchmark");
+    println!("===============\n");
 
-    // Find data directory
-    let data_dir = find_data_dir(&dataset)?;
-    println!("Dataset: {} ({})\n", dataset, data_dir);
+    // Try to load pre-generated data; fall back to synthetic
+    let (train, test, neighbors, dim, k_gt, source) = match find_data_dir(&dataset) {
+        Ok(data_dir) => {
+            let test_file = if variant.is_empty() {
+                format!("{}/{}_test.bin", data_dir, dataset)
+            } else {
+                format!("{}/{}_test_{}.bin", data_dir, dataset, variant)
+            };
+            let nbr_file = if variant.is_empty() {
+                format!("{}/{}_neighbors.bin", data_dir, dataset)
+            } else {
+                format!("{}/{}_neighbors_{}.bin", data_dir, dataset, variant)
+            };
 
-    // Load dataset
-    let (train, dim) = load_vectors(&format!("{}/{}_train.bin", data_dir, dataset))?;
-    let test_file = if variant.is_empty() {
-        format!("{}/{}_test.bin", data_dir, dataset)
-    } else {
-        format!("{}/{}_test_{}.bin", data_dir, dataset, variant)
+            let (train, dim) = load_vectors(&format!("{}/{}_train.bin", data_dir, dataset))?;
+            let (test, _) = load_vectors(&test_file)?;
+            let (neighbors, k_gt) = load_neighbors(&nbr_file)?;
+            (
+                train,
+                test,
+                neighbors,
+                dim,
+                k_gt,
+                format!("file ({})", data_dir),
+            )
+        }
+        Err(_) => {
+            // Generate synthetic data
+            let (n, dim) = if dataset == "quick" {
+                (2_000, 128)
+            } else {
+                (10_000, 384)
+            };
+            let n_queries = 100;
+            let k_gt = 100;
+
+            let (train, test, neighbors) = generate_synthetic_benchmark(n, dim, n_queries, k_gt);
+            (train, test, neighbors, dim, k_gt, "synthetic".to_string())
+        }
     };
-    let nbr_file = if variant.is_empty() {
-        format!("{}/{}_neighbors.bin", data_dir, dataset)
-    } else {
-        format!("{}/{}_neighbors_{}.bin", data_dir, dataset, variant)
-    };
 
-    let (test, _) = load_vectors(&test_file)?;
-    let (neighbors, k_gt) = load_neighbors(&nbr_file)?;
-
-    println!("Train:  {} vectors x {} dims", train.len(), dim);
-    println!("Test:   {} queries", test.len());
+    println!("Dataset: {} ({})", dataset, source);
+    println!("Train:   {} vectors x {} dims", train.len(), dim);
+    println!("Test:    {} queries", test.len());
     println!("Ground truth: {} neighbors per query\n", k_gt);
 
     // Build HNSW index
@@ -72,13 +94,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let build_start = Instant::now();
 
-    // For `hard/filter`, we enable metadata filtering and assign each vector a "topic" category.
     let mut index = if is_filter {
-        // with_filtering uses default ef_construction (200). Keep it aligned with `ef_construction`.
         HNSWIndex::with_filtering(dim, m, m_max, "topic")?
     } else {
-        // NOTE: HNSWIndex::new takes (dimension, m, m_max), NOT ef_construction.
-        // Use with_params to set ef_construction explicitly.
         let params = HNSWParams {
             m,
             m_max,
@@ -88,8 +106,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         HNSWIndex::with_params(dim, params)?
     };
 
+    let data_dir = find_data_dir(&dataset).ok();
     let train_topics = if is_filter {
-        Some(load_labels(&format!("{}/hard_train_topics.bin", data_dir))?)
+        data_dir
+            .as_ref()
+            .and_then(|d| load_labels(&format!("{}/hard_train_topics.bin", d)).ok())
     } else {
         None
     };
@@ -125,10 +146,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut total_recall = 0.0;
 
         let filter_topics = if is_filter {
-            Some(load_labels(&format!(
-                "{}/hard_test_filter_topics.bin",
-                data_dir
-            ))?)
+            data_dir
+                .as_ref()
+                .and_then(|d| load_labels(&format!("{}/hard_test_filter_topics.bin", d)).ok())
         } else {
             None
         };
@@ -142,7 +162,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 index.search(query, k, ef)?
             };
 
-            // Compare against ground truth
             let gt_set: HashSet<u32> = neighbors[i].iter().take(k).map(|&n| n as u32).collect();
             let found: HashSet<u32> = results.iter().map(|r| r.0).collect();
             let intersection = gt_set.intersection(&found).count();
@@ -160,14 +179,96 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    println!("\n--- Notes ---");
-    println!("- These datasets are regenerated by `scripts/generate_sample_data.py`.");
-    println!("- Treat any \"expected recall\" as approximate; re-run this example to measure.");
-    println!("- The `hard` dataset is tuned to have low relative contrast and ambiguous queries,");
-    println!("  so it typically needs higher ef_search to reach high recall.");
+    println!();
 
     Ok(())
 }
+
+// ─── Synthetic data generation ───────────────────────────────────────────────
+
+/// Generate a self-contained benchmark dataset with ground truth.
+///
+/// Creates clustered, L2-normalized vectors and computes exact brute-force
+/// k-NN ground truth using cosine distance.
+fn generate_synthetic_benchmark(
+    n: usize,
+    dim: usize,
+    n_queries: usize,
+    k: usize,
+) -> (Vec<Vec<f32>>, Vec<Vec<f32>>, Vec<Vec<i32>>) {
+    use rand::prelude::*;
+    let mut rng = StdRng::seed_from_u64(42);
+
+    let num_clusters = 10;
+    let vectors_per_cluster = n / num_clusters;
+
+    // Generate cluster centers
+    let centers: Vec<Vec<f32>> = (0..num_clusters)
+        .map(|_| {
+            let v: Vec<f32> = (0..dim).map(|_| rng.random::<f32>() * 2.0 - 1.0).collect();
+            normalize(&v)
+        })
+        .collect();
+
+    // Generate clustered vectors with Gaussian noise
+    let mut train = Vec::with_capacity(n);
+    for center in &centers {
+        for _ in 0..vectors_per_cluster {
+            let noisy: Vec<f32> = center
+                .iter()
+                .map(|&c| c + (rng.random::<f32>() - 0.5) * 0.3)
+                .collect();
+            train.push(normalize(&noisy));
+        }
+    }
+    // Fill remainder if n not divisible by num_clusters
+    while train.len() < n {
+        let v: Vec<f32> = (0..dim).map(|_| rng.random::<f32>() * 2.0 - 1.0).collect();
+        train.push(normalize(&v));
+    }
+
+    // Generate queries as perturbations of existing vectors
+    let test: Vec<Vec<f32>> = (0..n_queries)
+        .map(|i| {
+            let base = &train[(i * 7) % n];
+            let perturbed: Vec<f32> = base
+                .iter()
+                .map(|&v| v + (rng.random::<f32>() - 0.5) * 0.15)
+                .collect();
+            normalize(&perturbed)
+        })
+        .collect();
+
+    // Compute brute-force ground truth (cosine distance = 1 - dot for normalized vecs)
+    let neighbors: Vec<Vec<i32>> = test
+        .iter()
+        .map(|query| {
+            let mut dists: Vec<(usize, f32)> = train
+                .iter()
+                .enumerate()
+                .map(|(i, v)| {
+                    let dot: f32 = query.iter().zip(v.iter()).map(|(a, b)| a * b).sum();
+                    (i, 1.0 - dot)
+                })
+                .collect();
+            dists.sort_by(|a, b| a.1.total_cmp(&b.1));
+            dists.iter().take(k).map(|(i, _)| *i as i32).collect()
+        })
+        .collect();
+
+    (train, test, neighbors)
+}
+
+fn normalize(v: &[f32]) -> Vec<f32> {
+    let n: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if n > 1e-9 {
+        v.iter().map(|x| x / n).collect()
+    } else {
+        vec![0.0; v.len()]
+    }
+}
+
+// ─── File-based data loading ─────────────────────────────────────────────────
 
 fn find_data_dir(dataset: &str) -> Result<String, Box<dyn std::error::Error>> {
     let paths = [
@@ -184,10 +285,7 @@ fn find_data_dir(dataset: &str) -> Result<String, Box<dyn std::error::Error>> {
         }
     }
 
-    Err(format!(
-        "Sample data not found (looked for {}). Run: uvx --with numpy python scripts/generate_sample_data.py",
-        train_file
-    ).into())
+    Err(format!("Sample data not found (looked for {})", train_file).into())
 }
 
 fn load_vectors(path: &str) -> Result<(Vec<Vec<f32>>, usize), Box<dyn std::error::Error>> {

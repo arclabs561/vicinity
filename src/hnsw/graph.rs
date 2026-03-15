@@ -285,13 +285,16 @@ impl Layer {
         })
     }
 
-    /// Get neighbors for a node (decompress if needed).
-    pub(crate) fn get_neighbors(&self, node: u32) -> SmallVec<[u32; 16]> {
+    /// Get neighbors for a node.
+    ///
+    /// Returns a `Cow` to avoid cloning on the uncompressed path (the common case).
+    /// The compressed path (id-compression feature) decompresses and returns owned data.
+    pub(crate) fn get_neighbors(&self, node: u32) -> std::borrow::Cow<'_, [u32]> {
         match &self.storage {
             NeighborStorage::Uncompressed(neighbors) => neighbors
                 .get(node as usize)
-                .cloned()
-                .unwrap_or_else(SmallVec::new),
+                .map(|n| std::borrow::Cow::Borrowed(n.as_slice()))
+                .unwrap_or(std::borrow::Cow::Borrowed(&[])),
             #[cfg(feature = "id-compression")]
             NeighborStorage::Compressed {
                 data,
@@ -304,16 +307,14 @@ impl Layer {
                         .lock()
                         .unwrap_or_else(|e| e.into_inner());
                     if let Some(cached) = cache.get(&node) {
-                        return cached.clone();
+                        return std::borrow::Cow::Owned(cached.to_vec());
                     }
                 }
 
                 // Decompress
                 let compressed = &data[node as usize];
                 if compressed.data.is_empty() {
-                    // Uncompressed (too small to compress)
-                    // This shouldn't happen in compressed storage, but handle gracefully
-                    return SmallVec::new();
+                    return std::borrow::Cow::Borrowed(&[]);
                 }
 
                 let decompressed = crate::compression::decompress_set_enveloped(&compressed.data)
@@ -328,16 +329,17 @@ impl Layer {
 
                 let neighbors: SmallVec<[u32; 16]> = decompressed.into();
 
-                // Cache
+                // Cache for future lookups
+                let result = neighbors.to_vec();
                 {
                     let mut cache = self
                         .decompressed_cache
                         .lock()
                         .unwrap_or_else(|e| e.into_inner());
-                    cache.insert(node, neighbors.clone());
+                    cache.insert(node, neighbors);
                 }
 
-                neighbors
+                std::borrow::Cow::Owned(result)
             }
         }
     }
@@ -561,7 +563,7 @@ impl HNSWIndex {
             let layer_len = layer.len();
             for node in 0..layer_len {
                 let neighbors = layer.get_neighbors(node as u32);
-                for &neighbor in &neighbors {
+                for &neighbor in neighbors.iter() {
                     if neighbor as usize >= num_vectors {
                         return Err(RetrieveError::InvalidParameter(format!(
                             "layer {} node {} has out-of-bounds neighbor {} (num_vectors={})",
