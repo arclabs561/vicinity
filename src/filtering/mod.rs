@@ -13,8 +13,13 @@ pub use inline::{FilterStrategy, FilterStrategySelector, InlineFilter, InlineFil
 /// Filter predicate for metadata-based filtering.
 #[derive(Clone, Debug)]
 pub enum FilterPredicate {
-    /// Equality filter: field must equal value
-    Equals { field: String, value: u32 },
+    /// Equality filter: field must equal value.
+    Equals {
+        /// Metadata field name to match on.
+        field: String,
+        /// Required value for the field.
+        value: u32,
+    },
     /// Multiple equality filters (AND logic)
     And(Vec<FilterPredicate>),
     /// Multiple equality filters (OR logic)
@@ -22,6 +27,7 @@ pub enum FilterPredicate {
 }
 
 impl FilterPredicate {
+    /// Create an equality filter for a field and value.
     pub fn equals(field: impl Into<String>, value: u32) -> Self {
         Self::Equals {
             field: field.into(),
@@ -29,6 +35,7 @@ impl FilterPredicate {
         }
     }
 
+    /// Check whether the given document metadata satisfies this predicate.
     pub fn matches(&self, metadata: &DocumentMetadata) -> bool {
         match self {
             Self::Equals { field, value } => metadata.get(field).is_some_and(|&v| v == *value),
@@ -48,26 +55,33 @@ pub struct MetadataStore {
 }
 
 impl MetadataStore {
+    /// Create an empty metadata store.
     pub fn new() -> Self {
         Self {
             metadata: HashMap::new(),
         }
     }
 
+    /// Insert metadata for a document, replacing any existing entry.
     pub fn add(&mut self, doc_id: u32, metadata: DocumentMetadata) {
         self.metadata.insert(doc_id, metadata);
     }
 
+    /// Retrieve metadata for a document, if present.
     pub fn get(&self, doc_id: u32) -> Option<&DocumentMetadata> {
         self.metadata.get(&doc_id)
     }
 
+    /// Check whether a document's metadata satisfies the given filter.
     pub fn matches(&self, doc_id: u32, filter: &FilterPredicate) -> bool {
         self.metadata
             .get(&doc_id)
             .is_some_and(|metadata| filter.matches(metadata))
     }
 
+    /// Estimate the fraction of documents that match the filter (0.0 to 1.0).
+    ///
+    /// Returns `None` if the store is empty.
     pub fn estimate_selectivity(&self, filter: &FilterPredicate) -> Option<f32> {
         if self.metadata.is_empty() {
             return None;
@@ -82,6 +96,7 @@ impl MetadataStore {
         Some(matching as f32 / self.metadata.len() as f32)
     }
 
+    /// Return all distinct values for a metadata field, sorted ascending.
     pub fn get_all_values(&self, field: &str) -> Vec<u32> {
         let mut values: std::collections::HashSet<u32> = std::collections::HashSet::new();
         for metadata in self.metadata.values() {
@@ -94,6 +109,7 @@ impl MetadataStore {
         result
     }
 
+    /// Return `(value, count)` pairs for a field, sorted descending by count.
     pub fn get_value_counts(&self, field: &str) -> Vec<(u32, usize)> {
         let mut counts: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
         for metadata in self.metadata.values() {
@@ -106,6 +122,7 @@ impl MetadataStore {
         result
     }
 
+    /// Like [`get_value_counts`](Self::get_value_counts), but only considers documents matching the filter.
     pub fn get_value_counts_filtered(
         &self,
         field: &str,
@@ -344,9 +361,13 @@ mod tests {
     }
 }
 
+/// Embedding-space fusion for category-aware search.
 pub mod fusion {
     use super::*;
 
+    /// Append a one-hot category vector to an embedding.
+    ///
+    /// Returns a new vector of length `embedding.len() + num_categories`.
     pub fn augment_embedding(
         embedding: &[f32],
         category_id: u32,
@@ -374,6 +395,7 @@ pub mod fusion {
         Ok(augmented)
     }
 
+    /// Augment a query vector with a desired-category one-hot suffix.
     pub fn augment_query(
         query: &[f32],
         desired_category: u32,
@@ -383,6 +405,7 @@ pub mod fusion {
         augment_embedding(query, desired_category, num_categories, weight)
     }
 
+    /// Extract the original embedding from an augmented vector.
     pub fn extract_original(augmented: &[f32], original_dim: usize) -> Vec<f32> {
         augmented[..original_dim].to_vec()
     }

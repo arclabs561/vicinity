@@ -13,23 +13,36 @@ use std::path::PathBuf;
 
 /// Filesystem-like directory abstraction for `vicinity` persistence.
 pub trait Directory: Send + Sync {
+    /// Create a new file for writing, truncating if it exists.
     fn create_file(&self, path: &str) -> PersistenceResult<Box<dyn Write>>;
+    /// Open an existing file for reading.
     fn open_file(&self, path: &str) -> PersistenceResult<Box<dyn Read>>;
+    /// Check whether a file or directory exists at the given path.
     fn exists(&self, path: &str) -> bool;
+    /// Delete a file.
     fn delete(&self, path: &str) -> PersistenceResult<()>;
+    /// Atomically rename a file.
     fn atomic_rename(&self, from: &str, to: &str) -> PersistenceResult<()>;
+    /// Create a directory and all parent directories.
     fn create_dir_all(&self, path: &str) -> PersistenceResult<()>;
+    /// List entries in a directory.
     fn list_dir(&self, path: &str) -> PersistenceResult<Vec<String>>;
+    /// Open a file for appending, creating it if it does not exist.
     fn append_file(&self, path: &str) -> PersistenceResult<Box<dyn Write>>;
+    /// Write data atomically (write-to-temp then rename).
     fn atomic_write(&self, path: &str, data: &[u8]) -> PersistenceResult<()>;
+    /// Return the underlying filesystem path, if backed by one.
     fn file_path(&self, path: &str) -> Option<PathBuf>;
 }
 
 /// Controls how often writers call `flush()` on their underlying `Write`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FlushPolicy {
+    /// Flush after every append call.
     PerAppend,
+    /// Flush every N append calls.
     EveryN(usize),
+    /// Caller is responsible for flushing.
     Manual,
 }
 
@@ -49,10 +62,12 @@ fn disabled() -> PersistenceError {
 
 #[cfg(not(feature = "persistence"))]
 #[derive(Debug, Default, Clone)]
+/// In-memory directory stub (persistence feature disabled).
 pub struct MemoryDirectory;
 
 #[cfg(not(feature = "persistence"))]
 impl MemoryDirectory {
+    /// Create a new in-memory directory (no-op without persistence feature).
     pub fn new() -> Self {
         Self
     }
@@ -93,11 +108,13 @@ impl Directory for MemoryDirectory {
 }
 
 #[cfg(not(feature = "persistence"))]
+/// Filesystem-backed directory stub (persistence feature disabled).
 #[derive(Debug, Default, Clone)]
 pub struct FsDirectory;
 
 #[cfg(not(feature = "persistence"))]
 impl FsDirectory {
+    /// Create a filesystem directory (fails without persistence feature).
     pub fn new(_root: impl Into<PathBuf>) -> PersistenceResult<Self> {
         Err(disabled())
     }

@@ -27,20 +27,28 @@ use std::time::{Duration, Instant};
 pub enum Criterion {
     /// Maximize recall@K (target is minimum acceptable recall)
     RecallAtK {
+        /// Number of nearest neighbors to evaluate.
         k: usize,
-        target: f32, // Minimum acceptable recall (e.g., 0.95)
+        /// Minimum acceptable recall (e.g., 0.95).
+        target: f32,
     },
     /// Minimize query time while maintaining minimum recall
     LatencyWithRecall {
+        /// Number of nearest neighbors to evaluate.
         k: usize,
+        /// Minimum acceptable recall threshold.
         min_recall: f32,
+        /// Maximum acceptable query latency in milliseconds.
         max_latency_ms: f32,
     },
     /// Balance recall and latency (weighted combination)
     Balanced {
+        /// Number of nearest neighbors to evaluate.
         k: usize,
-        recall_weight: f32,  // 0.0 to 1.0
-        latency_weight: f32, // 0.0 to 1.0
+        /// Weight for recall in the combined score (0.0 to 1.0).
+        recall_weight: f32,
+        /// Weight for latency in the combined score (0.0 to 1.0).
+        latency_weight: f32,
     },
 }
 

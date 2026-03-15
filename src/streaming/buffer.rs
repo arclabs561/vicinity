@@ -55,10 +55,12 @@ pub struct StreamBuffer {
 }
 
 impl StreamBuffer {
+    /// Create a buffer with default configuration.
     pub fn new() -> Self {
         Self::with_config(StreamBufferConfig::default())
     }
 
+    /// Create a buffer with the given configuration.
     pub fn with_config(config: StreamBufferConfig) -> Self {
         Self {
             inserts: HashMap::new(),

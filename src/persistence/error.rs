@@ -25,11 +25,21 @@ pub enum PersistenceError {
 
     /// Checksum mismatch (data corruption detected)
     #[error("checksum mismatch: expected {expected}, got {actual}")]
-    ChecksumMismatch { expected: u32, actual: u32 },
+    ChecksumMismatch {
+        /// Expected CRC32 checksum.
+        expected: u32,
+        /// Actual CRC32 checksum read from data.
+        actual: u32,
+    },
 
     /// Lock acquisition failed (concurrent access conflict)
     #[error("failed to acquire lock on {resource}: {reason}")]
-    LockFailed { resource: String, reason: String },
+    LockFailed {
+        /// The resource that could not be locked.
+        resource: String,
+        /// Why the lock could not be acquired.
+        reason: String,
+    },
 
     /// Invalid state (e.g., operation not allowed in current state)
     #[error("invalid state: {0}")]

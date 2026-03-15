@@ -572,9 +572,13 @@ impl InPlaceIndex {
 /// Statistics for in-place index.
 #[derive(Clone, Debug)]
 pub struct InPlaceStats {
+    /// Number of nodes currently in the index.
     pub active_nodes: usize,
+    /// Number of deleted slots available for reuse.
     pub free_slots: usize,
+    /// Mean outgoing edge count per node.
     pub avg_out_degree: f32,
+    /// Mean incoming edge count per node.
     pub avg_in_degree: f32,
 }
 

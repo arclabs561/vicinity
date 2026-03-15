@@ -52,9 +52,13 @@ pub trait ANNIndex {
 /// Statistics about an ANN index.
 #[derive(Debug, Clone)]
 pub struct ANNStats {
+    /// Number of vectors in the index.
     pub num_vectors: usize,
+    /// Dimensionality of each vector.
     pub dimension: usize,
+    /// Approximate memory usage in bytes.
     pub size_bytes: usize,
+    /// Name of the ANN algorithm (e.g. "HNSW", "DiskANN").
     pub algorithm: &'static str,
 }
 

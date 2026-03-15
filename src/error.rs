@@ -19,7 +19,12 @@ pub enum RetrieveError {
 
     /// Dimension mismatch between query and documents.
     #[error("dimension mismatch: query has {query_dim} dimensions, document has {doc_dim}")]
-    DimensionMismatch { query_dim: usize, doc_dim: usize },
+    DimensionMismatch {
+        /// Dimension of the query vector.
+        query_dim: usize,
+        /// Dimension of the document vector (or index).
+        doc_dim: usize,
+    },
 
     /// I/O error (wrapped)
     #[error("I/O error: {0}")]

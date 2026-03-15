@@ -9,6 +9,7 @@
 //! exposed in the public search results. The index uses cosine distance internally.
 
 use std::collections::HashSet;
+use vicinity::hnsw::filtered::{acorn_search, AcornConfig, FnFilter};
 use vicinity::hnsw::{HNSWIndex, HNSWParams};
 
 /// Generate random vectors for testing.

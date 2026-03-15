@@ -52,18 +52,23 @@ pub use self::AnyANNIndex as ANNIndexEnum;
 /// enabling polymorphic usage through the `ANNIndex` trait.
 #[derive(Debug)]
 pub enum AnyANNIndex {
+    /// Hierarchical Navigable Small World index.
     #[cfg(feature = "hnsw")]
     HNSW(crate::hnsw::HNSWIndex),
 
+    /// Flat Navigable Small World index.
     #[cfg(feature = "nsw")]
     NSW(crate::nsw::NSWIndex),
 
+    /// Inverted File Index with Product Quantization.
     #[cfg(feature = "ivf_pq")]
     IVFPQ(crate::ivf_pq::IVFPQIndex),
 
+    /// Anisotropic vector quantization with k-means partitioning.
     #[cfg(feature = "scann")]
     SCANN(crate::scann::search::SCANNIndex),
 
+    /// Hierarchical k-means tree index.
     #[cfg(feature = "kmeans_tree")]
     KMeansTree(crate::classic::trees::kmeans_tree::KMeansTreeIndex),
 }

@@ -30,10 +30,20 @@ use std::collections::HashMap;
 /// Attribute value that can be embedded.
 #[derive(Clone, Debug, PartialEq)]
 pub enum AttributeValue {
+    /// A single categorical label.
     Categorical(String),
+    /// A scalar numeric value.
     Numeric(f32),
-    NumericRange { min: f32, max: f32 },
+    /// A numeric range with bounds.
+    NumericRange {
+        /// Lower bound of the range.
+        min: f32,
+        /// Upper bound of the range.
+        max: f32,
+    },
+    /// A boolean flag.
     Boolean(bool),
+    /// Multiple categorical labels.
     MultiCategory(Vec<String>),
 }
 
@@ -49,7 +59,9 @@ pub struct AttributeSchema {
 /// Single attribute definition.
 #[derive(Clone, Debug)]
 pub struct AttributeDefinition {
+    /// Attribute name.
     pub name: String,
+    /// Type and encoding parameters.
     pub attr_type: AttributeType,
     /// Weight when fusing (higher = more important for filtering)
     pub weight: f32,
@@ -58,10 +70,18 @@ pub struct AttributeDefinition {
 /// Attribute type for embedding strategy.
 #[derive(Clone, Debug)]
 pub enum AttributeType {
-    /// One-hot encoding for categories
-    Categorical { categories: Vec<String> },
-    /// Normalized numeric value
-    Numeric { min: f32, max: f32 },
+    /// One-hot encoding for categories.
+    Categorical {
+        /// Known category labels for one-hot encoding.
+        categories: Vec<String>,
+    },
+    /// Normalized numeric value.
+    Numeric {
+        /// Minimum value for normalization.
+        min: f32,
+        /// Maximum value for normalization.
+        max: f32,
+    },
     /// Boolean flag
     Boolean,
 }

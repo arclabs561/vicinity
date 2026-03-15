@@ -4,11 +4,24 @@
 #[derive(Debug, Clone)]
 pub enum UpdateOp {
     /// Insert a new vector.
-    Insert { id: u32, vector: Vec<f32> },
+    Insert {
+        /// Identifier for the new vector.
+        id: u32,
+        /// The vector data to insert.
+        vector: Vec<f32>,
+    },
     /// Delete an existing vector.
-    Delete { id: u32 },
+    Delete {
+        /// Identifier of the vector to delete.
+        id: u32,
+    },
     /// Update (atomic delete + insert).
-    Update { id: u32, vector: Vec<f32> },
+    Update {
+        /// Identifier of the vector to update.
+        id: u32,
+        /// Replacement vector data.
+        vector: Vec<f32>,
+    },
 }
 
 impl UpdateOp {
@@ -39,28 +52,34 @@ pub struct UpdateBatch {
 }
 
 impl UpdateBatch {
+    /// Create an empty batch.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Create a batch pre-allocated for `capacity` operations.
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             ops: Vec::with_capacity(capacity),
         }
     }
 
+    /// Append an operation to the batch.
     pub fn push(&mut self, op: UpdateOp) {
         self.ops.push(op);
     }
 
+    /// Number of operations in the batch.
     pub fn len(&self) -> usize {
         self.ops.len()
     }
 
+    /// Check whether the batch contains no operations.
     pub fn is_empty(&self) -> bool {
         self.ops.is_empty()
     }
 
+    /// Iterate over operations in submission order.
     pub fn iter(&self) -> impl Iterator<Item = &UpdateOp> {
         self.ops.iter()
     }
@@ -101,15 +120,20 @@ impl UpdateBatch {
 /// Statistics from applying updates.
 #[derive(Debug, Clone, Default)]
 pub struct UpdateStats {
+    /// Number of insert operations applied.
     pub inserts_applied: usize,
+    /// Number of delete operations applied.
     pub deletes_applied: usize,
+    /// Number of update operations applied.
     pub updates_applied: usize,
+    /// Number of operations that failed.
     pub errors: usize,
     /// Time spent applying updates (microseconds).
     pub duration_us: u64,
 }
 
 impl UpdateStats {
+    /// Accumulate counters from another stats snapshot.
     pub fn merge(&mut self, other: &UpdateStats) {
         self.inserts_applied += other.inserts_applied;
         self.deletes_applied += other.deletes_applied;

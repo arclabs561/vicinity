@@ -90,32 +90,45 @@ pub fn recall_curve(
 /// Evaluation result for a single query.
 #[derive(Debug, Clone)]
 pub struct QueryEvaluation {
+    /// Recall score for this query.
     pub recall: f32,
+    /// Precision score for this query.
     pub precision: f32,
+    /// Query latency in microseconds.
     pub latency_us: u64,
+    /// Number of distance computations (if tracked).
     pub n_distance_computations: Option<usize>,
 }
 
 /// Aggregated evaluation results.
 #[derive(Debug, Clone)]
 pub struct EvaluationSummary {
+    /// Number of queries evaluated.
     pub n_queries: usize,
+    /// Number of nearest neighbors per query.
     pub k: usize,
 
-    // Recall stats
+    /// Mean recall across all queries.
     pub mean_recall: f32,
+    /// Minimum recall observed.
     pub min_recall: f32,
+    /// Maximum recall observed.
     pub max_recall: f32,
+    /// Standard deviation of recall.
     pub recall_std: f32,
 
-    // Latency stats (microseconds)
+    /// Mean query latency in microseconds.
     pub mean_latency_us: f64,
+    /// Median (p50) query latency in microseconds.
     pub p50_latency_us: u64,
+    /// 95th-percentile query latency in microseconds.
     pub p95_latency_us: u64,
+    /// 99th-percentile query latency in microseconds.
     pub p99_latency_us: u64,
+    /// Maximum query latency in microseconds.
     pub max_latency_us: u64,
 
-    // Throughput
+    /// Queries per second (throughput).
     pub qps: f64,
 }
 

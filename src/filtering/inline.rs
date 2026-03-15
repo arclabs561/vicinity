@@ -2,18 +2,27 @@
 
 use super::{FilterPredicate, MetadataStore};
 
+/// Strategy for applying metadata filters during vector search.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FilterStrategy {
+    /// Filter candidates before distance computation.
     PreFilter,
+    /// Compute distances first, then filter results.
     PostFilter,
+    /// Evaluate filter inline during graph traversal.
     Inline,
 }
 
+/// Configuration for adaptive inline filtering.
 #[derive(Clone, Debug)]
 pub struct InlineFilterConfig {
+    /// Multiplier for candidate pool size when post-filtering.
     pub post_filter_oversearch: f32,
+    /// Maximum candidates to evaluate during inline filtering.
     pub inline_max_candidates: usize,
+    /// Selectivity below this triggers pre-filtering.
     pub pre_filter_threshold: f32,
+    /// Selectivity above this triggers post-filtering.
     pub post_filter_threshold: f32,
 }
 
@@ -28,21 +37,25 @@ impl Default for InlineFilterConfig {
     }
 }
 
+/// Selects a [`FilterStrategy`] based on estimated selectivity and query parameters.
 pub struct FilterStrategySelector {
     config: InlineFilterConfig,
 }
 
 impl FilterStrategySelector {
+    /// Create a selector with default thresholds.
     pub fn new() -> Self {
         Self {
             config: InlineFilterConfig::default(),
         }
     }
 
+    /// Create a selector with custom configuration.
     pub fn with_config(config: InlineFilterConfig) -> Self {
         Self { config }
     }
 
+    /// Choose a filter strategy given selectivity, k, and collection size.
     pub fn select(
         &self,
         estimated_selectivity: f32,
@@ -64,6 +77,7 @@ impl FilterStrategySelector {
         FilterStrategy::Inline
     }
 
+    /// Estimate filter selectivity from metadata statistics.
     pub fn estimate_selectivity(
         &self,
         filter: &FilterPredicate,
@@ -113,6 +127,7 @@ fn estimate_predicate_selectivity(
     }
 }
 
+/// Stateful filter that tracks how many candidates it evaluates and passes.
 pub struct InlineFilter<'a> {
     predicate: &'a FilterPredicate,
     metadata: &'a MetadataStore,
@@ -121,6 +136,7 @@ pub struct InlineFilter<'a> {
 }
 
 impl<'a> InlineFilter<'a> {
+    /// Create a new inline filter for the given predicate and metadata store.
     pub fn new(predicate: &'a FilterPredicate, metadata: &'a MetadataStore) -> Self {
         Self {
             predicate,
@@ -130,6 +146,7 @@ impl<'a> InlineFilter<'a> {
         }
     }
 
+    /// Evaluate whether a document passes the filter, updating internal counters.
     pub fn matches(&mut self, doc_id: u32) -> bool {
         self.evaluated += 1;
         let result = self.metadata.matches(doc_id, self.predicate);
@@ -139,6 +156,7 @@ impl<'a> InlineFilter<'a> {
         result
     }
 
+    /// Return the observed selectivity so far (passed / evaluated).
     pub fn observed_selectivity(&self) -> f32 {
         if self.evaluated == 0 {
             1.0
@@ -147,6 +165,7 @@ impl<'a> InlineFilter<'a> {
         }
     }
 
+    /// Snapshot of evaluation statistics.
     pub fn stats(&self) -> InlineFilterStats {
         InlineFilterStats {
             evaluated: self.evaluated,
@@ -156,13 +175,18 @@ impl<'a> InlineFilter<'a> {
     }
 }
 
+/// Counters from an [`InlineFilter`] evaluation run.
 #[derive(Clone, Copy, Debug)]
 pub struct InlineFilterStats {
+    /// Total number of candidates evaluated.
     pub evaluated: usize,
+    /// Number of candidates that passed the filter.
     pub passed: usize,
+    /// Ratio of passed to evaluated.
     pub selectivity: f32,
 }
 
+/// Filter a pre-sorted result list, keeping at most `k` matching entries.
 pub fn post_filter_results(
     results: Vec<(u32, f32)>,
     predicate: &FilterPredicate,
@@ -176,6 +200,7 @@ pub fn post_filter_results(
         .collect()
 }
 
+/// Compute the candidate pool size needed to yield `k` results after filtering.
 pub fn calculate_oversearch_k(
     k: usize,
     estimated_selectivity: f32,
