@@ -60,5 +60,12 @@ impl From<qntz::VQuantError> for RetrieveError {
     }
 }
 
+#[cfg(feature = "id-compression")]
+impl From<crate::compression::CompressionError> for RetrieveError {
+    fn from(err: crate::compression::CompressionError) -> Self {
+        RetrieveError::Other(err.to_string())
+    }
+}
+
 /// Result type alias for vicinity operations.
 pub type Result<T> = std::result::Result<T, RetrieveError>;

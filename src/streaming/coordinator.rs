@@ -211,15 +211,17 @@ impl<I: IndexOps> StreamingCoordinator<I> {
     /// cosine distance (matching HNSW). If you use a different index type
     /// or metric, set `StreamBufferConfig::distance_metric` accordingly.
     pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>> {
-        // Detect metric mismatch between buffer and main index
-        debug_assert_eq!(
-            self.config.buffer.distance_metric,
-            self.index.distance_metric(),
-            "Buffer distance metric ({:?}) does not match index metric ({:?}). \
-             Merged search results will have inconsistent rankings.",
-            self.config.buffer.distance_metric,
-            self.index.distance_metric()
-        );
+        // Detect metric mismatch between buffer and main index.
+        // This is a runtime check (not debug_assert) because mismatched metrics
+        // silently produce wrong merged rankings in release builds.
+        if self.config.buffer.distance_metric != self.index.distance_metric() {
+            return Err(crate::RetrieveError::InvalidParameter(format!(
+                "buffer distance metric ({:?}) does not match index metric ({:?}); \
+                 merged search results would have inconsistent rankings",
+                self.config.buffer.distance_metric,
+                self.index.distance_metric()
+            )));
+        }
 
         if !self.config.merge_search_results || self.buffer.insert_count() == 0 {
             // Just search main index, filter deletes

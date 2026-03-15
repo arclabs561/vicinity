@@ -139,6 +139,66 @@ name = "retrieve_and_rerank"
 path = "examples/retrieve_and_rerank.rs"
 required-features = ["hnsw"]
 
+[[example]]
+name = "01_basic_search"
+path = "examples/01_basic_search.rs"
+required-features = ["hnsw"]
+
+[[example]]
+name = "02_measure_recall"
+path = "examples/02_measure_recall.rs"
+required-features = ["hnsw"]
+
+[[example]]
+name = "03_quick_benchmark"
+path = "examples/03_quick_benchmark.rs"
+required-features = ["hnsw"]
+
+[[example]]
+name = "04_rigorous_benchmark"
+path = "examples/04_rigorous_benchmark.rs"
+required-features = ["hnsw"]
+
+[[example]]
+name = "05_normalization_matters"
+path = "examples/05_normalization_matters.rs"
+required-features = ["hnsw"]
+
+[[example]]
+name = "hnsw_benchmark"
+path = "examples/hnsw_benchmark.rs"
+required-features = ["hnsw"]
+
+[[example]]
+name = "semantic_search_demo"
+path = "examples/semantic_search_demo.rs"
+required-features = ["hnsw"]
+
+[[example]]
+name = "lid_demo"
+path = "examples/lid_demo.rs"
+required-features = ["hnsw"]
+
+[[example]]
+name = "lid_outlier_detection"
+path = "examples/lid_outlier_detection.rs"
+required-features = ["hnsw"]
+
+[[example]]
+name = "dual_branch_demo"
+path = "examples/dual_branch_demo.rs"
+required-features = ["hnsw"]
+
+[[example]]
+name = "dual_branch_hnsw_demo"
+path = "examples/dual_branch_hnsw_demo.rs"
+required-features = ["hnsw"]
+
+[[example]]
+name = "glove_benchmark"
+path = "examples/glove_benchmark.rs"
+required-features = ["hnsw"]
+
 [[bench]]
 name = "hnsw"
 harness = false
