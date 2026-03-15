@@ -10,6 +10,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
+use vicinity::hnsw::HNSWIndex;
 
 fn l2_distance_squared(a: &[f32], b: &[f32]) -> f32 {
     a.iter()
@@ -19,101 +20,6 @@ fn l2_distance_squared(a: &[f32], b: &[f32]) -> f32 {
             d * d
         })
         .sum()
-}
-
-/// Simple HNSW for benchmarking
-struct SimpleHnsw {
-    vectors: Vec<Vec<f32>>,
-    neighbors: Vec<Vec<u32>>,
-    m: usize,
-}
-
-impl SimpleHnsw {
-    fn new(m: usize) -> Self {
-        Self {
-            vectors: Vec::new(),
-            neighbors: Vec::new(),
-            m,
-        }
-    }
-
-    fn insert(&mut self, vec: Vec<f32>) {
-        let id = self.vectors.len() as u32;
-        self.vectors.push(vec);
-
-        if self.vectors.len() == 1 {
-            self.neighbors.push(Vec::new());
-            return;
-        }
-
-        let query = &self.vectors[id as usize];
-        let mut candidates: Vec<(u32, f32)> = self
-            .vectors
-            .iter()
-            .enumerate()
-            .take(id as usize)
-            .map(|(i, v)| (i as u32, l2_distance_squared(query, v)))
-            .collect();
-        candidates.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
-
-        let selected: Vec<u32> = candidates
-            .iter()
-            .take(self.m)
-            .map(|(idx, _)| *idx)
-            .collect();
-
-        for &neighbor_id in &selected {
-            self.neighbors[neighbor_id as usize].push(id);
-            if self.neighbors[neighbor_id as usize].len() > self.m * 2 {
-                let neighbor_vec = &self.vectors[neighbor_id as usize];
-                let mut with_dist: Vec<(u32, f32)> = self.neighbors[neighbor_id as usize]
-                    .iter()
-                    .map(|&n| {
-                        (
-                            n,
-                            l2_distance_squared(neighbor_vec, &self.vectors[n as usize]),
-                        )
-                    })
-                    .collect();
-                with_dist.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
-                self.neighbors[neighbor_id as usize] =
-                    with_dist.iter().take(self.m).map(|(n, _)| *n).collect();
-            }
-        }
-
-        self.neighbors.push(selected);
-    }
-
-    fn search(&self, query: &[f32], k: usize, ef: usize) -> Vec<(u32, f32)> {
-        if self.vectors.is_empty() {
-            return Vec::new();
-        }
-
-        let mut visited = vec![false; self.vectors.len()];
-        let mut candidates: Vec<(u32, f32)> = Vec::with_capacity(ef);
-
-        let entry = 0u32;
-        let dist = l2_distance_squared(query, &self.vectors[0]);
-        candidates.push((entry, dist));
-        visited[0] = true;
-
-        let mut i = 0;
-        while i < candidates.len() && candidates.len() < ef {
-            let (current, _) = candidates[i];
-            for &neighbor in &self.neighbors[current as usize] {
-                if !visited[neighbor as usize] {
-                    visited[neighbor as usize] = true;
-                    let d = l2_distance_squared(query, &self.vectors[neighbor as usize]);
-                    candidates.push((neighbor, d));
-                }
-            }
-            i += 1;
-        }
-
-        candidates.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
-        candidates.truncate(k);
-        candidates
-    }
 }
 
 /// Brute force k-NN
@@ -135,6 +41,15 @@ fn create_dataset(n: usize, dim: usize, seed: u64) -> Vec<Vec<f32>> {
         .collect()
 }
 
+fn build_index(database: &[Vec<f32>], dim: usize, m: usize) -> HNSWIndex {
+    let mut index = HNSWIndex::new(dim, m, m).unwrap();
+    for (i, vec) in database.iter().enumerate() {
+        index.add_slice(i as u32, vec).unwrap();
+    }
+    index.build().unwrap();
+    index
+}
+
 /// Benchmark query time scaling with dataset size.
 fn bench_query_scaling_n(c: &mut Criterion) {
     let mut group = c.benchmark_group("query_scaling_n");
@@ -149,18 +64,14 @@ fn bench_query_scaling_n(c: &mut Criterion) {
         let database = create_dataset(n, dimension, 42);
         let queries = create_dataset(10, dimension, 123);
 
-        // Build index
-        let mut index = SimpleHnsw::new(m);
-        for vec in &database {
-            index.insert(vec.clone());
-        }
+        let index = build_index(&database, dimension, m);
 
         group.throughput(Throughput::Elements(n as u64));
 
         group.bench_with_input(BenchmarkId::new("hnsw", n), &n, |b, _| {
             b.iter(|| {
                 for query in &queries {
-                    black_box(index.search(query, k, ef));
+                    black_box(index.search(query, k, ef).unwrap());
                 }
             })
         });
@@ -194,17 +105,14 @@ fn bench_query_scaling_dim(c: &mut Criterion) {
         let database = create_dataset(n, dim, 42);
         let queries = create_dataset(10, dim, 123);
 
-        let mut index = SimpleHnsw::new(m);
-        for vec in &database {
-            index.insert(vec.clone());
-        }
+        let index = build_index(&database, dim, m);
 
         group.throughput(Throughput::Elements(dim as u64));
 
         group.bench_with_input(BenchmarkId::new("hnsw", dim), &dim, |b, _| {
             b.iter(|| {
                 for query in &queries {
-                    black_box(index.search(query, k, ef));
+                    black_box(index.search(query, k, ef).unwrap());
                 }
             })
         });
@@ -216,7 +124,7 @@ fn bench_query_scaling_dim(c: &mut Criterion) {
 /// Benchmark construction time scaling.
 fn bench_construction_scaling(c: &mut Criterion) {
     let mut group = c.benchmark_group("construction_scaling");
-    group.sample_size(10); // Construction is slow
+    group.sample_size(10);
 
     let dimension = 128;
     let m = 16;
@@ -228,10 +136,11 @@ fn bench_construction_scaling(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::new("hnsw", n), &n, |b, _| {
             b.iter(|| {
-                let mut index = SimpleHnsw::new(m);
-                for vec in &database {
-                    index.insert(vec.clone());
+                let mut index = HNSWIndex::new(dimension, m, m).unwrap();
+                for (i, vec) in database.iter().enumerate() {
+                    index.add_slice(i as u32, vec).unwrap();
                 }
+                index.build().unwrap();
                 index
             })
         });
@@ -250,20 +159,16 @@ fn bench_crossover_point(c: &mut Criterion) {
     let ef = 64;
     let m = 16;
 
-    // Test small sizes to find where HNSW becomes faster
     for n in [100usize, 200, 500, 1_000, 2_000, 5_000] {
         let database = create_dataset(n, dimension, 42);
         let queries = create_dataset(10, dimension, 123);
 
-        let mut index = SimpleHnsw::new(m);
-        for vec in &database {
-            index.insert(vec.clone());
-        }
+        let index = build_index(&database, dimension, m);
 
         group.bench_with_input(BenchmarkId::new("hnsw", n), &n, |b, _| {
             b.iter(|| {
                 for query in &queries {
-                    black_box(index.search(query, k, ef));
+                    black_box(index.search(query, k, ef).unwrap());
                 }
             })
         });
