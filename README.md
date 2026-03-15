@@ -8,7 +8,7 @@ Approximate nearest-neighbor (ANN) search in Rust. HNSW, NSW, DiskANN, IVF-PQ, S
 
 ```toml
 [dependencies]
-vicinity = { version = "0.1.3", features = ["hnsw"] }
+vicinity = { version = "0.1.4", features = ["hnsw"] }
 ```
 
 ## Minimal API
@@ -132,7 +132,7 @@ so that “same input vectors” means “same meaning” across indexes.
 
 ```toml
 [dependencies]
-vicinity = { version = "0.1.3", features = ["hnsw"] }
+vicinity = { version = "0.1.4", features = ["hnsw"] }
 ```
 
 - `hnsw` — HNSW graph index (default)
