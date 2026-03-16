@@ -115,13 +115,34 @@ def normalize_vectors(vectors: np.ndarray) -> np.ndarray:
 
 
 def recompute_ground_truth(train: np.ndarray, test: np.ndarray, k: int) -> np.ndarray:
-    """Recompute ground truth using cosine distance on normalized vectors."""
+    """Recompute ground truth using cosine distance on normalized vectors.
+
+    Processes queries in batches to avoid O(n_test * n_train) memory spike.
+    """
     print(f"  Recomputing ground truth (cosine distance, k={k})...")
-    # Cosine distance = 1 - dot(a, b) for normalized vectors
-    # For batch: distances = 1 - test @ train.T
-    similarities = test @ train.T  # (n_test, n_train)
-    # Top-k by similarity (highest = closest)
-    neighbors = np.argsort(-similarities, axis=1)[:, :k]
+    n_test = test.shape[0]
+    batch_size = max(1, min(100, 500_000_000 // (train.shape[0] * 4)))  # ~500MB per batch
+    neighbors = np.empty((n_test, k), dtype=np.int32)
+
+    for start in range(0, n_test, batch_size):
+        end = min(start + batch_size, n_test)
+        # Cosine similarity = dot(a, b) for normalized vectors
+        sims = test[start:end] @ train.T  # (batch, n_train)
+        # Top-k by similarity (highest = closest)
+        # Use argpartition for O(n) partial sort instead of O(n log n) full sort
+        if k < sims.shape[1]:
+            top_k_idx = np.argpartition(-sims, k, axis=1)[:, :k]
+            # Sort the top-k by similarity (descending)
+            for i in range(end - start):
+                order = np.argsort(-sims[i, top_k_idx[i]])
+                top_k_idx[i] = top_k_idx[i, order]
+            neighbors[start:end] = top_k_idx
+        else:
+            neighbors[start:end] = np.argsort(-sims, axis=1)[:, :k]
+
+        if end < n_test:
+            print(f"    {end}/{n_test} queries...", flush=True)
+
     return neighbors
 
 
