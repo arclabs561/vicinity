@@ -202,8 +202,9 @@ cargo bench
 | `lid_outlier_detection` | `hnsw` (default) | LID-based anomaly detection |
 | `dual_branch_demo` | `hnsw` (default) | LID-driven dual-branch HNSW |
 | `dual_branch_hnsw_demo` | `hnsw` (default) | LID-aware graph construction |
-| `sift_benchmark` | `hnsw` | SIFT-128 real dataset benchmark |
+| `sift_benchmark` | `hnsw` | Synthetic 50K benchmark (SIFT-like) |
 | `glove_benchmark` | `hnsw` (default) | GloVe-25 real dataset benchmark |
+| `ann_benchmark` | `hnsw` | ann-benchmarks runner (real datasets, HNSW + NSW) |
 
 For primary sources (papers) backing the algorithms and phenomena mentioned in docs, see [doc/references.md](doc/references.md).
 
