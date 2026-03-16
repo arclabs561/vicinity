@@ -97,6 +97,7 @@ evoc = ["dep:clump"]
 
 id-compression = ["dep:cnk", "dep:sbits", "cnk/sbits"]
 persistence-bincode = ["dep:bincode", "persistence"]
+# Deprecated: alias for persistence. Will be removed in 0.2.0.
 memmap = ["persistence"]
 
 # Quantization sub-features (kept separate so callers can be explicit)

@@ -165,47 +165,11 @@ pub mod vamana;
 #[cfg(feature = "hnsw")]
 pub use vamana::{build_vamana_graph, search_vamana, VamanaConfig, VamanaGraph};
 
-// FusedANN: Attribute-vector fusion for filtered search
-#[cfg(feature = "hnsw")]
-pub mod fused;
-#[cfg(feature = "hnsw")]
-pub use fused::{
-    recommend_alpha, AttributeDefinition, AttributeEmbedder, AttributeSchema, AttributeType,
-    AttributeValue, FusedConfig, FusedIndex, FusedVector,
-};
-
-// Random Walk-based graph repair (alternative to MN-RU)
-#[cfg(feature = "hnsw")]
-pub mod random_walk_repair;
-
-// Dynamic Edge Navigation Graph (DEG) for bimodal data
-#[cfg(feature = "hnsw")]
-pub mod deg;
-#[cfg(feature = "hnsw")]
-pub use deg::{DEGConfig, DEGIndex, DensityInfo};
-
 // In-place updates (IP-DiskANN style)
 #[cfg(feature = "hnsw")]
 pub mod inplace;
 #[cfg(feature = "hnsw")]
 pub use inplace::{InPlaceConfig, InPlaceIndex, InPlaceStats, MappedInPlaceIndex};
-
-// Incremental learning patterns (edge refinement, temporal locality)
-#[cfg(feature = "hnsw")]
-pub mod incremental;
-
-// Probabilistic edge routing (PEOs) for QPS improvement
-#[cfg(feature = "hnsw")]
-pub mod probabilistic_routing;
-
-// HNSW index merging algorithms (NGM, IGTM, CGTM)
-#[cfg(feature = "hnsw")]
-pub mod merge;
-#[cfg(feature = "hnsw")]
-pub use merge::{
-    cross_graph_traversal_merge, intra_graph_traversal_merge, naive_graph_merge, MergeConfig,
-    MergeGraph, MergeNode, MergeStats,
-};
 
 // Dual-Branch HNSW with LID-based insertion and skip bridges (arXiv 2501.13992)
 #[cfg(feature = "hnsw")]
@@ -213,8 +177,43 @@ pub mod dual_branch;
 #[cfg(feature = "hnsw")]
 pub use dual_branch::{DualBranchConfig, DualBranchHNSW, DualBranchStats, SkipBridge};
 
-// Tombstone-based deletions for streaming updates (FreshDiskANN/IP-DiskANN inspired)
+// ─── Experimental modules ────────────────────────────────────────────────────
+// These are research implementations. Public for experimentation but not part
+// of the stable API. Types are accessible via submodule paths
+// (e.g., `vicinity::hnsw::fused::FusedIndex`) but not re-exported at
+// `vicinity::hnsw::*`.
+
+/// FusedANN: Attribute-vector fusion for filtered search.
 #[cfg(feature = "hnsw")]
+#[doc(hidden)]
+pub mod fused;
+
+/// Dynamic Edge Navigation Graph (DEG) for bimodal data.
+#[cfg(feature = "hnsw")]
+#[doc(hidden)]
+pub mod deg;
+
+/// HNSW index merging algorithms (NGM, IGTM, CGTM).
+#[cfg(feature = "hnsw")]
+#[doc(hidden)]
+pub mod merge;
+
+/// Tombstone-based deletions for streaming updates.
+#[cfg(feature = "hnsw")]
+#[doc(hidden)]
 pub mod tombstones;
+
+/// Random walk-based graph repair (alternative to MN-RU).
 #[cfg(feature = "hnsw")]
-pub use tombstones::{TombstoneSet, TombstoneStats};
+#[doc(hidden)]
+pub mod random_walk_repair;
+
+/// Incremental learning patterns (edge refinement, temporal locality).
+#[cfg(feature = "hnsw")]
+#[doc(hidden)]
+pub mod incremental;
+
+/// Probabilistic edge routing (PEOs) for QPS improvement.
+#[cfg(feature = "hnsw")]
+#[doc(hidden)]
+pub mod probabilistic_routing;
