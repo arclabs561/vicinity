@@ -200,6 +200,11 @@ name = "glove_benchmark"
 path = "examples/glove_benchmark.rs"
 required-features = ["hnsw"]
 
+[[example]]
+name = "ann_benchmark"
+path = "examples/ann_benchmark.rs"
+required-features = ["hnsw"]
+
 [[bench]]
 name = "hnsw"
 harness = false
