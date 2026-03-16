@@ -8,8 +8,8 @@
 //! use vicinity::hnsw::HNSWIndex;
 //!
 //! fn main() -> Result<(), vicinity::RetrieveError> {
-//!     // dimension=128, M=16, ef_construction=200
-//!     let mut index = HNSWIndex::new(128, 16, 200)?;
+//!     // dimension=128, M=16, m_max=16
+//!     let mut index = HNSWIndex::new(128, 16, 16)?;
 //!
 //!     let v0 = vec![0.1; 128];
 //!     let v1 = vec![0.2; 128];

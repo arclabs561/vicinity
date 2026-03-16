@@ -16,9 +16,9 @@ vicinity = { version = "0.1.5", features = ["hnsw"] }
 ```rust
 use vicinity::hnsw::HNSWIndex;
 
-// 1. Create index (dim=4, M=16, ef_construction=32)
+// 1. Create index (dim=4, M=16, m_max=16)
 //    (use dim >= 128 for real workloads)
-let mut index = HNSWIndex::new(4, 16, 32)?;
+let mut index = HNSWIndex::new(4, 16, 16)?;
 
 // 2. Add vectors
 index.add_slice(0, &[1.0, 0.0, 0.0, 0.0])?;
