@@ -11,8 +11,9 @@
 //!     // dimension=128, M=16, m_max=16
 //!     let mut index = HNSWIndex::new(128, 16, 16)?;
 //!
-//!     let v0 = vec![0.1; 128];
-//!     let v1 = vec![0.2; 128];
+//!     // Vectors must be L2-normalized for cosine distance
+//!     let v0 = vicinity::distance::normalize(&vec![0.1; 128]);
+//!     let v1 = vicinity::distance::normalize(&vec![0.2; 128]);
 //!     index.add_slice(0, &v0)?;
 //!     index.add_slice(1, &v1)?;
 //!     index.build()?;

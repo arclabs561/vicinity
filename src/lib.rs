@@ -7,7 +7,7 @@
 //!
 //! - **Graph-based**: [`hnsw`], `nsw`, `sng`, `vamana`
 //! - **Partition-based**: `ivf_pq`, `scann`
-//! - **Quantization**: `quantization` (PQ, RaBitQ)
+//! - **Quantization**: `quantization` (RaBitQ, SAQ), `ivf_pq` (Product Quantization)
 //!
 //! # Which Index Should I Use?
 //!

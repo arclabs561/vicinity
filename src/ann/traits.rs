@@ -20,6 +20,8 @@ pub trait ANNIndex {
     fn build(&mut self) -> Result<(), RetrieveError>;
 
     /// Search for k nearest neighbors.
+    ///
+    /// Returns `Vec<(doc_id, distance)>` sorted ascending by distance (closest first).
     fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, RetrieveError>;
 
     /// Search with per-query effort parameter.

@@ -111,7 +111,7 @@ This is intentionally surfaced here because it's an easy place to make silent mi
 |---|---|---|
 | `hnsw::HNSWIndex` | cosine distance | Fast path assumes **L2-normalized** vectors |
 | `ivf_pq::IVFPQIndex` | cosine distance | Uses dot-based cosine distance for IVF + PQ |
-| `scann::SCANNIndex` | inner product / cosine | Uses dot products; reranking uses cosine distance |
+| `scann::SCANNIndex` | dot (coarse) / cosine (rerank) | Dot product for partition scoring, cosine distance for reranking |
 | `hnsw::dual_branch::DualBranchHNSW` | L2 distance | Experimental implementation |
 | `quantization` | Hamming-like / binary distances | See `quantization::simd_ops::hamming_distance` and ternary helpers |
 
@@ -135,14 +135,17 @@ so that “same input vectors” means “same meaning” across indexes.
 vicinity = { version = "0.1.5", features = ["hnsw"] }
 ```
 
-- `hnsw` — HNSW graph index (default)
+- `hnsw` — HNSW graph index (default, with `innr` SIMD)
+- `innr` — Pure Rust SIMD distance kernels (default; alternative: `simsimd` for C-based SIMD)
+- `simsimd` — SimSIMD C bindings for distance computation (replaces `innr` when enabled)
+- `nsw` — Flat navigable small-world graph (alternative to HNSW, no hierarchy)
+- `sng` — OPT-SNG auto-tuned sparse neighborhood graph (experimental)
 - `diskann` / `vamana` — DiskANN-style graph variants (experimental)
 - `ivf_pq` — Inverted File with Product Quantization (activates `clump` for k-means clustering)
 - `scann` — ScaNN-style coarse-to-fine scaffolding (experimental; activates `clump`)
 - `evoc` — EVoC hierarchical clustering (activates `clump`)
 - `quantization` / `rabitq` / `saq` — vector quantization and RaBitQ-style compression
-- `nsw` — Flat navigable small-world graph (alternative to HNSW, no hierarchy)
-- `persistence` — on-disk persistence helpers (requires the `durability` crate, which is not yet published to crates.io; available for local development only)
+- `persistence` — on-disk persistence helpers (requires the `durability` crate)
 - `python` — optional PyO3 bindings (feature-gated)
 
 ## Flat vs hierarchical graphs (why “H” may not matter)
@@ -204,6 +207,7 @@ cargo bench
 | `dual_branch_hnsw_demo` | `hnsw` (default) | LID-aware graph construction |
 | `sift_benchmark` | `hnsw` | Synthetic 50K benchmark (SIFT-like) |
 | `glove_benchmark` | `hnsw` (default) | GloVe-25 real dataset benchmark |
+| `retrieve_and_rerank` | `hnsw` | Two-stage retrieval with reranking |
 | `ann_benchmark` | `hnsw` | ann-benchmarks runner (real datasets, HNSW + NSW) |
 
 For primary sources (papers) backing the algorithms and phenomena mentioned in docs, see [doc/references.md](doc/references.md).

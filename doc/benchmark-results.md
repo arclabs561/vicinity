@@ -39,8 +39,8 @@ Build: 505s (2,343 vectors/sec)
 - **hnswlib (C++)**: ~95% recall @ ~5K QPS on same dataset (AVX2, optimized C).
   vicinity is ~4-5x slower, expected for pure Rust without hand-tuned intrinsics.
 - **SimSIMD feature**: enabling `simsimd` instead of `innr` should improve distance
-  computation throughput significantly (up to 200x for the distance kernel), though
-  the overall improvement depends on the graph traversal overhead ratio.
+  computation throughput (not yet benchmarked for vicinity; improvement depends on
+  the graph traversal overhead ratio vs distance computation time).
 
 ### Synthetic (03_quick_benchmark, 10K vectors, 384 dims)
 

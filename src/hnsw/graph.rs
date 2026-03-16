@@ -12,6 +12,10 @@ use std::collections::HashMap;
 /// Implements the Hierarchical Navigable Small World algorithm (Malkov & Yashunin, 2016)
 /// with optimizations for SIMD acceleration and cache efficiency.
 ///
+/// **Important**: This index uses cosine distance (`1 - dot(a, b)`) which requires
+/// **L2-normalized** input vectors. Un-normalized vectors produce silently wrong results.
+/// Use [`crate::distance::normalize`] before adding vectors.
+///
 /// # Scalability Note (Wilson Lin's 3B Embedding Insight)
 ///
 /// Standard in-memory HNSW (like this implementation) becomes cost-prohibitive at billion-scale (requires TBs of RAM).
