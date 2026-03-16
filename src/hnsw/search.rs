@@ -5,6 +5,64 @@ use std::collections::{BinaryHeap, HashSet};
 #[cfg(feature = "hnsw")]
 use crate::distance::cosine_distance_normalized as cosine_distance;
 
+// ─── Visited set ─────────────────────────────────────────────────────────────
+
+/// Threshold below which we use a dense bit-vector instead of HashSet.
+/// 100K nodes = 100KB Vec<bool>, fits comfortably in L2 cache.
+const DENSE_VISITED_THRESHOLD: usize = 100_000;
+
+/// Fast visited-node tracker.
+///
+/// Uses a dense `Vec<bool>` for small indexes (O(1) lookup, no hashing)
+/// and falls back to `HashSet<u32>` for large indexes where a full
+/// bit-vector would waste memory.
+enum VisitedSet {
+    Dense(Vec<bool>),
+    Sparse(HashSet<u32>),
+}
+
+impl VisitedSet {
+    /// Create a visited set sized for `num_nodes` total nodes.
+    fn new(num_nodes: usize, capacity_hint: usize) -> Self {
+        if num_nodes <= DENSE_VISITED_THRESHOLD {
+            VisitedSet::Dense(vec![false; num_nodes])
+        } else {
+            VisitedSet::Sparse(HashSet::with_capacity(capacity_hint))
+        }
+    }
+
+    /// Mark a node as visited. Returns `true` if the node was NOT previously visited.
+    #[inline]
+    fn insert(&mut self, id: u32) -> bool {
+        match self {
+            VisitedSet::Dense(v) => {
+                let idx = id as usize;
+                if idx < v.len() && !v[idx] {
+                    v[idx] = true;
+                    true
+                } else {
+                    false
+                }
+            }
+            VisitedSet::Sparse(s) => s.insert(id),
+        }
+    }
+
+    /// Check if a node has been visited.
+    #[inline]
+    fn contains(&self, id: u32) -> bool {
+        match self {
+            VisitedSet::Dense(v) => {
+                let idx = id as usize;
+                idx < v.len() && v[idx]
+            }
+            VisitedSet::Sparse(s) => s.contains(&id),
+        }
+    }
+}
+
+// ─── Candidate types ─────────────────────────────────────────────────────────
+
 /// Candidate node during search.
 #[derive(Clone, PartialEq)]
 pub(crate) struct Candidate {
@@ -64,6 +122,8 @@ impl PartialOrd for MaxResult {
     }
 }
 
+// ─── Search state ────────────────────────────────────────────────────────────
+
 /// Search state for HNSW search algorithm.
 pub(crate) struct SearchState {
     /// Candidate queue (min-heap by distance)
@@ -93,8 +153,8 @@ impl SearchState {
     /// Create with pre-allocated capacity for better performance.
     pub(crate) fn with_capacity(ef: usize) -> Self {
         Self {
-            candidates: BinaryHeap::with_capacity(ef * 2), // Pre-allocate for ef candidates
-            visited: HashSet::with_capacity(ef * 2),       // Pre-allocate visited set
+            candidates: BinaryHeap::with_capacity(ef * 2),
+            visited: HashSet::with_capacity(ef * 2),
             best_distance: f32::INFINITY,
             no_improvement_count: 0,
         }
@@ -123,6 +183,8 @@ impl SearchState {
     }
 }
 
+// ─── Search functions ────────────────────────────────────────────────────────
+
 /// Greedy search in a single layer using standard HNSW beam search.
 ///
 /// Implements the correct HNSW search from Malkov & Yashunin (2016):
@@ -140,9 +202,11 @@ pub fn greedy_search_layer(
     dimension: usize,
     ef: usize,
 ) -> Vec<(u32, f32)> {
+    let num_vectors = vectors.len() / dimension;
+
     let mut candidates: BinaryHeap<MinCandidate> = BinaryHeap::with_capacity(ef * 2);
     let mut results: BinaryHeap<MaxResult> = BinaryHeap::with_capacity(ef + 1);
-    let mut visited = HashSet::with_capacity(ef * 2);
+    let mut visited = VisitedSet::new(num_vectors, ef * 2);
 
     // Start from entry point
     let entry_vector = get_vector(vectors, dimension, entry_point as usize);
@@ -204,7 +268,7 @@ pub fn greedy_search_layer(
 /// Greedy search with adaptive early termination.
 ///
 /// Same beam search as [`greedy_search_layer`], but uses an
-/// [`crate::adaptive::EarlyTerminationOracle`] to stop once the distance
+/// `EarlyTerminationOracle` to stop once the distance
 /// distribution suggests further exploration is unlikely to improve the top-k.
 ///
 /// Returns `(results, num_evaluated)` so callers can inspect how many
@@ -222,9 +286,11 @@ pub fn greedy_search_layer_adaptive(
 ) -> (Vec<(u32, f32)>, usize) {
     use crate::adaptive::EarlyTerminationOracle;
 
+    let num_vectors = vectors.len() / dimension;
+
     let mut candidates: BinaryHeap<MinCandidate> = BinaryHeap::with_capacity(ef * 2);
     let mut results: BinaryHeap<MaxResult> = BinaryHeap::with_capacity(ef + 1);
-    let mut visited = HashSet::with_capacity(ef * 2);
+    let mut visited = VisitedSet::new(num_vectors, ef * 2);
     let mut oracle = EarlyTerminationOracle::new(k, config.clone());
 
     // Start from entry point
@@ -318,5 +384,24 @@ mod tests {
         assert_eq!(heap.pop().unwrap().distance, 0.1);
         assert_eq!(heap.pop().unwrap().distance, 0.3);
         assert_eq!(heap.pop().unwrap().distance, 0.5);
+    }
+
+    #[test]
+    fn test_visited_set_dense() {
+        let mut v = VisitedSet::new(100, 10);
+        assert!(!v.contains(5));
+        assert!(v.insert(5));
+        assert!(v.contains(5));
+        assert!(!v.insert(5)); // already visited
+    }
+
+    #[test]
+    fn test_visited_set_sparse() {
+        // Force sparse by using a large num_nodes
+        let mut v = VisitedSet::new(DENSE_VISITED_THRESHOLD + 1, 10);
+        assert!(!v.contains(42));
+        assert!(v.insert(42));
+        assert!(v.contains(42));
+        assert!(!v.insert(42));
     }
 }

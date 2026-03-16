@@ -241,6 +241,25 @@ impl ANNIndex for AnyANNIndex {
             AnyANNIndex::KMeansTree(idx) => idx.num_vectors(),
         }
     }
+
+    fn distance_metric(&self) -> crate::distance::DistanceMetric {
+        match self {
+            #[cfg(feature = "hnsw")]
+            AnyANNIndex::HNSW(idx) => ANNIndex::distance_metric(idx),
+
+            #[cfg(feature = "nsw")]
+            AnyANNIndex::NSW(idx) => ANNIndex::distance_metric(idx),
+
+            #[cfg(feature = "ivf_pq")]
+            AnyANNIndex::IVFPQ(idx) => ANNIndex::distance_metric(idx),
+
+            #[cfg(feature = "scann")]
+            AnyANNIndex::SCANN(idx) => ANNIndex::distance_metric(idx),
+
+            #[cfg(feature = "kmeans_tree")]
+            AnyANNIndex::KMeansTree(idx) => ANNIndex::distance_metric(idx),
+        }
+    }
 }
 
 /// Create an ANN index from a factory string.
