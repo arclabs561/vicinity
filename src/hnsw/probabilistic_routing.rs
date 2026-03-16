@@ -510,14 +510,7 @@ fn estimate_improvement_probability(
     }
 }
 
-#[inline]
-fn euclidean_distance(a: &[f32], b: &[f32]) -> f32 {
-    a.iter()
-        .zip(b.iter())
-        .map(|(x, y)| (x - y).powi(2))
-        .sum::<f32>()
-        .sqrt()
-}
+use crate::distance::l2_distance as euclidean_distance;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]

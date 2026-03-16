@@ -395,15 +395,7 @@ impl KMeansTreeIndex {
     }
 }
 
-/// Compute Euclidean distance.
-fn euclidean_distance(a: &[f32], b: &[f32]) -> f32 {
-    let mut dist_sq = 0.0;
-    for (ai, bi) in a.iter().zip(b.iter()) {
-        let diff = ai - bi;
-        dist_sq += diff * diff;
-    }
-    dist_sq.sqrt()
-}
+use crate::distance::l2_distance as euclidean_distance;
 
 /// Get vector from SoA storage.
 fn get_vector(vectors: &[f32], dimension: usize, idx: usize) -> &[f32] {

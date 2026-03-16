@@ -34,13 +34,13 @@ DATASETS = {
     "sift-128-euclidean": {
         "url": "http://ann-benchmarks.com/sift-128-euclidean.hdf5",
         "metric": "euclidean",
-        "normalize": True,  # Normalize for cosine-based HNSW
+        "normalize": False,  # Keep original metric; use original ground truth
         "size_mb": 501,
     },
     "glove-25-angular": {
         "url": "http://ann-benchmarks.com/glove-25-angular.hdf5",
         "metric": "angular",
-        "normalize": True,
+        "normalize": True,  # Normalize for cosine-based HNSW
         "size_mb": 121,
     },
     "glove-100-angular": {
@@ -52,7 +52,7 @@ DATASETS = {
     "fashion-mnist-784-euclidean": {
         "url": "http://ann-benchmarks.com/fashion-mnist-784-euclidean.hdf5",
         "metric": "euclidean",
-        "normalize": True,
+        "normalize": False,
         "size_mb": 217,
     },
     "nytimes-256-angular": {
@@ -64,7 +64,7 @@ DATASETS = {
     "mnist-784-euclidean": {
         "url": "http://ann-benchmarks.com/mnist-784-euclidean.hdf5",
         "metric": "euclidean",
-        "normalize": True,
+        "normalize": False,
         "size_mb": 217,
     },
 }

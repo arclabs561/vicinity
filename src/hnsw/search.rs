@@ -37,11 +37,23 @@ impl VisitedSet {
         match self {
             VisitedSet::Dense(v) => {
                 let idx = id as usize;
-                if idx < v.len() && !v[idx] {
-                    v[idx] = true;
-                    true
+                debug_assert!(
+                    idx < v.len(),
+                    "VisitedSet::insert: id {} out of bounds (capacity {})",
+                    id,
+                    v.len()
+                );
+                if idx < v.len() {
+                    if !v[idx] {
+                        v[idx] = true;
+                        true
+                    } else {
+                        false
+                    }
                 } else {
-                    false
+                    // Out-of-bounds: treat as unvisited but don't track.
+                    // This shouldn't happen if num_vectors is correct.
+                    true
                 }
             }
             VisitedSet::Sparse(s) => s.insert(id),
@@ -54,6 +66,7 @@ impl VisitedSet {
         match self {
             VisitedSet::Dense(v) => {
                 let idx = id as usize;
+                // Out-of-bounds IDs are never "visited" (conservative: don't skip them)
                 idx < v.len() && v[idx]
             }
             VisitedSet::Sparse(s) => s.contains(&id),
