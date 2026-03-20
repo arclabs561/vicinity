@@ -1056,7 +1056,10 @@ impl HNSWIndex {
 
         // Navigate from top layer down to base layer
         let mut current_closest = entry_point;
-        let mut current_dist = f32::INFINITY;
+        let mut current_dist = crate::distance::cosine_distance_normalized(
+            query,
+            self.get_vector(entry_point as usize),
+        );
 
         // Search in upper layers (coarse search)
         for layer_idx in (1..=entry_layer).rev() {
@@ -1427,7 +1430,8 @@ impl HNSWIndex {
         let entry_layer = self.layer_assignments[ep as usize] as usize;
 
         let mut current_closest = ep;
-        let mut current_dist = f32::INFINITY;
+        let mut current_dist =
+            crate::distance::cosine_distance_normalized(query, self.get_vector(ep as usize));
 
         for layer_idx in (1..=entry_layer).rev() {
             if layer_idx >= self.layers.len() {

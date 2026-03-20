@@ -101,6 +101,10 @@ fn select_neighbors_mond(
         selected.push(*id);
     }
 
+    // Precompute dot(query, query) once -- loop-invariant across all candidates and selected neighbors
+    use crate::simd;
+    let dot_qq = simd::dot(query_vector, query_vector);
+
     // MOND: Add candidate if angle with all selected neighbors > min_angle
     for (candidate_id, _) in sorted.iter().skip(1) {
         if selected.len() >= m {
@@ -111,27 +115,22 @@ fn select_neighbors_mond(
         let mut can_add = true;
 
         // Compute angle between query->candidate and query->selected for each selected neighbor
-        // Optimized: avoid temporary Vec allocations, use SIMD-accelerated operations
-        use crate::simd;
+        // Precompute candidate-invariant dot products (loop-invariant hoisting)
+        let dot_cq = simd::dot(candidate_vec, query_vector);
+        let dot_cc_self = simd::dot(candidate_vec, candidate_vec);
+
         for &selected_id in &selected {
             let selected_vec = get_vector(vectors, dimension, selected_id as usize);
-
-            // Compute difference vectors inline (avoid allocations)
-            // q_to_c = candidate_vec - query_vector
-            // q_to_s = selected_vec - query_vector
-            // We compute dot(q_to_c, q_to_s) and norms without creating temporary Vecs
 
             // Use identity: dot(a-b, c-b) = dot(a,c) - dot(a,b) - dot(c,b) + dot(b,b)
             // For our case: dot(q_to_c, q_to_s) = dot(candidate_vec, selected_vec)
             //                - dot(candidate_vec, query) - dot(selected_vec, query) + dot(query, query)
             let dot_cc = simd::dot(candidate_vec, selected_vec);
-            let dot_cq = simd::dot(candidate_vec, query_vector);
             let dot_sq = simd::dot(selected_vec, query_vector);
-            let dot_qq = simd::dot(query_vector, query_vector);
             let dot_qc_qs = dot_cc - dot_cq - dot_sq + dot_qq;
 
             // Compute norms: norm(a-b)^2 = norm(a)^2 + norm(b)^2 - 2*dot(a,b)
-            let norm_c_sq = simd::dot(candidate_vec, candidate_vec) + dot_qq - 2.0 * dot_cq;
+            let norm_c_sq = dot_cc_self + dot_qq - 2.0 * dot_cq;
             let norm_s_sq = simd::dot(selected_vec, selected_vec) + dot_qq - 2.0 * dot_sq;
 
             if norm_c_sq > 0.0 && norm_s_sq > 0.0 {
