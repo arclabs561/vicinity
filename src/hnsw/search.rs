@@ -2,6 +2,32 @@
 
 use std::collections::{BinaryHeap, HashSet};
 
+// ─── Software prefetch ──────────────────────────────────────────────────────
+
+/// Prefetch a memory address into L1 cache for reading.
+///
+/// No-op on unsupported platforms. This is a performance hint only;
+/// correctness does not depend on it.
+#[inline(always)]
+#[allow(unsafe_code, unused_variables)]
+fn prefetch_read_data(ptr: *const f32) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        // SAFETY: _mm_prefetch is a hint; invalid addresses are silently ignored.
+        unsafe {
+            std::arch::x86_64::_mm_prefetch(ptr as *const i8, std::arch::x86_64::_MM_HINT_T0);
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: prefetch is a hint; invalid addresses are silently ignored.
+        // Using inline asm because the intrinsic is nightly-only.
+        unsafe {
+            std::arch::asm!("prfm pldl1keep, [{ptr}]", ptr = in(reg) ptr, options(nostack, preserves_flags));
+        }
+    }
+}
+
 #[cfg(feature = "hnsw")]
 use crate::distance::cosine_distance_normalized as cosine_distance;
 
@@ -143,7 +169,7 @@ pub(crate) struct SearchState {
     candidates: BinaryHeap<Candidate>,
 
     /// Visited nodes (to avoid revisiting)
-    visited: HashSet<u32>,
+    visited: VisitedSet,
 
     /// Best distance found so far
     best_distance: f32,
@@ -153,36 +179,26 @@ pub(crate) struct SearchState {
 }
 
 impl SearchState {
-    #[allow(dead_code)]
-    fn new() -> Self {
-        Self {
-            candidates: BinaryHeap::new(),
-            visited: HashSet::new(),
-            best_distance: f32::INFINITY,
-            no_improvement_count: 0,
-        }
-    }
-
     /// Create with pre-allocated capacity for better performance.
-    pub(crate) fn with_capacity(ef: usize) -> Self {
+    pub(crate) fn with_capacity(ef: usize, num_nodes: usize) -> Self {
         Self {
             candidates: BinaryHeap::with_capacity(ef * 2),
-            visited: HashSet::with_capacity(ef * 2),
+            visited: VisitedSet::new(num_nodes, ef * 2),
             best_distance: f32::INFINITY,
             no_improvement_count: 0,
         }
     }
 
     pub(crate) fn add_candidate(&mut self, id: u32, distance: f32) {
-        if !self.visited.contains(&id) {
+        if !self.visited.contains(id) {
             self.candidates.push(Candidate { id, distance });
         }
     }
 
     pub(crate) fn pop_candidate(&mut self) -> Option<Candidate> {
         while let Some(candidate) = self.candidates.pop() {
-            if !self.visited.contains(&candidate.id) {
-                self.visited.insert(candidate.id);
+            // Single insert call: returns true if newly visited
+            if self.visited.insert(candidate.id) {
                 if candidate.distance < self.best_distance {
                     self.best_distance = candidate.distance;
                     self.no_improvement_count = 0;
@@ -246,7 +262,14 @@ pub fn greedy_search_layer(
 
         // Explore neighbors
         let neighbors = layer.get_neighbors(candidate.id);
-        for &neighbor_id in neighbors.iter() {
+        for (i, &neighbor_id) in neighbors.iter().enumerate() {
+            // Prefetch next neighbor's vector while processing current
+            if i + 1 < neighbors.len() {
+                let next_id = neighbors[i + 1] as usize;
+                if next_id < num_vectors {
+                    prefetch_read_data(vectors.as_ptr().wrapping_add(next_id * dimension));
+                }
+            }
             if visited.insert(neighbor_id) {
                 let neighbor_vector = get_vector(vectors, dimension, neighbor_id as usize);
                 let neighbor_distance = cosine_distance(query, neighbor_vector);
@@ -329,7 +352,14 @@ pub fn greedy_search_layer_adaptive(
 
         // Explore neighbors
         let neighbors = layer.get_neighbors(candidate.id);
-        for &neighbor_id in neighbors.iter() {
+        for (i, &neighbor_id) in neighbors.iter().enumerate() {
+            // Prefetch next neighbor's vector while processing current
+            if i + 1 < neighbors.len() {
+                let next_id = neighbors[i + 1] as usize;
+                if next_id < num_vectors {
+                    prefetch_read_data(vectors.as_ptr().wrapping_add(next_id * dimension));
+                }
+            }
             if visited.insert(neighbor_id) {
                 let neighbor_vector = get_vector(vectors, dimension, neighbor_id as usize);
                 let neighbor_distance = cosine_distance(query, neighbor_vector);
