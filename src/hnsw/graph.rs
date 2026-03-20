@@ -1,5 +1,6 @@
 //! HNSW graph structure and core types.
 
+use crate::hnsw::tombstones::TombstoneSet;
 use crate::RetrieveError;
 
 #[cfg(feature = "hnsw")]
@@ -25,6 +26,7 @@ use std::collections::HashMap;
 /// - Support live updates without full rebuilds.
 /// - Use sharding (e.g., 64 shards by xxHash) to distribute load.
 #[derive(Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct HNSWIndex {
     /// Vectors stored in Structure of Arrays (SoA) format for cache efficiency
     /// Layout: [v0[0..d], v1[0..d], ..., vn[0..d]]
@@ -38,6 +40,8 @@ pub struct HNSWIndex {
     pub(crate) doc_ids: Vec<u32>,
 
     /// Reverse map: external `doc_id -> internal vector index`.
+    /// Rebuilt from `doc_ids` on deserialization.
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub(crate) doc_id_to_internal: HashMap<u32, u32>,
 
     /// Vector dimension
@@ -58,7 +62,9 @@ pub struct HNSWIndex {
     /// Whether index has been built
     built: bool,
 
-    /// Optional metadata store for filtering
+    /// Optional metadata store for filtering.
+    /// Skipped during serialization -- must be re-added after load for filtered search.
+    #[cfg_attr(feature = "serde", serde(skip))]
     metadata: Option<crate::filtering::MetadataStore>,
 
     /// Field name for filtering (e.g., "category")
@@ -66,6 +72,12 @@ pub struct HNSWIndex {
 
     /// Category assignments: vector_idx -> category_id
     category_assignments: Vec<Option<u32>>,
+
+    /// Soft-deleted nodes. Deleted internal IDs are excluded from search results
+    /// but remain in the graph for navigation. Storage is not reclaimed until rebuild.
+    /// Skipped during serialization -- starts empty on deserialization.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    tombstones: TombstoneSet,
 }
 
 /// Seed selection strategy for HNSW search initialization.
@@ -74,6 +86,7 @@ pub struct HNSWIndex {
 /// behave better on different datasets and scale regimes; treat this as a tuning knob
 /// and benchmark on your workload.
 #[derive(Clone, Debug, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum SeedSelectionStrategy {
     /// Stacked NSW: Hierarchical multi-resolution graphs (default, best for large datasets)
     /// Uses entry point in highest layer, navigates down layer by layer.
@@ -93,6 +106,7 @@ pub enum SeedSelectionStrategy {
 /// These strategies pick a subset of candidate neighbors to keep the graph navigable
 /// while avoiding redundant edges.
 #[derive(Clone, Debug, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum NeighborhoodDiversification {
     /// Relative Neighborhood Diversification (RND) - best overall performance
     /// Formula: dist(X_q, X_j) < dist(X_i, X_j) for all neighbors X_i
@@ -116,6 +130,7 @@ pub enum NeighborhoodDiversification {
 
 /// HNSW parameters controlling graph structure and search behavior.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct HNSWParams {
     /// Maximum number of connections per node (typically 16)
     pub m: usize,
@@ -141,11 +156,22 @@ pub struct HNSWParams {
 
     /// ID compression method (optional)
     #[cfg(feature = "id-compression")]
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub id_compression: Option<crate::compression::IdCompressionMethod>,
 
     /// Minimum neighbor list size to compress (smaller lists use uncompressed storage)
     #[cfg(feature = "id-compression")]
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip, default = "default_compression_threshold")
+    )]
     pub compression_threshold: usize,
+}
+
+/// Default compression threshold for serde deserialization.
+#[cfg(feature = "id-compression")]
+fn default_compression_threshold() -> usize {
+    32
 }
 
 impl Default for HNSWParams {
@@ -168,6 +194,7 @@ impl Default for HNSWParams {
 
 /// Storage for neighbor lists (compressed or uncompressed).
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 enum NeighborStorage {
     /// Uncompressed neighbors (current implementation).
     Uncompressed(Vec<SmallVec<[u32; 16]>>),
@@ -183,6 +210,7 @@ enum NeighborStorage {
 /// Compressed neighbor list for a single node.
 #[cfg(feature = "id-compression")]
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 struct CompressedNeighborList {
     data: Vec<u8>,
     num_neighbors: usize,
@@ -190,14 +218,23 @@ struct CompressedNeighborList {
 
 /// Graph layer containing neighbor lists for all vectors in that layer.
 #[derive(Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) struct Layer {
     storage: NeighborStorage,
-    /// Cache for decompressed neighbors (temporary, cleared after use)
+    /// Cache for decompressed neighbors (temporary, cleared after use).
+    /// Skipped during serialization -- rebuilt as empty on load.
     #[cfg(feature = "id-compression")]
+    #[cfg_attr(feature = "serde", serde(skip, default = "Layer::empty_cache"))]
     decompressed_cache: std::sync::Mutex<std::collections::HashMap<u32, SmallVec<[u32; 16]>>>,
 }
 
 impl Layer {
+    /// Default empty decompression cache (used by serde skip default).
+    #[cfg(feature = "id-compression")]
+    fn empty_cache() -> std::sync::Mutex<std::collections::HashMap<u32, SmallVec<[u32; 16]>>> {
+        std::sync::Mutex::new(std::collections::HashMap::new())
+    }
+
     /// Create uncompressed layer.
     pub(crate) fn new_uncompressed(neighbors: Vec<SmallVec<[u32; 16]>>) -> Self {
         Self {
@@ -420,6 +457,7 @@ impl HNSWIndex {
             metadata: None,
             filter_field: None,
             category_assignments: Vec::new(),
+            tombstones: TombstoneSet::default(),
         })
     }
 
@@ -449,6 +487,7 @@ impl HNSWIndex {
             metadata: None,
             filter_field: None,
             category_assignments: Vec::new(),
+            tombstones: TombstoneSet::default(),
         })
     }
 
@@ -494,12 +533,75 @@ impl HNSWIndex {
             metadata: Some(crate::filtering::MetadataStore::new()),
             filter_field: Some(filter_field.into()),
             category_assignments: Vec::new(),
+            tombstones: TombstoneSet::default(),
         })
     }
 
     /// Check if the index has been built and is ready for search.
     pub fn is_built(&self) -> bool {
         self.built
+    }
+
+    /// Mark a vector as deleted. Deleted vectors are excluded from search results.
+    ///
+    /// The vector's storage is not reclaimed until the index is rebuilt.
+    /// Graph edges from/to deleted nodes remain intact for navigation;
+    /// deleted nodes are filtered from final results only.
+    pub fn delete(&mut self, doc_id: u32) -> Result<(), RetrieveError> {
+        let internal_id = self
+            .doc_id_to_internal
+            .get(&doc_id)
+            .copied()
+            .ok_or_else(|| {
+                RetrieveError::InvalidParameter(format!("doc_id {} not found in index", doc_id))
+            })?;
+
+        self.tombstones.delete(internal_id as usize);
+        Ok(())
+    }
+
+    /// Check if a doc_id has been deleted.
+    pub fn is_deleted(&self, doc_id: u32) -> bool {
+        self.doc_id_to_internal
+            .get(&doc_id)
+            .map(|&internal_id| self.tombstones.is_deleted(internal_id as usize))
+            .unwrap_or(false)
+    }
+
+    /// Number of active (non-deleted) vectors.
+    pub fn num_active(&self) -> usize {
+        self.num_vectors.saturating_sub(self.tombstones.len())
+    }
+
+    /// Serialize this index to a writer as JSON.
+    ///
+    /// The `metadata` store and `doc_id_to_internal` reverse map are not
+    /// serialized. The reverse map is rebuilt on [`load_from_reader`]; metadata
+    /// must be re-added if filtered search is needed.
+    #[cfg(feature = "serde")]
+    pub fn save_to_writer<W: std::io::Write>(&self, writer: W) -> Result<(), RetrieveError> {
+        serde_json::to_writer(writer, self).map_err(|e| RetrieveError::Serialization(e.to_string()))
+    }
+
+    /// Deserialize an index from a reader (JSON).
+    ///
+    /// Rebuilds the `doc_id_to_internal` reverse map from `doc_ids`.
+    /// The `metadata` store is not restored -- call [`add_metadata`] after
+    /// loading if filtered search is needed.
+    #[cfg(feature = "serde")]
+    pub fn load_from_reader<R: std::io::Read>(reader: R) -> Result<Self, RetrieveError> {
+        let mut index: Self = serde_json::from_reader(reader)
+            .map_err(|e| RetrieveError::Serialization(e.to_string()))?;
+
+        // Rebuild the reverse map that was skipped during deserialization.
+        index.doc_id_to_internal = index
+            .doc_ids
+            .iter()
+            .enumerate()
+            .map(|(i, &doc_id)| (doc_id, i as u32))
+            .collect();
+
+        Ok(index)
     }
 
     /// Reconstruct an index from persisted parts (internal use only).
@@ -591,6 +693,7 @@ impl HNSWIndex {
             metadata: None,
             filter_field: None,
             category_assignments: Vec::new(),
+            tombstones: TombstoneSet::default(),
         })
     }
 
@@ -996,7 +1099,7 @@ impl HNSWIndex {
             {
                 // Use KS seeds to initialize search
                 use crate::hnsw::search::SearchState;
-                let mut state = SearchState::with_capacity(ef.max(k));
+                let mut state = SearchState::with_capacity(ef.max(k), self.num_vectors);
 
                 // Add all KS seeds to candidate queue
                 for &seed_id in &initial_seeds {
@@ -1058,9 +1161,10 @@ impl HNSWIndex {
                 }
             }
 
-            // Convert internal IDs -> external doc_ids.
+            // Convert internal IDs -> external doc_ids, filtering out deleted nodes.
             let results = results
                 .into_iter()
+                .filter(|(internal_id, _)| !self.tombstones.is_deleted(*internal_id as usize))
                 .filter_map(|(internal_id, dist)| {
                     let doc_id = self.doc_ids.get(internal_id as usize).copied()?;
                     Some((doc_id, dist))
@@ -1221,9 +1325,10 @@ impl HNSWIndex {
             }
         }
 
-        // Extract top-k results
+        // Extract top-k results, filtering out deleted nodes
         let mut results: Vec<(u32, f32)> = visited
             .iter()
+            .filter(|&&id| !self.tombstones.is_deleted(id as usize))
             .filter_map(|&id| {
                 if self.category_assignments.get(id as usize).and_then(|&c| c) == desired_category {
                     let vec = self.get_vector(id as usize);
@@ -1334,6 +1439,7 @@ impl HNSWIndex {
 
             let results = base_results
                 .into_iter()
+                .filter(|(internal_id, _)| !self.tombstones.is_deleted(*internal_id as usize))
                 .take(k)
                 .filter_map(|(internal_id, dist)| {
                     let doc_id = self.doc_ids.get(internal_id as usize).copied()?;
@@ -1527,5 +1633,128 @@ mod tests {
             evaluated_a,
             evaluated_c,
         );
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn test_hnsw_save_load_roundtrip() {
+        let (index, q) = build_test_index();
+        let k = 5;
+        let ef = 64;
+
+        // Search the original index.
+        let original_results = index.search(&q, k, ef).unwrap();
+
+        // Serialize to an in-memory buffer.
+        let mut buf = Vec::new();
+        index.save_to_writer(&mut buf).unwrap();
+        assert!(!buf.is_empty(), "serialized output should not be empty");
+
+        // Deserialize back.
+        let loaded = HNSWIndex::load_from_reader(buf.as_slice()).unwrap();
+
+        // Basic structural checks.
+        assert_eq!(loaded.dimension, index.dimension);
+        assert_eq!(loaded.num_vectors, index.num_vectors);
+        assert!(loaded.is_built());
+        assert_eq!(loaded.doc_ids, index.doc_ids);
+        // Reverse map should have been rebuilt.
+        assert_eq!(
+            loaded.doc_id_to_internal.len(),
+            index.doc_id_to_internal.len()
+        );
+
+        // Search the loaded index and compare results.
+        let loaded_results = loaded.search(&q, k, ef).unwrap();
+        assert_eq!(
+            loaded_results, original_results,
+            "search results should be identical after save/load roundtrip"
+        );
+    }
+
+    #[test]
+    fn test_delete_excludes_from_results() {
+        let (mut index, q) = build_test_index();
+        let k = 10;
+        let ef = 64;
+
+        let before = index.search(&q, k, ef).unwrap();
+        assert!(!before.is_empty());
+
+        // Delete the nearest neighbor
+        let nearest_id = before[0].0;
+        index.delete(nearest_id).unwrap();
+
+        let after = index.search(&q, k, ef).unwrap();
+        let after_ids: Vec<u32> = after.iter().map(|(id, _)| *id).collect();
+        assert!(
+            !after_ids.contains(&nearest_id),
+            "deleted doc_id {} should not appear in results",
+            nearest_id
+        );
+    }
+
+    #[test]
+    fn test_delete_all_returns_empty() {
+        let dim = 4;
+        let mut index = HNSWIndex::new(dim, 4, 4).unwrap();
+
+        // Insert 5 normalized vectors
+        for i in 0..5u32 {
+            let mut v = vec![0.0f32; dim];
+            v[i as usize % dim] = 1.0;
+            index.add(i, v).unwrap();
+        }
+        index.build().unwrap();
+
+        // Delete all
+        for i in 0..5u32 {
+            index.delete(i).unwrap();
+        }
+
+        let results = index.search(&[1.0, 0.0, 0.0, 0.0], 5, 50).unwrap();
+        assert!(
+            results.is_empty(),
+            "all vectors deleted, results should be empty"
+        );
+    }
+
+    #[test]
+    fn test_delete_nonexistent_returns_error() {
+        let mut index = HNSWIndex::new(4, 4, 4).unwrap();
+        index.add(0, vec![1.0, 0.0, 0.0, 0.0]).unwrap();
+        index.build().unwrap();
+
+        let result = index.delete(999);
+        assert!(result.is_err(), "deleting nonexistent doc_id should error");
+    }
+
+    #[test]
+    fn test_delete_idempotent() {
+        let (mut index, _q) = build_test_index();
+
+        // Delete same ID twice -- second should succeed silently
+        index.delete(0).unwrap();
+        index.delete(0).unwrap();
+    }
+
+    #[test]
+    fn test_is_deleted() {
+        let (mut index, _q) = build_test_index();
+        assert!(!index.is_deleted(0));
+        index.delete(0).unwrap();
+        assert!(index.is_deleted(0));
+        assert!(!index.is_deleted(1));
+    }
+
+    #[test]
+    fn test_num_active() {
+        let (mut index, _q) = build_test_index();
+        let total = index.num_vectors;
+        assert_eq!(index.num_active(), total);
+
+        index.delete(0).unwrap();
+        index.delete(1).unwrap();
+        assert_eq!(index.num_active(), total - 2);
     }
 }

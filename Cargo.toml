@@ -74,6 +74,7 @@ persistence = [
     "dep:byteorder", "dep:crc32fast", "dep:libc",
     "dep:hex", "dep:fst",
 ]
+serde = ["dep:serde", "dep:serde_json", "smallvec/serde"]
 hnsw = []
 ivf_pq = ["dep:clump", "dep:serde", "dep:serde_json", "smallvec/serde"]
 diskann = ["dep:serde_json"]
