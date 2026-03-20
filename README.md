@@ -20,7 +20,7 @@ use vicinity::hnsw::HNSWIndex;
 //    (use dim >= 128 for real workloads)
 let mut index = HNSWIndex::new(4, 16, 16)?;
 
-// 2. Add vectors
+// 2. Add vectors (must be L2-normalized for cosine distance)
 index.add_slice(0, &[1.0, 0.0, 0.0, 0.0])?;
 index.add_slice(1, &[0.0, 1.0, 0.0, 0.0])?;
 
@@ -123,10 +123,24 @@ so that “same input vectors” means “same meaning” across indexes.
 | Type | Implementations | Status |
 |---|---|---|
 | Graph | HNSW, NSW | Stable |
-| Graph | Vamana (DiskANN), SNG | Experimental |
+| Graph | Vamana (DiskANN), SNG, DEG | Experimental |
 | Partition | IVF-PQ | Stable |
 | Partition | ScaNN | Experimental |
-| Quantization | PQ, RaBitQ | Stable |
+| Quantization | PQ, RaBitQ, SQ8 (scalar) | Stable |
+| Tree | KD-Tree, Ball Tree, RP-Forest, K-Means Tree | Experimental |
+
+## Beyond basic search
+
+| Capability | API | Notes |
+|---|---|---|
+| **Delete vectors** | `index.delete(doc_id)` | Lazy tombstoning; deleted vectors excluded from results |
+| **Filtered search** | `index.search_with_filter(query, k, ef, predicate)` | ACORN-style metadata filtering during graph traversal |
+| **Save / load** | `index.save_to_writer(w)` / `HNSWIndex::load_from_reader(r)` | Requires `serde` feature |
+| **Batch search** | `index.search_batch(&queries, k, ef)` | Parallel via rayon; requires `parallel` feature |
+| **Scalar quantization** | `ScalarQuantizedHNSW::new(dim, m, m_max)` | ~4x memory reduction (uint8); asymmetric search + optional reranking |
+| **Streaming updates** | `StreamingCoordinator::new(index, config)` | Buffer-and-compact architecture for online insert/delete |
+| **Index factory** | `index_factory(dim, "HNSW16")` | Faiss-style string-based index construction |
+| **Trait-based API** | `dyn ANNIndex` | Unified trait across all index types via `AnyANNIndex` |
 
 ## Features
 
@@ -138,6 +152,8 @@ vicinity = { version = "0.1.5", features = ["hnsw"] }
 - `hnsw` — HNSW graph index (default, with `innr` SIMD)
 - `innr` — Pure Rust SIMD distance kernels (default; alternative: `simsimd` for C-based SIMD)
 - `simsimd` — SimSIMD C bindings for distance computation (replaces `innr` when enabled)
+- `serde` — JSON serialization for index save/load (`save_to_writer` / `load_from_reader`)
+- `parallel` — Rayon-based batch search (`search_batch`, `search_batch_flat`)
 - `nsw` — Flat navigable small-world graph (alternative to HNSW, no hierarchy)
 - `sng` — OPT-SNG auto-tuned sparse neighborhood graph (experimental)
 - `diskann` / `vamana` — DiskANN-style graph variants (experimental)
@@ -147,6 +163,8 @@ vicinity = { version = "0.1.5", features = ["hnsw"] }
 - `quantization` / `rabitq` / `saq` — vector quantization and RaBitQ-style compression
 - `persistence` — on-disk persistence helpers (requires the `durability` crate)
 - `python` — optional PyO3 bindings (feature-gated)
+
+Compiles on `wasm32-unknown-unknown` with default features.
 
 ## Flat vs hierarchical graphs (why “H” may not matter)
 
@@ -159,7 +177,7 @@ Concrete reference:
 - Munyampirwa et al. (2024). *Down with the Hierarchy: The 'H' in HNSW Stands for "Hubs"* (arXiv:2412.01940).
 
 Practical guidance in `vicinity`:
-- Try `HNSW{m}` first (default; robust).
+- Try `HNSW{m}` first (default; well-tested).
 - If you want to experiment with a simpler flat graph, enable `nsw` and try `NSW{m}` via the factory.
   Benchmark recall@k vs latency on your workload; the “best” choice depends on data and constraints.
 
@@ -221,6 +239,7 @@ For primary sources (papers) backing the algorithms and phenomena mentioned in d
 - Jégou, Douze, Schmid (2011). *Product Quantization for Nearest Neighbor Search* (PQ / IVFADC). `https://ieeexplore.ieee.org/document/5432202`
 - Ge et al. (2014). *Optimized Product Quantization* (OPQ). `https://arxiv.org/abs/1311.4055`
 - Guo et al. (2020). *Accelerating Large-Scale Inference with Anisotropic Vector Quantization* (ScaNN line). `https://arxiv.org/abs/1908.10396`
+- Gao & Long (2024). *RaBitQ: Quantizing High-Dimensional Vectors with a Theoretical Error Bound for Approximate Nearest Neighbor Search*. `https://arxiv.org/abs/2405.12497`
 
 ## See also
 

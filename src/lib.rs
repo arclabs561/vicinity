@@ -3,7 +3,7 @@
 
 //! vicinity: Approximate Nearest Neighbor Search primitives.
 //!
-//! Provides standalone implementations of state-of-the-art ANN algorithms:
+//! Provides implementations of ANN algorithms:
 //!
 //! - **Graph-based**: [`hnsw`], `nsw`, `sng`, `vamana`
 //! - **Partition-based**: `ivf_pq`, `scann`
