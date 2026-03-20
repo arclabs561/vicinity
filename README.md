@@ -79,8 +79,8 @@ Larger values usually increase recall, at the cost of query time.
 </p>
 
 Notes:
-- This plot is from `vicinity`’s bundled “quick” profile (it’s meant to show the *shape* of the curve).
-- It does **not** justify a universal claim like “ef_search=50–100 gives >95% recall” for all datasets.
+- Data from GloVe-25 (1.2M vectors, 25-d, cosine). See `doc/benchmark-results.md` for full numbers.
+- Results are dataset-specific; do **not** assume these recall values generalize to other distributions.
 
 Higher `ef_search` typically improves recall and increases query time. Start around `ef_search=50-100`
 and measure recall@k vs latency for your dataset.
@@ -98,8 +98,8 @@ Higher `M` generally improves recall, but increases build time and memory.
 </p>
 
 Notes:
-- These plots are for the labeled settings (e.g. 1K vectors for build-time; dim=128, M=16 for memory).
-- Treat them as *sanity checks*, not as a stable performance contract.
+- Build-time data from GloVe-25 (1.2M vectors). Memory plot is theoretical (formula: N*D*4 + N*M*2*4*1.2).
+- Treat these as reference points, not a stable performance contract.
 
 ## Distance semantics (current behavior)
 
