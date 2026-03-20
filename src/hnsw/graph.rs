@@ -1176,6 +1176,50 @@ impl HNSWIndex {
         }
     }
 
+    /// Search for multiple queries in parallel.
+    ///
+    /// Returns one result vector per query, in the same order as the input queries.
+    /// Each result vector contains `(doc_id, distance)` pairs sorted by distance ascending.
+    ///
+    /// Requires the `parallel` feature.
+    #[cfg(feature = "parallel")]
+    pub fn search_batch(
+        &self,
+        queries: &[&[f32]],
+        k: usize,
+        ef_search: usize,
+    ) -> Vec<Vec<(u32, f32)>> {
+        use rayon::prelude::*;
+        queries
+            .par_iter()
+            .map(|query| self.search(query, k, ef_search).unwrap_or_default())
+            .collect()
+    }
+
+    /// Search for multiple queries (flat buffer) in parallel.
+    ///
+    /// `queries_flat` is a contiguous buffer of length `num_queries * dimension`.
+    /// Returns one result vector per query, in input order.
+    ///
+    /// Requires the `parallel` feature.
+    #[cfg(feature = "parallel")]
+    pub fn search_batch_flat(
+        &self,
+        queries_flat: &[f32],
+        num_queries: usize,
+        k: usize,
+        ef_search: usize,
+    ) -> Vec<Vec<(u32, f32)>> {
+        use rayon::prelude::*;
+        (0..num_queries)
+            .into_par_iter()
+            .map(|i| {
+                let query = &queries_flat[i * self.dimension..(i + 1) * self.dimension];
+                self.search(query, k, ef_search).unwrap_or_default()
+            })
+            .collect()
+    }
+
     /// Search with filter using filterable graph (integrated filtering).
     ///
     /// Uses intra-category edges to maintain graph connectivity during filtered search.
@@ -1756,5 +1800,66 @@ mod tests {
         index.delete(0).unwrap();
         index.delete(1).unwrap();
         assert_eq!(index.num_active(), total - 2);
+    }
+
+    #[cfg(feature = "parallel")]
+    #[test]
+    fn test_search_batch_matches_sequential() {
+        let (index, q) = build_test_index();
+        let k = 5;
+        let ef = 64;
+
+        // Create several query vectors by rotating the base query
+        let dim = index.dimension;
+        let mut queries_flat: Vec<f32> = Vec::new();
+        let num_queries = 8;
+
+        let mut seed: u64 = 99;
+        let mut next = || -> f32 {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            ((seed >> 33) as f32) / (u32::MAX as f32) - 0.5
+        };
+
+        for _ in 0..num_queries {
+            let mut v: Vec<f32> = (0..dim).map(|_| next()).collect();
+            let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+            if norm > 0.0 {
+                v.iter_mut().for_each(|x| *x /= norm);
+            }
+            queries_flat.extend_from_slice(&v);
+        }
+
+        // Sequential results
+        let sequential: Vec<Vec<(u32, f32)>> = (0..num_queries)
+            .map(|i| {
+                let query = &queries_flat[i * dim..(i + 1) * dim];
+                index.search(query, k, ef).unwrap()
+            })
+            .collect();
+
+        // Batch (parallel) results -- slice-of-slices variant
+        let query_slices: Vec<&[f32]> = (0..num_queries)
+            .map(|i| &queries_flat[i * dim..(i + 1) * dim])
+            .collect();
+        let batch = index.search_batch(&query_slices, k, ef);
+
+        // Batch (parallel) results -- flat-buffer variant
+        let batch_flat = index.search_batch_flat(&queries_flat, num_queries, k, ef);
+
+        // Also include the original query to make sure it still works
+        let _ = index.search(&q, k, ef).unwrap();
+
+        for i in 0..num_queries {
+            assert_eq!(
+                sequential[i], batch[i],
+                "search_batch result {} differs from sequential",
+                i
+            );
+            assert_eq!(
+                sequential[i], batch_flat[i],
+                "search_batch_flat result {} differs from sequential",
+                i
+            );
+        }
     }
 }

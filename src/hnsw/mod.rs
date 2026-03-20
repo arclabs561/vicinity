@@ -178,6 +178,10 @@ pub mod dual_branch;
 #[cfg(feature = "hnsw")]
 pub use dual_branch::{DualBranchConfig, DualBranchHNSW, DualBranchStats, SkipBridge};
 
+// Scalar quantization (SQ8) wrapper
+#[cfg(all(feature = "hnsw", feature = "innr"))]
+pub mod scalar_quantized;
+
 // ─── Experimental modules ────────────────────────────────────────────────────
 // These are research implementations. Public for experimentation but not part
 // of the stable API. Types are accessible via submodule paths
