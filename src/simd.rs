@@ -92,7 +92,7 @@ pub use simsimd_backend::*;
 
 // Priority 2: innr (pure Rust SIMD)
 #[cfg(all(feature = "innr", not(feature = "simsimd")))]
-pub use innr::{cosine, dot, dot_portable, l2_distance, l2_distance_squared, norm};
+pub use innr::{cosine, dot, l2_distance, l2_distance_squared, norm};
 
 // Priority 3: Portable fallback (no dependencies)
 #[cfg(not(any(feature = "innr", feature = "simsimd")))]
