@@ -296,7 +296,7 @@ pub fn construct_graph(index: &mut HNSWIndex) -> Result<(), RetrieveError> {
     // Insert each vector into the graph
     for current_id in 0..index.num_vectors {
         let current_layer = index.layer_assignments[current_id] as usize;
-        let current_vector = index.get_vector(current_id).to_vec(); // Copy to avoid borrowing
+        let current_vector = get_vector(&index.vectors, index.dimension, current_id);
 
         // First node initializes the entry point.
         if current_id == 0 {
@@ -317,7 +317,7 @@ pub fn construct_graph(index: &mut HNSWIndex) -> Result<(), RetrieveError> {
             for layer_idx in ((current_layer + 1)..=entry_layer).rev() {
                 let layer = &index.layers[layer_idx];
                 let results = greedy_search_layer(
-                    &current_vector,
+                    current_vector,
                     layer_entry_point,
                     layer,
                     &index.vectors,
@@ -333,7 +333,7 @@ pub fn construct_graph(index: &mut HNSWIndex) -> Result<(), RetrieveError> {
         // 2) For layers <= min(current_layer, entry_layer), run ef_construction search and connect.
         for layer_idx in (0..=current_layer.min(entry_layer)).rev() {
             let candidates = greedy_search_layer(
-                &current_vector,
+                current_vector,
                 layer_entry_point,
                 &index.layers[layer_idx],
                 &index.vectors,
@@ -354,7 +354,7 @@ pub fn construct_graph(index: &mut HNSWIndex) -> Result<(), RetrieveError> {
             };
 
             let mut selected = select_neighbors(
-                &current_vector,
+                current_vector,
                 &candidates,
                 m_actual,
                 &index.vectors,
@@ -369,14 +369,15 @@ pub fn construct_graph(index: &mut HNSWIndex) -> Result<(), RetrieveError> {
                 id_usize < current_id && (index.layer_assignments[id_usize] as usize) >= layer_idx
             });
 
-            // Pre-compute all neighbor vectors and distances (before any mutable borrows)
-            // selected contains the new neighbors we want to add
-            let neighbor_data: Vec<(u32, Vec<f32>, f32)> = selected
+            // Pre-compute neighbor distances (before any mutable borrows).
+            // Vectors are looked up via get_vector(&index.vectors, ...) when needed,
+            // avoiding a Vec<f32> heap allocation per neighbor.
+            let neighbor_data: Vec<(u32, f32)> = selected
                 .iter()
                 .map(|&id| {
-                    let vec = index.get_vector(id as usize);
-                    let dist = distance::cosine_distance_normalized(&current_vector, vec);
-                    (id, vec.to_vec(), dist) // Copy vector to avoid borrowing
+                    let vec = get_vector(&index.vectors, index.dimension, id as usize);
+                    let dist = distance::cosine_distance_normalized(current_vector, vec);
+                    (id, dist)
                 })
                 .collect();
 
@@ -400,14 +401,14 @@ pub fn construct_graph(index: &mut HNSWIndex) -> Result<(), RetrieveError> {
 
             // Add distances to existing neighbors
             for &id in &current_existing_neighbors {
-                let vec = index.get_vector(id as usize);
-                let dist = distance::cosine_distance_normalized(&current_vector, vec);
+                let vec = get_vector(&index.vectors, index.dimension, id as usize);
+                let dist = distance::cosine_distance_normalized(current_vector, vec);
                 all_current_distances.insert(id, dist);
             }
 
             // Add distances to selected neighbors
-            for (nid, _, dist) in &neighbor_data {
-                all_current_distances.insert(*nid, *dist);
+            for &(nid, dist) in &neighbor_data {
+                all_current_distances.insert(nid, dist);
             }
 
             // Pre-compute existing neighbor data for reverse connections
@@ -429,16 +430,18 @@ pub fn construct_graph(index: &mut HNSWIndex) -> Result<(), RetrieveError> {
             // Pre-compute distances for each selected neighbor to ALL its potential neighbors
             // This includes: existing neighbors of that node + current_id
             let mut all_reverse_distances: Vec<std::collections::HashMap<u32, f32>> = Vec::new();
-            for (idx, _) in selected.iter().enumerate() {
-                let neighbor_vec = &neighbor_data[idx].1;
+            for (idx, &(neighbor_id, dist_to_current)) in neighbor_data.iter().enumerate() {
+                let neighbor_vec =
+                    get_vector(&index.vectors, index.dimension, neighbor_id as usize);
                 let mut distances = std::collections::HashMap::new();
 
-                // Distance to current_id
-                distances.insert(current_id as u32, neighbor_data[idx].2);
+                // Distance to current_id (already computed)
+                distances.insert(current_id as u32, dist_to_current);
 
                 // Distances to existing neighbors
                 for &existing_id in &existing_neighbor_lists[idx] {
-                    let existing_vec = index.get_vector(existing_id as usize);
+                    let existing_vec =
+                        get_vector(&index.vectors, index.dimension, existing_id as usize);
                     let dist = distance::cosine_distance_normalized(neighbor_vec, existing_vec);
                     distances.insert(existing_id, dist);
                 }
@@ -475,7 +478,7 @@ pub fn construct_graph(index: &mut HNSWIndex) -> Result<(), RetrieveError> {
                                     // Compute distance on the fly if somehow missing
                                     let vec =
                                         get_vector(&index.vectors, index.dimension, id as usize);
-                                    distance::cosine_distance_normalized(&current_vector, vec)
+                                    distance::cosine_distance_normalized(current_vector, vec)
                                 });
                             (id, dist)
                         })
@@ -492,7 +495,8 @@ pub fn construct_graph(index: &mut HNSWIndex) -> Result<(), RetrieveError> {
                 let reverse_neighbors = &mut neighbors_vec[neighbor_id as usize];
                 if reverse_neighbors.len() > m_actual {
                     let distances = &all_reverse_distances[idx];
-                    let neighbor_vec = &neighbor_data[idx].1;
+                    let neighbor_vec =
+                        get_vector(&index.vectors, index.dimension, neighbor_id as usize);
 
                     let mut reverse_candidates: Vec<(u32, f32)> = reverse_neighbors
                         .iter()

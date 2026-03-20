@@ -12,6 +12,7 @@
 //! - Li et al. (2026): "SAQ: Pushing the Limits of Vector Quantization through
 //!   Code Adjustment and Dimension Segmentation" - <https://arxiv.org/abs/2509.12086>
 
+use crate::distance::cosine_distance_normalized;
 use crate::RetrieveError;
 
 /// SAQ quantizer with dimension segmentation and code adjustment.
@@ -202,7 +203,7 @@ impl SAQQuantizer {
             let mut best_dist = f32::INFINITY;
 
             for (code, codeword) in codebook.iter().enumerate() {
-                let dist = cosine_distance(segment, codeword);
+                let dist = cosine_distance_normalized(segment, codeword);
                 if dist < best_dist {
                     best_dist = dist;
                     best_code = code.min(255) as u8;
@@ -225,7 +226,7 @@ impl SAQQuantizer {
 
         // Check initial code
         if (initial_code as usize) < codebook.len() {
-            best_dist = cosine_distance(segment, &codebook[initial_code as usize]);
+            best_dist = cosine_distance_normalized(segment, &codebook[initial_code as usize]);
         }
 
         // Check neighbors (coordinate-descent refinement)
@@ -237,7 +238,7 @@ impl SAQQuantizer {
 
         for code in start..=end {
             if (code as usize) < codebook.len() {
-                let dist = cosine_distance(segment, &codebook[code as usize]);
+                let dist = cosine_distance_normalized(segment, &codebook[code as usize]);
                 if dist < best_dist {
                     best_dist = dist;
                     best_code = code;
@@ -258,7 +259,7 @@ impl SAQQuantizer {
                     let query_segment = &query[*start..*end];
                     if (code as usize) < self.codebooks[segment_idx].len() {
                         let codeword = &self.codebooks[segment_idx][code as usize];
-                        total_dist += cosine_distance(query_segment, codeword);
+                        total_dist += cosine_distance_normalized(query_segment, codeword);
                     }
                 }
             }
@@ -266,11 +267,6 @@ impl SAQQuantizer {
 
         total_dist
     }
-}
-
-/// Compute cosine distance for **L2-normalized** vectors.
-fn cosine_distance(a: &[f32], b: &[f32]) -> f32 {
-    crate::distance::cosine_distance_normalized(a, b)
 }
 
 /// Get vector from SoA storage.
@@ -426,7 +422,7 @@ mod tests {
     #[test]
     fn cosine_distance_fn_identical_vectors() {
         let v = vec![0.6, 0.8]; // already L2-normalized (0.36+0.64=1)
-        let d = cosine_distance(&v, &v);
+        let d = cosine_distance_normalized(&v, &v);
         assert!(
             d.abs() < 1e-5,
             "cosine distance to self should be ~0, got {}",
@@ -438,7 +434,7 @@ mod tests {
     fn cosine_distance_fn_opposite_vectors() {
         let a = vec![1.0, 0.0];
         let b = vec![-1.0, 0.0];
-        let d = cosine_distance(&a, &b);
+        let d = cosine_distance_normalized(&a, &b);
         // Cosine distance for opposite vectors = 1 - (-1) = 2
         assert!(
             (d - 2.0).abs() < 1e-5,

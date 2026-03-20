@@ -338,8 +338,8 @@ impl IVFPQIndex {
 
         if vector.len() != self.dimension {
             return Err(RetrieveError::DimensionMismatch {
-                query_dim: self.dimension,
-                doc_dim: vector.len(),
+                query_dim: vector.len(),
+                doc_dim: self.dimension,
             });
         }
 

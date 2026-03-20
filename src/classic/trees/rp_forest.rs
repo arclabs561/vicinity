@@ -114,15 +114,15 @@ impl RpForestIndex {
     /// Add a vector to the index.
     pub fn add(&mut self, _doc_id: u32, vector: Vec<f32>) -> Result<(), RetrieveError> {
         if self.built {
-            return Err(RetrieveError::Other(
+            return Err(RetrieveError::InvalidParameter(
                 "Cannot add vectors after index is built".to_string(),
             ));
         }
 
         if vector.len() != self.dimension {
             return Err(RetrieveError::DimensionMismatch {
-                query_dim: self.dimension,
-                doc_dim: vector.len(),
+                query_dim: vector.len(),
+                doc_dim: self.dimension,
             });
         }
 
@@ -247,7 +247,7 @@ impl RpForestIndex {
     /// Search for k nearest neighbors.
     pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::Other(
+            return Err(RetrieveError::InvalidParameter(
                 "Index must be built before search".to_string(),
             ));
         }

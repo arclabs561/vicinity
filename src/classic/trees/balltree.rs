@@ -75,7 +75,7 @@ impl BallTreeIndex {
     /// Create new Ball Tree index.
     pub fn new(dimension: usize, params: BallTreeParams) -> Result<Self, RetrieveError> {
         if dimension == 0 {
-            return Err(RetrieveError::Other(
+            return Err(RetrieveError::InvalidParameter(
                 "Dimension must be greater than 0".to_string(),
             ));
         }
@@ -93,7 +93,7 @@ impl BallTreeIndex {
     /// Add a vector to the index.
     pub fn add(&mut self, _doc_id: u32, embedding: Vec<f32>) -> Result<(), RetrieveError> {
         if embedding.len() != self.dimension {
-            return Err(RetrieveError::Other(format!(
+            return Err(RetrieveError::InvalidParameter(format!(
                 "Embedding dimension {} != {}",
                 embedding.len(),
                 self.dimension
@@ -101,7 +101,7 @@ impl BallTreeIndex {
         }
 
         if self.built {
-            return Err(RetrieveError::Other(
+            return Err(RetrieveError::InvalidParameter(
                 "Cannot add vectors after build".to_string(),
             ));
         }
@@ -131,7 +131,7 @@ impl BallTreeIndex {
     /// Build tree recursively.
     fn build_tree(&self, indices: &[u32], depth: usize) -> Result<BallNode, RetrieveError> {
         if indices.is_empty() {
-            return Err(RetrieveError::Other("Empty indices".to_string()));
+            return Err(RetrieveError::InvalidParameter("Empty indices".to_string()));
         }
 
         // Compute center and radius
@@ -250,11 +250,13 @@ impl BallTreeIndex {
     /// than the current k-th best distance.
     pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::Other("Index not built".to_string()));
+            return Err(RetrieveError::InvalidParameter(
+                "Index not built".to_string(),
+            ));
         }
 
         if query.len() != self.dimension {
-            return Err(RetrieveError::Other(format!(
+            return Err(RetrieveError::InvalidParameter(format!(
                 "Query dimension {} != {}",
                 query.len(),
                 self.dimension
@@ -264,7 +266,7 @@ impl BallTreeIndex {
         let root = self
             .root
             .as_ref()
-            .ok_or_else(|| RetrieveError::Other("Tree not built".to_string()))?;
+            .ok_or_else(|| RetrieveError::InvalidParameter("Tree not built".to_string()))?;
 
         // Use a bounded priority queue for k-nearest neighbors
         // Store (distance, index) pairs, sorted by distance descending (max-heap behavior)

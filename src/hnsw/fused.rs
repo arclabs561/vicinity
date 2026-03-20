@@ -320,8 +320,8 @@ impl FusedIndex {
     ) -> Result<u32, RetrieveError> {
         if content.len() != self.content_dim {
             return Err(RetrieveError::DimensionMismatch {
-                query_dim: self.content_dim,
-                doc_dim: content.len(),
+                query_dim: content.len(),
+                doc_dim: self.content_dim,
             });
         }
 

@@ -141,8 +141,8 @@ impl DualBranchHNSW {
     pub fn add_vectors(&mut self, vectors: &[f32]) -> Result<(), RetrieveError> {
         if vectors.len() % self.dimension != 0 {
             return Err(RetrieveError::DimensionMismatch {
-                query_dim: self.dimension,
-                doc_dim: vectors.len(),
+                query_dim: vectors.len(),
+                doc_dim: self.dimension,
             });
         }
 

@@ -128,6 +128,7 @@ pub mod spectral;
 pub use distance::DistanceMetric;
 pub use error::{Result, RetrieveError};
 
+#[cfg(feature = "benchmark")]
 pub mod benchmark;
 pub mod compression;
 pub mod error;

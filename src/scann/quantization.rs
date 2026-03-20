@@ -65,8 +65,8 @@ impl AnisotropicQuantizer {
     ) -> Result<(), RetrieveError> {
         if residuals.len() != num_vectors * self.dimension {
             return Err(RetrieveError::DimensionMismatch {
-                query_dim: self.dimension,
-                doc_dim: residuals.len() / num_vectors,
+                query_dim: residuals.len() / num_vectors,
+                doc_dim: self.dimension,
             });
         }
 

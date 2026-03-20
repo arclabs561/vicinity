@@ -102,8 +102,8 @@ impl DEGIndex {
     pub fn add(&mut self, vector: Vec<f32>) -> Result<u32, RetrieveError> {
         if vector.len() != self.dim {
             return Err(RetrieveError::DimensionMismatch {
-                query_dim: self.dim,
-                doc_dim: vector.len(),
+                query_dim: vector.len(),
+                doc_dim: self.dim,
             });
         }
 

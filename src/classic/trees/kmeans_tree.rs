@@ -83,13 +83,13 @@ impl KMeansTreeIndex {
     /// Create new K-Means Tree index.
     pub fn new(dimension: usize, params: KMeansTreeParams) -> Result<Self, RetrieveError> {
         if dimension == 0 {
-            return Err(RetrieveError::Other(
+            return Err(RetrieveError::InvalidParameter(
                 "Dimension must be greater than 0".to_string(),
             ));
         }
 
         if params.num_clusters == 0 {
-            return Err(RetrieveError::Other(
+            return Err(RetrieveError::InvalidParameter(
                 "Number of clusters must be greater than 0".to_string(),
             ));
         }
@@ -107,7 +107,7 @@ impl KMeansTreeIndex {
     /// Add a vector to the index.
     pub fn add(&mut self, _doc_id: u32, embedding: Vec<f32>) -> Result<(), RetrieveError> {
         if embedding.len() != self.dimension {
-            return Err(RetrieveError::Other(format!(
+            return Err(RetrieveError::InvalidParameter(format!(
                 "Embedding dimension {} != {}",
                 embedding.len(),
                 self.dimension
@@ -115,7 +115,7 @@ impl KMeansTreeIndex {
         }
 
         if self.built {
-            return Err(RetrieveError::Other(
+            return Err(RetrieveError::InvalidParameter(
                 "Cannot add vectors after build".to_string(),
             ));
         }
@@ -330,13 +330,13 @@ impl KMeansTreeIndex {
     /// Search for k nearest neighbors.
     pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::Other(
+            return Err(RetrieveError::InvalidParameter(
                 "Index must be built before search".to_string(),
             ));
         }
 
         if query.len() != self.dimension {
-            return Err(RetrieveError::Other(format!(
+            return Err(RetrieveError::InvalidParameter(format!(
                 "Query dimension {} != {}",
                 query.len(),
                 self.dimension

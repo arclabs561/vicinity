@@ -114,8 +114,8 @@ impl MatryoshkaEmbedding {
     pub fn new(data: Vec<f32>, config: MatryoshkaConfig) -> Result<Self, RetrieveError> {
         if data.len() != config.full_dimension {
             return Err(RetrieveError::DimensionMismatch {
-                query_dim: config.full_dimension,
-                doc_dim: data.len(),
+                query_dim: data.len(),
+                doc_dim: config.full_dimension,
             });
         }
         Ok(Self { data, config })
@@ -144,21 +144,21 @@ impl MatryoshkaEmbedding {
     pub fn cosine_similarity_at(&self, other: &Self, dim: usize) -> f32 {
         let a = self.at_dimension(dim);
         let b = other.at_dimension(dim);
-        cosine_similarity(a, b)
+        crate::simd::cosine(a, b)
     }
 
     /// Compute L2 distance at a specific dimension.
     pub fn l2_distance_at(&self, other: &Self, dim: usize) -> f32 {
         let a = self.at_dimension(dim);
         let b = other.at_dimension(dim);
-        l2_distance(a, b)
+        crate::distance::l2_distance(a, b)
     }
 
     /// Compute inner product at a specific dimension.
     pub fn inner_product_at(&self, other: &Self, dim: usize) -> f32 {
         let a = self.at_dimension(dim);
         let b = other.at_dimension(dim);
-        inner_product(a, b)
+        crate::simd::dot(a, b)
     }
 }
 
@@ -257,7 +257,7 @@ impl MatryoshkaIndex {
 
         for (idx, emb) in self.embeddings.iter().enumerate() {
             let emb_slice = emb.at_dimension(dimension);
-            let dist = l2_distance(query_slice, emb_slice);
+            let dist = crate::distance::l2_distance(query_slice, emb_slice);
 
             heap.push(Candidate {
                 id: self.doc_ids[idx],
@@ -298,7 +298,7 @@ impl MatryoshkaIndex {
             .filter_map(|(doc_id, _)| {
                 let idx = self.doc_ids.iter().position(|&id| id == *doc_id)?;
                 let emb = &self.embeddings[idx];
-                let dist = l2_distance(query_fine, emb.at_dimension(fine_dim));
+                let dist = crate::distance::l2_distance(query_fine, emb.at_dimension(fine_dim));
                 Some((*doc_id, dist))
             })
             .collect();
@@ -430,23 +430,6 @@ impl AdaptiveDimensionSelector {
         }
         *self.dimensions.last().unwrap_or(&768)
     }
-}
-
-// Delegate to crate-level distance functions (SIMD-accelerated).
-
-#[inline]
-fn l2_distance(a: &[f32], b: &[f32]) -> f32 {
-    crate::distance::l2_distance(a, b)
-}
-
-#[inline]
-fn inner_product(a: &[f32], b: &[f32]) -> f32 {
-    crate::simd::dot(a, b)
-}
-
-#[inline]
-fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    crate::simd::cosine(a, b)
 }
 
 #[cfg(test)]

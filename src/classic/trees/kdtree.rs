@@ -71,13 +71,13 @@ impl KDTreeIndex {
     /// Create new KD-Tree index.
     pub fn new(dimension: usize, params: KDTreeParams) -> Result<Self, RetrieveError> {
         if dimension == 0 {
-            return Err(RetrieveError::Other(
+            return Err(RetrieveError::InvalidParameter(
                 "Dimension must be greater than 0".to_string(),
             ));
         }
 
         if dimension > 50 {
-            return Err(RetrieveError::Other(
+            return Err(RetrieveError::InvalidParameter(
                 "KD-Tree not recommended for dimensions > 50. Use Ball Tree or modern methods."
                     .to_string(),
             ));
@@ -96,7 +96,7 @@ impl KDTreeIndex {
     /// Add a vector to the index.
     pub fn add(&mut self, _doc_id: u32, embedding: Vec<f32>) -> Result<(), RetrieveError> {
         if embedding.len() != self.dimension {
-            return Err(RetrieveError::Other(format!(
+            return Err(RetrieveError::InvalidParameter(format!(
                 "Embedding dimension {} != {}",
                 embedding.len(),
                 self.dimension
@@ -104,7 +104,7 @@ impl KDTreeIndex {
         }
 
         if self.built {
-            return Err(RetrieveError::Other(
+            return Err(RetrieveError::InvalidParameter(
                 "Cannot add vectors after build".to_string(),
             ));
         }
@@ -194,11 +194,13 @@ impl KDTreeIndex {
     /// Search for k nearest neighbors.
     pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::Other("Index not built".to_string()));
+            return Err(RetrieveError::InvalidParameter(
+                "Index not built".to_string(),
+            ));
         }
 
         if query.len() != self.dimension {
-            return Err(RetrieveError::Other(format!(
+            return Err(RetrieveError::InvalidParameter(format!(
                 "Query dimension {} != {}",
                 query.len(),
                 self.dimension
@@ -208,7 +210,7 @@ impl KDTreeIndex {
         let root = self
             .root
             .as_ref()
-            .ok_or_else(|| RetrieveError::Other("Tree not built".to_string()))?;
+            .ok_or_else(|| RetrieveError::InvalidParameter("Tree not built".to_string()))?;
 
         // Collect candidates from tree traversal
         let mut candidates = Vec::new();

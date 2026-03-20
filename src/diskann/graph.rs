@@ -298,7 +298,7 @@ impl DiskANNSearcher {
     }
 
     fn dist(&self, a: &[f32], b: &[f32]) -> f32 {
-        a.iter().zip(b.iter()).map(|(x, y)| (x - y) * (x - y)).sum()
+        crate::simd::l2_distance_squared(a, b)
     }
 }
 
@@ -392,8 +392,8 @@ impl DiskANNIndex {
 
         if vector.len() != self.dimension {
             return Err(RetrieveError::DimensionMismatch {
-                query_dim: self.dimension,
-                doc_dim: vector.len(),
+                query_dim: vector.len(),
+                doc_dim: self.dimension,
             });
         }
 

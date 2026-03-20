@@ -12,7 +12,7 @@
 //! - Small clustered (1K): 85%+ recall@10
 //! - Medium clustered (10K): 80%+ recall@10
 
-#![cfg(feature = "hnsw")]
+#![cfg(all(feature = "hnsw", feature = "benchmark"))]
 
 use std::time::Instant;
 
