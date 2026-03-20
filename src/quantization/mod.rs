@@ -115,8 +115,6 @@
 //!   Randomized Binary Quantization."
 //! - See also: Product Quantization (`ivf_pq`), ScaNN (`scann`).
 
-#![allow(dead_code)]
-
 #[cfg(feature = "rabitq")]
 pub use qntz::rabitq;
 

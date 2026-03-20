@@ -1,2 +1,2 @@
 // Use shared KMeans implementation
-pub use crate::partitioning::kmeans::KMeans;
+pub(crate) use crate::partitioning::kmeans::KMeans;

@@ -6,8 +6,6 @@
 //!
 //! The reader fields are placeholders for future implementation.
 
-#![allow(dead_code)]
-
 use crate::persistence::directory::Directory;
 use crate::persistence::error::{PersistenceError, PersistenceResult};
 use std::io::Write;

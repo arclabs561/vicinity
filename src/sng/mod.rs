@@ -93,8 +93,6 @@
 //! - Ma et al. (2026). "Graph-Based Approximate Nearest Neighbor Search Revisited:
 //!   Theoretical Analysis and Optimization." arXiv:2509.15531
 
-#![allow(dead_code)]
-
 mod graph;
 mod martingale;
 mod optimization;
