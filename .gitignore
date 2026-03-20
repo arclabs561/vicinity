@@ -16,3 +16,4 @@
 __pycache__/
 *.pyc
 qa/
+/data/**/*.hdf5
