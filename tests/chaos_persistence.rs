@@ -11,7 +11,6 @@ async fn test_crash_recovery_invariant() -> anyhow::Result<()> {
 
     // 1. Record an incomplete operation in WAL
     writer.append(WalEntry::StartMerge {
-        entry_id: 1,
         transaction_id: 100,
         segment_ids: vec![1, 2],
     })?;
@@ -24,7 +23,7 @@ async fn test_crash_recovery_invariant() -> anyhow::Result<()> {
     let entries = reader.replay()?;
 
     assert_eq!(entries.len(), 1);
-    match &entries[0] {
+    match &entries[0].payload {
         WalEntry::StartMerge { transaction_id, .. } => {
             assert_eq!(*transaction_id, 100);
         }

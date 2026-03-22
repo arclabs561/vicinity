@@ -10,7 +10,7 @@ use crate::persistence::directory as vicinity_dir;
 use crate::persistence::error::{PersistenceError, PersistenceResult};
 use std::sync::Arc;
 
-pub use durability::walog::{WalEntry, WalReplayMode};
+pub use durability::walog::{WalEntry, WalRecord, WalReplayMode};
 
 fn to_durability_err(e: PersistenceError) -> durability::PersistenceError {
     match e {
@@ -63,6 +63,7 @@ fn from_durability_err(e: durability::PersistenceError) -> PersistenceError {
         durability::PersistenceError::MissingPath(p) => {
             PersistenceError::NotFound(p.to_string_lossy().to_string())
         }
+        _ => PersistenceError::Format(format!("unknown durability error: {e}")),
     }
 }
 
@@ -113,7 +114,7 @@ impl durability::Directory for DirAdapter {
 /// Compatibility wrapper: keeps `vicinity::persistence::wal::WalWriter` stable while using the
 /// canonical `durability::walog::WalWriter` implementation underneath.
 pub struct WalWriter {
-    inner: durability::walog::WalWriter,
+    inner: durability::walog::WalWriter<WalEntry>,
 }
 
 impl WalWriter {
@@ -131,7 +132,7 @@ impl WalWriter {
 
     /// Append an entry to the WAL, returning its assigned entry id.
     pub fn append(&mut self, entry: WalEntry) -> PersistenceResult<u64> {
-        self.inner.append(entry).map_err(from_durability_err)
+        self.inner.append(&entry).map_err(from_durability_err)
     }
 
     /// Flush buffered bytes (if any).
@@ -142,7 +143,7 @@ impl WalWriter {
 
 /// WAL reader for replaying entries.
 pub struct WalReader {
-    inner: durability::walog::WalReader,
+    inner: durability::walog::WalReader<WalEntry>,
 }
 
 impl WalReader {
@@ -157,12 +158,12 @@ impl WalReader {
     }
 
     /// Replay all WAL entries from disk (strict).
-    pub fn replay(&self) -> PersistenceResult<Vec<WalEntry>> {
+    pub fn replay(&self) -> PersistenceResult<Vec<WalRecord<WalEntry>>> {
         self.inner.replay().map_err(from_durability_err)
     }
 
     /// Best-effort replay: tolerate a truncated tail record in the final segment.
-    pub fn replay_best_effort(&self) -> PersistenceResult<Vec<WalEntry>> {
+    pub fn replay_best_effort(&self) -> PersistenceResult<Vec<WalRecord<WalEntry>>> {
         self.inner.replay_best_effort().map_err(from_durability_err)
     }
 }
@@ -177,13 +178,11 @@ mod tests {
         let dir: Arc<dyn vicinity_dir::Directory> = Arc::new(MemoryDirectory::new());
         let mut w = WalWriter::new(dir.clone());
         w.append(WalEntry::AddSegment {
-            entry_id: 0,
             segment_id: 1,
             doc_count: 10,
         })
         .unwrap();
         w.append(WalEntry::DeleteDocuments {
-            entry_id: 0,
             deletes: vec![(1, 5)],
         })
         .unwrap();

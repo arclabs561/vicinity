@@ -10,7 +10,7 @@
 use crate::persistence::checkpoint::{CheckpointReader, SegmentMetadata};
 use crate::persistence::directory::Directory;
 use crate::persistence::error::{PersistenceError, PersistenceResult};
-use crate::persistence::wal::{WalEntry, WalReader};
+use crate::persistence::wal::{WalEntry, WalReader, WalRecord};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -96,20 +96,9 @@ impl RecoveryManager {
         let all_entries = wal_reader.replay()?;
 
         // Filter entries after checkpoint
-        let entries: Vec<WalEntry> = all_entries
+        let entries: Vec<WalRecord<WalEntry>> = all_entries
             .into_iter()
-            .filter(|entry| {
-                // Extract entry_id from entry and filter by checkpoint
-                let entry_id = match entry {
-                    WalEntry::AddSegment { entry_id, .. } => *entry_id,
-                    WalEntry::StartMerge { entry_id, .. } => *entry_id,
-                    WalEntry::CancelMerge { entry_id, .. } => *entry_id,
-                    WalEntry::EndMerge { entry_id, .. } => *entry_id,
-                    WalEntry::DeleteDocuments { entry_id, .. } => *entry_id,
-                    WalEntry::Checkpoint { entry_id, .. } => *entry_id,
-                };
-                entry_id > last_checkpoint_entry_id
-            })
+            .filter(|record| record.entry_id > last_checkpoint_entry_id)
             .collect();
 
         // Step 4-7: Reconstruct state from checkpoint + WAL entries.
@@ -124,14 +113,15 @@ impl RecoveryManager {
         let mut deletes: HashMap<u64, Vec<u32>> = HashMap::new();
         let mut last_entry_id = last_checkpoint_entry_id;
 
-        for entry in entries {
-            match entry {
+        for record in entries {
+            let entry_id = record.entry_id;
+            last_entry_id = last_entry_id.max(entry_id);
+
+            match record.payload {
                 WalEntry::AddSegment {
-                    entry_id,
                     segment_id,
                     doc_count,
                 } => {
-                    last_entry_id = last_entry_id.max(entry_id);
                     active_segments.insert(
                         segment_id,
                         SegmentMetadata {
@@ -144,21 +134,17 @@ impl RecoveryManager {
                     );
                 }
                 WalEntry::StartMerge {
-                    entry_id,
                     transaction_id,
                     segment_ids,
                 } => {
-                    last_entry_id = last_entry_id.max(entry_id);
                     // Track pending merge
                     pending_merges.insert(transaction_id, segment_ids);
                 }
                 WalEntry::EndMerge {
-                    entry_id,
                     transaction_id,
                     old_segment_ids,
                     ..
                 } => {
-                    last_entry_id = last_entry_id.max(entry_id);
                     // Complete merge: remove old segments, add new
                     for old_id in &old_segment_ids {
                         active_segments.remove(old_id);
@@ -167,25 +153,23 @@ impl RecoveryManager {
                     pending_merges.remove(&transaction_id);
                 }
                 WalEntry::CancelMerge {
-                    entry_id,
                     transaction_id,
                     ..
                 } => {
-                    last_entry_id = last_entry_id.max(entry_id);
                     pending_merges.remove(&transaction_id);
                 }
                 WalEntry::DeleteDocuments {
-                    entry_id,
                     deletes: delete_list,
                 } => {
-                    last_entry_id = last_entry_id.max(entry_id);
                     for (segment_id, doc_id) in delete_list {
                         deletes.entry(segment_id).or_default().push(doc_id);
                     }
                 }
-                WalEntry::Checkpoint { entry_id, .. } => {
-                    last_entry_id = last_entry_id.max(entry_id);
+                WalEntry::Checkpoint { .. } => {
                     // Checkpoint entry doesn't change state
+                }
+                _ => {
+                    // Forward-compatible: ignore unknown entry variants
                 }
             }
         }
@@ -349,14 +333,12 @@ mod tests {
         let mut wal_writer = WalWriter::new(dir_arc.clone());
         wal_writer
             .append(WalEntry::AddSegment {
-                entry_id: 1,
                 segment_id: 1,
                 doc_count: 100,
             })
             .unwrap();
         wal_writer
             .append(WalEntry::AddSegment {
-                entry_id: 2,
                 segment_id: 2,
                 doc_count: 200,
             })

@@ -117,6 +117,7 @@ impl From<durability_crate::PersistenceError> for PersistenceError {
             durability_crate::PersistenceError::MissingPath(p) => {
                 Self::NotFound(p.to_string_lossy().to_string())
             }
+            _ => Self::Format(format!("unknown durability error: {e}")),
         }
     }
 }
