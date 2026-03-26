@@ -178,6 +178,7 @@ vicinity = { version = "0.2.0", features = ["hnsw"] }
 - `evoc` — EVoC hierarchical clustering (activates `clump`)
 - `quantization` / `rabitq` / `saq` — vector quantization and RaBitQ-style compression
 - `persistence` — segment-based on-disk persistence with WAL and crash recovery (includes `durability`)
+- `experimental` — research algorithm variants (DEG, FusedANN, merge, probabilistic routing, incremental)
 - `python` — optional PyO3 bindings (feature-gated)
 
 Compiles on `wasm32-unknown-unknown` with default features.

@@ -1982,6 +1982,28 @@ mod tests {
         assert_eq!(index.num_active(), total - 2);
     }
 
+    #[test]
+    fn test_builder_produces_working_index() {
+        let mut index = HNSWIndex::builder(4)
+            .m(8)
+            .ef_search(32)
+            .auto_normalize(true)
+            .build()
+            .unwrap();
+
+        // auto_normalize is on, so raw (un-normalized) vectors should be accepted
+        index.add_slice(0, &[3.0, 4.0, 0.0, 0.0]).unwrap();
+        index.add_slice(1, &[0.0, 0.0, 3.0, 4.0]).unwrap();
+        index.build().unwrap();
+
+        // Query with un-normalized vector (will be normalized at search time
+        // only if the caller normalizes -- auto_normalize applies to add, not search).
+        let q = crate::distance::normalize(&[3.0, 4.0, 0.0, 0.0]);
+        let results = index.search(&q, 1, 32).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, 0, "nearest neighbor should be doc 0");
+    }
+
     #[cfg(feature = "parallel")]
     #[test]
     fn test_search_batch_matches_sequential() {

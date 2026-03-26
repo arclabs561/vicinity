@@ -541,7 +541,7 @@ fn incremental_additions_dont_corrupt_earlier_data() {
     }
     index_small.build().unwrap();
     let results_small = index_small.search(query, k, ef_search).unwrap();
-    let ids_small: HashSet<u32> = results_small.iter().map(|(id, _)| *id).collect();
+    let _ids_small: HashSet<u32> = results_small.iter().map(|(id, _)| *id).collect();
 
     // Phase 2: build a NEW index with initial + extra vectors
     let mut index_large = HNSWIndex::new(dim, 16, 200).unwrap();
@@ -551,15 +551,6 @@ fn incremental_additions_dont_corrupt_earlier_data() {
     index_large.build().unwrap();
     let results_large = index_large.search(query, k, ef_search).unwrap();
     let ids_large: HashSet<u32> = results_large.iter().map(|(id, _)| *id).collect();
-
-    // The ground truth from initial vectors should still be well-represented
-    // in the larger index. Compute overlap of top-k results restricted to
-    // the original ID range [0, n_initial).
-    let ids_large_original: HashSet<u32> = ids_large
-        .iter()
-        .filter(|&&id| (id as usize) < n_initial)
-        .copied()
-        .collect();
 
     // Ground truth: brute-force k-NN among original vectors
     let gt_small = ground_truth_cosine(query, &all_vecs[..n_initial], k);

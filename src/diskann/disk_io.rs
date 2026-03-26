@@ -179,9 +179,9 @@ impl DiskGraphReader {
 
         let offset = self.header_size + (node_id as u64 * self.record_size);
 
-        // Seek to node record
-        // Note: Mutex or pread required for thread safety. DiskANNReader usually cloned or thread-local.
-        // For simplicity here, we seek/read.
+        // Seek to node record.
+        // Safety: `&mut self` prevents concurrent calls. For parallel search,
+        // create one DiskGraphReader per thread (each with its own file handle).
         self.file.seek(SeekFrom::Start(offset))?;
 
         // Read degree
