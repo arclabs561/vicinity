@@ -424,6 +424,12 @@ mod tests {
         assert_eq!(WalEntryType::try_from(2), Ok(WalEntryType::Delete));
         assert_eq!(WalEntryType::try_from(3), Ok(WalEntryType::Update));
         assert_eq!(WalEntryType::try_from(4), Ok(WalEntryType::Checkpoint));
+        assert_eq!(WalEntryType::try_from(5), Ok(WalEntryType::InsertNode));
+        assert_eq!(WalEntryType::try_from(6), Ok(WalEntryType::DeleteNode));
+        assert_eq!(
+            WalEntryType::try_from(7),
+            Ok(WalEntryType::UpdateNeighbors)
+        );
         assert_eq!(WalEntryType::try_from(99), Err(()));
     }
 
@@ -454,6 +460,7 @@ mod tests {
             dimension: 384,
             total_vectors: 10000,
             segments: vec![1, 2, 3],
+            segment_info: vec![],
             wal_sequence: 42,
             checkpoint_id: Some(5),
             config: serde_json::json!({"M": 16, "ef_construction": 200}),
@@ -466,5 +473,104 @@ mod tests {
 
         assert_eq!(parsed.version, FORMAT_VERSION);
         assert_eq!(parsed.segments.len(), 3);
+        // segment_info is empty, so it should be absent from JSON (skip_serializing_if)
+        assert!(!json.contains("segment_info"));
+    }
+
+    #[test]
+    fn test_manifest_backward_compat_no_segment_info() {
+        // Simulate a legacy manifest JSON without segment_info field.
+        let legacy_json = r#"{
+            "version": 1,
+            "index_type": "DiskAnn",
+            "dimension": 384,
+            "total_vectors": 10000,
+            "segments": [1, 2, 3],
+            "wal_sequence": 42,
+            "checkpoint_id": 5,
+            "config": {},
+            "created_at": 1234567890,
+            "modified_at": 1234567899
+        }"#;
+
+        let parsed: IndexManifest = serde_json::from_str(legacy_json).unwrap();
+        assert!(parsed.segment_info.is_empty());
+        // Falls back to global wal_sequence
+        assert_eq!(parsed.replay_start_sequence(), 42);
+    }
+
+    #[test]
+    fn test_manifest_per_segment_watermarks() {
+        let manifest = IndexManifest {
+            version: FORMAT_VERSION,
+            index_type: IndexType::Hnsw,
+            dimension: 128,
+            total_vectors: 5000,
+            segments: vec![1, 2, 3],
+            segment_info: vec![
+                SegmentInfo {
+                    segment_id: 1,
+                    wal_sequence: 100,
+                },
+                SegmentInfo {
+                    segment_id: 2,
+                    wal_sequence: 50,
+                },
+                SegmentInfo {
+                    segment_id: 3,
+                    wal_sequence: 200,
+                },
+            ],
+            wal_sequence: 200,
+            checkpoint_id: None,
+            config: serde_json::json!({}),
+            created_at: 0,
+            modified_at: 0,
+        };
+
+        // Replay starts from min(segment watermarks) = 50
+        assert_eq!(manifest.replay_start_sequence(), 50);
+
+        // Round-trip through JSON
+        let json = serde_json::to_string(&manifest).unwrap();
+        let parsed: IndexManifest = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.segment_info.len(), 3);
+        assert_eq!(parsed.replay_start_sequence(), 50);
+    }
+
+    #[test]
+    fn test_segment_info_serde() {
+        let info = SegmentInfo {
+            segment_id: 42,
+            wal_sequence: 100,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        let parsed: SegmentInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.segment_id, 42);
+        assert_eq!(parsed.wal_sequence, 100);
+    }
+
+    #[test]
+    fn test_graph_wal_entry_postcard_roundtrip() {
+        let entries = vec![
+            GraphWalEntry::InsertNode {
+                doc_id: 42,
+                level: 2,
+                vector: vec![1.0, 2.0, 3.0],
+                neighbors_per_level: vec![vec![1, 2, 3], vec![4, 5], vec![6]],
+            },
+            GraphWalEntry::DeleteNode { doc_id: 99 },
+            GraphWalEntry::UpdateNeighbors {
+                node_id: 10,
+                level: 0,
+                neighbors: vec![20, 30, 40],
+            },
+        ];
+
+        for entry in &entries {
+            let bytes = postcard::to_allocvec(entry).unwrap();
+            let decoded: GraphWalEntry = postcard::from_bytes(&bytes).unwrap();
+            assert_eq!(&decoded, entry);
+        }
     }
 }

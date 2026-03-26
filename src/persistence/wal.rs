@@ -10,6 +10,7 @@ use crate::persistence::directory as vicinity_dir;
 use crate::persistence::error::{PersistenceError, PersistenceResult};
 use std::sync::Arc;
 
+pub use crate::persistence::format::GraphWalEntry;
 pub use durability::walog::{WalEntry, WalRecord, WalReplayMode};
 
 fn to_durability_err(e: PersistenceError) -> durability::PersistenceError {
