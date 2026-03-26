@@ -154,9 +154,9 @@ impl VisitedSet {
 }
 
 thread_local! {
-    static THREAD_VISITED: RefCell<VisitedSet> = RefCell::new(
+    static THREAD_VISITED: RefCell<VisitedSet> = const { RefCell::new(
         VisitedSet::Dense { marks: Vec::new(), generation: 1 }
-    );
+    ) };
 }
 
 /// Borrow the thread-local visited set, prepared for `num_nodes`.

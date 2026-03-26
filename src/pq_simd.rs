@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! SIMD-accelerated Product Quantization distance computation.
 //!
 //! # Asymmetric Distance Computation (ADC)
@@ -435,7 +436,7 @@ impl PackedCodes4bit {
         debug_assert_eq!(codes.len(), num_vectors * num_codebooks);
 
         let block_size = 32usize;
-        let num_blocks = (num_vectors + block_size - 1) / block_size;
+        let num_blocks = num_vectors.div_ceil(block_size);
         let bytes_per_block = 16 * num_codebooks;
 
         let mut data = vec![0u8; num_blocks * bytes_per_block];
@@ -480,7 +481,7 @@ impl PackedCodes4bit {
 
     /// Number of 32-vector blocks.
     pub fn num_blocks(&self) -> usize {
-        (self.num_vectors + self.block_size - 1) / self.block_size
+        self.num_vectors.div_ceil(self.block_size)
     }
 
     /// Bytes per block: 16 bytes per subquantizer.
@@ -630,8 +631,8 @@ pub fn fastscan_batch(packed: &PackedCodes4bit, lut: &[Vec<f32>]) -> Vec<f32> {
             32
         };
 
-        for i in 0..vecs_in_block {
-            distances.push(accum[i] as f32 * scale + base_offset);
+        for &a in accum.iter().take(vecs_in_block) {
+            distances.push(a as f32 * scale + base_offset);
         }
     }
 

@@ -101,6 +101,7 @@ pub use fallback::*;
 // Fallback implementation -- always compiled so simsimd_backend can reference it
 // as an unwrap_or_else fallback, but only publicly exported when no SIMD backend
 // is enabled.
+#[allow(dead_code)]
 mod fallback {
     //! Portable fallback implementations when innr is not available.
 

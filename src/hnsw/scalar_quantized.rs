@@ -269,9 +269,9 @@ impl ScalarQuantizedHNSW {
         let dim = self.index.dimension;
         let mut q_scaled = Vec::with_capacity(dim);
         let mut offset_dot: f32 = 0.0;
-        for d in 0..dim {
-            q_scaled.push(query[d] * self.scales[d] / 255.0);
-            offset_dot += query[d] * self.offsets[d];
+        for (d, &q) in query.iter().enumerate().take(dim) {
+            q_scaled.push(q * self.scales[d] / 255.0);
+            offset_dot += q * self.offsets[d];
         }
         QueryCtx {
             q_scaled,
