@@ -82,7 +82,7 @@ jobs:
         run: cargo install cargo-hack --locked
 
       - name: Compile each feature (no dev-deps)
-        run: cargo hack check --each-feature --no-dev-deps --exclude-features persistence,memmap,persistence-bincode
+        run: cargo hack check --each-feature --no-dev-deps --exclude-features persistence,persistence-bincode
 
   # Cross-compilation check for different targets
   cross-compile:
