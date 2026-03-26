@@ -1,11 +1,14 @@
 //! DiskANN graph structure and Vamana construction.
 
-use crate::RetrieveError;
+use std::collections::HashSet;
+use std::path::Path;
+use std::sync::Arc;
+
 use rand::seq::SliceRandom;
 use rand::Rng;
 use smallvec::SmallVec;
-use std::collections::HashSet;
-use std::path::Path;
+
+use crate::RetrieveError;
 
 /// DiskANN index for disk-based approximate nearest neighbor search.
 ///
@@ -78,13 +81,13 @@ impl DiskANNIndex {
         }
 
         if !output_dir.exists() {
-            std::fs::create_dir_all(output_dir).map_err(|e| RetrieveError::Io(e.to_string()))?;
+            std::fs::create_dir_all(output_dir)?;
         }
 
         // 1. Save Vectors (vectors.bin)
         let vectors_path = output_dir.join("vectors.bin");
         let mut vectors_file =
-            std::fs::File::create(&vectors_path).map_err(|e| RetrieveError::Io(e.to_string()))?;
+            std::fs::File::create(&vectors_path)?;
         let vectors_bytes = unsafe {
             std::slice::from_raw_parts(
                 self.vectors.as_ptr() as *const u8,
@@ -94,7 +97,7 @@ impl DiskANNIndex {
         use std::io::Write;
         vectors_file
             .write_all(vectors_bytes)
-            .map_err(|e| RetrieveError::Io(e.to_string()))?;
+            .write_all(vectors_bytes)?;
 
         // 2. Save Graph (graph.index)
         let graph_path = output_dir.join("graph.index");
@@ -106,16 +109,16 @@ impl DiskANNIndex {
             self.params.m,
             self.start_node,
         )
-        .map_err(|e| RetrieveError::Io(format!("failed to create graph writer: {}", e)))?;
+        .map_err(|e| RetrieveError::Io(Arc::new(std::io::Error::other(format!("failed to create graph writer: {}", e)))))?;
 
         for neighbors in &self.adj {
             graph_writer
                 .write_adjacency(neighbors)
-                .map_err(|e| RetrieveError::Io(format!("failed to write adjacency: {}", e)))?;
+                .map_err(|e| RetrieveError::Io(Arc::new(std::io::Error::other(format!("failed to write adjacency: {}", e)))))?;
         }
         graph_writer
             .flush()
-            .map_err(|e| RetrieveError::Io(format!("failed to flush graph: {}", e)))?;
+            .map_err(|e| RetrieveError::Io(Arc::new(std::io::Error::other(format!("failed to flush graph: {}", e)))))?;
 
         // 3. Save Metadata (metadata.json)
         let metadata_path = output_dir.join("metadata.json");
@@ -131,7 +134,7 @@ impl DiskANNIndex {
             }
         });
         let metadata_file =
-            std::fs::File::create(&metadata_path).map_err(|e| RetrieveError::Io(e.to_string()))?;
+            std::fs::File::create(&metadata_path)?;
         serde_json::to_writer_pretty(metadata_file, &metadata)
             .map_err(|e| RetrieveError::Serialization(e.to_string()))?; // Need to add Serialization error to RetrieveError
 
@@ -160,7 +163,7 @@ impl DiskANNSearcher {
         // 1. Load Metadata
         let metadata_path = index_dir.join("metadata.json");
         let metadata_file =
-            std::fs::File::open(&metadata_path).map_err(|e| RetrieveError::Io(e.to_string()))?;
+            std::fs::File::open(&metadata_path)?;
         let metadata: serde_json::Value = serde_json::from_reader(metadata_file)
             .map_err(|e| RetrieveError::Serialization(e.to_string()))?;
 
@@ -189,12 +192,12 @@ impl DiskANNSearcher {
         // 2. Open Graph
         let graph_path = index_dir.join("graph.index");
         let graph_reader = super::disk_io::DiskGraphReader::open(&graph_path)
-            .map_err(|e| RetrieveError::Io(format!("failed to open graph: {}", e)))?;
+            .map_err(|e| RetrieveError::Io(Arc::new(std::io::Error::other(format!("failed to open graph: {}", e)))))?;
 
         // 3. Open Vectors
         let vectors_path = index_dir.join("vectors.bin");
         let vectors_file =
-            std::fs::File::open(&vectors_path).map_err(|e| RetrieveError::Io(e.to_string()))?;
+            std::fs::File::open(&vectors_path)?;
 
         Ok(Self {
             dimension,
@@ -275,13 +278,11 @@ impl DiskANNSearcher {
         use std::io::{Read, Seek, SeekFrom};
         let offset = idx as u64 * self.dimension as u64 * 4;
         self.vectors_file
-            .seek(SeekFrom::Start(offset))
-            .map_err(|e| RetrieveError::Io(e.to_string()))?;
+            .seek(SeekFrom::Start(offset))?;
 
         let mut buffer = vec![0u8; self.dimension * 4];
         self.vectors_file
-            .read_exact(&mut buffer)
-            .map_err(|e| RetrieveError::Io(e.to_string()))?;
+            .read_exact(&mut buffer)?;
 
         let mut vec = Vec::with_capacity(self.dimension);
         for i in 0..self.dimension {
