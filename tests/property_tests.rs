@@ -1463,3 +1463,219 @@ mod persistence_props {
         }
     }
 }
+
+// =============================================================================
+// HNSW Self-Retrieval Properties
+// =============================================================================
+
+mod hnsw_self_retrieval_props {
+    use proptest::prelude::*;
+    use vicinity::hnsw::HNSWIndex;
+
+    fn random_normalized_vectors(n: usize, dim: usize, seed: u64) -> Vec<Vec<f32>> {
+        use rand::prelude::*;
+        let mut rng = StdRng::seed_from_u64(seed);
+        (0..n)
+            .map(|_| {
+                let v: Vec<f32> = (0..dim).map(|_| rng.random::<f32>() - 0.5).collect();
+                vicinity::distance::normalize(&v)
+            })
+            .collect()
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(20))]
+
+        #[test]
+        fn self_retrieval_high_rate(
+            n in 50usize..200,
+            dim in prop::sample::select(vec![8, 16, 32, 64]),
+            m in prop::sample::select(vec![8, 16, 32]),
+            seed in any::<u64>(),
+        ) {
+            let vectors = random_normalized_vectors(n, dim, seed);
+            let mut index = HNSWIndex::new(dim, m, 2 * m).unwrap();
+            for (i, v) in vectors.iter().enumerate() {
+                index.add_slice(i as u32, v).unwrap();
+            }
+            index.build().unwrap();
+
+            let mut self_found = 0;
+            for (i, v) in vectors.iter().enumerate() {
+                let results = index.search(v, 1, 200).unwrap();
+                if !results.is_empty() && results[0].0 == i as u32 {
+                    self_found += 1;
+                }
+            }
+            let rate = self_found as f64 / n as f64;
+            prop_assert!(rate >= 0.95,
+                "Self-retrieval {:.1}% < 95% (n={}, dim={}, M={}, seed={})",
+                rate * 100.0, n, dim, m, seed);
+        }
+    }
+}
+
+// =============================================================================
+// HNSW ef_search Monotonicity Properties
+// =============================================================================
+
+mod hnsw_ef_monotonicity_props {
+    use proptest::prelude::*;
+    use std::collections::HashSet;
+    use vicinity::hnsw::HNSWIndex;
+
+    fn random_normalized_vectors(n: usize, dim: usize, seed: u64) -> Vec<Vec<f32>> {
+        use rand::prelude::*;
+        let mut rng = StdRng::seed_from_u64(seed);
+        (0..n)
+            .map(|_| {
+                let v: Vec<f32> = (0..dim).map(|_| rng.random::<f32>() - 0.5).collect();
+                vicinity::distance::normalize(&v)
+            })
+            .collect()
+    }
+
+    fn brute_force_knn(query: &[f32], vectors: &[Vec<f32>], k: usize) -> Vec<u32> {
+        let mut dists: Vec<(u32, f32)> = vectors
+            .iter()
+            .enumerate()
+            .map(|(i, v)| (i as u32, vicinity::distance::cosine_distance(query, v)))
+            .collect();
+        dists.sort_by(|a, b| a.1.total_cmp(&b.1));
+        dists.into_iter().take(k).map(|(id, _)| id).collect()
+    }
+
+    fn recall_at_k(results: &[(u32, f32)], ground_truth: &[u32]) -> f32 {
+        let gt: HashSet<u32> = ground_truth.iter().copied().collect();
+        let found: HashSet<u32> = results.iter().map(|(id, _)| *id).collect();
+        gt.intersection(&found).count() as f32 / ground_truth.len().max(1) as f32
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(15))]
+
+        #[test]
+        fn ef_search_monotonic_recall(
+            n in 100usize..300,
+            seed in any::<u64>(),
+        ) {
+            let dim = 32;
+            let vectors = random_normalized_vectors(n, dim, seed);
+            let queries = random_normalized_vectors(10, dim, seed.wrapping_add(1));
+
+            let mut index = HNSWIndex::new(dim, 16, 32).unwrap();
+            for (i, v) in vectors.iter().enumerate() {
+                index.add_slice(i as u32, v).unwrap();
+            }
+            index.build().unwrap();
+
+            let k = 10.min(n);
+            let ef_values = [10, 20, 50, 100, 200];
+            let mut prev_recall = 0.0f32;
+
+            for &ef in &ef_values {
+                let mut total_recall = 0.0;
+                for q in &queries {
+                    let results = index.search(q, k, ef).unwrap();
+                    let gt = brute_force_knn(q, &vectors, k);
+                    total_recall += recall_at_k(&results, &gt);
+                }
+                let avg_recall = total_recall / queries.len() as f32;
+
+                // Allow 5% tolerance for statistical noise
+                prop_assert!(avg_recall >= prev_recall - 0.05,
+                    "Recall decreased from {:.3} to {:.3} when ef increased to {} (seed={})",
+                    prev_recall, avg_recall, ef, seed);
+                prev_recall = avg_recall;
+            }
+        }
+    }
+}
+
+// =============================================================================
+// HNSW Build-Order Independence Properties
+// =============================================================================
+
+mod hnsw_build_order_props {
+    use proptest::prelude::*;
+    use std::collections::HashSet;
+    use vicinity::hnsw::HNSWIndex;
+
+    fn random_normalized_vectors(n: usize, dim: usize, seed: u64) -> Vec<Vec<f32>> {
+        use rand::prelude::*;
+        let mut rng = StdRng::seed_from_u64(seed);
+        (0..n)
+            .map(|_| {
+                let v: Vec<f32> = (0..dim).map(|_| rng.random::<f32>() - 0.5).collect();
+                vicinity::distance::normalize(&v)
+            })
+            .collect()
+    }
+
+    fn brute_force_knn(query: &[f32], vectors: &[Vec<f32>], k: usize) -> Vec<u32> {
+        let mut dists: Vec<(u32, f32)> = vectors
+            .iter()
+            .enumerate()
+            .map(|(i, v)| (i as u32, vicinity::distance::cosine_distance(query, v)))
+            .collect();
+        dists.sort_by(|a, b| a.1.total_cmp(&b.1));
+        dists.into_iter().take(k).map(|(id, _)| id).collect()
+    }
+
+    fn recall_at_k(results: &[(u32, f32)], ground_truth: &[u32]) -> f32 {
+        let gt: HashSet<u32> = ground_truth.iter().copied().collect();
+        let found: HashSet<u32> = results.iter().map(|(id, _)| *id).collect();
+        gt.intersection(&found).count() as f32 / ground_truth.len().max(1) as f32
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(10))]
+
+        #[test]
+        fn build_order_independence(
+            n in 50usize..150,
+            shuffle_seed in any::<u64>(),
+            data_seed in any::<u64>(),
+        ) {
+            let dim = 16;
+            let vectors = random_normalized_vectors(n, dim, data_seed);
+            let queries = random_normalized_vectors(5, dim, data_seed.wrapping_add(999));
+
+            // Build with original order
+            let mut index1 = HNSWIndex::new(dim, 16, 32).unwrap();
+            for (i, v) in vectors.iter().enumerate() {
+                index1.add_slice(i as u32, v).unwrap();
+            }
+            index1.build().unwrap();
+
+            // Build with shuffled order (Fisher-Yates with deterministic seed)
+            let mut order: Vec<usize> = (0..n).collect();
+            let mut rng_state = shuffle_seed;
+            for i in (1..n).rev() {
+                rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
+                let j = (rng_state >> 33) as usize % (i + 1);
+                order.swap(i, j);
+            }
+
+            let mut index2 = HNSWIndex::new(dim, 16, 32).unwrap();
+            for &i in &order {
+                index2.add_slice(i as u32, &vectors[i]).unwrap();
+            }
+            index2.build().unwrap();
+
+            let k = 10.min(n);
+            for q in &queries {
+                let gt = brute_force_knn(q, &vectors, k);
+                let r1 = index1.search(q, k, 200).unwrap();
+                let r2 = index2.search(q, k, 200).unwrap();
+                let recall1 = recall_at_k(&r1, &gt);
+                let recall2 = recall_at_k(&r2, &gt);
+                let diff = (recall1 - recall2).abs();
+                prop_assert!(diff <= 0.3,
+                    "Build order changed recall by {:.2} ({:.2} vs {:.2}, seed={})",
+                    diff, recall1, recall2, shuffle_seed);
+            }
+        }
+    }
+}
+
