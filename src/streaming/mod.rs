@@ -64,17 +64,17 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use vicinity::streaming::{StreamingCoordinator, StreamingConfig};
-//! use vicinity::hnsw::InPlaceIndex;
+//! use vicinity::streaming::StreamingCoordinator;
+//! use vicinity::hnsw::{InPlaceIndex, InPlaceConfig};
 //!
-//! let index = InPlaceIndex::new(128, 16)?;
-//! let mut coord = StreamingCoordinator::new(index, StreamingConfig::default());
+//! let index = InPlaceIndex::new(128, InPlaceConfig::default());
+//! let mut coord = StreamingCoordinator::new(index);
 //!
 //! coord.insert(0, vec![0.1; 128])?;
 //! coord.insert(1, vec![0.2; 128])?;
 //! coord.delete(0)?;
 //!
-//! let results = coord.search(&vec![0.15; 128], 10, 50)?;
+//! let results = coord.search(&vec![0.15; 128], 10)?;
 //! coord.compact()?;
 //! ```
 

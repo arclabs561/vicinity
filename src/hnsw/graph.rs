@@ -861,13 +861,13 @@ impl HNSWIndex {
 
     /// Add a vector to the index from a borrowed slice.
     ///
-    /// This is the most ergonomic entry-point for callers that already have `&[f32]`
-    /// (e.g., from `ndarray`, `nalgebra`, or other tensor libraries).
+    /// # Errors
     ///
-    /// Notes:
-    /// - The index stores vectors internally, so it must copy the slice into its own storage.
-    /// - Vectors should be L2-normalized for cosine similarity.
-    /// - The index must be built before searching.
+    /// Returns [`RetrieveError::InvalidParameter`] if:
+    /// - The vector is not L2-normalized (`norm^2` outside `[0.9, 1.1]`),
+    ///   unless `auto_normalize` is enabled on the builder.
+    /// - The `doc_id` is a duplicate.
+    /// - The index has already been built.
     pub fn add_slice(&mut self, doc_id: u32, vector: &[f32]) -> Result<(), RetrieveError> {
         if self.built {
             return Err(RetrieveError::InvalidParameter(
