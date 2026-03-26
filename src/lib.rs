@@ -111,6 +111,7 @@ pub mod sng;
 pub mod vamana;
 
 pub(crate) mod adaptive;
+#[cfg(feature = "experimental")]
 pub(crate) mod matryoshka;
 pub mod partitioning;
 pub(crate) mod pq_simd;

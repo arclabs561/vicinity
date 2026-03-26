@@ -195,37 +195,37 @@ pub mod tombstones;
 // via submodule paths (e.g., `vicinity::hnsw::fused::FusedIndex`).
 
 /// FusedANN: Attribute-vector fusion for filtered search.
-#[cfg(feature = "hnsw")]
+#[cfg(all(feature = "hnsw", feature = "experimental"))]
 #[doc(hidden)]
 pub mod fused;
 
 /// Dynamic Edge Navigation Graph (DEG) for bimodal data.
-#[cfg(feature = "hnsw")]
+#[cfg(all(feature = "hnsw", feature = "experimental"))]
 #[doc(hidden)]
 pub mod deg;
 
 /// HNSW index merging algorithms (NGM, IGTM, CGTM).
-#[cfg(feature = "hnsw")]
+#[cfg(all(feature = "hnsw", feature = "experimental"))]
 #[doc(hidden)]
 pub mod merge;
 
 /// Random walk-based graph repair (alternative to MN-RU).
-#[cfg(feature = "hnsw")]
+#[cfg(all(feature = "hnsw", feature = "experimental"))]
 #[doc(hidden)]
 pub mod random_walk_repair;
 
 /// Incremental learning patterns (edge refinement, temporal locality).
-#[cfg(feature = "hnsw")]
+#[cfg(all(feature = "hnsw", feature = "experimental"))]
 #[doc(hidden)]
 pub mod incremental;
 
 /// Probabilistic edge routing (PEOs) for QPS improvement.
-#[cfg(feature = "hnsw")]
+#[cfg(all(feature = "hnsw", feature = "experimental"))]
 #[doc(hidden)]
 pub mod probabilistic_routing;
 
 /// Vamana graph construction (DiskANN-style alpha-pruning).
 /// Prefer `crate::vamana` for the integrated implementation.
-#[cfg(feature = "hnsw")]
+#[cfg(all(feature = "hnsw", feature = "experimental"))]
 #[doc(hidden)]
 pub mod vamana;

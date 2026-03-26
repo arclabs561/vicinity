@@ -98,6 +98,7 @@ persistence = [
 ]
 serde = ["dep:serde", "dep:serde_json", "smallvec/serde"]
 hnsw = []
+experimental = []
 ivf_pq = [
   "dep:clump",
   "dep:nalgebra",
@@ -230,6 +231,11 @@ required-features = ["hnsw"]
 [[example]]
 name = "ann_benchmark"
 path = "examples/ann_benchmark.rs"
+required-features = ["hnsw"]
+
+[[example]]
+name = "wasm_search"
+path = "examples/wasm_search.rs"
 required-features = ["hnsw"]
 
 [[bench]]
