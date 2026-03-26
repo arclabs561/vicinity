@@ -64,7 +64,9 @@ fn main() -> vicinity::Result<()> {
     let ef = 50;
 
     // Generate sample vectors (deterministic, no file I/O).
-    let vectors: Vec<Vec<f32>> = (0..n).map(|i| normalize(&pseudo_random_vec(dim, i))).collect();
+    let vectors: Vec<Vec<f32>> = (0..n)
+        .map(|i| normalize(&pseudo_random_vec(dim, i)))
+        .collect();
 
     // Build an HNSW index.
     let mut index = HNSWIndex::new(dim, 16, 32)?;
@@ -85,7 +87,10 @@ fn main() -> vicinity::Result<()> {
     }
 
     // Sanity: the query itself should be the nearest neighbor.
-    assert_eq!(results[0].0, 0, "expected vector 0 as its own nearest neighbor");
+    assert_eq!(
+        results[0].0, 0,
+        "expected vector 0 as its own nearest neighbor"
+    );
     println!("\npassed: vector 0 is its own nearest neighbor");
 
     Ok(())

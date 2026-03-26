@@ -27,42 +27,90 @@ fn build_corpus() -> Vec<Document> {
     // 16-dim embeddings. Each document gets a hand-crafted direction so that
     // semantically related docs cluster together in vector space.
     let docs: Vec<(&str, &str, [f32; 16])> = vec![
-        ("Rust basics",
-         "Rust is a systems programming language focused on safety and performance",
-         [1.0, 0.8, 0.3, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
-        ("C++ overview",
-         "C++ is a fast systems language used for operating systems and game engines",
-         [0.9, 0.7, 0.2, 0.0, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
-        ("Python intro",
-         "Python is a high-level language popular for scripting and data science",
-         [0.1, 0.1, 0.0, 0.0, 0.9, 0.8, 0.3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
-        ("Go concurrency",
-         "Go provides goroutines and channels for concurrent systems programming",
-         [0.7, 0.5, 0.4, 0.2, 0.0, 0.0, 0.0, 0.3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
-        ("JavaScript web",
-         "JavaScript powers interactive web applications and runs in the browser",
-         [0.0, 0.0, 0.0, 0.0, 0.2, 0.3, 0.0, 0.0, 0.9, 0.8, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
-        ("Rust async",
-         "Async Rust uses futures and tokio for high-performance network services",
-         [0.9, 0.7, 0.5, 0.3, 0.0, 0.0, 0.0, 0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
-        ("Database systems",
-         "Relational databases use SQL for querying structured data with ACID guarantees",
-         [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.8, 0.9, 0.3, 0.0, 0.0, 0.0]),
-        ("Machine learning",
-         "Neural networks learn patterns from data using gradient descent optimization",
-         [0.0, 0.0, 0.0, 0.0, 0.3, 0.4, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.8, 0.9, 0.2, 0.0]),
-        ("Operating systems",
-         "An OS kernel manages hardware resources and provides fast system call interfaces",
-         [0.6, 0.5, 0.2, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.7, 0.8]),
-        ("Rust memory",
-         "Rust ownership and borrowing prevent memory bugs without garbage collection",
-         [0.9, 0.9, 0.4, 0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.1, 0.0]),
-        ("WebAssembly",
-         "WebAssembly compiles systems languages to run fast portable code in browsers",
-         [0.5, 0.3, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.7, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
-        ("Garbage collection",
-         "Tracing garbage collectors reclaim memory automatically but add latency pauses",
-         [0.2, 0.2, 0.0, 0.0, 0.3, 0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.6]),
+        (
+            "Rust basics",
+            "Rust is a systems programming language focused on safety and performance",
+            [
+                1.0, 0.8, 0.3, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            ],
+        ),
+        (
+            "C++ overview",
+            "C++ is a fast systems language used for operating systems and game engines",
+            [
+                0.9, 0.7, 0.2, 0.0, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            ],
+        ),
+        (
+            "Python intro",
+            "Python is a high-level language popular for scripting and data science",
+            [
+                0.1, 0.1, 0.0, 0.0, 0.9, 0.8, 0.3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            ],
+        ),
+        (
+            "Go concurrency",
+            "Go provides goroutines and channels for concurrent systems programming",
+            [
+                0.7, 0.5, 0.4, 0.2, 0.0, 0.0, 0.0, 0.3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            ],
+        ),
+        (
+            "JavaScript web",
+            "JavaScript powers interactive web applications and runs in the browser",
+            [
+                0.0, 0.0, 0.0, 0.0, 0.2, 0.3, 0.0, 0.0, 0.9, 0.8, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            ],
+        ),
+        (
+            "Rust async",
+            "Async Rust uses futures and tokio for high-performance network services",
+            [
+                0.9, 0.7, 0.5, 0.3, 0.0, 0.0, 0.0, 0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            ],
+        ),
+        (
+            "Database systems",
+            "Relational databases use SQL for querying structured data with ACID guarantees",
+            [
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.8, 0.9, 0.3, 0.0, 0.0, 0.0,
+            ],
+        ),
+        (
+            "Machine learning",
+            "Neural networks learn patterns from data using gradient descent optimization",
+            [
+                0.0, 0.0, 0.0, 0.0, 0.3, 0.4, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.8, 0.9, 0.2, 0.0,
+            ],
+        ),
+        (
+            "Operating systems",
+            "An OS kernel manages hardware resources and provides fast system call interfaces",
+            [
+                0.6, 0.5, 0.2, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.7, 0.8,
+            ],
+        ),
+        (
+            "Rust memory",
+            "Rust ownership and borrowing prevent memory bugs without garbage collection",
+            [
+                0.9, 0.9, 0.4, 0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.1, 0.0,
+            ],
+        ),
+        (
+            "WebAssembly",
+            "WebAssembly compiles systems languages to run fast portable code in browsers",
+            [
+                0.5, 0.3, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.7, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            ],
+        ),
+        (
+            "Garbage collection",
+            "Tracing garbage collectors reclaim memory automatically but add latency pauses",
+            [
+                0.2, 0.2, 0.0, 0.0, 0.3, 0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.6,
+            ],
+        ),
     ];
 
     docs.into_iter()

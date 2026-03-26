@@ -157,8 +157,6 @@ so that “same input vectors” means “same meaning” across indexes.
 | **Batch search** | `index.search_batch(&queries, k, ef)` | Parallel via rayon; requires `parallel` feature |
 | **Scalar quantization** | `ScalarQuantizedHNSW::new(dim, m, m_max)` | ~4x memory reduction (uint8); asymmetric search + optional reranking |
 | **Streaming updates** | `StreamingCoordinator::new(index, config)` | Buffer-and-compact architecture for online insert/delete |
-| **Index factory** | `index_factory(dim, "HNSW16")` | Faiss-style string-based index construction |
-| **Trait-based API** | `dyn ANNIndex` | Unified trait across all index types via `AnyANNIndex` |
 
 ## Features
 
@@ -179,7 +177,7 @@ vicinity = { version = "0.2.0", features = ["hnsw"] }
 - `scann` — ScaNN-style coarse-to-fine scaffolding (experimental; activates `clump`)
 - `evoc` — EVoC hierarchical clustering (activates `clump`)
 - `quantization` / `rabitq` / `saq` — vector quantization and RaBitQ-style compression
-- `persistence` — on-disk persistence helpers (requires the `durability` crate)
+- `persistence` — segment-based on-disk persistence with WAL and crash recovery (requires `durability`)
 - `python` — optional PyO3 bindings (feature-gated)
 
 Compiles on `wasm32-unknown-unknown` with default features.
@@ -245,6 +243,9 @@ cargo bench
 | `glove_benchmark` | `hnsw` (default) | GloVe-25 real dataset benchmark |
 | `retrieve_and_rerank` | `hnsw` | Two-stage retrieval with reranking |
 | `ann_benchmark` | `hnsw` | ann-benchmarks runner (real datasets, HNSW + NSW) |
+| `hybrid_search` | `hnsw` | Combined vector + metadata search |
+| `wasm_search` | `hnsw` | WebAssembly-compatible search |
+| `embedding_pipeline` | `hnsw` | End-to-end embedding ingestion pipeline |
 
 For primary sources (papers) backing the algorithms and phenomena mentioned in docs, see [doc/references.md](doc/references.md).
 
