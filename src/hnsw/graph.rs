@@ -148,6 +148,10 @@ pub struct HNSWParams {
     /// Default search width during query (typically 50-200)
     pub ef_search: usize,
 
+    /// When true, L2-normalize vectors before storing them.
+    /// Useful when callers cannot guarantee pre-normalized input.
+    pub auto_normalize: bool,
+
     /// Seed selection strategy (default: StackedNSW for large-scale)
     pub seed_selection: SeedSelectionStrategy,
 
@@ -182,6 +186,7 @@ impl Default for HNSWParams {
             m_l: 1.0 / 16.0_f64.ln(), // 1/ln(M), per Malkov & Yashunin 2018
             ef_construction: 200,
             ef_search: 50,
+            auto_normalize: false,
             seed_selection: SeedSelectionStrategy::default(),
             neighborhood_diversification: NeighborhoodDiversification::default(),
             #[cfg(feature = "id-compression")]
@@ -189,6 +194,70 @@ impl Default for HNSWParams {
             #[cfg(feature = "id-compression")]
             compression_threshold: 32, // Only compress if m >= 32 (per paper)
         }
+    }
+}
+
+/// Builder for [`HNSWIndex`].
+///
+/// ```ignore
+/// let index = HNSWIndex::builder(128)
+///     .m(24)
+///     .ef_construction(400)
+///     .auto_normalize(true)
+///     .build()?;
+/// ```
+pub struct HNSWBuilder {
+    dimension: usize,
+    m: usize,
+    m_max: Option<usize>,
+    ef_construction: usize,
+    ef_search: usize,
+    auto_normalize: bool,
+}
+
+impl HNSWBuilder {
+    /// Set the maximum number of neighbors per node (default 16).
+    pub fn m(mut self, m: usize) -> Self {
+        self.m = m;
+        self
+    }
+
+    /// Set the maximum neighbors on non-zero layers (default: same as `m`).
+    pub fn m_max(mut self, m_max: usize) -> Self {
+        self.m_max = Some(m_max);
+        self
+    }
+
+    /// Set construction effort (default 200).
+    pub fn ef_construction(mut self, ef: usize) -> Self {
+        self.ef_construction = ef;
+        self
+    }
+
+    /// Set default search effort (default 50).
+    pub fn ef_search(mut self, ef: usize) -> Self {
+        self.ef_search = ef;
+        self
+    }
+
+    /// Whether to L2-normalize vectors on add (default false).
+    pub fn auto_normalize(mut self, normalize: bool) -> Self {
+        self.auto_normalize = normalize;
+        self
+    }
+
+    /// Build the index.
+    pub fn build(self) -> Result<HNSWIndex, RetrieveError> {
+        let m_max = self.m_max.unwrap_or(self.m);
+        let params = HNSWParams {
+            m: self.m,
+            m_max,
+            ef_construction: self.ef_construction,
+            ef_search: self.ef_search,
+            auto_normalize: self.auto_normalize,
+            ..Default::default()
+        };
+        HNSWIndex::with_params(self.dimension, params)
     }
 }
 
@@ -417,6 +486,18 @@ impl Layer {
 }
 
 impl HNSWIndex {
+    /// Create a builder for configuring an HNSW index.
+    pub fn builder(dimension: usize) -> HNSWBuilder {
+        HNSWBuilder {
+            dimension,
+            m: 16,
+            m_max: None,
+            ef_construction: 200,
+            ef_search: 50,
+            auto_normalize: false,
+        }
+    }
+
     /// Create a new HNSW index.
     ///
     /// # Arguments
@@ -751,6 +832,15 @@ impl HNSWIndex {
             });
         }
 
+        // Normalize if requested, otherwise borrow the original slice.
+        let normalized;
+        let vector = if self.params.auto_normalize {
+            normalized = crate::distance::normalize(vector);
+            normalized.as_slice()
+        } else {
+            vector
+        };
+
         debug_assert!(
             {
                 let norm_sq: f32 = vector.iter().map(|x| x * x).sum();
@@ -808,6 +898,26 @@ impl HNSWIndex {
             "category_assignments out of sync with num_vectors"
         );
 
+        Ok(())
+    }
+
+    /// Add multiple vectors in bulk from a flat f32 slice.
+    ///
+    /// `ids` and `vectors` must be aligned: `vectors.len() == ids.len() * self.dimension`.
+    /// Each contiguous `dimension`-sized chunk in `vectors` corresponds to the ID at the same
+    /// position in `ids`.
+    pub fn add_batch(&mut self, ids: &[u32], vectors: &[f32]) -> Result<(), RetrieveError> {
+        if vectors.len() != ids.len() * self.dimension {
+            return Err(RetrieveError::InvalidParameter(format!(
+                "vectors.len() ({}) != ids.len() ({}) * dimension ({})",
+                vectors.len(),
+                ids.len(),
+                self.dimension
+            )));
+        }
+        for (id, chunk) in ids.iter().zip(vectors.chunks_exact(self.dimension)) {
+            self.add_slice(*id, chunk)?;
+        }
         Ok(())
     }
 

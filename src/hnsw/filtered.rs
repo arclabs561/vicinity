@@ -39,6 +39,40 @@ impl<F: Fn(u32) -> bool + Sync> FilterPredicate for FnFilter<F> {
     }
 }
 
+/// Adapter that bridges [`MetadataFilter`](crate::filtering::MetadataFilter) to [`FilterPredicate`].
+///
+/// Allows using the metadata filtering system with ACORN search.
+///
+/// ```rust,no_run
+/// use vicinity::hnsw::filtered::MetadataFilterAdapter;
+/// use vicinity::filtering::{MetadataFilter, MetadataStore};
+///
+/// let filter = MetadataFilter::equals("color", 1);
+/// let store = MetadataStore::new();
+/// let adapter = MetadataFilterAdapter::new(&filter, &store);
+/// // `adapter` implements `FilterPredicate` and can be passed to `acorn_search`
+/// ```
+pub struct MetadataFilterAdapter<'a> {
+    filter: &'a crate::filtering::MetadataFilter,
+    store: &'a crate::filtering::MetadataStore,
+}
+
+impl<'a> MetadataFilterAdapter<'a> {
+    /// Create a new adapter from a metadata filter and store.
+    pub fn new(
+        filter: &'a crate::filtering::MetadataFilter,
+        store: &'a crate::filtering::MetadataStore,
+    ) -> Self {
+        Self { filter, store }
+    }
+}
+
+impl FilterPredicate for MetadataFilterAdapter<'_> {
+    fn matches(&self, doc_id: u32) -> bool {
+        self.store.matches(doc_id, self.filter)
+    }
+}
+
 /// Always-pass filter (no filtering).
 pub struct NoFilter;
 

@@ -2,8 +2,26 @@
 
 use super::opq::OptimizedProductQuantizer;
 use super::pq::ProductQuantizer;
+use crate::pq_simd::{adc_batch_dispatch, PackedLUT};
 use crate::RetrieveError;
 use serde::{Deserialize, Serialize};
+
+/// Minimum candidates in a partition to use SIMD batch ADC.
+/// Below this threshold, scalar per-candidate lookup is used.
+const SIMD_BATCH_THRESHOLD: usize = 16;
+
+/// Reshape a flat ADC table into nested `Vec<Vec<f32>>` for `PackedLUT`.
+///
+/// Flat layout: `[cb0_cw0, cb0_cw1, ..., cb1_cw0, cb1_cw1, ...]`
+/// Nested: `nested[codebook][codeword]`
+fn flat_table_to_nested(table: &[f32], num_codebooks: usize, codebook_size: usize) -> Vec<Vec<f32>> {
+    (0..num_codebooks)
+        .map(|m| {
+            let start = m * codebook_size;
+            table[start..start + codebook_size].to_vec()
+        })
+        .collect()
+}
 
 /// Quantizer strategy.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -510,26 +528,45 @@ impl IVFPQIndex {
 
         cluster_distances.sort_unstable_by(|a, b| a.1.total_cmp(&b.1)); // Unstable for better performance
 
+        // Build PackedLUT once for SIMD batch dispatch
+        let nested_lut = flat_table_to_nested(
+            &adc_table,
+            self.params.num_codebooks,
+            self.params.codebook_size,
+        );
+        let packed_lut = PackedLUT::from_nested(&nested_lut);
+
         // Search in top nprobe clusters
         let mut candidates = Vec::new();
 
-        // Use mutable reference for decompression cache
-        // Note: This requires interior mutability or changing API
-        // For now, use immutable access which may decompress multiple times
         for (cluster_idx, _) in cluster_distances.iter().take(self.params.nprobe) {
             let cluster = &self.clusters[*cluster_idx];
-
-            // Get IDs (may decompress if compressed)
             let ids = cluster.get_ids_immut();
 
-            for &vector_idx in &ids {
-                // Use ADC distance instead of raw vector distance
-                let start = vector_idx as usize * self.params.num_codebooks;
-                let end = start + self.params.num_codebooks;
-                let codes = &self.quantized_codes[start..end];
+            if ids.len() >= SIMD_BATCH_THRESHOLD {
+                // SIMD batch path: gather codes into a contiguous buffer, dispatch
+                let num_cb = self.params.num_codebooks;
+                let mut codes_batch = Vec::with_capacity(ids.len() * num_cb);
+                for &vector_idx in &ids {
+                    let start = vector_idx as usize * num_cb;
+                    codes_batch.extend_from_slice(&self.quantized_codes[start..start + num_cb]);
+                }
 
-                let dist = pq.distance_with_table(&adc_table, codes);
-                candidates.push((vector_idx, dist));
+                let distances = adc_batch_dispatch(&codes_batch, num_cb, &packed_lut);
+
+                for (i, &vector_idx) in ids.iter().enumerate() {
+                    candidates.push((vector_idx, distances[i]));
+                }
+            } else {
+                // Scalar fallback for small clusters
+                for &vector_idx in &ids {
+                    let start = vector_idx as usize * self.params.num_codebooks;
+                    let end = start + self.params.num_codebooks;
+                    let codes = &self.quantized_codes[start..end];
+
+                    let dist = pq.distance_with_table(&adc_table, codes);
+                    candidates.push((vector_idx, dist));
+                }
             }
         }
 

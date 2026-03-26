@@ -337,6 +337,10 @@ impl ANNIndex for crate::classic::trees::kmeans_tree::KMeansTreeIndex {
     fn num_vectors(&self) -> usize {
         self.num_vectors
     }
+
+    fn distance_metric(&self) -> crate::distance::DistanceMetric {
+        crate::distance::DistanceMetric::L2
+    }
 }
 
 // Implement ANNIndex for Random Projection Tree

@@ -149,7 +149,8 @@ pub use graph::{HNSWIndex, HNSWParams, NeighborhoodDiversification, SeedSelectio
 pub mod filtered;
 #[cfg(feature = "hnsw")]
 pub use filtered::{
-    acorn_search, AcornConfig, FilterPredicate, FilterStrategy, FnFilter, NoFilter,
+    acorn_search, AcornConfig, FilterPredicate, FilterStrategy, FnFilter, MetadataFilterAdapter,
+    NoFilter,
 };
 
 // Graph repair (MN-RU algorithm for deletions)
@@ -159,12 +160,6 @@ pub mod repair;
 pub use repair::{
     compute_repair_operations, validate_connectivity, GraphRepairer, RepairConfig, RepairStats,
 };
-
-// Vamana graph construction (DiskANN-style alpha-pruning)
-#[cfg(feature = "hnsw")]
-pub mod vamana;
-#[cfg(feature = "hnsw")]
-pub use vamana::{build_vamana_graph, search_vamana, VamanaConfig, VamanaGraph};
 
 // In-place updates (IP-DiskANN style)
 #[cfg(feature = "hnsw")]
@@ -188,6 +183,15 @@ pub mod scalar_quantized;
 // (e.g., `vicinity::hnsw::fused::FusedIndex`) but not re-exported at
 // `vicinity::hnsw::*`.
 
+/// Tombstone-based deletions for streaming updates.
+#[cfg(feature = "hnsw")]
+#[doc(hidden)]
+pub mod tombstones;
+
+// ─── Experimental modules ────────────────────────────────────────────────────
+// Research implementations gated behind `hnsw` only. Not re-exported. Access
+// via submodule paths (e.g., `vicinity::hnsw::fused::FusedIndex`).
+
 /// FusedANN: Attribute-vector fusion for filtered search.
 #[cfg(feature = "hnsw")]
 #[doc(hidden)]
@@ -203,11 +207,6 @@ pub mod deg;
 #[doc(hidden)]
 pub mod merge;
 
-/// Tombstone-based deletions for streaming updates.
-#[cfg(feature = "hnsw")]
-#[doc(hidden)]
-pub mod tombstones;
-
 /// Random walk-based graph repair (alternative to MN-RU).
 #[cfg(feature = "hnsw")]
 #[doc(hidden)]
@@ -222,3 +221,9 @@ pub mod incremental;
 #[cfg(feature = "hnsw")]
 #[doc(hidden)]
 pub mod probabilistic_routing;
+
+/// Vamana graph construction (DiskANN-style alpha-pruning).
+/// Prefer `crate::vamana` for the integrated implementation.
+#[cfg(feature = "hnsw")]
+#[doc(hidden)]
+pub mod vamana;

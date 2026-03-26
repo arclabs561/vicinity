@@ -60,9 +60,12 @@ byteorder = { version = "1.5", optional = true }
 crc32fast = { version = "1.4", optional = true }
 libc = { version = "0.2", optional = true }
 hex = { version = "0.4", optional = true }
-fst = { version = "0.4", optional = true }
 memmap2 = { version = "0.9", optional = true }
-postcard = { version = "1.0", optional = true, features = ["use-crc", "alloc", "use-std"] }
+postcard = { version = "1.0", optional = true, features = [
+  "use-crc",
+  "alloc",
+  "use-std",
+] }
 bytemuck = { version = "1.14", optional = true, features = ["derive"] }
 durability = { version = "0.2.0", optional = true }
 
@@ -76,10 +79,17 @@ getrandom = { version = "0.3", features = ["wasm_js"] }
 [features]
 default = ["hnsw", "innr"]
 persistence = [
-    "dep:serde", "dep:serde_json", "smallvec/serde",
-    "dep:postcard", "dep:bytemuck", "dep:memmap2", "dep:durability",
-    "dep:byteorder", "dep:crc32fast", "dep:libc",
-    "dep:hex", "dep:fst",
+  "dep:serde",
+  "dep:serde_json",
+  "smallvec/serde",
+  "dep:postcard",
+  "dep:bytemuck",
+  "dep:memmap2",
+  "dep:durability",
+  "dep:byteorder",
+  "dep:crc32fast",
+  "dep:libc",
+  "dep:hex",
 ]
 serde = ["dep:serde", "dep:serde_json", "smallvec/serde"]
 hnsw = []
@@ -90,7 +100,6 @@ sng = []
 vamana = ["hnsw"]
 quantization = ["qntz"]
 benchmark = []
-nightly = []
 innr = ["dep:innr"]
 simsimd = ["dep:simsimd"]
 parallel = ["dep:rayon"]
@@ -108,9 +117,6 @@ evoc = ["dep:clump"]
 
 id-compression = ["dep:cnk", "dep:sbits", "cnk/sbits"]
 persistence-bincode = ["dep:bincode", "persistence"]
-# Deprecated: alias for persistence. Will be removed in 0.2.0.
-memmap = ["persistence"]
-
 # Quantization sub-features (kept separate so callers can be explicit)
 rabitq = ["qntz", "qntz/rabitq"]
 saq = ["qntz", "qntz/ternary"]
@@ -122,7 +128,6 @@ criterion = { version = "0.5", features = ["html_reports"] }
 proptest = "1.5"
 tempfile = "3"
 memmap2 = "0.9"
-tokio = { version = "1.40", features = ["macros", "rt-multi-thread"] }
 anyhow = "1.0"
 rankops = "0.1.4"
 
