@@ -45,16 +45,24 @@ def apply_style(ax):
 
 
 def pareto_frontier(points):
-    """Extract Pareto-optimal points (maximize both recall and QPS)."""
-    # Sort by recall ascending
-    pts = sorted(points, key=lambda p: p[0])
+    """Extract Pareto-optimal points (maximize both recall and QPS).
+
+    A point is Pareto-optimal if no other point has both higher recall
+    AND higher QPS. For ANN algorithms, this traces the upper-right
+    envelope: as recall increases, QPS typically decreases.
+    """
+    if not points:
+        return []
+    # Sort by recall descending; sweep tracking max QPS seen so far
+    pts = sorted(points, key=lambda p: -p[0])
     frontier = []
     max_qps = -1
     for recall, qps in pts:
         if qps > max_qps:
             frontier.append((recall, qps))
             max_qps = qps
-    return frontier
+    # Return sorted by recall ascending for plotting
+    return sorted(frontier, key=lambda p: p[0])
 
 
 def load_results(path):
@@ -124,6 +132,10 @@ def plot_comparison(results_path, output_dir=None):
     ax.set_ylabel("Queries per second (QPS)", fontsize=10)
     ax.set_yscale("log")
     ax.set_xlim(0, 1.05)
+    # Ensure y-axis includes all data points (brute force can be very low)
+    all_qps = [q for pts in by_algo.values() for _, q in pts]
+    if all_qps:
+        ax.set_ylim(min(all_qps) * 0.5, max(all_qps) * 3)
     ax.yaxis.set_major_formatter(ticker.FuncFormatter(
         lambda x, _: f"{x:.0f}" if x < 1000 else f"{x/1000:.0f}K"
     ))
