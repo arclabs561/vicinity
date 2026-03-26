@@ -37,6 +37,11 @@ innr = { version = "0.2.0", optional = true }
 # Provides up to 200x speedups for vector distance functions
 simsimd = { version = "6.5.12", optional = true }
 
+# Linear algebra for OPQ Procrustes solver (SVD)
+nalgebra = { version = "0.33", optional = true, default-features = false, features = [
+  "std",
+] }
+
 # Parallel batch search (feature-gated)
 rayon = { version = "1.10", optional = true }
 
@@ -93,7 +98,13 @@ persistence = [
 ]
 serde = ["dep:serde", "dep:serde_json", "smallvec/serde"]
 hnsw = []
-ivf_pq = ["dep:clump", "dep:serde", "dep:serde_json", "smallvec/serde"]
+ivf_pq = [
+  "dep:clump",
+  "dep:nalgebra",
+  "dep:serde",
+  "dep:serde_json",
+  "smallvec/serde",
+]
 diskann = ["dep:serde_json"]
 scann = ["dep:clump"]
 sng = []

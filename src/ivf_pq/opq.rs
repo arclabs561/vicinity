@@ -187,17 +187,15 @@ fn apply_rotation_batch(
     }
 }
 
-/// Compute optimal rotation matrix using Procrustes analysis.
+/// Compute optimal rotation matrix using SVD-based Procrustes analysis.
 ///
 /// Given original vectors X and their PQ reconstructions Q,
 /// find orthogonal R minimizing ||XR - Q||_F.
 ///
-/// Solution: if X'Q = UΣV', then R = VU'
-///
-/// For efficiency, we use a simplified approach:
-/// - Compute X'Q where Q is the reconstruction
-/// - Apply power iteration for dominant singular vectors
-/// - Construct R from these vectors
+/// Solution (FAISS algorithm):
+///   M = Q^T X   (d x d cross-covariance)
+///   M = U S V^T  (SVD)
+///   R = U V^T    (optimal orthogonal matrix)
 fn compute_optimal_rotation(
     data: &[f32],
     num_vectors: usize,
@@ -205,12 +203,18 @@ fn compute_optimal_rotation(
     pq: &ProductQuantizer,
     current_rotation: &[f32],
 ) -> Vec<f32> {
-    // Sample subset for efficiency (use all if small enough)
-    let sample_size = num_vectors.min(5000);
+    if dimension == 0 {
+        return Vec::new();
+    }
 
-    // Compute cross-covariance matrix X'Q
-    // X'Q[i,j] = sum_k X[k,i] * Q[k,j]
-    let mut xtq = vec![0.0f32; dimension * dimension];
+    let sample_size = num_vectors.min(5000);
+    if sample_size == 0 {
+        return identity_matrix(dimension);
+    }
+
+    // Compute cross-covariance matrix M = Q^T X (d x d)
+    // M[i,j] = sum_k reconstruction[k,i] * original[k,j]
+    let mut m = vec![0.0f32; dimension * dimension];
 
     for k in 0..sample_size {
         let src_start = k * dimension;
@@ -219,26 +223,41 @@ fn compute_optimal_rotation(
         // Apply current rotation
         let rotated = matrix_vector_multiply(current_rotation, original, dimension);
 
-        // Get PQ reconstruction
+        // Get PQ reconstruction of the rotated vector
         let codes = pq.quantize(&rotated);
         let reconstruction = reconstruct_vector(pq, &codes, dimension);
 
-        // Accumulate outer product: X'Q += original' × reconstruction
+        // Accumulate: M += reconstruction^T * original  (outer product)
         for i in 0..dimension {
             for j in 0..dimension {
-                xtq[i * dimension + j] += original[i] * reconstruction[j];
+                m[i * dimension + j] += reconstruction[i] * original[j];
             }
         }
     }
 
-    // Compute SVD of X'Q using power iteration (simplified for robustness)
-    // For a proper implementation, use a linear algebra library
-    //
-    // Approximate: R ≈ orthogonalize(X'Q)
-    // This is a simplification of the full Procrustes solution
-    orthogonalize_matrix(&mut xtq, dimension);
+    // SVD via nalgebra: M = U S V^T, then R = U V^T
+    let na_m = nalgebra::DMatrix::from_row_slice(dimension, dimension, &m);
+    let svd = nalgebra::linalg::SVD::new(na_m, true, true);
 
-    xtq
+    let u = match svd.u {
+        Some(ref u) => u,
+        None => return identity_matrix(dimension),
+    };
+    let vt = match svd.v_t {
+        Some(ref vt) => vt,
+        None => return identity_matrix(dimension),
+    };
+
+    let rotation = u * vt;
+
+    // Extract to row-major Vec<f32>
+    let mut result = vec![0.0f32; dimension * dimension];
+    for i in 0..dimension {
+        for j in 0..dimension {
+            result[i * dimension + j] = rotation[(i, j)];
+        }
+    }
+    result
 }
 
 /// Reconstruct vector from PQ codes.
@@ -254,48 +273,6 @@ fn reconstruct_vector(pq: &ProductQuantizer, codes: &[u8], dimension: usize) -> 
         result[start..start + subvector_dim].copy_from_slice(codeword);
     }
     result
-}
-
-/// Orthogonalize a matrix using Gram-Schmidt process.
-/// This makes the matrix orthonormal (rows become orthonormal vectors).
-fn orthogonalize_matrix(m: &mut [f32], d: usize) {
-    // Gram-Schmidt on rows
-    for i in 0..d {
-        let row_i_start = i * d;
-
-        // Subtract projections onto previous rows
-        for j in 0..i {
-            let row_j_start = j * d;
-
-            // Compute dot product
-            let mut dot = 0.0f32;
-            for k in 0..d {
-                dot += m[row_i_start + k] * m[row_j_start + k];
-            }
-
-            // Subtract projection
-            for k in 0..d {
-                m[row_i_start + k] -= dot * m[row_j_start + k];
-            }
-        }
-
-        // Normalize row i
-        let mut norm = 0.0f32;
-        for k in 0..d {
-            norm += m[row_i_start + k] * m[row_i_start + k];
-        }
-        norm = norm.sqrt();
-
-        if norm > 1e-10 {
-            for k in 0..d {
-                m[row_i_start + k] /= norm;
-            }
-        } else {
-            // Row is zero or nearly zero, make it a unit vector
-            // (this shouldn't happen with proper training data)
-            m[row_i_start + (i % d)] = 1.0;
-        }
-    }
 }
 
 #[cfg(test)]
