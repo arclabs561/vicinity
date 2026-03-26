@@ -16,6 +16,25 @@ pub trait ANNIndex {
         self.add(doc_id, vector.to_vec())
     }
 
+    /// Add multiple vectors in bulk.
+    ///
+    /// `ids` and `vectors` must be aligned: `vectors.len() == ids.len() * self.dimension()`.
+    fn add_batch(&mut self, ids: &[u32], vectors: &[f32]) -> Result<(), RetrieveError> {
+        let dim = self.dimension();
+        if vectors.len() != ids.len() * dim {
+            return Err(RetrieveError::InvalidParameter(format!(
+                "vectors.len() ({}) != ids.len() ({}) * dimension ({})",
+                vectors.len(),
+                ids.len(),
+                dim
+            )));
+        }
+        for (id, chunk) in ids.iter().zip(vectors.chunks_exact(dim)) {
+            self.add_slice(*id, chunk)?;
+        }
+        Ok(())
+    }
+
     /// Build the index (required before search).
     fn build(&mut self) -> Result<(), RetrieveError>;
 

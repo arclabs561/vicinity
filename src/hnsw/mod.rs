@@ -142,7 +142,9 @@ pub(crate) mod graph;
 mod search;
 
 #[cfg(feature = "hnsw")]
-pub use graph::{HNSWIndex, HNSWParams, NeighborhoodDiversification, SeedSelectionStrategy};
+pub use graph::{
+    HNSWBuilder, HNSWIndex, HNSWParams, NeighborhoodDiversification, SeedSelectionStrategy,
+};
 
 // Filtered search (ACORN-style)
 #[cfg(feature = "hnsw")]
