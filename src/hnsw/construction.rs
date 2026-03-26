@@ -465,16 +465,16 @@ pub fn construct_graph(index: &mut HNSWIndex) -> Result<(), RetrieveError> {
                 }
             }
 
-            // Second pass: prune current_id's neighbors if needed
+            // Second pass: prune current_id's neighbors using diversity heuristic
+            // Paper (Algorithm 4): pruning should use the same heuristic as selection
             {
                 let neighbors = &mut neighbors_vec[current_id];
                 if neighbors.len() > m_actual {
-                    let mut neighbor_candidates: Vec<(u32, f32)> = neighbors
+                    let neighbor_candidates: Vec<(u32, f32)> = neighbors
                         .iter()
                         .map(|&id| {
                             let dist =
                                 all_current_distances.get(&id).copied().unwrap_or_else(|| {
-                                    // Compute distance on the fly if somehow missing
                                     let vec =
                                         get_vector(&index.vectors, index.dimension, id as usize);
                                     distance::cosine_distance_normalized(current_vector, vec)
@@ -483,13 +483,19 @@ pub fn construct_graph(index: &mut HNSWIndex) -> Result<(), RetrieveError> {
                         })
                         .collect();
 
-                    neighbor_candidates.sort_by(|a, b| a.1.total_cmp(&b.1));
-                    neighbor_candidates.truncate(m_actual);
-                    *neighbors = neighbor_candidates.iter().map(|(id, _)| *id).collect();
+                    let pruned = select_neighbors(
+                        current_vector,
+                        &neighbor_candidates,
+                        m_actual,
+                        &index.vectors,
+                        index.dimension,
+                        &index.params.neighborhood_diversification,
+                    );
+                    *neighbors = pruned.into_iter().collect();
                 }
             }
 
-            // Third pass: prune each selected neighbor's reverse list if needed
+            // Third pass: prune each selected neighbor's reverse list using diversity heuristic
             for (idx, &neighbor_id) in selected.iter().enumerate() {
                 let reverse_neighbors = &mut neighbors_vec[neighbor_id as usize];
                 if reverse_neighbors.len() > m_actual {
@@ -497,11 +503,10 @@ pub fn construct_graph(index: &mut HNSWIndex) -> Result<(), RetrieveError> {
                     let neighbor_vec =
                         get_vector(&index.vectors, index.dimension, neighbor_id as usize);
 
-                    let mut reverse_candidates: Vec<(u32, f32)> = reverse_neighbors
+                    let reverse_candidates: Vec<(u32, f32)> = reverse_neighbors
                         .iter()
                         .map(|&id| {
                             let dist = distances.get(&id).copied().unwrap_or_else(|| {
-                                // Compute distance on the fly if somehow missing
                                 let vec = get_vector(&index.vectors, index.dimension, id as usize);
                                 distance::cosine_distance_normalized(neighbor_vec, vec)
                             });
@@ -509,9 +514,15 @@ pub fn construct_graph(index: &mut HNSWIndex) -> Result<(), RetrieveError> {
                         })
                         .collect();
 
-                    reverse_candidates.sort_by(|a, b| a.1.total_cmp(&b.1));
-                    reverse_candidates.truncate(m_actual);
-                    *reverse_neighbors = reverse_candidates.iter().map(|(id, _)| *id).collect();
+                    let pruned = select_neighbors(
+                        neighbor_vec,
+                        &reverse_candidates,
+                        m_actual,
+                        &index.vectors,
+                        index.dimension,
+                        &index.params.neighborhood_diversification,
+                    );
+                    *reverse_neighbors = pruned.into_iter().collect();
                 }
             }
         }
