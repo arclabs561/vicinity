@@ -54,7 +54,7 @@ Given a query vector, find the top-k most similar vectors from a collection.
 Brute force computes all N distances (O(N) per query). For 1,000,000 vectors,
 that's 1,000,000 distance computations per query.
 
-ANN systems trade exactness for speed: they aim for **high recall** at much lower latency.
+ANN systems trade exactness for speed: they aim for high recall at much lower latency.
 
 ## The key idea (graph search, not magic)
 
@@ -152,11 +152,11 @@ so that “same input vectors” means “same meaning” across indexes.
 |---|---|---|
 | **Batch add** | `index.add_batch(ids, vectors)` | Bulk ingestion from flat f32 slice |
 | **Delete vectors** | `index.delete(doc_id)` | Lazy tombstoning; deleted vectors excluded from results |
-| **Filtered search** | `index.search_with_filter(query, k, ef, predicate)` | ACORN-style metadata filtering during graph traversal |
+| **Filtered search** | `index.search_with_filter(query, k, ef, &filter)` | Metadata filtering during graph traversal (`MetadataFilter`) |
 | **Save / load** | `index.save_to_writer(w)` / `HNSWIndex::load_from_reader(r)` | Requires `serde` feature |
 | **Batch search** | `index.search_batch(&queries, k, ef)` | Parallel via rayon; requires `parallel` feature |
 | **Scalar quantization** | `ScalarQuantizedHNSW::new(dim, m, m_max)` | ~4x memory reduction (uint8); asymmetric search + optional reranking |
-| **Streaming updates** | `StreamingCoordinator::new(index, config)` | Buffer-and-compact architecture for online insert/delete |
+| **Streaming updates** | `StreamingCoordinator::new(index)` | Buffer-and-compact architecture for online insert/delete |
 
 ## Features
 
@@ -177,7 +177,7 @@ vicinity = { version = "0.2.0", features = ["hnsw"] }
 - `scann` — ScaNN-style coarse-to-fine scaffolding (experimental; activates `clump`)
 - `evoc` — EVoC hierarchical clustering (activates `clump`)
 - `quantization` / `rabitq` / `saq` — vector quantization and RaBitQ-style compression
-- `persistence` — segment-based on-disk persistence with WAL and crash recovery (requires `durability`)
+- `persistence` — segment-based on-disk persistence with WAL and crash recovery (includes `durability`)
 - `python` — optional PyO3 bindings (feature-gated)
 
 Compiles on `wasm32-unknown-unknown` with default features.
@@ -193,8 +193,8 @@ Concrete reference:
 - Munyampirwa et al. (2024). *Down with the Hierarchy: The 'H' in HNSW Stands for "Hubs"* (arXiv:2412.01940).
 
 Practical guidance in `vicinity`:
-- Try `HNSW{m}` first (default; well-tested).
-- If you want to experiment with a simpler flat graph, enable `nsw` and try `NSW{m}` via the factory.
+- Try HNSW first (default; well-tested).
+- If you want to experiment with a simpler flat graph, enable the `nsw` feature and use `NSWIndex` directly.
   Benchmark recall@k vs latency on your workload; the “best” choice depends on data and constraints.
 
 ## Running benchmarks / examples
