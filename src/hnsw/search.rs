@@ -35,21 +35,24 @@ use crate::distance::cosine_distance_normalized as cosine_distance;
 // ─── Visited set ─────────────────────────────────────────────────────────────
 
 /// Threshold below which we use a dense generation-counter array instead of HashSet.
-/// 100K nodes = 200KB Vec<u16>, fits comfortably in L2 cache.
+/// 100K nodes = 100KB Vec<u8>, fits comfortably in L1/L2 cache.
 const DENSE_VISITED_THRESHOLD: usize = 100_000;
 
 /// Fast visited-node tracker using the generation-counter pattern.
 ///
-/// Dense variant: a `Vec<u16>` where `visited[id] == generation` means visited.
+/// Dense variant: a `Vec<u8>` where `visited[id] == generation` means visited.
 /// Incrementing `generation` logically clears the set in O(1). Only when the
-/// u16 counter wraps (every 65 535 searches) does a memset occur.
+/// u8 counter wraps (every 255 searches) does a memset occur.
+///
+/// Uses u8 (not u16) to minimize cache footprint: 1 byte/node = same as
+/// the old Vec<bool>, but with O(1) clear instead of O(n).
 ///
 /// Falls back to `HashSet<u32>` for large indexes where a full dense array
 /// would waste memory.
 enum VisitedSet {
     Dense {
-        marks: Vec<u16>,
-        generation: u16,
+        marks: Vec<u8>,
+        generation: u8,
     },
     Sparse(HashSet<u32>),
 }
@@ -59,7 +62,7 @@ impl VisitedSet {
     fn new(num_nodes: usize, capacity_hint: usize) -> Self {
         if num_nodes <= DENSE_VISITED_THRESHOLD {
             VisitedSet::Dense {
-                marks: vec![0u16; num_nodes],
+                marks: vec![0u8; num_nodes],
                 generation: 1,
             }
         } else {
@@ -526,13 +529,13 @@ mod tests {
 
     #[test]
     fn test_visited_set_dense_generation_overflow() {
-        // Create a dense set and force generation to u16::MAX
+        // Create a dense set and force generation to u8::MAX
         let mut v = VisitedSet::new(100, 10);
         if let VisitedSet::Dense {
             ref mut generation, ..
         } = v
         {
-            *generation = u16::MAX;
+            *generation = u8::MAX;
         }
         assert!(v.insert(5));
         assert!(v.contains(5));
