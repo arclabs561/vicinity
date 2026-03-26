@@ -471,15 +471,25 @@ impl IVFPQIndex {
             })
             .collect();
 
-        // Stage 2: Product Quantization
-        // Train PQ or OPQ
+        // Stage 2: Product Quantization on residual vectors
+        // Compute residuals: vector[i] - centroid[assignment[i]]
+        let mut residuals = Vec::with_capacity(self.num_vectors * self.dimension);
+        for i in 0..self.num_vectors {
+            let vec = self.get_vector(i);
+            let centroid = &self.centroids[assignments[i]];
+            for (v, c) in vec.iter().zip(centroid.iter()) {
+                residuals.push(v - c);
+            }
+        }
+
+        // Train PQ or OPQ on residuals
         let pq: Quantizer = if self.params.use_opq {
             let mut opq = OptimizedProductQuantizer::new(
                 self.dimension,
                 self.params.num_codebooks,
                 self.params.codebook_size,
             )?;
-            opq.fit(&self.vectors, self.num_vectors, 10)?; // 10 iterations
+            opq.fit(&residuals, self.num_vectors, 10)?; // 10 iterations
             Quantizer::Optimized(opq)
         } else {
             let mut pq = ProductQuantizer::new(
@@ -487,15 +497,16 @@ impl IVFPQIndex {
                 self.params.num_codebooks,
                 self.params.codebook_size,
             )?;
-            pq.fit(&self.vectors, self.num_vectors)?;
+            pq.fit(&residuals, self.num_vectors)?;
             Quantizer::Product(pq)
         };
 
-        // Quantize all vectors
+        // Quantize residual vectors
         self.quantized_codes = Vec::with_capacity(self.num_vectors * self.params.num_codebooks);
         for i in 0..self.num_vectors {
-            let vec = self.get_vector(i);
-            let codes = pq.quantize(vec);
+            let residual =
+                &residuals[i * self.dimension..(i + 1) * self.dimension];
+            let codes = pq.quantize(residual);
             self.quantized_codes.extend_from_slice(&codes);
         }
 
@@ -524,9 +535,6 @@ impl IVFPQIndex {
             .as_ref()
             .ok_or(RetrieveError::InvalidParameter("PQ not initialized".into()))?;
 
-        // Precompute ADC table for fast distance lookup
-        let adc_table = pq.compute_adc_table(query)?;
-
         // Find closest clusters
         let mut cluster_distances: Vec<(usize, f32)> = self
             .centroids
@@ -540,22 +548,34 @@ impl IVFPQIndex {
 
         cluster_distances.sort_unstable_by(|a, b| a.1.total_cmp(&b.1)); // Unstable for better performance
 
-        // Build PackedLUT once for SIMD batch dispatch
-        let nested_lut = flat_table_to_nested(
-            &adc_table,
-            self.params.num_codebooks,
-            self.params.codebook_size,
-        );
-        let packed_lut = PackedLUT::from_nested(&nested_lut);
-
         // Search in top nprobe clusters
+        // ADC table is built per-cluster from the query residual (query - centroid).
         let mut candidates = Vec::new();
 
         for (cluster_idx, _) in cluster_distances.iter().take(self.params.nprobe) {
             let cluster = &self.clusters[*cluster_idx];
             let ids = cluster.get_ids_immut();
 
+            // Compute query residual for this cluster
+            let centroid = &self.centroids[*cluster_idx];
+            let query_residual: Vec<f32> = query
+                .iter()
+                .zip(centroid.iter())
+                .map(|(q, c)| q - c)
+                .collect();
+
+            // Build ADC table from query residual
+            let adc_table = pq.compute_adc_table(&query_residual)?;
+
             if ids.len() >= SIMD_BATCH_THRESHOLD {
+                // Build PackedLUT for SIMD batch dispatch
+                let nested_lut = flat_table_to_nested(
+                    &adc_table,
+                    self.params.num_codebooks,
+                    self.params.codebook_size,
+                );
+                let packed_lut = PackedLUT::from_nested(&nested_lut);
+
                 // SIMD batch path: gather codes into a contiguous buffer, dispatch
                 let num_cb = self.params.num_codebooks;
                 let mut codes_batch = Vec::with_capacity(ids.len() * num_cb);
@@ -665,7 +685,6 @@ impl IVFPQIndex {
             .pq
             .as_ref()
             .ok_or(RetrieveError::InvalidParameter("PQ not initialized".into()))?;
-        let adc_table = pq.compute_adc_table(query)?;
 
         for (cluster_idx, _) in cluster_distances.iter().take(self.params.nprobe) {
             let cluster = &self.clusters[*cluster_idx];
@@ -674,6 +693,16 @@ impl IVFPQIndex {
             if (cluster.filter_bitmask & filter_bit) == 0 {
                 continue;
             }
+
+            // Compute query residual for this cluster
+            let centroid = &self.centroids[*cluster_idx];
+            let query_residual: Vec<f32> = query
+                .iter()
+                .zip(centroid.iter())
+                .map(|(q, c)| q - c)
+                .collect();
+
+            let adc_table = pq.compute_adc_table(&query_residual)?;
 
             // Search vectors in this cluster, filtering by metadata
             if let Some(ref metadata_store) = self.metadata {
