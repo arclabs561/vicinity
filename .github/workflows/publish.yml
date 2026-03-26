@@ -38,4 +38,4 @@ jobs:
       - name: cargo publish (vicinity)
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
-        run: cargo publish
+        run: cargo publish --allow-dirty
