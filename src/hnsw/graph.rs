@@ -446,6 +446,12 @@ impl Layer {
                         .decompressed_cache
                         .lock()
                         .unwrap_or_else(|e| e.into_inner());
+                    // Cap cache size to prevent unbounded memory growth during
+                    // concurrent searches. Full clear is simple and sufficient;
+                    // hot entries will be re-populated on next access.
+                    if cache.len() >= 10_000 {
+                        cache.clear();
+                    }
                     cache.insert(node, neighbors);
                 }
 

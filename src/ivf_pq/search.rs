@@ -275,6 +275,14 @@ impl Cluster {
 }
 
 impl IVFPQIndex {
+    /// Set the number of clusters to probe during search.
+    ///
+    /// This can be changed after the index is built to sweep the
+    /// recall/latency trade-off without rebuilding.
+    pub fn set_nprobe(&mut self, nprobe: usize) {
+        self.params.nprobe = nprobe;
+    }
+
     /// Create a new IVF-PQ index.
     pub fn new(dimension: usize, params: IVFPQParams) -> Result<Self, RetrieveError> {
         if dimension == 0 {

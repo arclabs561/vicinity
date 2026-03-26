@@ -72,6 +72,18 @@ impl From<crate::RetrieveError> for PersistenceError {
     }
 }
 
+impl From<PersistenceError> for crate::RetrieveError {
+    fn from(e: PersistenceError) -> Self {
+        match e {
+            PersistenceError::Io(e) => Self::Other(format!("persistence I/O: {e}")),
+            PersistenceError::Format(s) => Self::FormatError(s),
+            PersistenceError::Serialization(s) => Self::Serialization(s),
+            PersistenceError::Deserialization(s) => Self::FormatError(s),
+            _ => Self::Other(e.to_string()),
+        }
+    }
+}
+
 /// Result type for persistence operations.
 pub type PersistenceResult<T> = Result<T, PersistenceError>;
 
