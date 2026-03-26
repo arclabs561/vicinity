@@ -106,16 +106,19 @@ and measure recall@k vs latency for your dataset.
 
 Higher `M` generally improves recall, but increases build time and memory.
 
-<p align="center">
-  <img src="doc/plots/build_time_vs_m.png" width="720" alt="Build time vs M" />
-</p>
+Build time on GloVe-25 (1.2M vectors, 25d, single-threaded, `ef_construction=200`):
+
+| M | Build time | Throughput |
+|---|---|---|
+| 16 | ~270s | 4,377 vec/s |
+| 32 | ~505s | 2,343 vec/s |
 
 <p align="center">
   <img src="doc/plots/memory_scaling.png" width="720" alt="Memory scaling" />
 </p>
 
 Notes:
-- Build-time data from GloVe-25 (1.2M vectors). Memory plot is theoretical (formula: N*D*4 + N*M*2*4*1.2).
+- Memory plot is theoretical (formula: `N*D*4 + N*M*2*4*1.2`).
 - Treat these as reference points, not a stable performance contract.
 
 ## Distance semantics (current behavior)
