@@ -95,9 +95,7 @@ impl DiskANNIndex {
             )
         };
         use std::io::Write;
-        vectors_file
-            .write_all(vectors_bytes)
-            .write_all(vectors_bytes)?;
+        vectors_file.write_all(vectors_bytes)?;
 
         // 2. Save Graph (graph.index)
         let graph_path = output_dir.join("graph.index");

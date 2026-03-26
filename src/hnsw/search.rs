@@ -302,72 +302,75 @@ pub fn greedy_search_layer(
 ) -> Vec<(u32, f32)> {
     let num_vectors = vectors.len() / dimension;
 
-    let mut candidates: BinaryHeap<MinCandidate> = BinaryHeap::with_capacity(ef * 2);
-    let mut results: BinaryHeap<MaxResult> = BinaryHeap::with_capacity(ef + 1);
-    let mut visited = VisitedSet::new(num_vectors, ef * 2);
+    with_visited_set(num_vectors, ef * 2, |visited| {
+        let mut candidates: BinaryHeap<MinCandidate> = BinaryHeap::with_capacity(ef * 2);
+        let mut results: BinaryHeap<MaxResult> = BinaryHeap::with_capacity(ef + 1);
 
-    // Start from entry point
-    let entry_vector = get_vector(vectors, dimension, entry_point as usize);
-    let entry_distance = cosine_distance(query, entry_vector);
-    candidates.push(MinCandidate {
-        id: entry_point,
-        distance: entry_distance,
-    });
-    results.push(MaxResult {
-        id: entry_point,
-        distance: entry_distance,
-    });
-    visited.insert(entry_point);
+        // Start from entry point
+        let entry_vector = get_vector(vectors, dimension, entry_point as usize);
+        let entry_distance = cosine_distance(query, entry_vector);
+        candidates.push(MinCandidate {
+            id: entry_point,
+            distance: entry_distance,
+        });
+        results.push(MaxResult {
+            id: entry_point,
+            distance: entry_distance,
+        });
+        visited.insert(entry_point);
 
-    // Standard HNSW beam search:
-    // Continue while we have candidates that might improve results
-    while let Some(candidate) = candidates.pop() {
-        // Stopping condition: if best candidate is worse than worst result
-        // and we have enough results, we're done
-        let worst_dist = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
-        if candidate.distance > worst_dist && results.len() >= ef {
-            break;
-        }
-
-        // Explore neighbors
-        let neighbors = layer.get_neighbors(candidate.id);
-        for (i, &neighbor_id) in neighbors.iter().enumerate() {
-            // Prefetch next neighbor's vector while processing current
-            if i + 1 < neighbors.len() {
-                let next_id = neighbors[i + 1] as usize;
-                if next_id < num_vectors {
-                    prefetch_read_data(vectors.as_ptr().wrapping_add(next_id * dimension));
-                }
+        // Standard HNSW beam search:
+        // Continue while we have candidates that might improve results
+        while let Some(candidate) = candidates.pop() {
+            // Stopping condition: if best candidate is worse than worst result
+            // and we have enough results, we're done
+            let worst_dist = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
+            if candidate.distance > worst_dist && results.len() >= ef {
+                break;
             }
-            if visited.insert(neighbor_id) {
-                let neighbor_vector = get_vector(vectors, dimension, neighbor_id as usize);
-                let neighbor_distance = cosine_distance(query, neighbor_vector);
 
-                // Only add if potentially useful
-                let worst_dist = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
-                if results.len() < ef || neighbor_distance < worst_dist {
-                    candidates.push(MinCandidate {
-                        id: neighbor_id,
-                        distance: neighbor_distance,
-                    });
-                    results.push(MaxResult {
-                        id: neighbor_id,
-                        distance: neighbor_distance,
-                    });
+            // Explore neighbors
+            let neighbors = layer.get_neighbors(candidate.id);
+            for (i, &neighbor_id) in neighbors.iter().enumerate() {
+                // Prefetch next neighbor's vector while processing current
+                if i + 1 < neighbors.len() {
+                    let next_id = neighbors[i + 1] as usize;
+                    if next_id < num_vectors {
+                        prefetch_read_data(vectors.as_ptr().wrapping_add(next_id * dimension));
+                    }
+                }
+                if visited.insert(neighbor_id) {
+                    let neighbor_vector = get_vector(vectors, dimension, neighbor_id as usize);
+                    let neighbor_distance = cosine_distance(query, neighbor_vector);
 
-                    // Prune results if over capacity
-                    if results.len() > ef {
-                        results.pop();
+                    // Only add if potentially useful
+                    let worst_dist =
+                        results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
+                    if results.len() < ef || neighbor_distance < worst_dist {
+                        candidates.push(MinCandidate {
+                            id: neighbor_id,
+                            distance: neighbor_distance,
+                        });
+                        results.push(MaxResult {
+                            id: neighbor_id,
+                            distance: neighbor_distance,
+                        });
+
+                        // Prune results if over capacity
+                        if results.len() > ef {
+                            results.pop();
+                        }
                     }
                 }
             }
         }
-    }
 
-    // Convert to sorted output
-    let mut output: Vec<(u32, f32)> = results.into_iter().map(|r| (r.id, r.distance)).collect();
-    output.sort_by(|a, b| a.1.total_cmp(&b.1));
-    output
+        // Convert to sorted output
+        let mut output: Vec<(u32, f32)> =
+            results.into_iter().map(|r| (r.id, r.distance)).collect();
+        output.sort_by(|a, b| a.1.total_cmp(&b.1));
+        output
+    })
 }
 
 /// Greedy search with adaptive early termination.
@@ -393,75 +396,78 @@ pub fn greedy_search_layer_adaptive(
 
     let num_vectors = vectors.len() / dimension;
 
-    let mut candidates: BinaryHeap<MinCandidate> = BinaryHeap::with_capacity(ef * 2);
-    let mut results: BinaryHeap<MaxResult> = BinaryHeap::with_capacity(ef + 1);
-    let mut visited = VisitedSet::new(num_vectors, ef * 2);
-    let mut oracle = EarlyTerminationOracle::new(k, config.clone());
+    with_visited_set(num_vectors, ef * 2, |visited| {
+        let mut candidates: BinaryHeap<MinCandidate> = BinaryHeap::with_capacity(ef * 2);
+        let mut results: BinaryHeap<MaxResult> = BinaryHeap::with_capacity(ef + 1);
+        let mut oracle = EarlyTerminationOracle::new(k, config.clone());
 
-    // Start from entry point
-    let entry_vector = get_vector(vectors, dimension, entry_point as usize);
-    let entry_distance = cosine_distance(query, entry_vector);
-    oracle.observe(entry_distance);
+        // Start from entry point
+        let entry_vector = get_vector(vectors, dimension, entry_point as usize);
+        let entry_distance = cosine_distance(query, entry_vector);
+        oracle.observe(entry_distance);
 
-    candidates.push(MinCandidate {
-        id: entry_point,
-        distance: entry_distance,
-    });
-    results.push(MaxResult {
-        id: entry_point,
-        distance: entry_distance,
-    });
-    visited.insert(entry_point);
+        candidates.push(MinCandidate {
+            id: entry_point,
+            distance: entry_distance,
+        });
+        results.push(MaxResult {
+            id: entry_point,
+            distance: entry_distance,
+        });
+        visited.insert(entry_point);
 
-    while let Some(candidate) = candidates.pop() {
-        let worst_dist = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
-        if candidate.distance > worst_dist && results.len() >= ef {
-            break;
-        }
-
-        // Explore neighbors
-        let neighbors = layer.get_neighbors(candidate.id);
-        for (i, &neighbor_id) in neighbors.iter().enumerate() {
-            // Prefetch next neighbor's vector while processing current
-            if i + 1 < neighbors.len() {
-                let next_id = neighbors[i + 1] as usize;
-                if next_id < num_vectors {
-                    prefetch_read_data(vectors.as_ptr().wrapping_add(next_id * dimension));
-                }
+        while let Some(candidate) = candidates.pop() {
+            let worst_dist = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
+            if candidate.distance > worst_dist && results.len() >= ef {
+                break;
             }
-            if visited.insert(neighbor_id) {
-                let neighbor_vector = get_vector(vectors, dimension, neighbor_id as usize);
-                let neighbor_distance = cosine_distance(query, neighbor_vector);
-                oracle.observe(neighbor_distance);
 
-                let worst_dist = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
-                if results.len() < ef || neighbor_distance < worst_dist {
-                    candidates.push(MinCandidate {
-                        id: neighbor_id,
-                        distance: neighbor_distance,
-                    });
-                    results.push(MaxResult {
-                        id: neighbor_id,
-                        distance: neighbor_distance,
-                    });
+            // Explore neighbors
+            let neighbors = layer.get_neighbors(candidate.id);
+            for (i, &neighbor_id) in neighbors.iter().enumerate() {
+                // Prefetch next neighbor's vector while processing current
+                if i + 1 < neighbors.len() {
+                    let next_id = neighbors[i + 1] as usize;
+                    if next_id < num_vectors {
+                        prefetch_read_data(vectors.as_ptr().wrapping_add(next_id * dimension));
+                    }
+                }
+                if visited.insert(neighbor_id) {
+                    let neighbor_vector = get_vector(vectors, dimension, neighbor_id as usize);
+                    let neighbor_distance = cosine_distance(query, neighbor_vector);
+                    oracle.observe(neighbor_distance);
 
-                    if results.len() > ef {
-                        results.pop();
+                    let worst_dist =
+                        results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
+                    if results.len() < ef || neighbor_distance < worst_dist {
+                        candidates.push(MinCandidate {
+                            id: neighbor_id,
+                            distance: neighbor_distance,
+                        });
+                        results.push(MaxResult {
+                            id: neighbor_id,
+                            distance: neighbor_distance,
+                        });
+
+                        if results.len() > ef {
+                            results.pop();
+                        }
                     }
                 }
             }
+
+            // After exploring this candidate's neighbors, check early termination
+            if oracle.should_terminate() && results.len() >= k {
+                break;
+            }
         }
 
-        // After exploring this candidate's neighbors, check early termination
-        if oracle.should_terminate() && results.len() >= k {
-            break;
-        }
-    }
-
-    let num_evaluated = oracle.num_evaluated();
-    let mut output: Vec<(u32, f32)> = results.into_iter().map(|r| (r.id, r.distance)).collect();
-    output.sort_by(|a, b| a.1.total_cmp(&b.1));
-    (output, num_evaluated)
+        let num_evaluated = oracle.num_evaluated();
+        let mut output: Vec<(u32, f32)> =
+            results.into_iter().map(|r| (r.id, r.distance)).collect();
+        output.sort_by(|a, b| a.1.total_cmp(&b.1));
+        (output, num_evaluated)
+    })
 }
 
 /// Get vector from SoA storage.
