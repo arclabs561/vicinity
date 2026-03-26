@@ -48,7 +48,10 @@ fn build_index(database: &[Vec<f32>], dim: usize, m: usize) -> HNSWIndex {
 fn create_dataset(n: usize, dim: usize, seed: u64) -> Vec<Vec<f32>> {
     let mut rng = StdRng::seed_from_u64(seed);
     (0..n)
-        .map(|_| (0..dim).map(|_| rng.random::<f32>()).collect())
+        .map(|_| {
+            let v: Vec<f32> = (0..dim).map(|_| rng.random::<f32>() - 0.5).collect();
+            vicinity::distance::normalize(&v)
+        })
         .collect()
 }
 
