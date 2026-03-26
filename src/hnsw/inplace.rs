@@ -611,8 +611,7 @@ impl InPlaceIndex {
         let mut nodes_needing_repair: Vec<u32> = Vec::new();
         for (i, slot) in self.nodes.iter().enumerate() {
             if let Some(node) = slot {
-                if !node.is_deleted()
-                    && node.out_neighbors.iter().any(|n| deleted_set.contains(n))
+                if !node.is_deleted() && node.out_neighbors.iter().any(|n| deleted_set.contains(n))
                 {
                     nodes_needing_repair.push(i as u32);
                 }
@@ -656,9 +655,7 @@ impl InPlaceIndex {
             };
             let compute_distance = |a: u32, b: u32| -> f32 {
                 match (nodes_ref.get(a as usize), nodes_ref.get(b as usize)) {
-                    (Some(Some(na)), Some(Some(nb)))
-                        if !na.is_deleted() && !nb.is_deleted() =>
-                    {
+                    (Some(Some(na)), Some(Some(nb))) if !na.is_deleted() && !nb.is_deleted() => {
                         crate::distance::l2_distance(&na.vector, &nb.vector)
                     }
                     _ => f32::INFINITY,
@@ -910,7 +907,9 @@ mod tests {
 
         // Insert 30 vectors in a grid pattern so the graph is well-connected
         for i in 0..30 {
-            index.insert(vec![i as f32, (i % 5) as f32, 0.0, 0.0]).unwrap();
+            index
+                .insert(vec![i as f32, (i % 5) as f32, 0.0, 0.0])
+                .unwrap();
         }
         assert_eq!(index.len(), 30);
 

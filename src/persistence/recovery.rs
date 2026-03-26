@@ -152,10 +152,7 @@ impl RecoveryManager {
                     // new_segment_id would be added via AddSegment entry
                     pending_merges.remove(&transaction_id);
                 }
-                WalEntry::CancelMerge {
-                    transaction_id,
-                    ..
-                } => {
+                WalEntry::CancelMerge { transaction_id, .. } => {
                     pending_merges.remove(&transaction_id);
                 }
                 WalEntry::DeleteDocuments {

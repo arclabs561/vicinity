@@ -127,13 +127,16 @@ fn hnsw_save_load_exact_roundtrip() {
 fn truncated_file_returns_err() {
     let index = build_deterministic_index(50, 16);
     let bytes = save_to_bytes(&index);
-    assert!(bytes.len() > 2, "sanity: serialized bytes should be non-trivial");
+    assert!(
+        bytes.len() > 2,
+        "sanity: serialized bytes should be non-trivial"
+    );
 
     let truncation_points = [
-        0,                // empty
-        1,                // single byte
-        bytes.len() / 2,  // half
-        bytes.len() - 1,  // one byte short
+        0,               // empty
+        1,               // single byte
+        bytes.len() / 2, // half
+        bytes.len() - 1, // one byte short
     ];
 
     for &len in &truncation_points {
@@ -184,14 +187,13 @@ fn corrupted_bytes_do_not_panic() {
                 // Deserialization caught the corruption -- expected.
             }
             Err(panic_payload) => {
-                let msg: String =
-                    if let Some(s) = panic_payload.downcast_ref::<&str>() {
-                        (*s).to_owned()
-                    } else if let Some(s) = panic_payload.downcast_ref::<String>() {
-                        s.clone()
-                    } else {
-                        "(non-string panic)".to_owned()
-                    };
+                let msg: String = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                    (*s).to_owned()
+                } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "(non-string panic)".to_owned()
+                };
                 panic!("trial {trial}: load_from_reader panicked: {msg}");
             }
         }

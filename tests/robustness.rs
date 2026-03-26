@@ -81,7 +81,10 @@ fn search_empty_index_returns_error() {
     let index = HNSWIndex::new(4, 16, 32).unwrap();
     // Index is not built, so search should return Err (not built).
     let result = index.search(&[1.0, 0.0, 0.0, 0.0], 5, 10);
-    assert!(result.is_err(), "searching an unbuilt index should return Err");
+    assert!(
+        result.is_err(),
+        "searching an unbuilt index should return Err"
+    );
 }
 
 #[test]
@@ -144,10 +147,7 @@ fn search_before_build_returns_error() {
     index.add_slice(0, &v).unwrap();
 
     let result = index.search(&[1.0, 0.0, 0.0, 0.0], 1, 10);
-    assert!(
-        result.is_err(),
-        "searching before build should return Err"
-    );
+    assert!(result.is_err(), "searching before build should return Err");
 }
 
 // ---------------------------------------------------------------------------
@@ -173,10 +173,7 @@ fn simd_odd_dimensions_produce_finite_nonnegative_distances() {
         );
 
         let l2 = DistanceMetric::L2.distance(&a_norm, &b_norm);
-        assert!(
-            l2.is_finite(),
-            "dim={dim}: L2 distance is not finite: {l2}"
-        );
+        assert!(l2.is_finite(), "dim={dim}: L2 distance is not finite: {l2}");
         assert!(l2 >= 0.0, "dim={dim}: L2 distance is negative: {l2}");
     }
 }
@@ -206,7 +203,10 @@ fn add_batch_correct_dimensions_succeeds() {
     flat.extend_from_slice(&v1);
 
     let result = index.add_batch(&[0, 1], &flat);
-    assert!(result.is_ok(), "add_batch with correct dimensions should succeed");
+    assert!(
+        result.is_ok(),
+        "add_batch with correct dimensions should succeed"
+    );
 }
 
 // ---------------------------------------------------------------------------

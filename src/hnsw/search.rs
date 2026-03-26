@@ -50,10 +50,7 @@ const DENSE_VISITED_THRESHOLD: usize = 100_000;
 /// Falls back to `HashSet<u32>` for large indexes where a full dense array
 /// would waste memory.
 enum VisitedSet {
-    Dense {
-        marks: Vec<u8>,
-        generation: u8,
-    },
+    Dense { marks: Vec<u8>, generation: u8 },
     Sparse(HashSet<u32>),
 }
 
@@ -347,8 +344,7 @@ pub fn greedy_search_layer(
                     let neighbor_distance = cosine_distance(query, neighbor_vector);
 
                     // Only add if potentially useful
-                    let worst_dist =
-                        results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
+                    let worst_dist = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
                     if results.len() < ef || neighbor_distance < worst_dist {
                         candidates.push(MinCandidate {
                             id: neighbor_id,
@@ -369,8 +365,7 @@ pub fn greedy_search_layer(
         }
 
         // Convert to sorted output
-        let mut output: Vec<(u32, f32)> =
-            results.into_iter().map(|r| (r.id, r.distance)).collect();
+        let mut output: Vec<(u32, f32)> = results.into_iter().map(|r| (r.id, r.distance)).collect();
         output.sort_by(|a, b| a.1.total_cmp(&b.1));
         output
     })
@@ -440,8 +435,7 @@ pub fn greedy_search_layer_adaptive(
                     let neighbor_distance = cosine_distance(query, neighbor_vector);
                     oracle.observe(neighbor_distance);
 
-                    let worst_dist =
-                        results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
+                    let worst_dist = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
                     if results.len() < ef || neighbor_distance < worst_dist {
                         candidates.push(MinCandidate {
                             id: neighbor_id,
@@ -466,8 +460,7 @@ pub fn greedy_search_layer_adaptive(
         }
 
         let num_evaluated = oracle.num_evaluated();
-        let mut output: Vec<(u32, f32)> =
-            results.into_iter().map(|r| (r.id, r.distance)).collect();
+        let mut output: Vec<(u32, f32)> = results.into_iter().map(|r| (r.id, r.distance)).collect();
         output.sort_by(|a, b| a.1.total_cmp(&b.1));
         (output, num_evaluated)
     })

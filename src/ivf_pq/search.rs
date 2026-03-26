@@ -14,7 +14,11 @@ const SIMD_BATCH_THRESHOLD: usize = 16;
 ///
 /// Flat layout: `[cb0_cw0, cb0_cw1, ..., cb1_cw0, cb1_cw1, ...]`
 /// Nested: `nested[codebook][codeword]`
-fn flat_table_to_nested(table: &[f32], num_codebooks: usize, codebook_size: usize) -> Vec<Vec<f32>> {
+fn flat_table_to_nested(
+    table: &[f32],
+    num_codebooks: usize,
+    codebook_size: usize,
+) -> Vec<Vec<f32>> {
     (0..num_codebooks)
         .map(|m| {
             let start = m * codebook_size;

@@ -6,6 +6,7 @@ use thiserror::Error;
 
 /// Errors that can occur during indexing/search operations.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum RetrieveError {
     /// Empty query provided.
     #[error("query is empty")]

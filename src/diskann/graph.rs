@@ -86,8 +86,7 @@ impl DiskANNIndex {
 
         // 1. Save Vectors (vectors.bin)
         let vectors_path = output_dir.join("vectors.bin");
-        let mut vectors_file =
-            std::fs::File::create(&vectors_path)?;
+        let mut vectors_file = std::fs::File::create(&vectors_path)?;
         let vectors_bytes = unsafe {
             std::slice::from_raw_parts(
                 self.vectors.as_ptr() as *const u8,
@@ -107,16 +106,27 @@ impl DiskANNIndex {
             self.params.m,
             self.start_node,
         )
-        .map_err(|e| RetrieveError::Io(Arc::new(std::io::Error::other(format!("failed to create graph writer: {}", e)))))?;
+        .map_err(|e| {
+            RetrieveError::Io(Arc::new(std::io::Error::other(format!(
+                "failed to create graph writer: {}",
+                e
+            ))))
+        })?;
 
         for neighbors in &self.adj {
-            graph_writer
-                .write_adjacency(neighbors)
-                .map_err(|e| RetrieveError::Io(Arc::new(std::io::Error::other(format!("failed to write adjacency: {}", e)))))?;
+            graph_writer.write_adjacency(neighbors).map_err(|e| {
+                RetrieveError::Io(Arc::new(std::io::Error::other(format!(
+                    "failed to write adjacency: {}",
+                    e
+                ))))
+            })?;
         }
-        graph_writer
-            .flush()
-            .map_err(|e| RetrieveError::Io(Arc::new(std::io::Error::other(format!("failed to flush graph: {}", e)))))?;
+        graph_writer.flush().map_err(|e| {
+            RetrieveError::Io(Arc::new(std::io::Error::other(format!(
+                "failed to flush graph: {}",
+                e
+            ))))
+        })?;
 
         // 3. Save Metadata (metadata.json)
         let metadata_path = output_dir.join("metadata.json");
@@ -131,8 +141,7 @@ impl DiskANNIndex {
                 "ef_search": self.params.ef_search
             }
         });
-        let metadata_file =
-            std::fs::File::create(&metadata_path)?;
+        let metadata_file = std::fs::File::create(&metadata_path)?;
         serde_json::to_writer_pretty(metadata_file, &metadata)
             .map_err(|e| RetrieveError::Serialization(e.to_string()))?; // Need to add Serialization error to RetrieveError
 
@@ -160,8 +169,7 @@ impl DiskANNSearcher {
     pub fn load(index_dir: &Path) -> Result<Self, RetrieveError> {
         // 1. Load Metadata
         let metadata_path = index_dir.join("metadata.json");
-        let metadata_file =
-            std::fs::File::open(&metadata_path)?;
+        let metadata_file = std::fs::File::open(&metadata_path)?;
         let metadata: serde_json::Value = serde_json::from_reader(metadata_file)
             .map_err(|e| RetrieveError::Serialization(e.to_string()))?;
 
@@ -189,13 +197,16 @@ impl DiskANNSearcher {
 
         // 2. Open Graph
         let graph_path = index_dir.join("graph.index");
-        let graph_reader = super::disk_io::DiskGraphReader::open(&graph_path)
-            .map_err(|e| RetrieveError::Io(Arc::new(std::io::Error::other(format!("failed to open graph: {}", e)))))?;
+        let graph_reader = super::disk_io::DiskGraphReader::open(&graph_path).map_err(|e| {
+            RetrieveError::Io(Arc::new(std::io::Error::other(format!(
+                "failed to open graph: {}",
+                e
+            ))))
+        })?;
 
         // 3. Open Vectors
         let vectors_path = index_dir.join("vectors.bin");
-        let vectors_file =
-            std::fs::File::open(&vectors_path)?;
+        let vectors_file = std::fs::File::open(&vectors_path)?;
 
         Ok(Self {
             dimension,
@@ -275,12 +286,10 @@ impl DiskANNSearcher {
     fn get_vector(&mut self, idx: u32) -> Result<Vec<f32>, RetrieveError> {
         use std::io::{Read, Seek, SeekFrom};
         let offset = idx as u64 * self.dimension as u64 * 4;
-        self.vectors_file
-            .seek(SeekFrom::Start(offset))?;
+        self.vectors_file.seek(SeekFrom::Start(offset))?;
 
         let mut buffer = vec![0u8; self.dimension * 4];
-        self.vectors_file
-            .read_exact(&mut buffer)?;
+        self.vectors_file.read_exact(&mut buffer)?;
 
         let mut vec = Vec::with_capacity(self.dimension);
         for i in 0..self.dimension {

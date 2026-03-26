@@ -674,7 +674,11 @@ impl HNSWIndex {
         let mut index: Self = serde_json::from_reader(reader)
             .map_err(|e| RetrieveError::Serialization(e.to_string()))?;
 
+        // Validate structural invariants before the index is usable.
+        index.validate_structure()?;
+
         // Rebuild the reverse map that was skipped during deserialization.
+        // validate_structure already checked for duplicate doc_ids.
         index.doc_id_to_internal = index
             .doc_ids
             .iter()
@@ -683,6 +687,103 @@ impl HNSWIndex {
             .collect();
 
         Ok(index)
+    }
+
+    /// Validate structural invariants of the index.
+    ///
+    /// Catches malformed or adversarial data that would cause panics during search.
+    /// Called by `load_from_reader` after deserialization and by `from_parts` after
+    /// reconstruction.
+    fn validate_structure(&self) -> Result<(), RetrieveError> {
+        // Dimension must be positive.
+        if self.dimension == 0 {
+            return Err(RetrieveError::FormatError("dimension must be > 0".into()));
+        }
+
+        // Vector buffer must be exactly num_vectors * dimension.
+        if self.vectors.len() != self.num_vectors * self.dimension {
+            return Err(RetrieveError::FormatError(format!(
+                "vectors.len() ({}) != num_vectors ({}) * dimension ({})",
+                self.vectors.len(),
+                self.num_vectors,
+                self.dimension
+            )));
+        }
+
+        // doc_ids length must match num_vectors.
+        if self.doc_ids.len() != self.num_vectors {
+            return Err(RetrieveError::FormatError(format!(
+                "doc_ids.len() ({}) != num_vectors ({})",
+                self.doc_ids.len(),
+                self.num_vectors
+            )));
+        }
+
+        // layer_assignments length must match num_vectors.
+        if self.layer_assignments.len() != self.num_vectors {
+            return Err(RetrieveError::FormatError(format!(
+                "layer_assignments.len() ({}) != num_vectors ({})",
+                self.layer_assignments.len(),
+                self.num_vectors
+            )));
+        }
+
+        // category_assignments, if non-empty, must match num_vectors.
+        if !self.category_assignments.is_empty()
+            && self.category_assignments.len() != self.num_vectors
+        {
+            return Err(RetrieveError::FormatError(format!(
+                "category_assignments.len() ({}) != num_vectors ({})",
+                self.category_assignments.len(),
+                self.num_vectors
+            )));
+        }
+
+        // Check for duplicate doc_ids.
+        {
+            let mut seen = std::collections::HashSet::with_capacity(self.doc_ids.len());
+            for &doc_id in &self.doc_ids {
+                if !seen.insert(doc_id) {
+                    return Err(RetrieveError::FormatError(format!(
+                        "duplicate doc_id: {}",
+                        doc_id
+                    )));
+                }
+            }
+        }
+
+        // Layer count sanity bound.
+        if self.layers.len() > 255 {
+            return Err(RetrieveError::FormatError(format!(
+                "too many layers ({}) -- expected < 256",
+                self.layers.len()
+            )));
+        }
+
+        // If built, layers should be non-empty (unless the index itself is empty).
+        if self.built && self.num_vectors > 0 && self.layers.is_empty() {
+            return Err(RetrieveError::FormatError(
+                "index is marked as built but has no layers".into(),
+            ));
+        }
+
+        // All neighbor IDs must be in bounds.
+        for (layer_idx, layer) in self.layers.iter().enumerate() {
+            let layer_len = layer.len();
+            for node in 0..layer_len {
+                let neighbors = layer.get_neighbors(node as u32);
+                for &neighbor in neighbors.iter() {
+                    if neighbor as usize >= self.num_vectors {
+                        return Err(RetrieveError::FormatError(format!(
+                            "layer {} node {} has out-of-bounds neighbor {} (num_vectors={})",
+                            layer_idx, node, neighbor, self.num_vectors
+                        )));
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Reconstruct an index from persisted parts (internal use only).
@@ -701,67 +802,14 @@ impl HNSWIndex {
         built: bool,
         doc_ids: Vec<u32>,
     ) -> Result<Self, RetrieveError> {
-        // Validate vector/dimension alignment
-        if dimension == 0 {
-            return Err(RetrieveError::InvalidParameter(
-                "dimension must be > 0".into(),
-            ));
-        }
-        if vectors.len() != num_vectors * dimension {
-            return Err(RetrieveError::InvalidParameter(format!(
-                "vectors.len() ({}) != num_vectors ({}) * dimension ({})",
-                vectors.len(),
-                num_vectors,
-                dimension
-            )));
-        }
+        // Build reverse map (validate_structure checks for duplicates).
+        let doc_id_to_internal: HashMap<u32, u32> = doc_ids
+            .iter()
+            .enumerate()
+            .map(|(i, &doc_id)| (doc_id, i as u32))
+            .collect();
 
-        // Validate doc_ids length
-        if doc_ids.len() != num_vectors {
-            return Err(RetrieveError::InvalidParameter(format!(
-                "doc_ids.len() ({}) != num_vectors ({})",
-                doc_ids.len(),
-                num_vectors
-            )));
-        }
-
-        // Validate layer_assignments length
-        if layer_assignments.len() != num_vectors {
-            return Err(RetrieveError::InvalidParameter(format!(
-                "layer_assignments.len() ({}) != num_vectors ({})",
-                layer_assignments.len(),
-                num_vectors
-            )));
-        }
-
-        // Build reverse map and check for duplicate doc_ids
-        let mut doc_id_to_internal = HashMap::with_capacity(doc_ids.len());
-        for (i, doc_id) in doc_ids.iter().copied().enumerate() {
-            if doc_id_to_internal.insert(doc_id, i as u32).is_some() {
-                return Err(RetrieveError::InvalidParameter(format!(
-                    "duplicate doc_id: {}",
-                    doc_id
-                )));
-            }
-        }
-
-        // Validate neighbor IDs are in bounds
-        for (layer_idx, layer) in layers.iter().enumerate() {
-            let layer_len = layer.len();
-            for node in 0..layer_len {
-                let neighbors = layer.get_neighbors(node as u32);
-                for &neighbor in neighbors.iter() {
-                    if neighbor as usize >= num_vectors {
-                        return Err(RetrieveError::InvalidParameter(format!(
-                            "layer {} node {} has out-of-bounds neighbor {} (num_vectors={})",
-                            layer_idx, node, neighbor, num_vectors
-                        )));
-                    }
-                }
-            }
-        }
-
-        Ok(Self {
+        let index = Self {
             vectors,
             doc_ids,
             doc_id_to_internal,
@@ -775,7 +823,16 @@ impl HNSWIndex {
             filter_field: None,
             category_assignments: Vec::new(),
             tombstones: TombstoneSet::default(),
-        })
+        };
+
+        // Reuse shared validation. Map FormatError to InvalidParameter to
+        // preserve the existing error variant contract for from_parts callers.
+        index.validate_structure().map_err(|e| match e {
+            RetrieveError::FormatError(msg) => RetrieveError::InvalidParameter(msg),
+            other => other,
+        })?;
+
+        Ok(index)
     }
 
     /// Add metadata for a document (required for filtering).
@@ -841,14 +898,20 @@ impl HNSWIndex {
             vector
         };
 
-        debug_assert!(
-            {
-                let norm_sq: f32 = vector.iter().map(|x| x * x).sum();
-                (norm_sq - 1.0).abs() < 0.1
-            },
-            "HNSW cosine distance requires L2-normalized vectors (got norm^2 = {})",
-            vector.iter().map(|x| x * x).sum::<f32>()
-        );
+        // HNSW cosine distance uses 1 - dot(a,b), which only equals cosine distance
+        // when vectors are L2-normalized. Reject clearly un-normalized vectors in release
+        // builds to prevent silent wrong results.
+        {
+            let norm_sq: f32 = vector.iter().map(|x| x * x).sum();
+            if (norm_sq - 1.0).abs() > 0.1 {
+                return Err(RetrieveError::InvalidParameter(format!(
+                    "HNSW cosine distance requires L2-normalized vectors \
+                     (got norm^2 = {:.4}, expected ~1.0). \
+                     Use `distance::normalize()` or set `auto_normalize(true)` on the builder.",
+                    norm_sq
+                )));
+            }
+        }
 
         // Assign internal ID (stable: insertion order)
         let internal_id = self.num_vectors as u32;

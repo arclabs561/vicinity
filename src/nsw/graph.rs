@@ -140,14 +140,16 @@ impl NSWIndex {
             });
         }
 
-        debug_assert!(
-            {
-                let norm_sq: f32 = vector.iter().map(|x| x * x).sum();
-                (norm_sq - 1.0).abs() < 0.1
-            },
-            "NSW cosine distance requires L2-normalized vectors (got norm^2 = {})",
-            vector.iter().map(|x| x * x).sum::<f32>()
-        );
+        {
+            let norm_sq: f32 = vector.iter().map(|x| x * x).sum();
+            if (norm_sq - 1.0).abs() > 0.1 {
+                return Err(RetrieveError::InvalidParameter(format!(
+                    "NSW cosine distance requires L2-normalized vectors \
+                     (got norm^2 = {:.4}, expected ~1.0). Use `distance::normalize()`.",
+                    norm_sq
+                )));
+            }
+        }
 
         // Store vector in SoA format
         self.vectors.extend_from_slice(vector);
