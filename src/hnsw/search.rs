@@ -1,5 +1,6 @@
 //! HNSW search algorithm with early termination optimizations.
 
+use std::cell::RefCell;
 use std::collections::{BinaryHeap, HashSet};
 
 // ─── Software prefetch ──────────────────────────────────────────────────────
@@ -33,17 +34,23 @@ use crate::distance::cosine_distance_normalized as cosine_distance;
 
 // ─── Visited set ─────────────────────────────────────────────────────────────
 
-/// Threshold below which we use a dense bit-vector instead of HashSet.
-/// 100K nodes = 100KB Vec<bool>, fits comfortably in L2 cache.
+/// Threshold below which we use a dense generation-counter array instead of HashSet.
+/// 100K nodes = 200KB Vec<u16>, fits comfortably in L2 cache.
 const DENSE_VISITED_THRESHOLD: usize = 100_000;
 
-/// Fast visited-node tracker.
+/// Fast visited-node tracker using the generation-counter pattern.
 ///
-/// Uses a dense `Vec<bool>` for small indexes (O(1) lookup, no hashing)
-/// and falls back to `HashSet<u32>` for large indexes where a full
-/// bit-vector would waste memory.
+/// Dense variant: a `Vec<u16>` where `visited[id] == generation` means visited.
+/// Incrementing `generation` logically clears the set in O(1). Only when the
+/// u16 counter wraps (every 65 535 searches) does a memset occur.
+///
+/// Falls back to `HashSet<u32>` for large indexes where a full dense array
+/// would waste memory.
 enum VisitedSet {
-    Dense(Vec<bool>),
+    Dense {
+        marks: Vec<u16>,
+        generation: u16,
+    },
     Sparse(HashSet<u32>),
 }
 
@@ -51,9 +58,30 @@ impl VisitedSet {
     /// Create a visited set sized for `num_nodes` total nodes.
     fn new(num_nodes: usize, capacity_hint: usize) -> Self {
         if num_nodes <= DENSE_VISITED_THRESHOLD {
-            VisitedSet::Dense(vec![false; num_nodes])
+            VisitedSet::Dense {
+                marks: vec![0u16; num_nodes],
+                generation: 1,
+            }
         } else {
             VisitedSet::Sparse(HashSet::with_capacity(capacity_hint))
+        }
+    }
+
+    /// Reset the visited set for a new search. O(1) amortized for the dense
+    /// variant (increments generation; memsets only on u16 overflow).
+    /// For the sparse variant, clears the HashSet.
+    fn clear(&mut self) {
+        match self {
+            VisitedSet::Dense { marks, generation } => {
+                if let Some(next) = generation.checked_add(1) {
+                    *generation = next;
+                } else {
+                    // Overflow: reset all marks and restart at generation 1
+                    marks.fill(0);
+                    *generation = 1;
+                }
+            }
+            VisitedSet::Sparse(s) => s.clear(),
         }
     }
 
@@ -61,17 +89,17 @@ impl VisitedSet {
     #[inline]
     fn insert(&mut self, id: u32) -> bool {
         match self {
-            VisitedSet::Dense(v) => {
+            VisitedSet::Dense { marks, generation } => {
                 let idx = id as usize;
                 debug_assert!(
-                    idx < v.len(),
+                    idx < marks.len(),
                     "VisitedSet::insert: id {} out of bounds (capacity {})",
                     id,
-                    v.len()
+                    marks.len()
                 );
-                if idx < v.len() {
-                    if !v[idx] {
-                        v[idx] = true;
+                if idx < marks.len() {
+                    if marks[idx] != *generation {
+                        marks[idx] = *generation;
                         true
                     } else {
                         false
@@ -90,14 +118,55 @@ impl VisitedSet {
     #[inline]
     fn contains(&self, id: u32) -> bool {
         match self {
-            VisitedSet::Dense(v) => {
+            VisitedSet::Dense { marks, generation } => {
                 let idx = id as usize;
-                // Out-of-bounds IDs are never "visited" (conservative: don't skip them)
-                idx < v.len() && v[idx]
+                idx < marks.len() && marks[idx] == *generation
             }
             VisitedSet::Sparse(s) => s.contains(&id),
         }
     }
+
+    /// Prepare for a new search with `num_nodes` total nodes. Reuses the
+    /// existing allocation when possible, only reallocating if the index grew.
+    fn prepare(&mut self, num_nodes: usize, capacity_hint: usize) {
+        match self {
+            VisitedSet::Dense { marks, .. } if num_nodes <= DENSE_VISITED_THRESHOLD => {
+                if marks.len() < num_nodes {
+                    // Index grew: resize and reset
+                    marks.resize(num_nodes, 0);
+                    // Force a full reset after resize since new slots are 0
+                    // and we need generation != 0
+                }
+                self.clear();
+            }
+            VisitedSet::Sparse(s) if num_nodes > DENSE_VISITED_THRESHOLD => {
+                s.clear();
+            }
+            _ => {
+                // Variant mismatch (index crossed threshold): recreate
+                *self = VisitedSet::new(num_nodes, capacity_hint);
+            }
+        }
+    }
+}
+
+thread_local! {
+    static THREAD_VISITED: RefCell<VisitedSet> = RefCell::new(
+        VisitedSet::Dense { marks: Vec::new(), generation: 1 }
+    );
+}
+
+/// Borrow the thread-local visited set, prepared for `num_nodes`.
+/// The closure receives a mutable reference to the reused set.
+fn with_visited_set<F, R>(num_nodes: usize, capacity_hint: usize, f: F) -> R
+where
+    F: FnOnce(&mut VisitedSet) -> R,
+{
+    THREAD_VISITED.with(|cell| {
+        let mut visited = cell.borrow_mut();
+        visited.prepare(num_nodes, capacity_hint);
+        f(&mut visited)
+    })
 }
 
 // ─── Candidate types ─────────────────────────────────────────────────────────
@@ -439,6 +508,36 @@ mod tests {
     }
 
     #[test]
+    fn test_visited_set_dense_clear() {
+        let mut v = VisitedSet::new(100, 10);
+        assert!(v.insert(5));
+        assert!(v.contains(5));
+        v.clear();
+        // After clear, previously visited nodes are no longer marked
+        assert!(!v.contains(5));
+        assert!(v.insert(5));
+    }
+
+    #[test]
+    fn test_visited_set_dense_generation_overflow() {
+        // Create a dense set and force generation to u16::MAX
+        let mut v = VisitedSet::new(100, 10);
+        if let VisitedSet::Dense {
+            ref mut generation, ..
+        } = v
+        {
+            *generation = u16::MAX;
+        }
+        assert!(v.insert(5));
+        assert!(v.contains(5));
+        // This clear triggers the overflow path (memset)
+        v.clear();
+        assert!(!v.contains(5));
+        assert!(v.insert(5));
+        assert!(v.contains(5));
+    }
+
+    #[test]
     fn test_visited_set_sparse() {
         // Force sparse by using a large num_nodes
         let mut v = VisitedSet::new(DENSE_VISITED_THRESHOLD + 1, 10);
@@ -446,5 +545,14 @@ mod tests {
         assert!(v.insert(42));
         assert!(v.contains(42));
         assert!(!v.insert(42));
+    }
+
+    #[test]
+    fn test_visited_set_sparse_clear() {
+        let mut v = VisitedSet::new(DENSE_VISITED_THRESHOLD + 1, 10);
+        assert!(v.insert(42));
+        v.clear();
+        assert!(!v.contains(42));
+        assert!(v.insert(42));
     }
 }
