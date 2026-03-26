@@ -124,13 +124,9 @@ impl EdgeProbabilityEstimator {
             .collect();
 
         // Compute cosine of angle between directions
-        let dot: f32 = to_query
-            .iter()
-            .zip(to_neighbor.iter())
-            .map(|(a, b)| a * b)
-            .sum();
-        let norm_q: f32 = to_query.iter().map(|x| x.powi(2)).sum::<f32>().sqrt();
-        let norm_n: f32 = to_neighbor.iter().map(|x| x.powi(2)).sum::<f32>().sqrt();
+        let dot: f32 = crate::simd::dot(&to_query, &to_neighbor);
+        let norm_q: f32 = crate::simd::norm(&to_query);
+        let norm_n: f32 = crate::simd::norm(&to_neighbor);
 
         let cos_angle = if norm_q > 1e-10 && norm_n > 1e-10 {
             (dot / (norm_q * norm_n)).clamp(-1.0, 1.0)

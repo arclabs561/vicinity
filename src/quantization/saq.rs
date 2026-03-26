@@ -166,20 +166,10 @@ impl SAQQuantizer {
             let mut codebook = Vec::new();
 
             for _ in 0..codebook_size {
-                let mut centroid = Vec::with_capacity(segment_dim);
-                let mut norm = 0.0;
-                for _ in 0..segment_dim {
-                    let val = rng.random::<f32>() * 2.0 - 1.0;
-                    norm += val * val;
-                    centroid.push(val);
-                }
-                let norm = norm.sqrt();
-                if norm > 0.0 {
-                    for val in &mut centroid {
-                        *val /= norm;
-                    }
-                }
-                codebook.push(centroid);
+                let centroid: Vec<f32> = (0..segment_dim)
+                    .map(|_| rng.random::<f32>() * 2.0 - 1.0)
+                    .collect();
+                codebook.push(crate::distance::normalize(&centroid));
             }
 
             self.codebooks.push(codebook);

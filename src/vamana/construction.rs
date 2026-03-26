@@ -206,12 +206,7 @@ fn compute_medoid(index: &VamanaIndex) -> u32 {
     }
 
     // Normalize centroid so cosine_distance_normalized is valid
-    let norm = centroid.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm > 1e-10 {
-        for c in centroid.iter_mut() {
-            *c /= norm;
-        }
-    }
+    centroid = crate::distance::normalize(&centroid);
 
     // Find vector closest to centroid
     let mut best_id: u32 = 0;
