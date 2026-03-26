@@ -95,53 +95,6 @@ plt.close(fig)
 print(f"  wrote {OUT / 'recall_vs_ef.png'}")
 
 
-# ===================================================================
-# Plot 2: Build time vs M  (GloVe-25, 1.2M vectors)
-# ===================================================================
-# Real data from doc/benchmark-results.md
-m_vals = [16, 32]
-build_secs = [270, 505]  # seconds
-vecs_per_sec = [4377, 2343]
-
-fig, ax = plt.subplots(figsize=(6.5, 3.8), dpi=150)
-apply_style(ax)
-
-bar_x = np.arange(len(m_vals))
-bars = ax.bar(
-    bar_x, build_secs, width=0.45, color=COLORS["m16"], edgecolor="white", linewidth=0.5
-)
-
-# Annotate with throughput
-for i, (b, vps) in enumerate(zip(bars, vecs_per_sec)):
-    ax.text(
-        b.get_x() + b.get_width() / 2,
-        b.get_height() + 12,
-        f"{vps:,} vec/s",
-        ha="center",
-        va="bottom",
-        fontsize=9,
-        color="#333333",
-    )
-
-ax.set_xticks(bar_x)
-ax.set_xticklabels([f"M = {m}" for m in m_vals], fontsize=10)
-ax.set_ylabel("Build time (seconds)", fontsize=10)
-ax.set_ylim(0, 600)
-
-fig.text(
-    0.5,
-    -0.02,
-    "GloVe-25 (1.2M vectors, 25-d). ef_construction = 200, single-threaded.",
-    ha="center",
-    fontsize=8,
-    color="#555555",
-)
-
-fig.tight_layout()
-fig.savefig(OUT / "build_time_vs_m.png", bbox_inches="tight", pad_inches=0.15)
-plt.close(fig)
-print(f"  wrote {OUT / 'build_time_vs_m'}")
-
 
 # ===================================================================
 # Plot 3: Memory scaling  (theoretical, dim=25 to match GloVe-25)
