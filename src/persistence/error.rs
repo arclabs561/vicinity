@@ -6,6 +6,7 @@ use thiserror::Error;
 
 /// Errors that can occur during persistence operations.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum PersistenceError {
     /// I/O error (file operations, disk I/O)
     #[error("I/O error: {0}")]
@@ -15,7 +16,7 @@ pub enum PersistenceError {
     #[error("format error: {0}")]
     Format(String),
 
-    /// Serialization error (bincode, serde)
+    /// Serialization error (postcard, serde)
     #[error("serialization error: {0}")]
     Serialization(String),
 
@@ -56,23 +57,12 @@ pub enum PersistenceError {
     /// Operation not supported
     #[error("operation not supported: {0}")]
     NotSupported(String),
-
-    /// Distributed coordination error.
-    #[error("distributed error: {0}")]
-    Distributed(String),
 }
 
 #[cfg(feature = "persistence")]
 impl From<postcard::Error> for PersistenceError {
     fn from(e: postcard::Error) -> Self {
         Self::Serialization(format!("postcard error: {}", e))
-    }
-}
-
-#[cfg(all(feature = "persistence", feature = "persistence-bincode"))]
-impl From<bincode::Error> for PersistenceError {
-    fn from(e: bincode::Error) -> Self {
-        Self::Serialization(format!("bincode error (legacy): {}", e))
     }
 }
 

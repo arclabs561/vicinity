@@ -30,13 +30,7 @@ pub mod recovery;
 #[cfg(all(feature = "persistence", feature = "hnsw"))]
 pub mod hnsw;
 
-#[cfg(all(feature = "persistence", feature = "ivf_pq"))]
-pub mod ivf_pq;
-
 #[cfg(feature = "persistence")]
 pub mod locking;
-
-#[cfg(feature = "persistence")]
-pub mod blob_store;
 
 pub use error::PersistenceError;

@@ -64,21 +64,18 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use vicinity::streaming::{StreamingIndex, UpdateOp};
-//! use vicinity::hnsw::HNSWIndex;
+//! use vicinity::streaming::{StreamingCoordinator, StreamingConfig};
+//! use vicinity::hnsw::InPlaceIndex;
 //!
-//! let mut index = StreamingIndex::new(HNSWIndex::new(128)?);
+//! let index = InPlaceIndex::new(128, 16)?;
+//! let mut coord = StreamingCoordinator::new(index, StreamingConfig::default());
 //!
-//! // Stream of updates
-//! index.apply(UpdateOp::Insert { id: 0, vector: vec![0.1; 128] })?;
-//! index.apply(UpdateOp::Insert { id: 1, vector: vec![0.2; 128] })?;
-//! index.apply(UpdateOp::Delete { id: 0 })?;
+//! coord.insert(0, vec![0.1; 128])?;
+//! coord.insert(1, vec![0.2; 128])?;
+//! coord.delete(0)?;
 //!
-//! // Search works across buffered and merged data
-//! let results = index.search(&query, 10)?;
-//!
-//! // Periodic compaction
-//! index.compact()?;
+//! let results = coord.search(&vec![0.15; 128], 10, 50)?;
+//! coord.compact()?;
 //! ```
 
 mod buffer;
@@ -87,7 +84,7 @@ mod ops;
 
 pub use buffer::{StreamBuffer, StreamBufferConfig};
 pub use coordinator::{IndexOps, StreamingConfig, StreamingCoordinator};
-pub use ops::{UpdateBatch, UpdateOp, UpdateStats};
+pub use ops::UpdateStats;
 
 /// Statistics about streaming index state.
 #[derive(Debug, Clone, Default)]

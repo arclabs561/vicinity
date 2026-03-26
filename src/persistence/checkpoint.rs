@@ -331,28 +331,13 @@ impl CheckpointReader {
         }
 
         let segment_list_bytes = &all_data[segment_list_start..];
-        // Deserialize segment list - try postcard first (new format), fall back to bincode (legacy)
-        let segments: Vec<SegmentMetadata> = match postcard::from_bytes(segment_list_bytes) {
-            Ok(s) => s, // Postcard format (new)
-            Err(_) => {
-                // Fall back to bincode for legacy checkpoints
-                #[cfg(feature = "persistence-bincode")]
-                {
-                    bincode::deserialize(segment_list_bytes).map_err(|e| {
-                        PersistenceError::Deserialization(format!(
-                            "Failed to deserialize segment list (tried postcard and bincode): {}",
-                            e
-                        ))
-                    })?
-                }
-                #[cfg(not(feature = "persistence-bincode"))]
-                {
-                    return Err(PersistenceError::Deserialization(
-                        "Checkpoint is in legacy bincode format, but persistence-bincode feature is not enabled".to_string()
-                    ));
-                }
-            }
-        };
+        let segments: Vec<SegmentMetadata> =
+            postcard::from_bytes(segment_list_bytes).map_err(|e| {
+                PersistenceError::Deserialization(format!(
+                    "Failed to deserialize segment list: {}",
+                    e
+                ))
+            })?;
 
         // Validate checksum
         let mut file_for_checksum = self.directory.open_file(checkpoint_path)?;

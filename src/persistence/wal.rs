@@ -29,8 +29,6 @@ fn to_durability_err(e: PersistenceError) -> durability::PersistenceError {
         PersistenceError::NotFound(s) => durability::PersistenceError::NotFound(s),
         PersistenceError::InvalidConfig(s) => durability::PersistenceError::InvalidConfig(s),
         PersistenceError::NotSupported(s) => durability::PersistenceError::NotSupported(s),
-        // `durability` does not model distributed coordination errors; treat as unsupported.
-        PersistenceError::Distributed(s) => durability::PersistenceError::NotSupported(s),
     }
 }
 
@@ -306,8 +304,7 @@ mod tests {
             neighbors: vec![42, 99],
         })
         .unwrap();
-        gw.append(GraphWalEntry::DeleteNode { doc_id: 99 })
-            .unwrap();
+        gw.append(GraphWalEntry::DeleteNode { doc_id: 99 }).unwrap();
         gw.flush().unwrap();
 
         let gr = GraphWalReader::new(dir.clone());
@@ -332,6 +329,10 @@ mod tests {
         // Verify graph WAL is isolated from segment WAL
         let segment_reader = WalReader::new(dir);
         let segment_entries = segment_reader.replay().unwrap();
-        assert_eq!(segment_entries.len(), 0, "graph WAL should not pollute segment WAL");
+        assert_eq!(
+            segment_entries.len(),
+            0,
+            "graph WAL should not pollute segment WAL"
+        );
     }
 }

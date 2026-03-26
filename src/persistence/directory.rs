@@ -35,23 +35,6 @@ pub trait Directory: Send + Sync {
     fn file_path(&self, path: &str) -> Option<PathBuf>;
 }
 
-/// Controls how often writers call `flush()` on their underlying `Write`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FlushPolicy {
-    /// Flush after every append call.
-    PerAppend,
-    /// Flush every N append calls.
-    EveryN(usize),
-    /// Caller is responsible for flushing.
-    Manual,
-}
-
-impl Default for FlushPolicy {
-    fn default() -> Self {
-        Self::EveryN(64)
-    }
-}
-
 fn disabled() -> PersistenceError {
     PersistenceError::NotSupported("persistence feature disabled".to_string())
 }

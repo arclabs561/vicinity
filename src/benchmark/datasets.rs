@@ -128,54 +128,6 @@ pub fn create_clustered_dataset(
     }
 }
 
-/// Compute exact k-nearest neighbors (ground truth) via brute force.
-///
-/// Returns indices of the k nearest neighbors in the database.
-///
-/// # Arguments
-///
-/// * `query` - Query vector
-/// * `database` - Database vectors to search
-/// * `k` - Number of neighbors to find
-pub fn compute_ground_truth(query: &[f32], database: &[Vec<f32>], k: usize) -> Vec<u32> {
-    let mut distances: Vec<(u32, f32)> = database
-        .iter()
-        .enumerate()
-        .map(|(i, vec)| {
-            let dist = l2_distance_squared(query, vec);
-            (i as u32, dist)
-        })
-        .collect();
-
-    // Partial sort - only need top k
-    distances.sort_by(|a, b| a.1.total_cmp(&b.1));
-
-    distances.into_iter().take(k).map(|(id, _)| id).collect()
-}
-
-/// Compute ground truth for all test queries.
-///
-/// Returns a vector of k-nearest neighbor lists, one per query.
-pub fn compute_all_ground_truth(dataset: &Dataset, k: usize) -> Vec<Vec<u32>> {
-    dataset
-        .test
-        .iter()
-        .map(|query| compute_ground_truth(query, &dataset.train, k))
-        .collect()
-}
-
-/// L2 distance squared (avoid sqrt for comparison).
-#[inline]
-fn l2_distance_squared(a: &[f32], b: &[f32]) -> f32 {
-    a.iter()
-        .zip(b.iter())
-        .map(|(x, y)| {
-            let d = x - y;
-            d * d
-        })
-        .sum()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -201,22 +153,6 @@ mod tests {
                 assert!((0.0..=1.0).contains(&v));
             }
         }
-    }
-
-    #[test]
-    fn test_compute_ground_truth() {
-        let database = vec![
-            vec![0.0, 0.0],
-            vec![1.0, 0.0],
-            vec![0.0, 1.0],
-            vec![1.0, 1.0],
-        ];
-        let query = vec![0.1, 0.1];
-        let gt = compute_ground_truth(&query, &database, 2);
-
-        // Closest should be [0,0] then either [1,0] or [0,1]
-        assert_eq!(gt[0], 0);
-        assert!(gt[1] == 1 || gt[1] == 2);
     }
 
     #[test]

@@ -155,43 +155,6 @@ pub struct SegmentHeader {
     pub metadata: std::collections::HashMap<String, String>,
 }
 
-/// WAL entry types.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum WalEntryType {
-    /// Insert a new vector
-    Insert = 1,
-    /// Delete a vector
-    Delete = 2,
-    /// Update a vector
-    Update = 3,
-    /// Checkpoint marker
-    Checkpoint = 4,
-    /// Insert a graph node (HNSW streaming)
-    InsertNode = 5,
-    /// Delete a graph node (HNSW streaming)
-    DeleteNode = 6,
-    /// Update neighbor list for a graph node (HNSW streaming)
-    UpdateNeighbors = 7,
-}
-
-impl TryFrom<u8> for WalEntryType {
-    type Error = ();
-
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        match value {
-            1 => Ok(WalEntryType::Insert),
-            2 => Ok(WalEntryType::Delete),
-            3 => Ok(WalEntryType::Update),
-            4 => Ok(WalEntryType::Checkpoint),
-            5 => Ok(WalEntryType::InsertNode),
-            6 => Ok(WalEntryType::DeleteNode),
-            7 => Ok(WalEntryType::UpdateNeighbors),
-            _ => Err(()),
-        }
-    }
-}
-
 /// Per-segment metadata tracked in the manifest.
 ///
 /// Each segment carries its own WAL watermark so that multi-segment compaction
@@ -419,20 +382,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_wal_entry_type_roundtrip() {
-        assert_eq!(WalEntryType::try_from(1), Ok(WalEntryType::Insert));
-        assert_eq!(WalEntryType::try_from(2), Ok(WalEntryType::Delete));
-        assert_eq!(WalEntryType::try_from(3), Ok(WalEntryType::Update));
-        assert_eq!(WalEntryType::try_from(4), Ok(WalEntryType::Checkpoint));
-        assert_eq!(WalEntryType::try_from(5), Ok(WalEntryType::InsertNode));
-        assert_eq!(WalEntryType::try_from(6), Ok(WalEntryType::DeleteNode));
-        assert_eq!(
-            WalEntryType::try_from(7),
-            Ok(WalEntryType::UpdateNeighbors)
-        );
-        assert_eq!(WalEntryType::try_from(99), Err(()));
-    }
-
     #[test]
     fn test_segment_header_serde() {
         let header = SegmentHeader {

@@ -24,11 +24,10 @@ pub mod evaluation;
 pub mod memory;
 pub mod metrics;
 
-pub use datasets::{compute_ground_truth, create_benchmark_dataset, Dataset};
+pub use datasets::{create_benchmark_dataset, create_clustered_dataset, Dataset};
 pub use evaluation::{
-    cosine_distance, evaluate, generate_clustered_dataset, generate_normalized_clustered_dataset,
-    generate_uniform_dataset, l2_distance, mrr, normalize, DistanceMetric, EvalDataset,
-    EvalResults,
+    evaluate, generate_clustered_dataset, generate_normalized_clustered_dataset,
+    generate_uniform_dataset, mrr, EvalDataset, EvalResults,
 };
 pub use memory::{IndexMemoryStats, MemoryTracker};
 pub use metrics::{precision_at_k, recall_at_k};

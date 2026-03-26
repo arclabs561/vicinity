@@ -347,51 +347,6 @@ where
     Ok(result_vec)
 }
 
-/// Filter execution strategy.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FilterStrategy {
-    /// Evaluate filter before computing distance (default for ACORN)
-    PreFilter,
-    /// Compute distance, then filter results
-    PostFilter,
-    /// Adaptive: start with pre-filter, switch based on selectivity
-    Adaptive,
-}
-
-/// Estimate optimal filter strategy based on selectivity.
-///
-/// # Arguments
-/// * `estimated_selectivity` - Fraction of nodes expected to pass filter (0.0 to 1.0)
-/// * `k` - Number of results needed
-/// * `total_nodes` - Total number of nodes in index
-///
-/// # Returns
-/// Recommended filter strategy.
-pub fn recommend_strategy(
-    estimated_selectivity: f32,
-    k: usize,
-    total_nodes: usize,
-) -> FilterStrategy {
-    // If very selective (few pass), use ACORN with pre-filter
-    if estimated_selectivity < 0.1 {
-        return FilterStrategy::PreFilter;
-    }
-
-    // If high selectivity (most pass), post-filter is fine
-    if estimated_selectivity > 0.8 {
-        return FilterStrategy::PostFilter;
-    }
-
-    // For k much smaller than filtered set, post-filter works
-    let estimated_filtered = (total_nodes as f32 * estimated_selectivity) as usize;
-    if k * 10 < estimated_filtered {
-        return FilterStrategy::PostFilter;
-    }
-
-    // Otherwise, use adaptive
-    FilterStrategy::Adaptive
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -499,32 +454,5 @@ mod tests {
         for (id, _) in &results {
             assert!(*id >= 8, "Node {} should be >= 8", id);
         }
-    }
-
-    #[test]
-    fn test_recommend_strategy() {
-        // Very selective -> PreFilter
-        assert_eq!(
-            recommend_strategy(0.05, 10, 10000),
-            FilterStrategy::PreFilter
-        );
-
-        // High selectivity -> PostFilter
-        assert_eq!(
-            recommend_strategy(0.9, 10, 10000),
-            FilterStrategy::PostFilter
-        );
-
-        // Medium with small k -> PostFilter
-        assert_eq!(
-            recommend_strategy(0.5, 10, 10000),
-            FilterStrategy::PostFilter
-        );
-
-        // Medium with large k -> Adaptive
-        assert_eq!(
-            recommend_strategy(0.3, 1000, 10000),
-            FilterStrategy::Adaptive
-        );
     }
 }

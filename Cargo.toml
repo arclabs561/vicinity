@@ -64,7 +64,6 @@ qntz = { package = "qntz", version = "0.1.1", optional = true }
 byteorder = { version = "1.5", optional = true }
 crc32fast = { version = "1.4", optional = true }
 libc = { version = "0.2", optional = true }
-hex = { version = "0.4", optional = true }
 memmap2 = { version = "0.9", optional = true }
 postcard = { version = "1.0", optional = true, features = [
   "use-crc",
@@ -74,8 +73,6 @@ postcard = { version = "1.0", optional = true, features = [
 bytemuck = { version = "1.14", optional = true, features = ["derive"] }
 durability = { version = "0.2.0", optional = true }
 
-# Legacy serialization (kept for backward compatibility)
-bincode = { version = "1.3", optional = true }
 
 # RNG backend for wasm32 (rand -> getrandom needs a JS backend on wasm).
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
@@ -94,7 +91,6 @@ persistence = [
   "dep:byteorder",
   "dep:crc32fast",
   "dep:libc",
-  "dep:hex",
 ]
 serde = ["dep:serde", "dep:serde_json", "smallvec/serde"]
 hnsw = []
@@ -128,7 +124,6 @@ rmt-spectral = ["dep:rmt"]
 evoc = ["dep:clump"]
 
 id-compression = ["dep:cnk", "dep:sbits", "cnk/sbits"]
-persistence-bincode = ["dep:bincode", "persistence"]
 # Quantization sub-features (kept separate so callers can be explicit)
 rabitq = ["qntz", "qntz/rabitq"]
 saq = ["qntz", "qntz/ternary"]
