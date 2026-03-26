@@ -215,6 +215,7 @@ impl HNSWSegmentReader {
             m_l: f64::from_le_bytes(m_l_bytes),
             ef_construction: u32::from_le_bytes(ef_construction_bytes) as usize,
             ef_search: u32::from_le_bytes(ef_search_bytes) as usize,
+            auto_normalize: false,
             seed_selection: SeedSelectionStrategy::default(),
             neighborhood_diversification: NeighborhoodDiversification::default(),
             #[cfg(feature = "id-compression")]

@@ -91,17 +91,6 @@ impl From<durability_crate::PersistenceError> for PersistenceError {
         match e {
             durability_crate::PersistenceError::Io(e) => Self::Io(e),
             durability_crate::PersistenceError::Format(s) => Self::Format(s),
-            durability_crate::PersistenceError::FormatDetail {
-                message,
-                expected,
-                actual,
-            } => {
-                let mut s = message;
-                if expected.is_some() || actual.is_some() {
-                    s.push_str(&format!(" (expected={expected:?}, actual={actual:?})"));
-                }
-                Self::Format(s)
-            }
             durability_crate::PersistenceError::CrcMismatch { expected, actual } => {
                 Self::ChecksumMismatch { expected, actual }
             }
@@ -114,9 +103,6 @@ impl From<durability_crate::PersistenceError> for PersistenceError {
                 Self::LockFailed { resource, reason }
             }
             durability_crate::PersistenceError::NotFound(s) => Self::NotFound(s),
-            durability_crate::PersistenceError::MissingPath(p) => {
-                Self::NotFound(p.to_string_lossy().to_string())
-            }
             _ => Self::Format(format!("unknown durability error: {e}")),
         }
     }

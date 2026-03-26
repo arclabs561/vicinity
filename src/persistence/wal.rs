@@ -33,40 +33,6 @@ fn to_durability_err(e: PersistenceError) -> durability::PersistenceError {
     }
 }
 
-fn from_durability_err(e: durability::PersistenceError) -> PersistenceError {
-    match e {
-        durability::PersistenceError::Io(e) => PersistenceError::Io(e),
-        durability::PersistenceError::Format(s) => PersistenceError::Format(s),
-        durability::PersistenceError::FormatDetail {
-            message,
-            expected,
-            actual,
-        } => {
-            let mut s = message;
-            if expected.is_some() || actual.is_some() {
-                s.push_str(&format!(" (expected={expected:?}, actual={actual:?})"));
-            }
-            PersistenceError::Format(s)
-        }
-        durability::PersistenceError::CrcMismatch { expected, actual } => {
-            PersistenceError::ChecksumMismatch { expected, actual }
-        }
-        durability::PersistenceError::Encode(s) => PersistenceError::Serialization(s),
-        durability::PersistenceError::Decode(s) => PersistenceError::Deserialization(s),
-        durability::PersistenceError::InvalidState(s) => PersistenceError::InvalidState(s),
-        durability::PersistenceError::InvalidConfig(s) => PersistenceError::InvalidConfig(s),
-        durability::PersistenceError::NotSupported(s) => PersistenceError::NotSupported(s),
-        durability::PersistenceError::LockFailed { resource, reason } => {
-            PersistenceError::LockFailed { resource, reason }
-        }
-        durability::PersistenceError::NotFound(s) => PersistenceError::NotFound(s),
-        durability::PersistenceError::MissingPath(p) => {
-            PersistenceError::NotFound(p.to_string_lossy().to_string())
-        }
-        _ => PersistenceError::Format(format!("unknown durability error: {e}")),
-    }
-}
-
 #[derive(Clone)]
 struct DirAdapter {
     inner: Arc<dyn vicinity_dir::Directory>,
@@ -126,18 +92,18 @@ impl WalWriter {
             inner: directory.into(),
         });
         Self {
-            inner: durability::walog::WalWriter::new_conservative(inner_dir),
+            inner: durability::walog::WalWriter::new(inner_dir),
         }
     }
 
     /// Append an entry to the WAL, returning its assigned entry id.
     pub fn append(&mut self, entry: WalEntry) -> PersistenceResult<u64> {
-        self.inner.append(&entry).map_err(from_durability_err)
+        self.inner.append(&entry).map_err(PersistenceError::from)
     }
 
     /// Flush buffered bytes (if any).
     pub fn flush(&mut self) -> PersistenceResult<()> {
-        self.inner.flush().map_err(from_durability_err)
+        self.inner.flush().map_err(PersistenceError::from)
     }
 }
 
@@ -159,12 +125,12 @@ impl WalReader {
 
     /// Replay all WAL entries from disk (strict).
     pub fn replay(&self) -> PersistenceResult<Vec<WalRecord<WalEntry>>> {
-        self.inner.replay().map_err(from_durability_err)
+        self.inner.replay().map_err(PersistenceError::from)
     }
 
     /// Best-effort replay: tolerate a truncated tail record in the final segment.
     pub fn replay_best_effort(&self) -> PersistenceResult<Vec<WalRecord<WalEntry>>> {
-        self.inner.replay_best_effort().map_err(from_durability_err)
+        self.inner.replay_best_effort().map_err(PersistenceError::from)
     }
 }
 
