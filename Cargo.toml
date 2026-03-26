@@ -234,6 +234,11 @@ path = "examples/ann_benchmark.rs"
 required-features = ["hnsw"]
 
 [[example]]
+name = "hybrid_search"
+path = "examples/hybrid_search.rs"
+required-features = ["hnsw"]
+
+[[example]]
 name = "wasm_search"
 path = "examples/wasm_search.rs"
 required-features = ["hnsw"]
