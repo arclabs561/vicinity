@@ -385,6 +385,261 @@ fn lut_to_nested(packed: &PackedLUT) -> Vec<Vec<f32>> {
     result
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// FastScan 4-bit PQ: SIMD-friendly ADC for 16-centroid subquantizers
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// FAISS FastScan processes 32 PQ candidates per SIMD iteration using vpshufb
+// (AVX2) or tbl (NEON) for parallel LUT access. The constraint: codes must be
+// 4-bit (16 centroids per subquantizer).
+//
+// This module provides:
+// 1. PackedCodes4bit -- nibble-interleaved code storage for 32-vector blocks
+// 2. LUT quantization (f32 -> u8 for integer SIMD accumulation)
+// 3. Portable scalar FastScan kernel (simulates vpshufb behavior)
+// 4. fastscan_batch -- end-to-end integration with f32 output
+//
+// TODO: AVX2 kernel using _mm256_shuffle_epi8
+// TODO: NEON kernel using vqtbl1q_u8
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Pack 4-bit PQ codes for FastScan SIMD processing.
+///
+/// Input: `codes[n][num_codebooks]` where each code is 0..15 (4-bit).
+/// Output: packed blocks of 32 vectors, interleaved for vpshufb.
+///
+/// Within each block of 32 vectors, for each subquantizer m:
+/// - 16 bytes, where byte[lane] =
+///   low nibble: code for vector `block_base + lane`,
+///   high nibble: code for vector `block_base + lane + 16`.
+///
+/// This layout lets vpshufb process 32 lookups (one subquantizer) per
+/// instruction.
+#[derive(Debug, Clone)]
+pub struct PackedCodes4bit {
+    /// Nibble-interleaved data. Layout: blocks of 32 vectors, each block
+    /// contains `16 * num_codebooks` bytes.
+    pub data: Vec<u8>,
+    /// Total number of vectors (including padding in the last block).
+    pub num_vectors: usize,
+    /// Number of subquantizers.
+    pub num_codebooks: usize,
+    /// Always 32.
+    pub block_size: usize,
+}
+
+impl PackedCodes4bit {
+    /// Pack flat 8-bit codes into the FastScan nibble layout.
+    ///
+    /// `codes` is row-major: `codes[i * num_codebooks + m]` is vector i's
+    /// code for subquantizer m. Each value must be in 0..16.
+    pub fn pack(codes: &[u8], num_vectors: usize, num_codebooks: usize) -> Self {
+        debug_assert_eq!(codes.len(), num_vectors * num_codebooks);
+
+        let block_size = 32usize;
+        let num_blocks = (num_vectors + block_size - 1) / block_size;
+        let bytes_per_block = 16 * num_codebooks;
+
+        let mut data = vec![0u8; num_blocks * bytes_per_block];
+
+        for block in 0..num_blocks {
+            let block_base = block * block_size;
+            let block_data_offset = block * bytes_per_block;
+
+            // Each subquantizer m gets 16 bytes per block.
+            // Byte layout within a block: [m0: 16 bytes][m1: 16 bytes]...
+            // Within each 16-byte group for subquantizer m:
+            //   byte[lane] = lo_nibble(vec[block_base+lane].code[m])
+            //              | hi_nibble(vec[block_base+lane+16].code[m])
+            for m in 0..num_codebooks {
+                for lane in 0..16usize {
+                    let vi_lo = block_base + lane;
+                    let vi_hi = block_base + 16 + lane;
+
+                    let code_lo = if vi_lo < num_vectors {
+                        codes[vi_lo * num_codebooks + m] & 0x0F
+                    } else {
+                        0
+                    };
+                    let code_hi = if vi_hi < num_vectors {
+                        codes[vi_hi * num_codebooks + m] & 0x0F
+                    } else {
+                        0
+                    };
+
+                    data[block_data_offset + m * 16 + lane] = code_lo | (code_hi << 4);
+                }
+            }
+        }
+
+        Self {
+            data,
+            num_vectors,
+            num_codebooks,
+            block_size,
+        }
+    }
+
+    /// Number of 32-vector blocks.
+    pub fn num_blocks(&self) -> usize {
+        (self.num_vectors + self.block_size - 1) / self.block_size
+    }
+
+    /// Bytes per block: 16 bytes per subquantizer.
+    pub fn bytes_per_block(&self) -> usize {
+        16 * self.num_codebooks
+    }
+
+    /// Slice of packed data for a given block.
+    pub fn block_data(&self, block_idx: usize) -> &[u8] {
+        let bpb = self.bytes_per_block();
+        let start = block_idx * bpb;
+        &self.data[start..start + bpb]
+    }
+}
+
+/// Quantize a float32 LUT to uint8 for SIMD integer accumulation.
+///
+/// The LUT has shape `[num_codebooks][16]` (4-bit PQ = 16 centroids).
+///
+/// Returns `(quantized_lut, scale, offset)` where:
+///   `original_distance ~= quantized_value * scale + offset`
+///
+/// The quantization maps the global [min, max] range across all codebooks
+/// to [0, 255], minimizing per-codebook rounding error.
+pub fn quantize_lut(lut: &[Vec<f32>]) -> (Vec<u8>, f32, f32) {
+    if lut.is_empty() {
+        return (Vec::new(), 1.0, 0.0);
+    }
+
+    // Find global min/max across all codebook entries.
+    let mut global_min = f32::INFINITY;
+    let mut global_max = f32::NEG_INFINITY;
+    for table in lut {
+        for &v in table {
+            if v < global_min {
+                global_min = v;
+            }
+            if v > global_max {
+                global_max = v;
+            }
+        }
+    }
+
+    let range = global_max - global_min;
+    let (scale, offset) = if range < f32::EPSILON {
+        // Degenerate case: all values equal.
+        (1.0, global_min)
+    } else {
+        (range / 255.0, global_min)
+    };
+
+    let inv_scale = if range < f32::EPSILON {
+        0.0
+    } else {
+        255.0 / range
+    };
+
+    let mut quantized = Vec::with_capacity(lut.len() * 16);
+    for table in lut {
+        for &v in table {
+            let q = ((v - offset) * inv_scale).round().clamp(0.0, 255.0) as u8;
+            quantized.push(q);
+        }
+    }
+
+    (quantized, scale, offset)
+}
+
+/// Portable FastScan kernel: process one 32-vector block.
+///
+/// Simulates what vpshufb does in hardware: for each of 32 vectors, look up
+/// each subquantizer's code in the 16-entry quantized LUT and accumulate
+/// as u16.
+///
+/// # Arguments
+///
+/// * `block_data` -- packed nibble data for this 32-vector block
+///   (16 bytes per subquantizer, laid out as `[m0_bytes..., m1_bytes..., ...]`)
+/// * `lut_quantized` -- quantized LUT, flat `[num_codebooks * 16]`
+/// * `num_codebooks` -- number of subquantizers
+///
+/// # Returns
+///
+/// 32 accumulated u16 distances (one per vector in the block).
+pub fn fastscan_block_portable(
+    block_data: &[u8],
+    lut_quantized: &[u8],
+    num_codebooks: usize,
+) -> [u16; 32] {
+    let mut accum = [0u16; 32];
+
+    for m in 0..num_codebooks {
+        let lut_offset = m * 16;
+        let data_offset = m * 16;
+
+        for lane in 0..16usize {
+            let packed_byte = block_data[data_offset + lane];
+            let code_lo = (packed_byte & 0x0F) as usize; // vector `lane`
+            let code_hi = (packed_byte >> 4) as usize; // vector `lane + 16`
+
+            accum[lane] += lut_quantized[lut_offset + code_lo] as u16;
+            accum[lane + 16] += lut_quantized[lut_offset + code_hi] as u16;
+        }
+    }
+
+    accum
+}
+
+/// End-to-end FastScan batch: pack codes, quantize LUT, scan all blocks,
+/// convert back to f32 distances.
+///
+/// # Arguments
+///
+/// * `packed` -- pre-packed 4-bit codes
+/// * `lut` -- float LUT, shape `[num_codebooks][16]`
+///
+/// # Returns
+///
+/// `Vec<f32>` of length `packed.num_vectors`, approximate distances.
+///
+/// The u16 accumulations are converted back via `value * scale + offset`
+/// where `(scale, offset)` come from `quantize_lut`.
+pub fn fastscan_batch(packed: &PackedCodes4bit, lut: &[Vec<f32>]) -> Vec<f32> {
+    assert_eq!(lut.len(), packed.num_codebooks);
+
+    let (lut_q, scale, offset) = quantize_lut(lut);
+    let num_codebooks = packed.num_codebooks;
+    let num_blocks = packed.num_blocks();
+    let bpb = packed.bytes_per_block();
+
+    // Per-codebook offset contributes `offset` to the sum `num_codebooks` times.
+    let base_offset = offset * num_codebooks as f32;
+
+    let mut distances = Vec::with_capacity(packed.num_vectors);
+
+    for block_idx in 0..num_blocks {
+        let block_start = block_idx * bpb;
+        let block_end = (block_start + bpb).min(packed.data.len());
+        let block_data = &packed.data[block_start..block_end];
+
+        let accum = fastscan_block_portable(block_data, &lut_q, num_codebooks);
+
+        let vecs_in_block = if block_idx == num_blocks - 1 {
+            let remaining = packed.num_vectors - block_idx * 32;
+            remaining.min(32)
+        } else {
+            32
+        };
+
+        for i in 0..vecs_in_block {
+            distances.push(accum[i] as f32 * scale + base_offset);
+        }
+    }
+
+    distances
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -518,5 +773,209 @@ mod tests {
         assert_eq!(result.len(), 1);
         let expected = packed_lut.adc_distance(&codes);
         assert!((result[0] - expected).abs() < 1e-6);
+    }
+
+    // ── FastScan 4-bit tests ─────────────────────────────────────────────
+
+    fn create_4bit_lut(num_codebooks: usize) -> Vec<Vec<f32>> {
+        // 16 entries per codebook (4-bit PQ).
+        (0..num_codebooks)
+            .map(|m| {
+                (0..16)
+                    .map(|c| (m * 16 + c) as f32 * 0.5)
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Scalar reference: compute ADC distance for one vector using 4-bit codes
+    /// and a float LUT with 16 entries per codebook.
+    fn scalar_adc_4bit(codes: &[u8], lut: &[Vec<f32>]) -> f32 {
+        codes
+            .iter()
+            .zip(lut.iter())
+            .map(|(&c, table)| table[(c & 0x0F) as usize])
+            .sum()
+    }
+
+    #[test]
+    fn test_packed_codes_4bit_roundtrip() {
+        let num_vectors = 5;
+        let num_codebooks = 4;
+        // Codes: vector i, codebook m -> (i + m) % 16
+        let codes: Vec<u8> = (0..num_vectors * num_codebooks)
+            .map(|idx| {
+                let i = idx / num_codebooks;
+                let m = idx % num_codebooks;
+                ((i + m) % 16) as u8
+            })
+            .collect();
+
+        let packed = PackedCodes4bit::pack(&codes, num_vectors, num_codebooks);
+        assert_eq!(packed.num_vectors, num_vectors);
+        assert_eq!(packed.num_codebooks, num_codebooks);
+        assert_eq!(packed.block_size, 32);
+        assert_eq!(packed.num_blocks(), 1);
+
+        // Verify we can unpack: for each vector, extract its code from the
+        // nibble layout and compare with original.
+        let bpb = packed.bytes_per_block();
+        let block = &packed.data[0..bpb];
+        for i in 0..num_vectors {
+            for m in 0..num_codebooks {
+                let byte = block[m * 16 + (i % 16)];
+                let code = if i < 16 { byte & 0x0F } else { byte >> 4 };
+                assert_eq!(
+                    code,
+                    codes[i * num_codebooks + m],
+                    "mismatch at vec={}, cb={}",
+                    i,
+                    m
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_quantize_lut_range() {
+        let lut = create_4bit_lut(8);
+        let (quantized, scale, offset) = quantize_lut(&lut);
+
+        assert_eq!(quantized.len(), 8 * 16);
+        // Min should map to ~0, max should map to ~255.
+        assert_eq!(quantized[0], 0); // smallest value
+        assert_eq!(*quantized.last().unwrap(), 255); // largest value
+
+        // Reconstruct and check closeness.
+        for (m, table) in lut.iter().enumerate() {
+            for (c, &original) in table.iter().enumerate() {
+                let reconstructed = quantized[m * 16 + c] as f32 * scale + offset;
+                let err = (reconstructed - original).abs();
+                // Max quantization error is scale/2 per entry.
+                assert!(
+                    err <= scale / 2.0 + 1e-5,
+                    "m={}, c={}: original={}, reconstructed={}, err={}",
+                    m,
+                    c,
+                    original,
+                    reconstructed,
+                    err,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_fastscan_vs_scalar_adc() {
+        // Compare fastscan_batch output against scalar ADC on the same data.
+        let num_codebooks = 8;
+        let num_vectors = 100;
+        let lut = create_4bit_lut(num_codebooks);
+
+        // Deterministic pseudo-random codes in 0..16.
+        let codes: Vec<u8> = (0..num_vectors * num_codebooks)
+            .map(|i| ((i * 7 + 3) % 16) as u8)
+            .collect();
+
+        // Scalar reference distances.
+        let scalar_dists: Vec<f32> = (0..num_vectors)
+            .map(|i| {
+                let c = &codes[i * num_codebooks..(i + 1) * num_codebooks];
+                scalar_adc_4bit(c, &lut)
+            })
+            .collect();
+
+        // FastScan distances.
+        let packed = PackedCodes4bit::pack(&codes, num_vectors, num_codebooks);
+        let fastscan_dists = fastscan_batch(&packed, &lut);
+
+        assert_eq!(fastscan_dists.len(), num_vectors);
+
+        // Tolerance: u8 quantization introduces up to `scale/2` error per
+        // codebook, so total error bound is `num_codebooks * scale / 2`.
+        let (_, scale, _) = quantize_lut(&lut);
+        let tolerance = num_codebooks as f32 * scale * 0.5 + 1e-3;
+
+        for i in 0..num_vectors {
+            let err = (fastscan_dists[i] - scalar_dists[i]).abs();
+            assert!(
+                err <= tolerance,
+                "vec {}: fastscan={}, scalar={}, err={}, tol={}",
+                i,
+                fastscan_dists[i],
+                scalar_dists[i],
+                err,
+                tolerance,
+            );
+        }
+    }
+
+    #[test]
+    fn test_fastscan_multiple_blocks() {
+        // Exercise the multi-block path (>32 vectors).
+        let num_codebooks = 4;
+        let num_vectors = 100; // 4 blocks (32 + 32 + 32 + 4)
+        let lut = create_4bit_lut(num_codebooks);
+
+        let codes: Vec<u8> = (0..num_vectors * num_codebooks)
+            .map(|i| ((i * 11 + 5) % 16) as u8)
+            .collect();
+
+        let packed = PackedCodes4bit::pack(&codes, num_vectors, num_codebooks);
+        assert_eq!(packed.num_blocks(), 4);
+
+        let fastscan_dists = fastscan_batch(&packed, &lut);
+        assert_eq!(fastscan_dists.len(), num_vectors);
+
+        let (_, scale, _) = quantize_lut(&lut);
+        let tolerance = num_codebooks as f32 * scale * 0.5 + 1e-3;
+
+        for i in 0..num_vectors {
+            let c = &codes[i * num_codebooks..(i + 1) * num_codebooks];
+            let scalar = scalar_adc_4bit(c, &lut);
+            let err = (fastscan_dists[i] - scalar).abs();
+            assert!(
+                err <= tolerance,
+                "vec {}: fastscan={}, scalar={}, err={}, tol={}",
+                i,
+                fastscan_dists[i],
+                scalar,
+                err,
+                tolerance,
+            );
+        }
+    }
+
+    #[test]
+    fn test_fastscan_odd_codebooks() {
+        // Odd number of codebooks to exercise the solo-pair path.
+        let num_codebooks = 5;
+        let num_vectors = 40;
+        let lut = create_4bit_lut(num_codebooks);
+
+        let codes: Vec<u8> = (0..num_vectors * num_codebooks)
+            .map(|i| (i % 16) as u8)
+            .collect();
+
+        let packed = PackedCodes4bit::pack(&codes, num_vectors, num_codebooks);
+        let fastscan_dists = fastscan_batch(&packed, &lut);
+        assert_eq!(fastscan_dists.len(), num_vectors);
+
+        let (_, scale, _) = quantize_lut(&lut);
+        let tolerance = num_codebooks as f32 * scale * 0.5 + 1e-3;
+
+        for i in 0..num_vectors {
+            let c = &codes[i * num_codebooks..(i + 1) * num_codebooks];
+            let scalar = scalar_adc_4bit(c, &lut);
+            let err = (fastscan_dists[i] - scalar).abs();
+            assert!(
+                err <= tolerance,
+                "vec {}: fastscan={}, scalar={}, err={}",
+                i,
+                fastscan_dists[i],
+                scalar,
+                err,
+            );
+        }
     }
 }
