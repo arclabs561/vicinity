@@ -167,6 +167,12 @@ pub enum WalEntryType {
     Update = 3,
     /// Checkpoint marker
     Checkpoint = 4,
+    /// Insert a graph node (HNSW streaming)
+    InsertNode = 5,
+    /// Delete a graph node (HNSW streaming)
+    DeleteNode = 6,
+    /// Update neighbor list for a graph node (HNSW streaming)
+    UpdateNeighbors = 7,
 }
 
 impl TryFrom<u8> for WalEntryType {
@@ -178,9 +184,63 @@ impl TryFrom<u8> for WalEntryType {
             2 => Ok(WalEntryType::Delete),
             3 => Ok(WalEntryType::Update),
             4 => Ok(WalEntryType::Checkpoint),
+            5 => Ok(WalEntryType::InsertNode),
+            6 => Ok(WalEntryType::DeleteNode),
+            7 => Ok(WalEntryType::UpdateNeighbors),
             _ => Err(()),
         }
     }
+}
+
+/// Per-segment metadata tracked in the manifest.
+///
+/// Each segment carries its own WAL watermark so that multi-segment compaction
+/// can replay from `min(segment watermarks)` instead of a single global sequence.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SegmentInfo {
+    /// Segment identifier.
+    pub segment_id: u64,
+    /// WAL sequence number: the last WAL entry that this segment has fully absorbed.
+    /// During replay, start from `min(all segment wal_sequences)`.
+    pub wal_sequence: u64,
+}
+
+/// Graph-level WAL entries for streaming HNSW updates.
+///
+/// These are finer-grained than the segment-lifecycle entries in `durability::walog::WalEntry`,
+/// enabling incremental graph recovery without replaying full segment rebuilds.
+///
+/// Serialized via postcard through `durability`'s generic `WalWriter<GraphWalEntry>`.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum GraphWalEntry {
+    /// A node was inserted into the HNSW graph.
+    InsertNode {
+        /// External document ID.
+        doc_id: u32,
+        /// Layer the node was assigned to (0 = bottom).
+        level: u8,
+        /// The node's vector data.
+        vector: Vec<f32>,
+        /// Neighbor lists per level, from level 0 up to `level`.
+        /// `neighbors_per_level[i]` is the neighbor list at level `i`.
+        neighbors_per_level: Vec<Vec<u32>>,
+    },
+    /// A node was deleted from the graph.
+    DeleteNode {
+        /// External document ID.
+        doc_id: u32,
+    },
+    /// Neighbor list for an existing node was updated (e.g., after a neighbor deletion or
+    /// re-ranking pass).
+    UpdateNeighbors {
+        /// Internal node ID.
+        node_id: u32,
+        /// Graph level whose neighbor list changed.
+        level: u8,
+        /// New neighbor list (replaces the old one entirely).
+        neighbors: Vec<u32>,
+    },
 }
 
 /// Manifest for the index directory.
@@ -194,9 +254,17 @@ pub struct IndexManifest {
     pub dimension: u32,
     /// Total vector count
     pub total_vectors: u64,
-    /// Active segment IDs
+    /// Active segment IDs (kept for backward compatibility with v1 manifests).
     pub segments: Vec<u64>,
-    /// Latest WAL sequence number
+    /// Per-segment metadata with individual WAL watermarks.
+    ///
+    /// When present, WAL replay starts from `min(segment_info[*].wal_sequence)`.
+    /// When absent (legacy manifests), falls back to the global `wal_sequence`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub segment_info: Vec<SegmentInfo>,
+    /// Latest WAL sequence number (global watermark, legacy).
+    ///
+    /// Superseded by per-segment watermarks in `segment_info` when available.
     pub wal_sequence: u64,
     /// Latest checkpoint ID
     pub checkpoint_id: Option<u64>,
@@ -206,6 +274,24 @@ pub struct IndexManifest {
     pub created_at: u64,
     /// Last modified timestamp
     pub modified_at: u64,
+}
+
+impl IndexManifest {
+    /// Compute the WAL replay start sequence.
+    ///
+    /// If per-segment watermarks are available, returns `min(segment watermarks)`.
+    /// Otherwise, falls back to the global `wal_sequence`.
+    pub fn replay_start_sequence(&self) -> u64 {
+        if self.segment_info.is_empty() {
+            self.wal_sequence
+        } else {
+            self.segment_info
+                .iter()
+                .map(|s| s.wal_sequence)
+                .min()
+                .unwrap_or(self.wal_sequence)
+        }
+    }
 }
 
 /// Section offsets in a segment file.
