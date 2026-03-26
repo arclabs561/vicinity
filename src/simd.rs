@@ -98,8 +98,9 @@ pub use innr::{cosine, dot, l2_distance, l2_distance_squared, norm};
 #[cfg(not(any(feature = "innr", feature = "simsimd")))]
 pub use fallback::*;
 
-// Fallback implementation (only compiled when no SIMD backend is enabled)
-#[cfg(not(any(feature = "innr", feature = "simsimd")))]
+// Fallback implementation -- always compiled so simsimd_backend can reference it
+// as an unwrap_or_else fallback, but only publicly exported when no SIMD backend
+// is enabled.
 mod fallback {
     //! Portable fallback implementations when innr is not available.
 

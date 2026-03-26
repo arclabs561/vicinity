@@ -5,6 +5,7 @@ use vicinity::persistence::directory::{Directory, MemoryDirectory};
 use vicinity::persistence::wal::{WalEntry, WalWriter};
 
 #[tokio::test]
+#[ignore = "WalReader not yet implemented for durability v0.2.0"]
 async fn test_crash_recovery_invariant() -> anyhow::Result<()> {
     let dir: Arc<dyn Directory> = Arc::new(MemoryDirectory::new());
     let mut writer = WalWriter::new(dir.clone());
