@@ -89,8 +89,7 @@ fn create_clustered_dataset(
 
 #[test]
 fn test_hnsw_achieves_reasonable_recall() {
-    // Note: HNSW has scaling issues beyond ~1000 vectors - using smaller dataset
-    // TODO: Investigate graph construction scaling
+    // Uses smaller dataset for fast CI; see examples/ for large-scale benchmarks.
     let _n_vectors = 1000;
     let _n_queries = 20;
     let dim = 32;
@@ -128,13 +127,9 @@ fn test_hnsw_achieves_reasonable_recall() {
 
     let mean_recall = total_recall / queries.len() as f32;
 
-    // Note: Current HNSW implementation has a graph construction issue that limits
-    // recall to ~60% even with high ef. This is being tracked for investigation.
-    // For now, verify we achieve at least 40% (much better than the fake SimpleHnsw's 0.8-9%)
-    // TODO: Investigate graph construction to achieve 90%+ recall typical of HNSW
     assert!(
-        mean_recall >= 0.40,
-        "HNSW recall too low: {:.1}% (expected >= 40%)",
+        mean_recall >= 0.90,
+        "HNSW recall too low: {:.1}% (expected >= 90%)",
         mean_recall * 100.0
     );
 
@@ -199,10 +194,8 @@ fn test_hnsw_recall_increases_with_ef() {
         recalls[0] * 100.0
     );
 
-    // Note: Current implementation is limited to ~60% due to graph construction issues.
-    // TODO: Investigate to achieve 90%+ typical of well-tuned HNSW
     assert!(
-        recalls[4] >= 0.30,
+        recalls[4] >= 0.90,
         "Recall at ef=256 too low: {:.1}%",
         recalls[4] * 100.0
     );
@@ -274,13 +267,10 @@ fn test_self_retrieval() {
         }
     }
 
-    // Note: Current HNSW has issues - only ~60% self-retrieval.
-    // A well-functioning HNSW should achieve 95%+.
-    // TODO: Investigate why self-retrieval is so low
     let self_rate = self_found as f32 / database.len() as f32;
     assert!(
-        self_rate >= 0.50,
-        "Self-retrieval rate too low: {:.1}% (expected >= 50%)",
+        self_rate >= 0.95,
+        "Self-retrieval rate too low: {:.1}% (expected >= 95%)",
         self_rate * 100.0
     );
     eprintln!("Self-retrieval rate: {:.1}%", self_rate * 100.0);
