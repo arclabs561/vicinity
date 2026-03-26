@@ -109,8 +109,34 @@ fn refine_with_rrnd(index: &mut VamanaIndex) -> Result<(), RetrieveError> {
             },
         );
 
-        // Update neighbors
-        index.neighbors[current_id] = SmallVec::from_vec(selected);
+        // Update outgoing neighbors
+        index.neighbors[current_id] = SmallVec::from_vec(selected.clone());
+
+        // Add reverse (bidirectional) edges. Paper: when p selects q as
+        // neighbor, add q->p edge. Prune if q's list exceeds max_degree.
+        let dim = index.dimension;
+        let max_deg = index.params.max_degree;
+        for &neighbor_id in &selected {
+            let reverse = &mut index.neighbors[neighbor_id as usize];
+            if !reverse.contains(&(current_id as u32)) {
+                reverse.push(current_id as u32);
+                if reverse.len() > max_deg {
+                    let nstart = neighbor_id as usize * dim;
+                    let node_vec = &index.vectors[nstart..nstart + dim];
+                    let mut scored: Vec<(u32, f32)> = reverse
+                        .iter()
+                        .map(|&nid| {
+                            let s = nid as usize * dim;
+                            let v = &index.vectors[s..s + dim];
+                            (nid, crate::distance::cosine_distance_normalized(node_vec, v))
+                        })
+                        .collect();
+                    scored.sort_by(|a, b| a.1.total_cmp(&b.1));
+                    scored.truncate(max_deg);
+                    *reverse = scored.iter().map(|(id, _)| *id).collect();
+                }
+            }
+        }
     }
 
     Ok(())
@@ -178,8 +204,33 @@ fn refine_with_rnd(index: &mut VamanaIndex) -> Result<(), RetrieveError> {
             &NeighborhoodDiversification::RelativeNeighborhood,
         );
 
-        // Update neighbors
-        index.neighbors[current_id] = SmallVec::from_vec(selected);
+        // Update outgoing neighbors
+        index.neighbors[current_id] = SmallVec::from_vec(selected.clone());
+
+        // Add reverse (bidirectional) edges with pruning
+        let dim = index.dimension;
+        let max_deg = index.params.max_degree;
+        for &neighbor_id in &selected {
+            let reverse = &mut index.neighbors[neighbor_id as usize];
+            if !reverse.contains(&(current_id as u32)) {
+                reverse.push(current_id as u32);
+                if reverse.len() > max_deg {
+                    let nstart = neighbor_id as usize * dim;
+                    let node_vec = &index.vectors[nstart..nstart + dim];
+                    let mut scored: Vec<(u32, f32)> = reverse
+                        .iter()
+                        .map(|&nid| {
+                            let s = nid as usize * dim;
+                            let v = &index.vectors[s..s + dim];
+                            (nid, crate::distance::cosine_distance_normalized(node_vec, v))
+                        })
+                        .collect();
+                    scored.sort_by(|a, b| a.1.total_cmp(&b.1));
+                    scored.truncate(max_deg);
+                    *reverse = scored.iter().map(|(id, _)| *id).collect();
+                }
+            }
+        }
     }
 
     Ok(())
