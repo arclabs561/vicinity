@@ -28,6 +28,8 @@ pub struct SCANNIndex {
 pub struct SCANNParams {
     /// Number of k-means partitions for coarse quantization.
     pub num_partitions: usize,
+    /// Number of partitions to probe during search (higher = better recall, slower).
+    pub nprobe: usize,
     /// Number of candidates to re-rank with exact distances.
     pub num_reorder: usize,
     /// Number of PQ subspaces (M).
@@ -42,6 +44,7 @@ impl Default for SCANNParams {
     fn default() -> Self {
         Self {
             num_partitions: 256,
+            nprobe: 20,
             num_reorder: 100,
             num_codebooks: 16,
             codebook_size: 256,
@@ -217,7 +220,7 @@ impl SCANNIndex {
         partition_scores.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
 
         // Select top partitions
-        let num_probe = (self.params.num_partitions / 10).clamp(1, 10);
+        let num_probe = self.params.nprobe.min(self.params.num_partitions);
         let lut = quantizer.build_lut(query); // Precompute LUT for residuals
 
         let mut candidates = Vec::new();
