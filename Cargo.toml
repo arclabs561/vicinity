@@ -243,6 +243,11 @@ name = "wasm_search"
 path = "examples/wasm_search.rs"
 required-features = ["hnsw"]
 
+[[example]]
+name = "embedding_pipeline"
+path = "examples/embedding_pipeline.rs"
+required-features = ["hnsw"]
+
 [[bench]]
 name = "hnsw"
 harness = false
