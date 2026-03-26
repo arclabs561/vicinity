@@ -47,6 +47,10 @@ use std::collections::{BinaryHeap, HashSet};
 /// uses f32 vectors (for quality). Search uses asymmetric distance: the query
 /// stays in f32 while graph vectors are u8.
 ///
+/// Quantization uses per-dimension min/max ranges (FAISS `QT_8bit` style),
+/// which gives better accuracy than a single global range when dimensions
+/// have different scales.
+///
 /// Memory for vector storage: `n * dim` bytes (u8) vs `n * dim * 4` bytes (f32).
 /// The HNSW graph edges are unchanged.
 pub struct ScalarQuantizedHNSW {
@@ -54,8 +58,10 @@ pub struct ScalarQuantizedHNSW {
     index: HNSWIndex,
     /// Flat quantized storage: `quantized[i * dim .. (i+1) * dim]` for internal id `i`.
     quantized: Vec<u8>,
-    /// Quantization parameters (global alpha/offset).
-    params: innr::scalar::QuantizationParams,
+    /// Per-dimension quantization scale (alpha = max - min per dim). Length = dimension.
+    scales: Vec<f32>,
+    /// Per-dimension quantization offset (min per dim). Length = dimension.
+    offsets: Vec<f32>,
     /// Whether quantization has been performed.
     quantized_built: bool,
 }
@@ -70,10 +76,8 @@ impl ScalarQuantizedHNSW {
         Ok(Self {
             index,
             quantized: Vec::new(),
-            params: innr::scalar::QuantizationParams {
-                alpha: 1.0,
-                offset: 0.0,
-            },
+            scales: Vec::new(),
+            offsets: Vec::new(),
             quantized_built: false,
         })
     }
@@ -90,21 +94,53 @@ impl ScalarQuantizedHNSW {
         Ok(())
     }
 
-    /// Quantize all vectors from the built index.
+    /// Quantize all vectors from the built index using per-dimension min/max ranges.
     fn quantize_vectors(&mut self) {
         let n = self.index.num_vectors;
         let dim = self.index.dimension;
 
-        // Fit quantization params from all stored f32 values.
-        self.params = innr::scalar::QuantizationParams::fit(&self.index.vectors);
+        // Compute per-dimension min/max.
+        let mut mins = vec![f32::MAX; dim];
+        let mut maxs = vec![f32::MIN; dim];
+        for i in 0..n {
+            let base = i * dim;
+            for d in 0..dim {
+                let v = self.index.vectors[base + d];
+                if v < mins[d] {
+                    mins[d] = v;
+                }
+                if v > maxs[d] {
+                    maxs[d] = v;
+                }
+            }
+        }
 
-        // Quantize each vector into the flat u8 buffer.
-        let inv_alpha = 255.0 / self.params.alpha;
+        // scales[d] = max[d] - min[d]; offsets[d] = min[d].
+        // Guard against zero range (constant dimension).
+        self.scales = mins
+            .iter()
+            .zip(maxs.iter())
+            .map(|(&mn, &mx)| {
+                let alpha = mx - mn;
+                if alpha > 0.0 {
+                    alpha
+                } else {
+                    1.0
+                }
+            })
+            .collect();
+        self.offsets = mins;
+
+        // Quantize each vector element with its per-dimension params.
         self.quantized = Vec::with_capacity(n * dim);
-        for &v in &self.index.vectors {
-            let normalized = (v - self.params.offset) * inv_alpha;
-            self.quantized
-                .push(normalized.round().clamp(0.0, 255.0) as u8);
+        for i in 0..n {
+            let base = i * dim;
+            for d in 0..dim {
+                let v = self.index.vectors[base + d];
+                let normalized = (v - self.offsets[d]) * (255.0 / self.scales[d]);
+                self.quantized
+                    .push(normalized.round().clamp(0.0, 255.0) as u8);
+            }
         }
 
         self.quantized_built = true;
@@ -179,8 +215,8 @@ impl ScalarQuantizedHNSW {
         let n = self.index.num_vectors;
         let f32_bytes = self.index.vectors.len() * 4;
         let u8_bytes = self.quantized.len();
-        // Params overhead: 2 f32s
-        let params_bytes = 8;
+        // Params overhead: 2 * dim f32s (scales + offsets).
+        let params_bytes = dim * 4 * 2;
 
         MemoryStats {
             num_vectors: n,
@@ -225,6 +261,24 @@ impl ScalarQuantizedHNSW {
         Ok(())
     }
 
+    /// Precompute per-query context for asymmetric distance.
+    ///
+    /// `q_scaled[i] = q[i] * scales[i] / 255.0` so that
+    /// `dot(q, dequant(d)) = sum(q_scaled[i] * d_u8[i]) + offset_dot`.
+    fn precompute_query_context(&self, query: &[f32]) -> QueryCtx {
+        let dim = self.index.dimension;
+        let mut q_scaled = Vec::with_capacity(dim);
+        let mut offset_dot: f32 = 0.0;
+        for d in 0..dim {
+            q_scaled.push(query[d] * self.scales[d] / 255.0);
+            offset_dot += query[d] * self.offsets[d];
+        }
+        QueryCtx {
+            q_scaled,
+            offset_dot,
+        }
+    }
+
     /// Walk the HNSW graph using asymmetric quantized cosine distance.
     ///
     /// Returns `(internal_id, distance)` sorted by distance.
@@ -233,17 +287,14 @@ impl ScalarQuantizedHNSW {
         query: &[f32],
         ef: usize,
     ) -> Result<Vec<(u32, f32)>, RetrieveError> {
-        // Precompute query context for asymmetric dot (amortizes sum(q) across comparisons).
-        let query_sum: f32 = query.iter().sum();
-        let scale_factor = self.params.alpha / 255.0;
+        let ctx = self.precompute_query_context(query);
 
         // Find entry point (highest-layer node).
         let (entry_point, entry_layer) = self.find_entry_point();
 
         // Navigate upper layers (greedy single-node descent).
         let mut current = entry_point;
-        let mut current_dist =
-            self.quantized_cosine_distance(query, current, scale_factor, query_sum);
+        let mut current_dist = self.quantized_cosine_distance(&ctx, current);
 
         for layer_idx in (1..=entry_layer).rev() {
             if layer_idx >= self.index.layers.len() {
@@ -255,8 +306,7 @@ impl ScalarQuantizedHNSW {
                 changed = false;
                 let neighbors = layer.get_neighbors(current);
                 for &neighbor_id in neighbors.iter() {
-                    let dist =
-                        self.quantized_cosine_distance(query, neighbor_id, scale_factor, query_sum);
+                    let dist = self.quantized_cosine_distance(&ctx, neighbor_id);
                     if dist < current_dist {
                         current_dist = dist;
                         current = neighbor_id;
@@ -271,48 +321,39 @@ impl ScalarQuantizedHNSW {
             return Ok(Vec::new());
         }
         let base_layer = &self.index.layers[0];
-        let results =
-            self.beam_search_quantized(query, current, base_layer, ef, scale_factor, query_sum);
+        let results = self.beam_search_quantized(&ctx, current, base_layer, ef);
         Ok(results)
     }
 
     /// Asymmetric cosine distance: `1 - dot(query_f32, dequant(vec_u8))`.
     ///
-    /// Uses the decomposition from innr::scalar:
-    /// `dot = (alpha/255) * mixed_dot(q, d_u8) + offset * sum(q)`
+    /// Per-dimension decomposition:
+    /// `dot = sum(q_scaled[i] * d_u8[i]) + offset_dot`
+    /// where `q_scaled` and `offset_dot` are precomputed per query.
     #[inline]
-    fn quantized_cosine_distance(
-        &self,
-        query: &[f32],
-        internal_id: u32,
-        scale_factor: f32,
-        query_sum: f32,
-    ) -> f32 {
+    fn quantized_cosine_distance(&self, ctx: &QueryCtx, internal_id: u32) -> f32 {
         let dim = self.index.dimension;
         let start = internal_id as usize * dim;
         let end = start + dim;
         let quantized_vec = &self.quantized[start..end];
 
-        // mixed_dot: sum(q[i] * d_u8[i] as f32)
-        let mixed: f32 = query
+        let mixed: f32 = ctx
+            .q_scaled
             .iter()
             .zip(quantized_vec.iter())
             .map(|(&q, &d)| q * d as f32)
             .sum();
 
-        let dot = scale_factor * mixed + self.params.offset * query_sum;
-        1.0 - dot
+        1.0 - (mixed + ctx.offset_dot)
     }
 
     /// Beam search in a single layer using quantized distance.
     fn beam_search_quantized(
         &self,
-        query: &[f32],
+        ctx: &QueryCtx,
         entry_point: u32,
         layer: &Layer,
         ef: usize,
-        scale_factor: f32,
-        query_sum: f32,
     ) -> Vec<(u32, f32)> {
         let n = self.index.num_vectors;
 
@@ -326,8 +367,7 @@ impl ScalarQuantizedHNSW {
             Visited::Sparse(HashSet::with_capacity(ef * 2))
         };
 
-        let entry_dist =
-            self.quantized_cosine_distance(query, entry_point, scale_factor, query_sum);
+        let entry_dist = self.quantized_cosine_distance(ctx, entry_point);
         candidates.push(MinCandidate {
             id: entry_point,
             distance: entry_dist,
@@ -347,8 +387,7 @@ impl ScalarQuantizedHNSW {
             let neighbors = layer.get_neighbors(candidate.id);
             for &neighbor_id in neighbors.iter() {
                 if visited.insert(neighbor_id) {
-                    let dist =
-                        self.quantized_cosine_distance(query, neighbor_id, scale_factor, query_sum);
+                    let dist = self.quantized_cosine_distance(ctx, neighbor_id);
 
                     let worst_dist = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
                     if results.len() < ef || dist < worst_dist {
@@ -399,6 +438,16 @@ pub struct MemoryStats {
     pub u8_vector_bytes: usize,
     /// Compression ratio (f32 / u8).
     pub compression_ratio: f64,
+}
+
+/// Precomputed per-query context for asymmetric distance with per-dimension quantization.
+///
+/// `q_scaled[i] = query[i] * scales[i] / 255.0` absorbs the per-dimension scale
+/// into the query so that the inner loop is a plain mixed dot product.
+/// `offset_dot = sum(query[i] * offsets[i])` is the constant bias term.
+struct QueryCtx {
+    q_scaled: Vec<f32>,
+    offset_dot: f32,
 }
 
 // ── Heap helpers (local to this module) ─────────────────────────────────────
@@ -540,13 +589,16 @@ mod tests {
         assert_eq!(stats.num_vectors, n);
         assert_eq!(stats.dimension, dim);
         assert_eq!(stats.f32_vector_bytes, n * dim * 4);
-        // u8 storage: n * dim + 8 bytes for params
-        assert_eq!(stats.u8_vector_bytes, n * dim + 8);
-        // Compression ratio should be close to 4x
+        // u8 storage: n * dim + dim * 8 bytes for per-dim params (scales + offsets)
+        assert_eq!(stats.u8_vector_bytes, n * dim + dim * 8);
+        // Compression ratio: n*dim*4 / (n*dim + dim*8).
+        // For n=100, dim=64: 25600 / (6400 + 512) = 3.70
+        let expected = (n * dim * 4) as f64 / (n * dim + dim * 8) as f64;
         assert!(
-            stats.compression_ratio > 3.5 && stats.compression_ratio < 4.1,
-            "compression ratio {} should be ~4x",
-            stats.compression_ratio
+            (stats.compression_ratio - expected).abs() < 0.01,
+            "compression ratio {} should be ~{:.2}",
+            stats.compression_ratio,
+            expected
         );
     }
 
