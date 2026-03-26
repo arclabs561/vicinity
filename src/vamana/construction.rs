@@ -227,8 +227,13 @@ fn compute_medoid(index: &VamanaIndex) -> u32 {
 ///
 /// 1. Compute medoid (entry point for search)
 /// 2. Initialize random graph with degree >= log(n)
-/// 3. First pass: Refine using RRND
-/// 4. Second pass: Further refine using RND
+/// 3. First pass: Refine using RND (alpha=1.0, strict diversity)
+/// 4. Second pass: Further refine using RRND (alpha>1.0, relaxed)
+///
+/// The paper (DiskANN/Vamana, Algorithm 2) specifies: first pass with
+/// alpha=1.0, second pass with alpha>1.0. The first pass builds a basic
+/// graph with strict diversity; the second pass enriches it with the
+/// relaxed criterion to add longer-range edges.
 pub fn construct_graph(index: &mut VamanaIndex) -> Result<(), RetrieveError> {
     if index.num_vectors == 0 {
         return Err(RetrieveError::EmptyIndex);
@@ -240,11 +245,11 @@ pub fn construct_graph(index: &mut VamanaIndex) -> Result<(), RetrieveError> {
     // Step 1: Initialize random graph
     initialize_random_graph(index)?;
 
-    // Step 2: First pass - refine with RRND
-    refine_with_rrnd(index)?;
-
-    // Step 3: Second pass - refine with RND
+    // Step 2: First pass - strict diversity (alpha=1.0)
     refine_with_rnd(index)?;
+
+    // Step 3: Second pass - relaxed diversity (alpha>1.0)
+    refine_with_rrnd(index)?;
 
     Ok(())
 }

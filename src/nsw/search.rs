@@ -63,8 +63,15 @@ pub fn greedy_search(
     });
     visited.insert(entry_point);
 
-    // Greedy search
+    // Beam search with stopping condition
     while let Some(current) = candidates.pop() {
+        // Stop when best unexplored candidate is worse than worst result
+        // and we have enough results (standard HNSW/NSW termination)
+        let worst_dist = results.peek().map(|c| c.distance).unwrap_or(f32::INFINITY);
+        if current.distance > worst_dist && results.len() >= ef {
+            break;
+        }
+
         if let Some(neighbor_list) = neighbors.get(current.id as usize) {
             for &neighbor_id in neighbor_list.iter() {
                 if visited.contains(&neighbor_id) {

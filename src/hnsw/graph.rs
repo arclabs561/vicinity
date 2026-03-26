@@ -182,7 +182,7 @@ impl Default for HNSWParams {
     fn default() -> Self {
         Self {
             m: 16,
-            m_max: 16,
+            m_max: 32, // Paper: m_max0 = 2*M for layer 0
             m_l: 1.0 / 16.0_f64.ln(), // 1/ln(M), per Malkov & Yashunin 2018
             ef_construction: 200,
             ef_search: 50,
@@ -248,7 +248,7 @@ impl HNSWBuilder {
 
     /// Build the index.
     pub fn build(self) -> Result<HNSWIndex, RetrieveError> {
-        let m_max = self.m_max.unwrap_or(self.m);
+        let m_max = self.m_max.unwrap_or(2 * self.m); // Paper: m_max0 = 2*M
         let params = HNSWParams {
             m: self.m,
             m_max,
