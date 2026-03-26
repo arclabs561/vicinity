@@ -1,9 +1,11 @@
 //! Error types for vicinity.
 
+use std::sync::Arc;
+
 use thiserror::Error;
 
 /// Errors that can occur during indexing/search operations.
-#[derive(Debug, Clone, PartialEq, Error)]
+#[derive(Debug, Error)]
 pub enum RetrieveError {
     /// Empty query provided.
     #[error("query is empty")]
@@ -26,9 +28,9 @@ pub enum RetrieveError {
         doc_dim: usize,
     },
 
-    /// I/O error (wrapped)
+    /// I/O error (preserves the original `std::io::Error` via `Arc` for `ErrorKind` access).
     #[error("I/O error: {0}")]
-    Io(String), // RetrieveError needs to be Clone, std::io::Error isn't. Store string representation.
+    Io(Arc<std::io::Error>),
 
     /// Out of bounds access
     #[error("index out of bounds: {0}")]
@@ -49,7 +51,7 @@ pub enum RetrieveError {
 
 impl From<std::io::Error> for RetrieveError {
     fn from(err: std::io::Error) -> Self {
-        RetrieveError::Io(err.to_string())
+        RetrieveError::Io(Arc::new(err))
     }
 }
 
