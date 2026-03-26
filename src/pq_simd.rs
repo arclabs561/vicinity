@@ -399,8 +399,6 @@ fn lut_to_nested(packed: &PackedLUT) -> Vec<Vec<f32>> {
 // 3. Portable scalar FastScan kernel (simulates vpshufb behavior)
 // 4. fastscan_batch -- end-to-end integration with f32 output
 //
-// TODO: AVX2 kernel using _mm256_shuffle_epi8
-// TODO: NEON kernel using vqtbl1q_u8
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Pack 4-bit PQ codes for FastScan SIMD processing.
@@ -780,11 +778,7 @@ mod tests {
     fn create_4bit_lut(num_codebooks: usize) -> Vec<Vec<f32>> {
         // 16 entries per codebook (4-bit PQ).
         (0..num_codebooks)
-            .map(|m| {
-                (0..16)
-                    .map(|c| (m * 16 + c) as f32 * 0.5)
-                    .collect()
-            })
+            .map(|m| (0..16).map(|c| (m * 16 + c) as f32 * 0.5).collect())
             .collect()
     }
 
