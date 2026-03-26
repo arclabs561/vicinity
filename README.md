@@ -13,21 +13,38 @@ vicinity = { version = "0.1.5", features = ["hnsw"] }
 
 ## Minimal API
 
+Builder pattern (recommended):
+
 ```rust
-use vicinity::hnsw::HNSWIndex;
+use vicinity::hnsw::{HNSWBuilder, HNSWIndex};
 
-// 1. Create index (dim=4, M=16, m_max=16)
-//    (use dim >= 128 for real workloads)
-let mut index = HNSWIndex::new(4, 16, 16)?;
+// 1. Create index via builder
+let mut index = HNSWIndex::builder(128)
+    .m(16)
+    .ef_search(50)
+    .auto_normalize(true)
+    .build()?;
 
-// 2. Add vectors (must be L2-normalized for cosine distance)
-index.add_slice(0, &[1.0, 0.0, 0.0, 0.0])?;
-index.add_slice(1, &[0.0, 1.0, 0.0, 0.0])?;
+// 2. Add vectors (auto-normalized when auto_normalize=true)
+index.add_slice(0, &vec![0.1; 128])?;
+index.add_slice(1, &vec![0.2; 128])?;
 
 // 3. Build graph
 index.build()?;
 
 // 4. Search (k=1, ef_search=50)
+let results = index.search(&vec![0.1; 128], 1, 50)?;
+```
+
+Direct constructor (when you need explicit control over `m_max`):
+
+```rust
+use vicinity::hnsw::HNSWIndex;
+
+let mut index = HNSWIndex::new(4, 16, 16)?;
+index.add_slice(0, &[1.0, 0.0, 0.0, 0.0])?;
+index.add_slice(1, &[0.0, 1.0, 0.0, 0.0])?;
+index.build()?;
 let results = index.search(&[1.0, 0.0, 0.0, 0.0], 1, 50)?;
 ```
 
@@ -133,6 +150,7 @@ so that “same input vectors” means “same meaning” across indexes.
 
 | Capability | API | Notes |
 |---|---|---|
+| **Batch add** | `index.add_batch(ids, vectors)` | Bulk ingestion from flat f32 slice |
 | **Delete vectors** | `index.delete(doc_id)` | Lazy tombstoning; deleted vectors excluded from results |
 | **Filtered search** | `index.search_with_filter(query, k, ef, predicate)` | ACORN-style metadata filtering during graph traversal |
 | **Save / load** | `index.save_to_writer(w)` / `HNSWIndex::load_from_reader(r)` | Requires `serde` feature |
