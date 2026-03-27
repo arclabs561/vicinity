@@ -8,18 +8,20 @@ SIMD: `innr` (pure Rust SIMD, default feature).
 Dataset: ann-benchmarks.com `glove-25-angular`.
 Ground truth: brute-force cosine k-NN on L2-normalized vectors.
 
-### HNSW (M=16, ef_construction=200)
+### HNSW (M=16, m_max=32, ef_construction=200)
 
-Build: 270s (4,377 vectors/sec)
+| ef_search | Recall@10 | QPS |
+|-----------|-----------|-----|
+| 10 | 63.0% | 1,496 |
+| 20 | 75.8% | 1,473 |
+| 50 | 88.4% | 1,409 |
+| 100 | 94.3% | 1,326 |
+| 200 | 97.6% | 1,189 |
+| 400 | 99.1% | 992 |
 
-| ef_search | Recall@10 | Latency | QPS |
-|-----------|-----------|---------|-----|
-| 10 | 58.0% | 689us | 1,451 |
-| 20 | 70.4% | 709us | 1,411 |
-| 50 | 83.1% | 744us | 1,344 |
-| 100 | 89.9% | 809us | 1,236 |
-| 200 | 94.3% | 962us | 1,040 |
-| 400 | 96.8% | 1,231us | 812 |
+Previous results (m_max=16, before fix): 58-97% recall. The m_max=32
+correction (paper's m_max0 = 2*M) improved recall by 3-5 percentage
+points across all ef values.
 
 ### HNSW (M=32, ef_construction=200)
 

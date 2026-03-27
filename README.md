@@ -86,18 +86,17 @@ Layer 0 (dense):  o--o--o--o--o--o--o--o
 
 ## Tuning knobs (HNSW)
 
-### `ef_search` (query effort)
-
-In HNSW, `ef_search` controls how many candidates you keep during the bottom-layer search.
-Larger values usually increase recall, at the cost of query time.
+### Recall vs throughput
 
 <p align="center">
-  <img src="doc/plots/recall_vs_ef.png" width="720" alt="Recall vs ef_search" />
+  <img src="doc/plots/algorithm_comparison_glove-25-final.png" width="720" alt="Recall vs QPS on GloVe-25" />
 </p>
 
-Notes:
-- Data from GloVe-25 (1.2M vectors, 25-d, cosine). See `doc/benchmark-results.md` for full numbers.
-- Results are dataset-specific; do **not** assume these recall values generalize to other distributions.
+HNSW (M=16, m_max=32) achieves 63-99% recall@10 at 800-1500 QPS on GloVe-25 (1.18M vectors, 25-d, cosine). Brute force provides the recall=1.0 baseline at ~42 QPS. See `doc/benchmark-results.md` for full numbers.
+
+### `ef_search` (query effort)
+
+`ef_search` controls how many candidates are explored during search. Larger values increase recall at the cost of query time. Start around `ef_search=50-100` and measure recall@k vs latency for your dataset.
 
 Higher `ef_search` typically improves recall and increases query time. Start around `ef_search=50-100`
 and measure recall@k vs latency for your dataset.
