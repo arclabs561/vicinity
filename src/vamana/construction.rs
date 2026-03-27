@@ -128,7 +128,10 @@ fn refine_with_rrnd(index: &mut VamanaIndex) -> Result<(), RetrieveError> {
                         .map(|&nid| {
                             let s = nid as usize * dim;
                             let v = &index.vectors[s..s + dim];
-                            (nid, crate::distance::cosine_distance_normalized(node_vec, v))
+                            (
+                                nid,
+                                crate::distance::cosine_distance_normalized(node_vec, v),
+                            )
                         })
                         .collect();
                     scored.sort_by(|a, b| a.1.total_cmp(&b.1));
@@ -222,7 +225,10 @@ fn refine_with_rnd(index: &mut VamanaIndex) -> Result<(), RetrieveError> {
                         .map(|&nid| {
                             let s = nid as usize * dim;
                             let v = &index.vectors[s..s + dim];
-                            (nid, crate::distance::cosine_distance_normalized(node_vec, v))
+                            (
+                                nid,
+                                crate::distance::cosine_distance_normalized(node_vec, v),
+                            )
                         })
                         .collect();
                     scored.sort_by(|a, b| a.1.total_cmp(&b.1));

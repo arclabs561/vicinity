@@ -1773,4 +1773,3 @@ mod hnsw_subset_props {
         }
     }
 }
-

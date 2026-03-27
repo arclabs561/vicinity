@@ -504,8 +504,7 @@ impl IVFPQIndex {
         // Quantize residual vectors
         self.quantized_codes = Vec::with_capacity(self.num_vectors * self.params.num_codebooks);
         for i in 0..self.num_vectors {
-            let residual =
-                &residuals[i * self.dimension..(i + 1) * self.dimension];
+            let residual = &residuals[i * self.dimension..(i + 1) * self.dimension];
             let codes = pq.quantize(residual);
             self.quantized_codes.extend_from_slice(&codes);
         }

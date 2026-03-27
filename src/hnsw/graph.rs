@@ -182,7 +182,7 @@ impl Default for HNSWParams {
     fn default() -> Self {
         Self {
             m: 16,
-            m_max: 32, // Paper: m_max0 = 2*M for layer 0
+            m_max: 32,                // Paper: m_max0 = 2*M for layer 0
             m_l: 1.0 / 16.0_f64.ln(), // 1/ln(M), per Malkov & Yashunin 2018
             ef_construction: 200,
             ef_search: 50,
@@ -1294,48 +1294,47 @@ impl HNSWIndex {
         // Fine search in base layer (layer 0)
         if !self.layers.is_empty() {
             // For KS strategy, warm up search with multiple seeds
-            let base_results = if let SeedSelectionStrategy::KSampledRandom { .. } =
-                &self.params.seed_selection
-            {
-                // Use KS seeds to initialize search
-                // Find the best seed (closest to query) among KSampled seeds
-                // and the greedy-descended entry point, then run standard beam search.
-                let mut best_entry = current_closest;
-                let mut best_dist = crate::distance::cosine_distance_normalized(
-                    query,
-                    self.get_vector(current_closest as usize),
-                );
-                for &seed_id in &initial_seeds {
-                    let dist = crate::distance::cosine_distance_normalized(
+            let base_results =
+                if let SeedSelectionStrategy::KSampledRandom { .. } = &self.params.seed_selection {
+                    // Use KS seeds to initialize search
+                    // Find the best seed (closest to query) among KSampled seeds
+                    // and the greedy-descended entry point, then run standard beam search.
+                    let mut best_entry = current_closest;
+                    let mut best_dist = crate::distance::cosine_distance_normalized(
                         query,
-                        self.get_vector(seed_id as usize),
+                        self.get_vector(current_closest as usize),
                     );
-                    if dist < best_dist {
-                        best_dist = dist;
-                        best_entry = seed_id;
+                    for &seed_id in &initial_seeds {
+                        let dist = crate::distance::cosine_distance_normalized(
+                            query,
+                            self.get_vector(seed_id as usize),
+                        );
+                        if dist < best_dist {
+                            best_dist = dist;
+                            best_entry = seed_id;
+                        }
                     }
-                }
 
-                // Use the standard beam search from the best entry point
-                crate::hnsw::search::greedy_search_layer(
-                    query,
-                    best_entry,
-                    &self.layers[0],
-                    &self.vectors,
-                    self.dimension,
-                    ef.max(k),
-                )
-            } else {
-                // Default: Use greedy search from entry point
-                crate::hnsw::search::greedy_search_layer(
-                    query,
-                    current_closest,
-                    &self.layers[0],
-                    &self.vectors,
-                    self.dimension,
-                    ef.max(k),
-                )
-            };
+                    // Use the standard beam search from the best entry point
+                    crate::hnsw::search::greedy_search_layer(
+                        query,
+                        best_entry,
+                        &self.layers[0],
+                        &self.vectors,
+                        self.dimension,
+                        ef.max(k),
+                    )
+                } else {
+                    // Default: Use greedy search from entry point
+                    crate::hnsw::search::greedy_search_layer(
+                        query,
+                        current_closest,
+                        &self.layers[0],
+                        &self.vectors,
+                        self.dimension,
+                        ef.max(k),
+                    )
+                };
 
             // `base_results` is not guaranteed to be sorted (it may be in exploration order).
             // Sort by distance first, then take top-k.
