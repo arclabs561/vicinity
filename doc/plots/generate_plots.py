@@ -3,11 +3,9 @@
 # dependencies = ["matplotlib>=3.8"]
 # ///
 """
-Generate README plots for vicinity HNSW benchmarks.
+Generate theoretical memory scaling plot for vicinity README.
 
-Data sources:
-  - doc/benchmark-results.md (GloVe-25, 1.2M vectors, 25 dims, cosine)
-  - Theoretical memory formulas: raw = N*D*4, graph ~ N*M*4*avg_layers
+For recall-vs-QPS comparison plots, use scripts/plot_comparison.py instead.
 """
 
 from pathlib import Path
@@ -18,20 +16,13 @@ import numpy as np
 
 OUT = Path(__file__).parent
 
-# ---------------------------------------------------------------------------
-# Style: distill.pub-inspired -- white background, minimal chrome, thin spines
-# ---------------------------------------------------------------------------
 COLORS = {
-    "m16": "#1f77b4",  # muted blue
-    "m32": "#d62728",  # muted red
-    "raw": "#aec7e8",  # light blue (stacked area)
-    "graph": "#1f77b4",  # blue (stacked area)
-    "total": "#333333",  # dark grey for total line
+    "m16": "#1f77b4",
+    "m32": "#d62728",
 }
 
 
 def apply_style(ax):
-    """Minimal distill.pub-like axes."""
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
     ax.spines["left"].set_linewidth(0.6)
@@ -39,60 +30,6 @@ def apply_style(ax):
     ax.tick_params(width=0.6, labelsize=9)
     ax.grid(axis="y", linewidth=0.3, color="#cccccc")
     ax.set_axisbelow(True)
-
-
-# ===================================================================
-# Plot 1: Recall@10 vs ef_search  (GloVe-25, M=16 and M=32)
-# ===================================================================
-# Real data from doc/benchmark-results.md
-ef_vals = np.array([10, 20, 50, 100, 200, 400])
-recall_m16 = np.array([58.0, 70.4, 83.1, 89.9, 94.3, 96.8])
-recall_m32 = np.array([72.8, 83.1, 92.1, 96.2, 98.3, 99.2])
-
-fig, ax = plt.subplots(figsize=(6.5, 3.8), dpi=150)
-apply_style(ax)
-
-ax.plot(
-    ef_vals,
-    recall_m16,
-    "o-",
-    color=COLORS["m16"],
-    markersize=5,
-    linewidth=1.5,
-    label="M = 16",
-)
-ax.plot(
-    ef_vals,
-    recall_m32,
-    "s-",
-    color=COLORS["m32"],
-    markersize=5,
-    linewidth=1.5,
-    label="M = 32",
-)
-ax.axhline(95, color="#999999", linewidth=0.8, linestyle="--", zorder=0)
-ax.text(405, 95.6, "95%", fontsize=8, color="#999999", va="bottom")
-
-ax.set_xlabel("ef_search", fontsize=10)
-ax.set_ylabel("Recall@10 (%)", fontsize=10)
-ax.set_xlim(0, 430)
-ax.set_ylim(50, 100)
-ax.legend(fontsize=9, frameon=False)
-
-fig.text(
-    0.5,
-    -0.02,
-    "GloVe-25 (1.2M vectors, 25-d, cosine). Higher M gives better recall "
-    "at each ef_search budget.",
-    ha="center",
-    fontsize=8,
-    color="#555555",
-)
-
-fig.tight_layout()
-fig.savefig(OUT / "recall_vs_ef.png", bbox_inches="tight", pad_inches=0.15)
-plt.close(fig)
-print(f"  wrote {OUT / 'recall_vs_ef.png'}")
 
 
 
