@@ -171,29 +171,6 @@ where
 
 // ─── Candidate types ─────────────────────────────────────────────────────────
 
-/// Candidate node during search.
-#[derive(Clone, PartialEq)]
-pub(crate) struct Candidate {
-    pub(crate) id: u32,
-    pub(crate) distance: f32,
-}
-
-impl Eq for Candidate {}
-
-impl Ord for Candidate {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        // Min-heap: smaller distance = higher priority
-        // Use total_cmp for IEEE 754 total ordering (NaN-safe)
-        self.distance.total_cmp(&other.distance).reverse()
-    }
-}
-
-impl PartialOrd for Candidate {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
 /// Candidate for min-heap (explore closest first).
 #[derive(PartialEq)]
 struct MinCandidate {
@@ -227,57 +204,6 @@ impl Ord for MaxResult {
 impl PartialOrd for MaxResult {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
-    }
-}
-
-// ─── Search state ────────────────────────────────────────────────────────────
-
-/// Search state for HNSW search algorithm.
-pub(crate) struct SearchState {
-    /// Candidate queue (min-heap by distance)
-    candidates: BinaryHeap<Candidate>,
-
-    /// Visited nodes (to avoid revisiting)
-    visited: VisitedSet,
-
-    /// Best distance found so far
-    best_distance: f32,
-
-    /// Number of iterations without improvement (for early termination)
-    no_improvement_count: usize,
-}
-
-impl SearchState {
-    /// Create with pre-allocated capacity for better performance.
-    pub(crate) fn with_capacity(ef: usize, num_nodes: usize) -> Self {
-        Self {
-            candidates: BinaryHeap::with_capacity(ef * 2),
-            visited: VisitedSet::new(num_nodes, ef * 2),
-            best_distance: f32::INFINITY,
-            no_improvement_count: 0,
-        }
-    }
-
-    pub(crate) fn add_candidate(&mut self, id: u32, distance: f32) {
-        if !self.visited.contains(id) {
-            self.candidates.push(Candidate { id, distance });
-        }
-    }
-
-    pub(crate) fn pop_candidate(&mut self) -> Option<Candidate> {
-        while let Some(candidate) = self.candidates.pop() {
-            // Single insert call: returns true if newly visited
-            if self.visited.insert(candidate.id) {
-                if candidate.distance < self.best_distance {
-                    self.best_distance = candidate.distance;
-                    self.no_improvement_count = 0;
-                } else {
-                    self.no_improvement_count += 1;
-                }
-                return Some(candidate);
-            }
-        }
-        None
     }
 }
 
