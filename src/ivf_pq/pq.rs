@@ -1,6 +1,6 @@
 //! Product Quantization (PQ) implementation.
 
-use crate::distance::cosine_distance_normalized;
+use crate::simd::l2_distance_squared;
 use crate::partitioning::kmeans::KMeans;
 use crate::RetrieveError;
 
@@ -100,7 +100,7 @@ impl ProductQuantizer {
             let mut best_dist = f32::INFINITY;
 
             for (code, codeword) in self.codebooks[codebook_idx].iter().enumerate() {
-                let dist = cosine_distance_normalized(subvector, codeword);
+                let dist = l2_distance_squared(subvector, codeword);
                 if dist < best_dist {
                     best_dist = dist;
                     best_code = code.min(255) as u8;
@@ -125,7 +125,7 @@ impl ProductQuantizer {
             let query_subvector = &query[start_dim..end_dim];
             let codeword = &self.codebooks[codebook_idx][code as usize];
 
-            total_dist += cosine_distance_normalized(query_subvector, codeword);
+            total_dist += l2_distance_squared(query_subvector, codeword);
         }
 
         total_dist
@@ -155,7 +155,7 @@ impl ProductQuantizer {
             for codeword in &self.codebooks[codebook_idx] {
                 // Compute distance (typically squared Euclidean or dot product depending on metric)
                 // For now, assuming cosine/dot product as used elsewhere
-                let dist = cosine_distance_normalized(query_subvector, codeword);
+                let dist = l2_distance_squared(query_subvector, codeword);
                 table.push(dist);
             }
         }
