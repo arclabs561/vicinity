@@ -629,6 +629,24 @@ impl HNSWIndex {
         self.built
     }
 
+    /// Return the maximum neighbor count across all nodes and layers.
+    ///
+    /// Useful for verifying the graph respects the degree bound after construction.
+    /// Returns `(layer_index, node_id, degree)` for the node with the most neighbors.
+    pub fn max_node_degree(&self) -> (usize, u32, usize) {
+        let mut max = (0, 0u32, 0usize);
+        for (layer_idx, layer) in self.layers.iter().enumerate() {
+            for node_id in 0..layer.len() as u32 {
+                let neighbors = layer.get_neighbors(node_id);
+                let degree = neighbors.len();
+                if degree > max.2 {
+                    max = (layer_idx, node_id, degree);
+                }
+            }
+        }
+        max
+    }
+
     /// Mark a vector as deleted. Deleted vectors are excluded from search results.
     ///
     /// The vector's storage is not reclaimed until the index is rebuilt.

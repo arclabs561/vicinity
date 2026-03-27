@@ -1679,3 +1679,98 @@ mod hnsw_build_order_props {
     }
 }
 
+mod hnsw_neighbor_bound_props {
+    use proptest::prelude::*;
+    use vicinity::hnsw::HNSWIndex;
+
+    fn random_normalized_vectors(n: usize, dim: usize, seed: u64) -> Vec<Vec<f32>> {
+        use rand::prelude::*;
+        let mut rng = StdRng::seed_from_u64(seed);
+        (0..n)
+            .map(|_| {
+                let v: Vec<f32> = (0..dim).map(|_| rng.random::<f32>() - 0.5).collect();
+                vicinity::distance::normalize(&v)
+            })
+            .collect()
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(20))]
+
+        #[test]
+        fn neighbor_degree_within_bound(
+            n in 50usize..200,
+            m in prop::sample::select(vec![4, 8, 16]),
+            seed in any::<u64>(),
+        ) {
+            let m_max = 2 * m;
+            let vectors = random_normalized_vectors(n, m_max.max(8), seed);
+
+            let mut index = HNSWIndex::new(vectors[0].len(), m, m_max).unwrap();
+            for (i, v) in vectors.iter().enumerate() {
+                index.add_slice(i as u32, v).unwrap();
+            }
+            index.build().unwrap();
+
+            let (layer, node, degree) = index.max_node_degree();
+            // Layer 0 uses m_max, upper layers use m
+            let bound = if layer == 0 { m_max } else { m };
+            prop_assert!(degree <= bound,
+                "Node {} on layer {} has degree {} > bound {} (m={}, m_max={})",
+                node, layer, degree, bound, m, m_max);
+        }
+    }
+}
+
+mod hnsw_subset_props {
+    use proptest::prelude::*;
+    use std::collections::HashSet;
+    use vicinity::hnsw::HNSWIndex;
+
+    fn random_normalized_vectors(n: usize, dim: usize, seed: u64) -> Vec<Vec<f32>> {
+        use rand::prelude::*;
+        let mut rng = StdRng::seed_from_u64(seed);
+        (0..n)
+            .map(|_| {
+                let v: Vec<f32> = (0..dim).map(|_| rng.random::<f32>() - 0.5).collect();
+                vicinity::distance::normalize(&v)
+            })
+            .collect()
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(30))]
+
+        #[test]
+        fn top_k_subset_property(
+            n in 50usize..200,
+            seed in any::<u64>(),
+        ) {
+            let dim = 16;
+            let vectors = random_normalized_vectors(n, dim, seed);
+
+            let mut index = HNSWIndex::new(dim, 16, 32).unwrap();
+            for (i, v) in vectors.iter().enumerate() {
+                index.add_slice(i as u32, v).unwrap();
+            }
+            index.build().unwrap();
+
+            let query = &vectors[0];
+            let ef = n; // high ef for near-exact results
+            let k_small = 5.min(n);
+            let k_large = 15.min(n);
+
+            let results_small = index.search(query, k_small, ef).unwrap();
+            let results_large = index.search(query, k_large, ef).unwrap();
+
+            let ids_small: HashSet<u32> = results_small.iter().map(|(id, _)| *id).collect();
+            let ids_large: HashSet<u32> = results_large.iter().map(|(id, _)| *id).collect();
+
+            let missing: Vec<u32> = ids_small.difference(&ids_large).copied().collect();
+            prop_assert!(missing.is_empty(),
+                "top-{} result(s) {:?} not in top-{} (seed={})",
+                k_small, missing, k_large, seed);
+        }
+    }
+}
+
