@@ -114,18 +114,6 @@ impl VisitedSet {
         }
     }
 
-    /// Check if a node has been visited.
-    #[inline]
-    fn contains(&self, id: u32) -> bool {
-        match self {
-            VisitedSet::Dense { marks, generation } => {
-                let idx = id as usize;
-                idx < marks.len() && marks[idx] == *generation
-            }
-            VisitedSet::Sparse(s) => s.contains(&id),
-        }
-    }
-
     /// Prepare for a new search with `num_nodes` total nodes. Reuses the
     /// existing allocation when possible, only reallocating if the index grew.
     fn prepare(&mut self, num_nodes: usize, capacity_hint: usize) {
