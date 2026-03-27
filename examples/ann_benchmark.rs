@@ -361,7 +361,8 @@ fn run_ivfpq(
     use vicinity::ivf_pq::{IVFPQIndex, IVFPQParams};
 
     let num_clusters = 256;
-    let num_codebooks = if dim >= 8 { 8 } else { dim };
+    // num_codebooks must divide dim evenly. Pick the largest divisor <= 8.
+    let num_codebooks = (1..=8.min(dim)).rev().find(|&c| dim % c == 0).unwrap_or(1);
 
     if !cfg.json {
         println!(
