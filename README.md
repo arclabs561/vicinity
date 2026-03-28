@@ -120,85 +120,17 @@ Notes:
 - Memory plot is theoretical (formula: `N*D*4 + N*M*2*4*1.2`).
 - Treat these as reference points, not a stable performance contract.
 
-## Distance semantics (current behavior)
+## Distance semantics
 
-Different components currently assume different distance semantics.
-This is intentionally surfaced here because it's an easy place to make silent mistakes
-(e.g. forgetting to normalize vectors).
-
-| Component | Metric | Notes |
-|---|---|---|
-| `hnsw::HNSWIndex` | cosine distance | Fast path assumes **L2-normalized** vectors |
-| `ivf_pq::IVFPQIndex` | cosine distance | Uses dot-based cosine distance for IVF + PQ |
-| `scann::SCANNIndex` | dot (coarse) / cosine (rerank) | Dot product for partition scoring, cosine distance for reranking |
-| `hnsw::dual_branch::DualBranchHNSW` | L2 distance | Experimental implementation |
-| `quantization` | Hamming-like / binary distances | See `quantization::simd_ops::hamming_distance` and ternary helpers |
-
-Planned direction: make distance semantics explicit via a shared metric/normalization contract
-so that “same input vectors” means “same meaning” across indexes.
+HNSW assumes L2-normalized vectors for cosine distance (the fast path). IVF-PQ and ScaNN also use cosine-family distances. See the [API docs](https://docs.rs/vicinity) for per-index details.
 
 ## Algorithms
 
-| Type | Implementations | Status |
-|---|---|---|
-| Graph | HNSW, NSW | Stable |
-| Graph | Vamana (DiskANN), SNG, DEG | Experimental |
-| Partition | IVF-PQ | Stable |
-| Partition | ScaNN | Experimental |
-| Quantization | PQ, RaBitQ, SQ8 (scalar) | Stable |
-| Tree | KD-Tree, Ball Tree, RP-Forest, K-Means Tree | Experimental |
-
-## Beyond basic search
-
-| Capability | API | Notes |
-|---|---|---|
-| **Batch add** | `index.add_batch(ids, vectors)` | Bulk ingestion from flat f32 slice |
-| **Delete vectors** | `index.delete(doc_id)` | Lazy tombstoning; deleted vectors excluded from results |
-| **Filtered search** | `index.search_with_filter(query, k, ef, &filter)` | Metadata filtering during graph traversal (`MetadataFilter`) |
-| **Save / load** | `index.save_to_writer(w)` / `HNSWIndex::load_from_reader(r)` | Requires `serde` feature |
-| **Batch search** | `index.search_batch(&queries, k, ef)` | Parallel via rayon; requires `parallel` feature |
-| **Scalar quantization** | `ScalarQuantizedHNSW::new(dim, m, m_max)` | ~4x memory reduction (uint8); asymmetric search + optional reranking |
-| **Streaming updates** | `StreamingCoordinator::new(index)` | Buffer-and-compact architecture for online insert/delete |
+Stable: HNSW, NSW, IVF-PQ, PQ, RaBitQ, SQ8. Experimental: Vamana (DiskANN), SNG, DEG, ScaNN, KD-Tree, Ball Tree, RP-Forest, K-Means Tree. Each is behind its own feature flag.
 
 ## Features
 
-```toml
-[dependencies]
-vicinity = { version = "0.2.0", features = ["hnsw"] }
-```
-
-- `hnsw` — HNSW graph index (default, with `innr` SIMD)
-- `innr` — Pure Rust SIMD distance kernels (default; alternative: `simsimd` for C-based SIMD)
-- `simsimd` — SimSIMD C bindings for distance computation (replaces `innr` when enabled)
-- `serde` — JSON serialization for index save/load (`save_to_writer` / `load_from_reader`)
-- `parallel` — Rayon-based batch search (`search_batch`, `search_batch_flat`)
-- `nsw` — Flat navigable small-world graph (alternative to HNSW, no hierarchy)
-- `sng` — OPT-SNG auto-tuned sparse neighborhood graph (experimental)
-- `diskann` / `vamana` — DiskANN-style graph variants (experimental)
-- `ivf_pq` — Inverted File with Product Quantization (activates `clump` for k-means clustering)
-- `scann` — ScaNN-style coarse-to-fine scaffolding (experimental; activates `clump`)
-- `evoc` — EVoC hierarchical clustering (activates `clump`)
-- `quantization` / `rabitq` / `saq` — vector quantization and RaBitQ-style compression
-- `persistence` — segment-based on-disk persistence with WAL and crash recovery (includes `durability`)
-- `experimental` — research algorithm variants (DEG, FusedANN, merge, probabilistic routing, incremental)
-- `python` — optional PyO3 bindings (feature-gated)
-
-Compiles on `wasm32-unknown-unknown` with default features.
-
-## Flat vs hierarchical graphs (why “H” may not matter)
-
-HNSW’s hierarchy was designed to provide multi-scale “express lanes” for long-range navigation.
-However, recent empirical work suggests that on **high-dimensional embedding datasets** a flat
-navigable small-world graph can retain the key recall/latency benefits of HNSW, because “hub” nodes
-emerge and already provide effective routing.
-
-Concrete reference:
-- Munyampirwa et al. (2024). *Down with the Hierarchy: The 'H' in HNSW Stands for "Hubs"* (arXiv:2412.01940).
-
-Practical guidance in `vicinity`:
-- Try HNSW first (default; well-tested).
-- If you want to experiment with a simpler flat graph, enable the `nsw` feature and use `NSWIndex` directly.
-  Benchmark recall@k vs latency on your workload; the “best” choice depends on data and constraints.
+The default feature is `hnsw`. Additional features: `nsw`, `ivf_pq`, `scann`, `diskann`/`vamana`, `quantization`/`rabitq`/`saq`, `serde` (save/load), `parallel` (rayon batch search), `persistence` (on-disk WAL), `experimental`, `python` (PyO3 bindings). Compiles on `wasm32-unknown-unknown` with default features. See [docs.rs](https://docs.rs/vicinity) for the full feature list.
 
 ## Running benchmarks / examples
 
@@ -224,33 +156,9 @@ Criterion microbenchmarks:
 cargo bench
 ```
 
-### Examples quick reference
+### Examples
 
-| Example | Features | What it demonstrates |
-|---|---|---|
-| `01_basic_search` | `hnsw` (default) | Minimal build-and-search workflow |
-| `02_measure_recall` | `hnsw` (default) | Recall@k measurement against brute force |
-| `03_quick_benchmark` | `hnsw` (default) | Benchmark with synthetic or bundled data (no downloads) |
-| `04_rigorous_benchmark` | `hnsw` (default) | Multi-run benchmark with confidence intervals |
-| `05_normalization_matters` | `hnsw` (default) | Why L2-normalization is required for HNSW cosine search |
-| `hnsw_benchmark` | `hnsw` (default) | HNSW vs brute-force speed and recall |
-| `semantic_search_demo` | `hnsw` (default) | End-to-end semantic search pipeline |
-| `ivf_pq_demo` | `ivf_pq` | IVF-PQ index construction and querying |
-| `rabitq_demo` | `rabitq`, `hnsw`, `quantization` | RaBitQ binary quantization |
-| `evoc_demo` | `evoc` | EVoC hierarchical clustering |
-| `lid_demo` | `hnsw` (default) | LID estimation on synthetic data |
-| `lid_outlier_detection` | `hnsw` (default) | LID-based anomaly detection |
-| `dual_branch_demo` | `hnsw` (default) | LID-driven dual-branch HNSW |
-| `dual_branch_hnsw_demo` | `hnsw` (default) | LID-aware graph construction |
-| `sift_benchmark` | `hnsw` | Synthetic 50K benchmark (SIFT-like) |
-| `glove_benchmark` | `hnsw` (default) | GloVe-25 real dataset benchmark |
-| `retrieve_and_rerank` | `hnsw` | Two-stage retrieval with reranking |
-| `ann_benchmark` | `hnsw` | ann-benchmarks runner (real datasets, HNSW + NSW) |
-| `hybrid_search` | `hnsw` | Combined vector + metadata search |
-| `wasm_search` | `hnsw` | WebAssembly-compatible search |
-| `embedding_pipeline` | `hnsw` | End-to-end embedding ingestion pipeline |
-
-For primary sources (papers) backing the algorithms and phenomena mentioned in docs, see [doc/references.md](doc/references.md).
+Key examples: `01_basic_search`, `02_measure_recall`, `03_quick_benchmark`, `semantic_search_demo`, `ivf_pq_demo`, `rabitq_demo`. See `examples/` for the full set (~20 examples covering benchmarks, quantization, hybrid search, and WASM).
 
 ## References
 
@@ -262,10 +170,6 @@ For primary sources (papers) backing the algorithms and phenomena mentioned in d
 - Ge et al. (2014). *Optimized Product Quantization* (OPQ). `https://arxiv.org/abs/1311.4055`
 - Guo et al. (2020). *Accelerating Large-Scale Inference with Anisotropic Vector Quantization* (ScaNN line). `https://arxiv.org/abs/1908.10396`
 - Gao & Long (2024). *RaBitQ: Quantizing High-Dimensional Vectors with a Theoretical Error Bound for Approximate Nearest Neighbor Search*. `https://arxiv.org/abs/2405.12497`
-
-## See also
-
-- [`innr`](https://crates.io/crates/innr) -- SIMD-accelerated similarity kernels (direct dependency for distance computation)
 
 ## License
 
