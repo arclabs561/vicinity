@@ -4,7 +4,7 @@
 [![Documentation](https://docs.rs/vicinity/badge.svg)](https://docs.rs/vicinity)
 [![CI](https://github.com/arclabs561/vicinity/actions/workflows/ci.yml/badge.svg)](https://github.com/arclabs561/vicinity/actions/workflows/ci.yml)
 
-Approximate nearest-neighbor (ANN) search in Rust. HNSW, NSW, DiskANN, IVF-PQ, ScaNN, PQ, and RaBitQ -- pure Rust, no C/C++ bindings.
+Nearest-neighbor search.
 
 ```toml
 [dependencies]
