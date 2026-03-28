@@ -2,7 +2,7 @@
 # https://github.com/repository-settings/app
 
 repository:
-  description: "vicinity -- approximate nearest-neighbor (ANN) search in Rust: HNSW, DiskANN, IVF-PQ, ScaNN, quantization"
+  description: "Nearest-neighbor search"
   homepage: "https://docs.rs/vicinity"
   private: false
   has_issues: true
