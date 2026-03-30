@@ -85,6 +85,18 @@ impl VisitedSet {
         }
     }
 
+    /// Check whether a node has been visited.
+    #[inline]
+    fn contains(&self, id: u32) -> bool {
+        match self {
+            VisitedSet::Dense { marks, generation } => {
+                let idx = id as usize;
+                idx < marks.len() && marks[idx] == *generation
+            }
+            VisitedSet::Sparse(s) => s.contains(&id),
+        }
+    }
+
     /// Mark a node as visited. Returns `true` if the node was NOT previously visited.
     #[inline]
     fn insert(&mut self, id: u32) -> bool {
@@ -395,15 +407,15 @@ mod tests {
     #[test]
     fn test_candidate_ordering() {
         let mut heap = BinaryHeap::new();
-        heap.push(Candidate {
+        heap.push(MinCandidate {
             id: 0,
             distance: 0.5,
         });
-        heap.push(Candidate {
+        heap.push(MinCandidate {
             id: 1,
             distance: 0.1,
         });
-        heap.push(Candidate {
+        heap.push(MinCandidate {
             id: 2,
             distance: 0.3,
         });

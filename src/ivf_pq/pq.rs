@@ -1,7 +1,7 @@
 //! Product Quantization (PQ) implementation.
 
-use crate::simd::l2_distance_squared;
 use crate::partitioning::kmeans::KMeans;
+use crate::simd::l2_distance_squared;
 use crate::RetrieveError;
 
 use serde::{Deserialize, Serialize};

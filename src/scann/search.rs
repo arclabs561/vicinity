@@ -277,6 +277,7 @@ mod tests {
     fn test_create_index() {
         let params = SCANNParams {
             num_partitions: 2,
+            nprobe: 2,
             num_reorder: 10,
             num_codebooks: 2,
             codebook_size: 256,
@@ -293,6 +294,7 @@ mod tests {
     fn test_add_and_search() {
         let params = SCANNParams {
             num_partitions: 2,
+            nprobe: 2,
             num_reorder: 10,
             num_codebooks: 2,
             codebook_size: 256,
