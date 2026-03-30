@@ -3,9 +3,12 @@
 use crate::simd;
 use crate::RetrieveError;
 use smallvec::SmallVec;
+use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashSet};
 
-/// Candidate during search.
+/// Candidate for search heaps. Natural ordering: larger distance = greater.
+/// Used directly in `results` max-heap (evict farthest), and wrapped in
+/// `Reverse` for the `candidates` min-heap (explore closest first).
 #[derive(Clone, PartialEq)]
 struct Candidate {
     id: u32,
@@ -22,19 +25,15 @@ impl PartialOrd for Candidate {
 
 impl Ord for Candidate {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        // Use total_cmp for IEEE 754 total ordering (NaN-safe)
-        self.distance.total_cmp(&other.distance).reverse()
+        self.distance.total_cmp(&other.distance)
     }
 }
 
 /// Greedy search in flat NSW graph.
 ///
-/// # Performance Note
-///
-/// Uses `HashSet` for visited tracking. For very large graphs (>1M nodes) with
-/// high ef values, a `BitVec` could reduce memory overhead, but `HashSet` with
-/// pre-allocation performs well for typical workloads and doesn't require
-/// knowing the total node count upfront.
+/// Uses a min-heap (`BinaryHeap<Reverse<Candidate>>`) for the exploration
+/// queue (closest first) and a max-heap (`BinaryHeap<Candidate>`) for the
+/// result set (evict farthest when full, keeping the nearest ef candidates).
 pub fn greedy_search(
     query: &[f32],
     entry_point: u32,
@@ -43,30 +42,26 @@ pub fn greedy_search(
     dimension: usize,
     ef: usize,
 ) -> Result<Vec<(u32, f32)>, RetrieveError> {
-    // Pre-allocate with capacity - HashSet is O(1) average for insert/lookup.
-    // For dense graphs with known size, BitVec would be more cache-efficient.
     let mut visited = HashSet::with_capacity(ef * 2);
-    let mut candidates = BinaryHeap::with_capacity(ef * 2);
-    let mut results = BinaryHeap::with_capacity(ef);
+    // Min-heap: explore closest candidates first
+    let mut candidates: BinaryHeap<Reverse<Candidate>> = BinaryHeap::with_capacity(ef * 2);
+    // Max-heap: farthest on top so we can evict it when full
+    let mut results: BinaryHeap<Candidate> = BinaryHeap::with_capacity(ef + 1);
 
     // Start from entry point
     let entry_vec = get_vector(vectors, dimension, entry_point as usize);
     let entry_dist = 1.0 - simd::dot(query, entry_vec);
 
-    candidates.push(Candidate {
+    let entry = Candidate {
         id: entry_point,
         distance: entry_dist,
-    });
-    results.push(Candidate {
-        id: entry_point,
-        distance: entry_dist,
-    });
+    };
+    candidates.push(Reverse(entry.clone()));
+    results.push(entry);
     visited.insert(entry_point);
 
-    // Beam search with stopping condition
-    while let Some(current) = candidates.pop() {
-        // Stop when best unexplored candidate is worse than worst result
-        // and we have enough results (standard HNSW/NSW termination)
+    while let Some(Reverse(current)) = candidates.pop() {
+        // worst_dist = farthest point in results (max-heap peek)
         let worst_dist = results.peek().map(|c| c.distance).unwrap_or(f32::INFINITY);
         if current.distance > worst_dist && results.len() >= ef {
             break;
@@ -83,19 +78,16 @@ pub fn greedy_search(
                 let neighbor_vec = get_vector(vectors, dimension, neighbor_id as usize);
                 let dist = 1.0 - simd::dot(query, neighbor_vec);
 
-                // Add to candidates if better than worst result
                 let worst_dist = results.peek().map(|c| c.distance).unwrap_or(f32::INFINITY);
                 if dist < worst_dist || results.len() < ef {
-                    candidates.push(Candidate {
+                    let c = Candidate {
                         id: neighbor_id,
                         distance: dist,
-                    });
-                    results.push(Candidate {
-                        id: neighbor_id,
-                        distance: dist,
-                    });
+                    };
+                    candidates.push(Reverse(c.clone()));
+                    results.push(c);
 
-                    // Keep only top ef
+                    // Evict farthest when over capacity
                     if results.len() > ef {
                         results.pop();
                     }
@@ -104,10 +96,9 @@ pub fn greedy_search(
         }
     }
 
-    // Convert to sorted vector
     let mut sorted_results: Vec<(u32, f32)> =
         results.into_iter().map(|c| (c.id, c.distance)).collect();
-    sorted_results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1)); // Unstable for better performance
+    sorted_results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
 
     Ok(sorted_results)
 }
