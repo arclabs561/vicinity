@@ -19,6 +19,7 @@
 //!
 //! let params = SCANNParams {
 //!     num_partitions: 256,
+//!     nprobe: 20,
 //!     num_reorder: 100,
 //!     num_codebooks: 16,
 //!     codebook_size: 256,

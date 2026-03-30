@@ -27,7 +27,7 @@ pub mod metrics;
 pub use datasets::{create_benchmark_dataset, create_clustered_dataset, Dataset};
 pub use evaluation::{
     evaluate, generate_clustered_dataset, generate_normalized_clustered_dataset,
-    generate_uniform_dataset, mrr, EvalDataset, EvalResults,
+    generate_uniform_dataset, mrr, normalize, DistanceMetric, EvalDataset, EvalResults,
 };
 pub use memory::{IndexMemoryStats, MemoryTracker};
 pub use metrics::{precision_at_k, recall_at_k};
