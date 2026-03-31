@@ -242,7 +242,8 @@ impl<I: IndexOps> StreamingCoordinator<I> {
         // Merge results
         let mut combined = buffer_results;
         combined.extend(main_results);
-        combined.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        combined
+            .sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
         combined.truncate(k);
 
         // Deduplicate (prefer lower distance)
@@ -317,7 +318,9 @@ mod tests {
                     (id, dist)
                 })
                 .collect();
-            results.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+            results.sort_unstable_by(|a, b| {
+                a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
+            });
             results.truncate(k);
             Ok(results)
         }

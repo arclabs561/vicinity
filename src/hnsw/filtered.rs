@@ -341,7 +341,7 @@ where
         .map(|c| (c.node_id, c.distance))
         .collect();
 
-    result_vec.sort_by(|a, b| a.1.total_cmp(&b.1));
+    result_vec.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
     result_vec.truncate(k);
 
     Ok(result_vec)

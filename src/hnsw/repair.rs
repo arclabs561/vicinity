@@ -278,7 +278,7 @@ impl<'a> GraphRepairer<'a> {
                     if candidates.len() > self.config.max_candidates {
                         // Trim to keep best candidates
                         let mut temp: Vec<_> = candidates.drain().collect();
-                        temp.sort_by(|a, b| a.dist.total_cmp(&b.dist));
+                        temp.sort_unstable_by(|a, b| a.dist.total_cmp(&b.dist));
                         temp.truncate(self.config.max_candidates / 2);
                         for c in temp {
                             candidates.push(c);
@@ -385,7 +385,7 @@ pub fn compute_repair_operations(
             }
         }
 
-        candidates.sort_by(|a, b| a.1.total_cmp(&b.1));
+        candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
 
         let mut new_neighbors = current;
         for (candidate, _) in candidates {

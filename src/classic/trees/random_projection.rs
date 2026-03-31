@@ -152,7 +152,7 @@ impl RPTreeIndex {
             })
             .collect();
 
-        projections.sort_by(|a, b| a.0.total_cmp(&b.0));
+        projections.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
         let median_idx = projections.len() / 2;
         let threshold = projections[median_idx].0;
 
@@ -240,7 +240,7 @@ impl RPTreeIndex {
             })
             .collect();
 
-        results.sort_by(|a, b| a.1.total_cmp(&b.1));
+        results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
         results.truncate(k);
 
         Ok(results)

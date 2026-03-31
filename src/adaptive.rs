@@ -152,10 +152,10 @@ impl EarlyTerminationOracle {
         // Update top-k
         if self.top_k_distances.len() < self.k {
             self.top_k_distances.push(distance);
-            self.top_k_distances.sort_by(|a, b| a.total_cmp(b));
+            self.top_k_distances.sort_unstable_by(|a, b| a.total_cmp(b));
         } else if distance < self.top_k_distances[self.k - 1] {
             self.top_k_distances[self.k - 1] = distance;
-            self.top_k_distances.sort_by(|a, b| a.total_cmp(b));
+            self.top_k_distances.sort_unstable_by(|a, b| a.total_cmp(b));
         }
     }
 
@@ -255,7 +255,7 @@ impl DimensionImportance {
 
         // Sort dimensions by variance (descending)
         let mut importance_order: Vec<usize> = (0..dimension).collect();
-        importance_order.sort_by(|&a, &b| variances[b].total_cmp(&variances[a]));
+        importance_order.sort_unstable_by(|&a, &b| variances[b].total_cmp(&variances[a]));
 
         Self {
             variances,

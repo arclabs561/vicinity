@@ -23,7 +23,7 @@ fn select_neighbors_rnd(
 
     // Sort by distance to query
     let mut sorted: Vec<(u32, f32)> = candidates.to_vec();
-    sorted.sort_by(|a, b| a.1.total_cmp(&b.1));
+    sorted.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
 
     let mut selected = Vec::with_capacity(m.min(sorted.len()));
 
@@ -92,7 +92,7 @@ fn select_neighbors_mond(
 
     // Sort by distance to query
     let mut sorted: Vec<(u32, f32)> = candidates.to_vec();
-    sorted.sort_by(|a, b| a.1.total_cmp(&b.1));
+    sorted.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
 
     let mut selected = Vec::with_capacity(m.min(sorted.len()));
 
@@ -181,7 +181,7 @@ fn select_neighbors_rrnd(
 
     // Sort by distance to query
     let mut sorted: Vec<(u32, f32)> = candidates.to_vec();
-    sorted.sort_by(|a, b| a.1.total_cmp(&b.1));
+    sorted.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
 
     let mut selected = Vec::with_capacity(m.min(sorted.len()));
 

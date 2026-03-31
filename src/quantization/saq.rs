@@ -123,7 +123,7 @@ impl SAQQuantizer {
                 let diff = allocated - total_bits;
                 // Reduce from segments with least variance
                 let mut sorted_indices: Vec<usize> = (0..self.num_segments).collect();
-                sorted_indices.sort_by(|&a, &b| {
+                sorted_indices.sort_unstable_by(|&a, &b| {
                     segment_variances[a]
                         .partial_cmp(&segment_variances[b])
                         .unwrap_or(std::cmp::Ordering::Equal)

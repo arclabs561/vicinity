@@ -304,7 +304,7 @@ impl<'a> RandomWalkRepairer<'a> {
         }
 
         // Sort by priority (descending)
-        candidates.sort_by(|a, b| b.1.total_cmp(&a.1));
+        candidates.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
 
         // Return top candidates
         let needed = self.config.max_neighbors.saturating_sub(existing.len());
@@ -480,7 +480,7 @@ pub fn random_walk_repair(
             }
         }
 
-        candidates.sort_by(|a, b| a.1.total_cmp(&b.1));
+        candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
 
         let mut new_neighbors = current;
         for (candidate, _) in candidates {
