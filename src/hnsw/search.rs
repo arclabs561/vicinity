@@ -393,6 +393,7 @@ pub fn greedy_search_layer_adaptive(
 }
 
 /// Get vector from SoA storage.
+#[inline]
 fn get_vector(vectors: &[f32], dimension: usize, idx: usize) -> &[f32] {
     let start = idx * dimension;
     let end = start + dimension;

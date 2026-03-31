@@ -1743,6 +1743,7 @@ impl HNSWIndex {
     }
 
     /// Get vector by index (for internal use).
+    #[inline]
     pub(crate) fn get_vector(&self, idx: usize) -> &[f32] {
         let start = idx * self.dimension;
         let end = start + self.dimension;
@@ -2075,6 +2076,122 @@ mod tests {
                 "search_batch_flat result {} differs from sequential",
                 i
             );
+        }
+    }
+
+    /// Build a small index for structural invariant tests.
+    fn build_structural_test_index(n: usize, dim: usize, m: usize) -> HNSWIndex {
+        let mut index = HNSWIndex::new(dim, m, 2 * m).unwrap();
+        for i in 0..n {
+            let v: Vec<f32> = (0..dim)
+                .map(|j| ((i * 7 + j * 3) % 100) as f32 / 100.0)
+                .collect();
+            let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+            let normed: Vec<f32> = v.iter().map(|x| x / norm).collect();
+            index.add(i as u32, normed).unwrap();
+        }
+        index.build().unwrap();
+        index
+    }
+
+    #[test]
+    fn test_layer_assignment_distribution() {
+        // With 500 vectors, we should see layer 0 most populated and
+        // exponentially fewer vectors in higher layers.
+        let index = build_structural_test_index(500, 32, 16);
+
+        let max_layer = *index.layer_assignments.iter().max().unwrap_or(&0) as usize;
+
+        let mut layer_counts = vec![0usize; max_layer + 1];
+        for &l in &index.layer_assignments {
+            layer_counts[l as usize] += 1;
+        }
+
+        // With m_l ≈ 0.36 (default for M=16), ~94% of vectors land on layer 0.
+        // Use a generous threshold to avoid flaking on unlucky seeds.
+        let layer0_frac = layer_counts[0] as f64 / 500.0;
+        assert!(
+            layer0_frac > 0.5,
+            "Layer 0 fraction {:.2} should be > 0.5 (got {} of 500)",
+            layer0_frac,
+            layer_counts[0]
+        );
+
+        // Layer 0 must have strictly the most vectors
+        for l in 1..layer_counts.len() {
+            assert!(
+                layer_counts[l] < layer_counts[0],
+                "Layer {} ({}) should have fewer vectors than layer 0 ({})",
+                l,
+                layer_counts[l],
+                layer_counts[0]
+            );
+        }
+    }
+
+    #[test]
+    fn test_m_max_enforced() {
+        // Verify no node in layer 0 exceeds m_max neighbors,
+        // and no node in upper layers exceeds m.
+        let m = 8;
+        let m_max = 2 * m;
+        let index = build_structural_test_index(200, 16, m);
+
+        for (layer_idx, layer) in index.layers.iter().enumerate() {
+            let limit = if layer_idx == 0 { m_max } else { m };
+            if let Some(neighbors) = layer.get_all_neighbors() {
+                for (node_id, nbrs) in neighbors.iter().enumerate() {
+                    assert!(
+                        nbrs.len() <= limit,
+                        "Node {} at layer {} has {} neighbors, limit is {}",
+                        node_id,
+                        layer_idx,
+                        nbrs.len(),
+                        limit
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_neighbor_ids_in_bounds() {
+        // All neighbor IDs must reference valid nodes.
+        let index = build_structural_test_index(100, 16, 8);
+
+        for (layer_idx, layer) in index.layers.iter().enumerate() {
+            if let Some(neighbors) = layer.get_all_neighbors() {
+                for (node_id, nbrs) in neighbors.iter().enumerate() {
+                    for &nbr in nbrs.iter() {
+                        assert!(
+                            (nbr as usize) < index.num_vectors,
+                            "Node {} at layer {} has out-of-bounds neighbor {}",
+                            node_id,
+                            layer_idx,
+                            nbr
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_layer_assignment_matches_layers() {
+        // Every node assigned to layer L should exist in layers 0..=L.
+        let index = build_structural_test_index(100, 16, 8);
+
+        for (node_id, &assigned_layer) in index.layer_assignments.iter().enumerate() {
+            // Node should be present in layers 0 through assigned_layer
+            for l in 0..=assigned_layer as usize {
+                assert!(
+                    l < index.layers.len(),
+                    "Node {} assigned to layer {} but only {} layers exist",
+                    node_id,
+                    assigned_layer,
+                    index.layers.len()
+                );
+            }
         }
     }
 }
