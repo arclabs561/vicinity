@@ -14,9 +14,9 @@ use std::path::PathBuf;
 /// Filesystem-like directory abstraction for `vicinity` persistence.
 pub trait Directory: Send + Sync {
     /// Create a new file for writing, truncating if it exists.
-    fn create_file(&self, path: &str) -> PersistenceResult<Box<dyn Write>>;
+    fn create_file(&self, path: &str) -> PersistenceResult<Box<dyn Write + Send>>;
     /// Open an existing file for reading.
-    fn open_file(&self, path: &str) -> PersistenceResult<Box<dyn Read>>;
+    fn open_file(&self, path: &str) -> PersistenceResult<Box<dyn Read + Send>>;
     /// Check whether a file or directory exists at the given path.
     fn exists(&self, path: &str) -> bool;
     /// Delete a file.
@@ -28,7 +28,7 @@ pub trait Directory: Send + Sync {
     /// List entries in a directory.
     fn list_dir(&self, path: &str) -> PersistenceResult<Vec<String>>;
     /// Open a file for appending, creating it if it does not exist.
-    fn append_file(&self, path: &str) -> PersistenceResult<Box<dyn Write>>;
+    fn append_file(&self, path: &str) -> PersistenceResult<Box<dyn Write + Send>>;
     /// Write data atomically (write-to-temp then rename).
     fn atomic_write(&self, path: &str, data: &[u8]) -> PersistenceResult<()>;
     /// Return the underlying filesystem path, if backed by one.
@@ -58,10 +58,10 @@ impl MemoryDirectory {
 
 #[cfg(not(feature = "persistence"))]
 impl Directory for MemoryDirectory {
-    fn create_file(&self, _path: &str) -> PersistenceResult<Box<dyn Write>> {
+    fn create_file(&self, _path: &str) -> PersistenceResult<Box<dyn Write + Send>> {
         Err(disabled())
     }
-    fn open_file(&self, _path: &str) -> PersistenceResult<Box<dyn Read>> {
+    fn open_file(&self, _path: &str) -> PersistenceResult<Box<dyn Read + Send>> {
         Err(disabled())
     }
     fn exists(&self, _path: &str) -> bool {
@@ -79,7 +79,7 @@ impl Directory for MemoryDirectory {
     fn list_dir(&self, _path: &str) -> PersistenceResult<Vec<String>> {
         Err(disabled())
     }
-    fn append_file(&self, _path: &str) -> PersistenceResult<Box<dyn Write>> {
+    fn append_file(&self, _path: &str) -> PersistenceResult<Box<dyn Write + Send>> {
         Err(disabled())
     }
     fn atomic_write(&self, _path: &str, _data: &[u8]) -> PersistenceResult<()> {
@@ -105,10 +105,10 @@ impl FsDirectory {
 
 #[cfg(not(feature = "persistence"))]
 impl Directory for FsDirectory {
-    fn create_file(&self, _path: &str) -> PersistenceResult<Box<dyn Write>> {
+    fn create_file(&self, _path: &str) -> PersistenceResult<Box<dyn Write + Send>> {
         Err(disabled())
     }
-    fn open_file(&self, _path: &str) -> PersistenceResult<Box<dyn Read>> {
+    fn open_file(&self, _path: &str) -> PersistenceResult<Box<dyn Read + Send>> {
         Err(disabled())
     }
     fn exists(&self, _path: &str) -> bool {
@@ -126,7 +126,7 @@ impl Directory for FsDirectory {
     fn list_dir(&self, _path: &str) -> PersistenceResult<Vec<String>> {
         Err(disabled())
     }
-    fn append_file(&self, _path: &str) -> PersistenceResult<Box<dyn Write>> {
+    fn append_file(&self, _path: &str) -> PersistenceResult<Box<dyn Write + Send>> {
         Err(disabled())
     }
     fn atomic_write(&self, _path: &str, _data: &[u8]) -> PersistenceResult<()> {
@@ -160,10 +160,10 @@ mod enabled {
     }
 
     impl Directory for MemoryDirectory {
-        fn create_file(&self, path: &str) -> PersistenceResult<Box<dyn Write>> {
+        fn create_file(&self, path: &str) -> PersistenceResult<Box<dyn Write + Send>> {
             self.inner.create_file(path).map_err(PersistenceError::from)
         }
-        fn open_file(&self, path: &str) -> PersistenceResult<Box<dyn Read>> {
+        fn open_file(&self, path: &str) -> PersistenceResult<Box<dyn Read + Send>> {
             self.inner.open_file(path).map_err(PersistenceError::from)
         }
         fn exists(&self, path: &str) -> bool {
@@ -185,7 +185,7 @@ mod enabled {
         fn list_dir(&self, path: &str) -> PersistenceResult<Vec<String>> {
             self.inner.list_dir(path).map_err(PersistenceError::from)
         }
-        fn append_file(&self, path: &str) -> PersistenceResult<Box<dyn Write>> {
+        fn append_file(&self, path: &str) -> PersistenceResult<Box<dyn Write + Send>> {
             self.inner.append_file(path).map_err(PersistenceError::from)
         }
         fn atomic_write(&self, path: &str, data: &[u8]) -> PersistenceResult<()> {
@@ -217,10 +217,10 @@ mod enabled {
     }
 
     impl Directory for FsDirectory {
-        fn create_file(&self, path: &str) -> PersistenceResult<Box<dyn Write>> {
+        fn create_file(&self, path: &str) -> PersistenceResult<Box<dyn Write + Send>> {
             self.inner.create_file(path).map_err(PersistenceError::from)
         }
-        fn open_file(&self, path: &str) -> PersistenceResult<Box<dyn Read>> {
+        fn open_file(&self, path: &str) -> PersistenceResult<Box<dyn Read + Send>> {
             self.inner.open_file(path).map_err(PersistenceError::from)
         }
         fn exists(&self, path: &str) -> bool {
@@ -242,7 +242,7 @@ mod enabled {
         fn list_dir(&self, path: &str) -> PersistenceResult<Vec<String>> {
             self.inner.list_dir(path).map_err(PersistenceError::from)
         }
-        fn append_file(&self, path: &str) -> PersistenceResult<Box<dyn Write>> {
+        fn append_file(&self, path: &str) -> PersistenceResult<Box<dyn Write + Send>> {
             self.inner.append_file(path).map_err(PersistenceError::from)
         }
         fn atomic_write(&self, path: &str, data: &[u8]) -> PersistenceResult<()> {
