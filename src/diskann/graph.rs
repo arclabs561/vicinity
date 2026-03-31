@@ -160,8 +160,11 @@ pub struct DiskANNSearcher {
 
     // Components
     graph_reader: super::disk_io::DiskGraphReader,
-    vectors_file: std::fs::File, // Or mmap
-                                 // Using simple file I/O for vectors for now, upgradable to mmap
+    vectors_file: std::fs::File,
+    /// Reusable byte buffer for vector reads (avoids per-read allocation).
+    read_buf: Vec<u8>,
+    /// Reusable f32 buffer for parsed vectors.
+    vec_buf: Vec<f32>,
 }
 
 impl DiskANNSearcher {
@@ -209,6 +212,8 @@ impl DiskANNSearcher {
         let vectors_file = std::fs::File::open(&vectors_path)?;
 
         Ok(Self {
+            read_buf: vec![0u8; dimension * 4],
+            vec_buf: vec![0.0f32; dimension],
             dimension,
             num_vectors,
             start_node,
@@ -235,8 +240,10 @@ impl DiskANNSearcher {
         let mut retset: Vec<Candidate> = Vec::with_capacity(ef + 1);
 
         // Fetch start node vector
-        let start_vec = self.get_vector(self.start_node)?;
-        let start_dist = self.dist(query, &start_vec);
+        let start_dist = {
+            let v = self.read_vector(self.start_node)?;
+            crate::simd::l2_distance_squared(query, v)
+        };
 
         retset.push(Candidate {
             id: self.start_node,
@@ -261,9 +268,11 @@ impl DiskANNSearcher {
                 }
                 visited.insert(neighbor);
 
-                // Fetch neighbor vector from disk
-                let neighbor_vec = self.get_vector(neighbor)?;
-                let dist = self.dist(query, &neighbor_vec);
+                // Fetch neighbor vector from disk (zero-alloc via reusable buffer)
+                let dist = {
+                    let v = self.read_vector(neighbor)?;
+                    crate::simd::l2_distance_squared(query, v)
+                };
 
                 retset.push(Candidate { id: neighbor, dist });
             }
@@ -278,26 +287,23 @@ impl DiskANNSearcher {
         Ok(retset.into_iter().take(k).map(|c| (c.id, c.dist)).collect())
     }
 
-    fn get_vector(&mut self, idx: u32) -> Result<Vec<f32>, RetrieveError> {
+    /// Read a vector from disk into the reusable buffer, returning a slice.
+    fn read_vector(&mut self, idx: u32) -> Result<&[f32], RetrieveError> {
         use std::io::{Read, Seek, SeekFrom};
         let offset = idx as u64 * self.dimension as u64 * 4;
         self.vectors_file.seek(SeekFrom::Start(offset))?;
+        self.vectors_file.read_exact(&mut self.read_buf)?;
 
-        let mut buffer = vec![0u8; self.dimension * 4];
-        self.vectors_file.read_exact(&mut buffer)?;
-
-        let mut vec = Vec::with_capacity(self.dimension);
         for i in 0..self.dimension {
             let start = i * 4;
-            let val = f32::from_le_bytes([
-                buffer[start],
-                buffer[start + 1],
-                buffer[start + 2],
-                buffer[start + 3],
+            self.vec_buf[i] = f32::from_le_bytes([
+                self.read_buf[start],
+                self.read_buf[start + 1],
+                self.read_buf[start + 2],
+                self.read_buf[start + 3],
             ]);
-            vec.push(val);
         }
-        Ok(vec)
+        Ok(&self.vec_buf)
     }
 
     fn dist(&self, a: &[f32], b: &[f32]) -> f32 {
