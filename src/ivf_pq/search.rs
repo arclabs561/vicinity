@@ -10,22 +10,7 @@ use serde::{Deserialize, Serialize};
 /// Below this threshold, scalar per-candidate lookup is used.
 const SIMD_BATCH_THRESHOLD: usize = 16;
 
-/// Reshape a flat ADC table into nested `Vec<Vec<f32>>` for `PackedLUT`.
-///
-/// Flat layout: `[cb0_cw0, cb0_cw1, ..., cb1_cw0, cb1_cw1, ...]`
-/// Nested: `nested[codebook][codeword]`
-fn flat_table_to_nested(
-    table: &[f32],
-    num_codebooks: usize,
-    codebook_size: usize,
-) -> Vec<Vec<f32>> {
-    (0..num_codebooks)
-        .map(|m| {
-            let start = m * codebook_size;
-            table[start..start + codebook_size].to_vec()
-        })
-        .collect()
-}
+// flat_table_to_nested removed: PackedLUT::from_flat skips the intermediate allocation.
 
 /// Quantizer strategy.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,7 +58,8 @@ pub struct IVFPQIndex {
 
     // IVF components
     clusters: Vec<Cluster>,
-    pub(crate) centroids: Vec<Vec<f32>>,
+    /// Flat centroid storage: `[c0_d0, c0_d1, ..., c1_d0, ...]` with stride = dimension.
+    pub(crate) centroids: Vec<f32>,
 
     // PQ components
     pq: Option<Quantizer>,
@@ -392,7 +378,12 @@ impl IVFPQIndex {
         let mut kmeans =
             crate::partitioning::kmeans::KMeans::new(self.dimension, self.params.num_clusters)?;
         kmeans.fit(&self.vectors, self.num_vectors)?;
-        self.centroids = kmeans.centroids().to_vec();
+        // Flatten centroids to contiguous storage for cache-friendly access.
+        self.centroids = kmeans
+            .centroids()
+            .iter()
+            .flat_map(|c| c.iter().copied())
+            .collect();
 
         // Assign vectors to clusters
         let assignments = kmeans.assign_clusters(&self.vectors, self.num_vectors);
@@ -476,7 +467,7 @@ impl IVFPQIndex {
         let mut residuals = Vec::with_capacity(self.num_vectors * self.dimension);
         for i in 0..self.num_vectors {
             let vec = self.get_vector(i);
-            let centroid = &self.centroids[assignments[i]];
+            let centroid = self.get_centroid(assignments[i]);
             for (v, c) in vec.iter().zip(centroid.iter()) {
                 residuals.push(v - c);
             }
@@ -534,50 +525,53 @@ impl IVFPQIndex {
             .as_ref()
             .ok_or(RetrieveError::InvalidParameter("PQ not initialized".into()))?;
 
-        // Find closest clusters
-        let mut cluster_distances: Vec<(usize, f32)> = self
-            .centroids
-            .iter()
-            .enumerate()
-            .map(|(idx, centroid)| {
+        // Find closest clusters (partial sort: O(C log nprobe) instead of O(C log C))
+        let num_centroids = self.centroids.len() / self.dimension;
+        let mut cluster_distances: Vec<(usize, f32)> = (0..num_centroids)
+            .map(|idx| {
+                let centroid = self.get_centroid(idx);
                 let dist = crate::distance::cosine_distance_normalized(query, centroid);
                 (idx, dist)
             })
             .collect();
 
-        cluster_distances.sort_unstable_by(|a, b| a.1.total_cmp(&b.1)); // Unstable for better performance
+        let nprobe = self.params.nprobe.min(cluster_distances.len());
+        if nprobe < cluster_distances.len() {
+            cluster_distances.select_nth_unstable_by(nprobe, |a, b| a.1.total_cmp(&b.1));
+            cluster_distances.truncate(nprobe);
+        }
+        cluster_distances.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
 
-        // Search in top nprobe clusters
-        // ADC table is built per-cluster from the query residual (query - centroid).
+        // Pre-allocate reusable buffers for the nprobe loop
         let mut candidates = Vec::new();
+        let mut query_residual = vec![0.0f32; self.dimension];
+        let mut codes_batch = Vec::new();
 
-        for (cluster_idx, _) in cluster_distances.iter().take(self.params.nprobe) {
+        for (cluster_idx, _) in &cluster_distances {
             let cluster = &self.clusters[*cluster_idx];
             let ids = cluster.get_ids_immut();
 
-            // Compute query residual for this cluster
-            let centroid = &self.centroids[*cluster_idx];
-            let query_residual: Vec<f32> = query
-                .iter()
-                .zip(centroid.iter())
-                .map(|(q, c)| q - c)
-                .collect();
+            // Compute query residual in-place (no allocation)
+            let centroid = self.get_centroid(*cluster_idx);
+            for (i, (q, c)) in query.iter().zip(centroid.iter()).enumerate() {
+                query_residual[i] = q - c;
+            }
 
             // Build ADC table from query residual
             let adc_table = pq.compute_adc_table(&query_residual)?;
 
             if ids.len() >= SIMD_BATCH_THRESHOLD {
-                // Build PackedLUT for SIMD batch dispatch
-                let nested_lut = flat_table_to_nested(
+                // Build PackedLUT directly from flat table (no intermediate Vec<Vec<f32>>)
+                let packed_lut = PackedLUT::from_flat(
                     &adc_table,
                     self.params.num_codebooks,
                     self.params.codebook_size,
                 );
-                let packed_lut = PackedLUT::from_nested(&nested_lut);
 
-                // SIMD batch path: gather codes into a contiguous buffer, dispatch
+                // SIMD batch path: gather codes into a reusable buffer
                 let num_cb = self.params.num_codebooks;
-                let mut codes_batch = Vec::with_capacity(ids.len() * num_cb);
+                codes_batch.clear();
+                codes_batch.reserve(ids.len() * num_cb);
                 for &vector_idx in &ids {
                     let start = vector_idx as usize * num_cb;
                     codes_batch.extend_from_slice(&self.quantized_codes[start..start + num_cb]);
@@ -602,7 +596,7 @@ impl IVFPQIndex {
         }
 
         // Sort and return top k
-        candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1)); // Unstable for better performance
+        candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
         Ok(candidates.into_iter().take(k).collect())
     }
 
@@ -664,28 +658,33 @@ impl IVFPQIndex {
 
         let filter_bit = 1u64 << desired_category;
 
-        // Find closest clusters
-        let mut cluster_distances: Vec<(usize, f32)> = self
-            .centroids
-            .iter()
-            .enumerate()
-            .map(|(idx, centroid)| {
+        // Find closest clusters (partial sort)
+        let num_centroids = self.centroids.len() / self.dimension;
+        let mut cluster_distances: Vec<(usize, f32)> = (0..num_centroids)
+            .map(|idx| {
+                let centroid = self.get_centroid(idx);
                 let dist = crate::distance::cosine_distance_normalized(query, centroid);
                 (idx, dist)
             })
             .collect();
 
+        let nprobe = self.params.nprobe.min(cluster_distances.len());
+        if nprobe < cluster_distances.len() {
+            cluster_distances.select_nth_unstable_by(nprobe, |a, b| a.1.total_cmp(&b.1));
+            cluster_distances.truncate(nprobe);
+        }
         cluster_distances.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
 
         // Search in top nprobe clusters, skipping those without matching vectors
         let mut candidates = Vec::new();
+        let mut query_residual = vec![0.0f32; self.dimension];
 
         let pq = self
             .pq
             .as_ref()
             .ok_or(RetrieveError::InvalidParameter("PQ not initialized".into()))?;
 
-        for (cluster_idx, _) in cluster_distances.iter().take(self.params.nprobe) {
+        for (cluster_idx, _) in &cluster_distances {
             let cluster = &self.clusters[*cluster_idx];
 
             // Skip cluster if it doesn't contain any vectors matching the filter
@@ -693,13 +692,11 @@ impl IVFPQIndex {
                 continue;
             }
 
-            // Compute query residual for this cluster
-            let centroid = &self.centroids[*cluster_idx];
-            let query_residual: Vec<f32> = query
-                .iter()
-                .zip(centroid.iter())
-                .map(|(q, c)| q - c)
-                .collect();
+            // Compute query residual in-place
+            let centroid = self.get_centroid(*cluster_idx);
+            for (i, (q, c)) in query.iter().zip(centroid.iter()).enumerate() {
+                query_residual[i] = q - c;
+            }
 
             let adc_table = pq.compute_adc_table(&query_residual)?;
 
@@ -717,7 +714,6 @@ impl IVFPQIndex {
                     }
                 }
             } else {
-                // No metadata store, can't filter (shouldn't happen)
                 return Err(RetrieveError::InvalidParameter(
                     "metadata store not initialized".into(),
                 ));
@@ -730,9 +726,18 @@ impl IVFPQIndex {
     }
 
     /// Get vector from SoA storage.
+    #[inline]
     fn get_vector(&self, idx: usize) -> &[f32] {
         let start = idx * self.dimension;
         let end = start + self.dimension;
         &self.vectors[start..end]
+    }
+
+    /// Get centroid from flat storage.
+    #[inline]
+    fn get_centroid(&self, idx: usize) -> &[f32] {
+        let start = idx * self.dimension;
+        let end = start + self.dimension;
+        &self.centroids[start..end]
     }
 }
