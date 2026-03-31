@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Robustness tests for vicinity.
 //!
 //! These tests verify graceful error handling for edge cases: NaN/Inf inputs,

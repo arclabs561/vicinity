@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Integration tests verifying idpaq usage in vicinity.
 //!
 //! These tests enforce that the id-compression feature correctly delegates

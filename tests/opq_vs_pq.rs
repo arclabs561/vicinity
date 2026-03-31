@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Test that OPQ reduces quantization error compared to plain PQ.
 //!
 //! OPQ learns a rotation that decorrelates subvectors before quantization.

@@ -1,3 +1,5 @@
+// Experimental module: planned implementation, not yet wired to public API.
+#![allow(dead_code)]
 //! Matryoshka Embedding Support
 //!
 //! Implements support for Matryoshka Representation Learning (MRL) embeddings,
