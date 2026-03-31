@@ -141,6 +141,7 @@ impl VamanaIndex {
     }
 
     /// Get vector by index.
+    #[inline]
     pub(crate) fn get_vector(&self, idx: usize) -> &[f32] {
         let start = idx * self.dimension;
         let end = start + self.dimension;
@@ -277,6 +278,110 @@ mod tests {
         assert_eq!(
             r1, r2,
             "search should be deterministic with medoid entry point"
+        );
+    }
+
+    #[test]
+    fn test_vamana_max_degree_enforced() {
+        let dim = 16;
+        let n = 100;
+        let vectors = generate_normalized_vectors(n, dim, 42);
+
+        let max_degree = 16;
+        let params = VamanaParams {
+            max_degree,
+            alpha: 1.3,
+            ef_construction: 60,
+            ef_search: 30,
+        };
+        let mut index = VamanaIndex::new(dim, params).unwrap();
+        for (i, v) in vectors.iter().enumerate() {
+            index.add(i as u32, v.clone()).unwrap();
+        }
+        index.build().unwrap();
+
+        // No node should exceed max_degree neighbors
+        for (node_id, neighbors) in index.neighbors.iter().enumerate() {
+            assert!(
+                neighbors.len() <= max_degree,
+                "Node {} has {} neighbors, max_degree is {}",
+                node_id,
+                neighbors.len(),
+                max_degree
+            );
+        }
+    }
+
+    #[test]
+    fn test_vamana_neighbor_ids_in_bounds() {
+        let dim = 16;
+        let n = 80;
+        let vectors = generate_normalized_vectors(n, dim, 99);
+
+        let params = VamanaParams {
+            max_degree: 16,
+            alpha: 1.3,
+            ef_construction: 60,
+            ef_search: 30,
+        };
+        let mut index = VamanaIndex::new(dim, params).unwrap();
+        for (i, v) in vectors.iter().enumerate() {
+            index.add(i as u32, v.clone()).unwrap();
+        }
+        index.build().unwrap();
+
+        for (node_id, neighbors) in index.neighbors.iter().enumerate() {
+            for &nbr in neighbors.iter() {
+                assert!(
+                    (nbr as usize) < n,
+                    "Node {} has out-of-bounds neighbor {}",
+                    node_id,
+                    nbr
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_vamana_graph_connected() {
+        // After construction, every node should be reachable from the medoid
+        // via BFS through the neighbor graph.
+        let dim = 16;
+        let n = 50;
+        let vectors = generate_normalized_vectors(n, dim, 55);
+
+        let params = VamanaParams {
+            max_degree: 16,
+            alpha: 1.5,
+            ef_construction: 100,
+            ef_search: 50,
+        };
+        let mut index = VamanaIndex::new(dim, params).unwrap();
+        for (i, v) in vectors.iter().enumerate() {
+            index.add(i as u32, v.clone()).unwrap();
+        }
+        index.build().unwrap();
+
+        // BFS from medoid
+        let mut visited = std::collections::HashSet::new();
+        let mut queue = std::collections::VecDeque::new();
+        queue.push_back(index.medoid);
+        visited.insert(index.medoid);
+
+        while let Some(node) = queue.pop_front() {
+            for &nbr in index.neighbors[node as usize].iter() {
+                if visited.insert(nbr) {
+                    queue.push_back(nbr);
+                }
+            }
+        }
+
+        assert_eq!(
+            visited.len(),
+            n,
+            "Only {} of {} nodes reachable from medoid (graph disconnected)",
+            visited.len(),
+            n
         );
     }
 }
