@@ -726,4 +726,104 @@ mod tests {
             Ok(_) => panic!("Expected error for dimension 0"),
         }
     }
+
+    #[test]
+    fn test_max_degree_enforced() {
+        let m = 4;
+        let params = DiskANNParams {
+            m,
+            ef_construction: 20,
+            alpha: 1.2,
+            ef_search: 20,
+        };
+        let mut index = DiskANNIndex::new(4, params).unwrap();
+        for i in 0..30u32 {
+            let v = vec![i as f32, (i as f32) * 0.3, 1.0, (i as f32) * 0.1];
+            index.add(i, v).unwrap();
+        }
+        index.build().unwrap();
+
+        for (node, neighbors) in index.adj.iter().enumerate() {
+            assert!(
+                neighbors.len() <= m,
+                "Node {} has {} neighbors, max is {}",
+                node,
+                neighbors.len(),
+                m
+            );
+        }
+    }
+
+    #[test]
+    fn test_self_query_in_results() {
+        // Use normalized vectors (same as cross-algorithm test) with high connectivity
+        let params = DiskANNParams {
+            m: 32,
+            ef_construction: 100,
+            alpha: 1.2,
+            ef_search: 100,
+        };
+        let dim = 16;
+        let n = 100u32;
+        let mut index = DiskANNIndex::new(dim, params).unwrap();
+
+        use std::hash::{Hash, Hasher};
+        for i in 0..n {
+            let raw: Vec<f32> = (0..dim)
+                .map(|j| {
+                    let mut h = std::collections::hash_map::DefaultHasher::new();
+                    (42u64, i, j).hash(&mut h);
+                    (h.finish() as f64 / u64::MAX as f64 * 2.0 - 1.0) as f32
+                })
+                .collect();
+            // Normalize for consistent L2 behavior
+            let norm: f32 = raw.iter().map(|x| x * x).sum::<f32>().sqrt();
+            let v: Vec<f32> = raw.iter().map(|x| x / norm).collect();
+            index.add(i, v).unwrap();
+        }
+        index.build().unwrap();
+
+        // Sample self-queries should return themselves in top-5
+        for &i in &[0, 1, n / 2, n - 1] {
+            let raw: Vec<f32> = (0..dim)
+                .map(|j| {
+                    let mut h = std::collections::hash_map::DefaultHasher::new();
+                    (42u64, i, j).hash(&mut h);
+                    (h.finish() as f64 / u64::MAX as f64 * 2.0 - 1.0) as f32
+                })
+                .collect();
+            let norm: f32 = raw.iter().map(|x| x * x).sum::<f32>().sqrt();
+            let v: Vec<f32> = raw.iter().map(|x| x / norm).collect();
+            let results = index.search(&v, 5, 100).unwrap();
+            let found = results.iter().any(|&(id, dist)| id == i && dist < 1e-4);
+            assert!(
+                found,
+                "Self-query doc_id={} not found in top-5: {:?}",
+                i, results
+            );
+        }
+    }
+
+    #[test]
+    fn test_neighbor_ids_in_bounds() {
+        let params = DiskANNParams {
+            m: 8,
+            ef_construction: 30,
+            alpha: 1.2,
+            ef_search: 30,
+        };
+        let mut index = DiskANNIndex::new(4, params).unwrap();
+        let n = 25u32;
+        for i in 0..n {
+            let v = vec![i as f32, (i as f32) * 0.4, 1.0, 0.0];
+            index.add(i, v).unwrap();
+        }
+        index.build().unwrap();
+
+        for (node, neighbors) in index.adj.iter().enumerate() {
+            for &nbr in neighbors {
+                assert!(nbr < n, "Node {} has out-of-bounds neighbor {}", node, nbr);
+            }
+        }
+    }
 }
