@@ -71,7 +71,7 @@ postcard = { version = "1.0", optional = true, features = [
   "use-std",
 ] }
 bytemuck = { version = "1.14", optional = true, features = ["derive"] }
-durability = { version = "0.4.0", optional = true }
+durability = { version = "0.5.0", optional = true }
 
 
 # RNG backend for wasm32 (rand -> getrandom needs a JS backend on wasm).

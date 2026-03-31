@@ -38,10 +38,10 @@ struct DirAdapter {
 }
 
 impl durability::Directory for DirAdapter {
-    fn create_file(&self, path: &str) -> durability::PersistenceResult<Box<dyn std::io::Write>> {
+    fn create_file(&self, path: &str) -> durability::PersistenceResult<Box<dyn std::io::Write + Send>> {
         self.inner.create_file(path).map_err(to_durability_err)
     }
-    fn open_file(&self, path: &str) -> durability::PersistenceResult<Box<dyn std::io::Read>> {
+    fn open_file(&self, path: &str) -> durability::PersistenceResult<Box<dyn std::io::Read + Send>> {
         self.inner.open_file(path).map_err(to_durability_err)
     }
     fn exists(&self, path: &str) -> bool {
@@ -61,7 +61,7 @@ impl durability::Directory for DirAdapter {
     fn list_dir(&self, path: &str) -> durability::PersistenceResult<Vec<String>> {
         self.inner.list_dir(path).map_err(to_durability_err)
     }
-    fn append_file(&self, path: &str) -> durability::PersistenceResult<Box<dyn std::io::Write>> {
+    fn append_file(&self, path: &str) -> durability::PersistenceResult<Box<dyn std::io::Write + Send>> {
         self.inner.append_file(path).map_err(to_durability_err)
     }
     fn atomic_write(&self, path: &str, data: &[u8]) -> durability::PersistenceResult<()> {
@@ -217,10 +217,10 @@ struct GraphDirAdapter {
 }
 
 impl durability::Directory for GraphDirAdapter {
-    fn create_file(&self, path: &str) -> durability::PersistenceResult<Box<dyn std::io::Write>> {
+    fn create_file(&self, path: &str) -> durability::PersistenceResult<Box<dyn std::io::Write + Send>> {
         self.inner.create_file(&remap_graph_wal_path(path))
     }
-    fn open_file(&self, path: &str) -> durability::PersistenceResult<Box<dyn std::io::Read>> {
+    fn open_file(&self, path: &str) -> durability::PersistenceResult<Box<dyn std::io::Read + Send>> {
         self.inner.open_file(&remap_graph_wal_path(path))
     }
     fn exists(&self, path: &str) -> bool {
@@ -239,7 +239,7 @@ impl durability::Directory for GraphDirAdapter {
     fn list_dir(&self, path: &str) -> durability::PersistenceResult<Vec<String>> {
         self.inner.list_dir(&remap_graph_wal_path(path))
     }
-    fn append_file(&self, path: &str) -> durability::PersistenceResult<Box<dyn std::io::Write>> {
+    fn append_file(&self, path: &str) -> durability::PersistenceResult<Box<dyn std::io::Write + Send>> {
         self.inner.append_file(&remap_graph_wal_path(path))
     }
     fn atomic_write(&self, path: &str, data: &[u8]) -> durability::PersistenceResult<()> {
