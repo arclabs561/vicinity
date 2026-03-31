@@ -927,7 +927,8 @@ mod tests {
         // Should have processed some nodes (those whose neighbors were deleted)
         // Stats may show 0 if the per-delete repair already cleaned edges,
         // but the method should not panic.
-        assert!(stats.edges_removed == 0 || stats.edges_removed > 0);
+        // Repair ran without panic; edges_removed count is informational.
+        let _ = stats.edges_removed;
 
         // Validate connectivity after repair
         let (reachable_after, orphans) = index.validate_connectivity();

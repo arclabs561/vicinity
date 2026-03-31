@@ -214,8 +214,10 @@ mod tests {
 
     #[test]
     fn test_search() {
-        let mut config = StreamBufferConfig::default();
-        config.distance_metric = crate::distance::DistanceMetric::L2;
+        let config = StreamBufferConfig {
+            distance_metric: crate::distance::DistanceMetric::L2,
+            ..Default::default()
+        };
         let mut buffer = StreamBuffer::with_config(config);
 
         buffer.insert(0, vec![0.0, 0.0]).unwrap();
