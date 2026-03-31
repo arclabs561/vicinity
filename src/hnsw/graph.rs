@@ -685,7 +685,7 @@ impl HNSWIndex {
     /// Serialize this index to a writer as JSON.
     ///
     /// The `metadata` store and `doc_id_to_internal` reverse map are not
-    /// serialized. The reverse map is rebuilt on [`load_from_reader`]; metadata
+    /// serialized. The reverse map is rebuilt on [`Self::load_from_reader`]; metadata
     /// must be re-added if filtered search is needed.
     #[cfg(feature = "serde")]
     pub fn save_to_writer<W: std::io::Write>(&self, writer: W) -> Result<(), RetrieveError> {
@@ -695,7 +695,7 @@ impl HNSWIndex {
     /// Deserialize an index from a reader (JSON).
     ///
     /// Rebuilds the `doc_id_to_internal` reverse map from `doc_ids`.
-    /// The `metadata` store is not restored -- call [`add_metadata`] after
+    /// The `metadata` store is not restored -- call [`Self::add_metadata`] after
     /// loading if filtered search is needed.
     #[cfg(feature = "serde")]
     pub fn load_from_reader<R: std::io::Read>(reader: R) -> Result<Self, RetrieveError> {
