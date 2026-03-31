@@ -16,6 +16,7 @@ pub struct SNGIndex {
     pub(crate) num_vectors: usize,
     /// External doc_ids aligned with internal indices
     doc_ids: Vec<u32>,
+    #[allow(dead_code)]
     params: SNGParams,
     built: bool,
 

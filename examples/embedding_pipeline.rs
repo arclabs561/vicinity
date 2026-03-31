@@ -43,9 +43,9 @@ fn embed(text: &str, dim: usize) -> Vec<f32> {
             .map(|(i, b)| (i as u64 + 1) * b as u64)
             .sum();
         // Spread across multiple dimensions using the hash.
-        for d in 0..dim {
+        for (d, val) in v.iter_mut().enumerate() {
             let angle = (h.wrapping_mul(d as u64 + 1)) as f32 * 0.01;
-            v[d] += angle.sin();
+            *val += angle.sin();
         }
     }
     normalize(&v)

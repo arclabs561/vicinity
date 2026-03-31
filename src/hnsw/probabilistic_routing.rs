@@ -183,6 +183,7 @@ impl EdgeProbabilityEstimator {
 struct ProbabilisticCandidate {
     id: u32,
     distance: f32,
+    #[allow(dead_code)]
     probability: f32,
 }
 
@@ -446,7 +447,8 @@ impl ProbabilisticRouter {
 /// Simple edge selector that uses probability to order edges.
 #[derive(Debug)]
 pub struct ProbabilisticEdgeSelector {
-    /// Configuration.
+    /// Configuration (reserved for probability-weighted edge selection).
+    #[allow(dead_code)]
     config: ProbabilisticRoutingConfig,
 }
 
