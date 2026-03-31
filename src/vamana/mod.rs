@@ -17,9 +17,9 @@
 //! # Algorithm
 //!
 //! Vamana constructs a proximity graph using:
-//! 1. Random graph initialization with node degree ≥ log(n)
-//! 2. First pass: Refine using RRND (Relaxed RND) with α ≥ 1.5
-//! 3. Second pass: Further refine using RND
+//! 1. Random graph initialization with node degree >= log(n)
+//! 2. First pass: Refine using RND (alpha=1.0, strict diversity)
+//! 3. Second pass: Further refine using RRND (alpha>1.0, relaxed)
 //! 4. Two-pass construction ensures better graph quality
 //!
 //! # Performance
