@@ -8,21 +8,16 @@ use crate::RetrieveError;
 /// Implements Product Quantization (PQ) on residuals, with support for
 /// anisotropic loss scoring during search.
 ///
-/// **Theory**:
-/// ScaNN minimizes the anisotropic loss:
-/// L(x, x̃) = ||x - x̃||² + h * ||<x - x̃, x>||²
-///
-/// This implementation currently performs training on standard residuals (x - c),
-/// which is the first step. Full anisotropic training requires iterating
-/// with weighted updates.
+/// Codebooks are stored in a flat contiguous buffer for cache-friendly access.
 #[derive(Debug)]
 pub struct AnisotropicQuantizer {
     dimension: usize,
     num_codebooks: usize,
     codebook_size: usize,
+    subvector_dim: usize,
     seed: u64,
-    // [codebook_idx][codeword_idx][subvector_dim]
-    pub(crate) codebooks: Vec<Vec<Vec<f32>>>,
+    /// Flat codebook storage: `[cb0_cw0..., cb0_cw1..., ..., cb1_cw0..., ...]`
+    codebooks: Vec<f32>,
 }
 
 impl AnisotropicQuantizer {
@@ -49,15 +44,20 @@ impl AnisotropicQuantizer {
             dimension,
             num_codebooks,
             codebook_size,
+            subvector_dim: dimension / num_codebooks,
             seed,
             codebooks: Vec::new(),
         })
     }
 
+    /// Get a codeword slice from the flat codebook storage.
+    #[inline]
+    fn get_codeword(&self, codebook_idx: usize, code: usize) -> &[f32] {
+        let offset = (codebook_idx * self.codebook_size + code) * self.subvector_dim;
+        &self.codebooks[offset..offset + self.subvector_dim]
+    }
+
     /// Train quantizer on residuals (x - centroid).
-    ///
-    /// The input `residuals` should be pre-computed:
-    /// residual[i] = vector[i] - partition_centroid[assignment[i]]
     pub fn fit_residuals(
         &mut self,
         residuals: &[f32],
@@ -70,52 +70,56 @@ impl AnisotropicQuantizer {
             });
         }
 
-        let subvector_dim = self.dimension / self.num_codebooks;
-        self.codebooks = Vec::with_capacity(self.num_codebooks);
+        let mut flat_codebooks =
+            Vec::with_capacity(self.num_codebooks * self.codebook_size * self.subvector_dim);
+        let mut actual_codebook_size = self.codebook_size;
 
         for m in 0..self.num_codebooks {
-            let start_dim = m * subvector_dim;
-            let _end_dim = (m + 1) * subvector_dim;
+            let start_dim = m * self.subvector_dim;
 
             // Gather all subvectors for subspace m
-            // TODO: In production, downsample if num_vectors is huge
-            let mut subvectors: Vec<f32> = Vec::with_capacity(num_vectors * subvector_dim);
-
+            let mut subvectors: Vec<f32> = Vec::with_capacity(num_vectors * self.subvector_dim);
             for i in 0..num_vectors {
                 let vec_start = i * self.dimension + start_dim;
-                subvectors.extend_from_slice(&residuals[vec_start..vec_start + subvector_dim]);
+                subvectors.extend_from_slice(&residuals[vec_start..vec_start + self.subvector_dim]);
             }
 
             // Train K-Means on this subspace
             let mut kmeans =
-                crate::scann::partitioning::KMeans::new(subvector_dim, self.codebook_size)?
+                crate::scann::partitioning::KMeans::new(self.subvector_dim, self.codebook_size)?
                     .with_seed(self.seed.wrapping_add(m as u64));
             kmeans.fit(&subvectors, num_vectors)?;
 
-            // Store centroids as codewords
-            // centroids() returns &[Vec<f32>], one Vec per cluster
-            let centers = kmeans.centroids();
-            let codewords: Vec<Vec<f32>> = centers.to_vec();
-            self.codebooks.push(codewords);
+            let centroids = kmeans.centroids();
+            if m == 0 {
+                // k-means may produce fewer centroids than requested
+                actual_codebook_size = centroids.len();
+            }
+
+            // Flatten centroids into contiguous buffer
+            for codeword in centroids {
+                flat_codebooks.extend_from_slice(codeword);
+            }
         }
 
+        self.codebook_size = actual_codebook_size;
+        self.codebooks = flat_codebooks;
         Ok(())
     }
 
     /// Quantize a single residual vector.
     pub fn quantize(&self, residual: &[f32]) -> Vec<u8> {
-        let subvector_dim = self.dimension / self.num_codebooks;
         let mut codes = Vec::with_capacity(self.num_codebooks);
 
         for m in 0..self.num_codebooks {
-            let start_dim = m * subvector_dim;
-            let sub = &residual[start_dim..start_dim + subvector_dim];
+            let start_dim = m * self.subvector_dim;
+            let sub = &residual[start_dim..start_dim + self.subvector_dim];
 
-            // Find nearest codeword
             let mut best_idx = 0;
             let mut min_dist = f32::MAX;
 
-            for (k, codeword) in self.codebooks[m].iter().enumerate() {
+            for k in 0..self.codebook_size {
+                let codeword = self.get_codeword(m, k);
                 let dist = squared_euclidean(sub, codeword);
                 if dist < min_dist {
                     min_dist = dist;
@@ -129,21 +133,18 @@ impl AnisotropicQuantizer {
 
     /// Build Lookup Table (LUT) for a query.
     ///
-    /// Returns a table of size [num_codebooks][codebook_size] containing distances.
+    /// Returns a table of size `[num_codebooks][codebook_size]` containing distances.
     /// This allows O(M) distance computation per candidate during search.
     pub fn build_lut(&self, query: &[f32]) -> Vec<Vec<f32>> {
-        let subvector_dim = self.dimension / self.num_codebooks;
         let mut lut = Vec::with_capacity(self.num_codebooks);
 
         for m in 0..self.num_codebooks {
-            let start_dim = m * subvector_dim;
-            let query_sub = &query[start_dim..start_dim + subvector_dim];
+            let start_dim = m * self.subvector_dim;
+            let query_sub = &query[start_dim..start_dim + self.subvector_dim];
 
             let mut sub_lut = Vec::with_capacity(self.codebook_size);
-            for codeword in &self.codebooks[m] {
-                // For MIPS: store dot product
-                // For L2: store squared distance
-                // Here we use dot product as ScaNN is MIPS-optimized
+            for k in 0..self.codebook_size {
+                let codeword = self.get_codeword(m, k);
                 let score = simd::dot(query_sub, codeword);
                 sub_lut.push(score);
             }
