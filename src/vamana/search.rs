@@ -7,7 +7,8 @@ use crate::vamana::graph::VamanaIndex;
 #[cfg(feature = "vamana")]
 use crate::RetrieveError;
 
-/// Candidate node during search.
+/// Candidate node during search. Natural ordering: larger distance = greater.
+/// Used with `Reverse` for the min-heap (explore closest first).
 #[derive(Clone, Copy, PartialEq)]
 struct Candidate {
     id: u32,
@@ -24,14 +25,14 @@ impl PartialOrd for Candidate {
 
 impl Ord for Candidate {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        // Use total_cmp for IEEE 754 total ordering (NaN-safe)
-        self.distance.total_cmp(&other.distance).reverse()
+        self.distance.total_cmp(&other.distance)
     }
 }
 
 /// Search for k nearest neighbors using beam search.
 ///
-/// Similar to HNSW but without hierarchy - uses single-layer graph with beam search.
+/// Uses a min-heap (closest first) for exploration and collects the
+/// nearest `ef` candidates into a result set.
 #[cfg(feature = "vamana")]
 pub fn search(
     index: &VamanaIndex,
@@ -39,6 +40,9 @@ pub fn search(
     k: usize,
     ef: usize,
 ) -> Result<Vec<(u32, f32)>, RetrieveError> {
+    use std::cmp::Reverse;
+    use std::collections::{BinaryHeap, HashSet};
+
     if index.num_vectors == 0 {
         return Err(RetrieveError::EmptyIndex);
     }
@@ -50,76 +54,64 @@ pub fn search(
         });
     }
 
-    // Use min-heap for candidates (smaller distance = higher priority)
-    use std::collections::{BinaryHeap, HashMap};
+    let mut visited = HashSet::with_capacity(ef * 2);
+    // Min-heap: explore closest candidates first
+    let mut candidates: BinaryHeap<Reverse<Candidate>> = BinaryHeap::with_capacity(ef * 2);
+    // Max-heap: track worst result for pruning, keep nearest ef
+    let mut results: BinaryHeap<Candidate> = BinaryHeap::with_capacity(ef + 1);
 
-    // Cache distances to avoid recomputation
-    let mut distance_cache: HashMap<u32, f32> = HashMap::with_capacity(ef);
-    let mut candidates: BinaryHeap<Candidate> = BinaryHeap::with_capacity(ef);
-
-    // Start from medoid (closest point to centroid), computed during build.
+    // Start from medoid
     let entry_point = index.medoid;
-
     let entry_vec = index.get_vector(entry_point as usize);
     let entry_dist = hnsw_distance::cosine_distance_normalized(query, entry_vec);
 
-    // Filter out NaN and Infinity
     if entry_dist.is_finite() {
-        distance_cache.insert(entry_point, entry_dist);
-        candidates.push(Candidate {
+        let entry = Candidate {
             id: entry_point,
             distance: entry_dist,
-        });
+        };
+        candidates.push(Reverse(entry));
+        results.push(entry);
+        visited.insert(entry_point);
     }
 
-    // Beam search: explore candidates until we have ef candidates
-    // Similar to HNSW: maintain visited set and candidate queue
-    let mut visited = std::collections::HashSet::with_capacity(ef);
-
-    while let Some(candidate) = candidates.pop() {
-        // Skip if already visited
-        if visited.contains(&candidate.id) {
-            continue;
-        }
-        visited.insert(candidate.id);
-
-        // Stop if we have enough candidates (ef limit)
-        if visited.len() >= ef {
+    while let Some(Reverse(current)) = candidates.pop() {
+        // Stop when closest unexplored is worse than worst result and we have enough
+        let worst_dist = results.peek().map(|c| c.distance).unwrap_or(f32::INFINITY);
+        if current.distance > worst_dist && results.len() >= ef {
             break;
         }
 
-        // Explore neighbors
-        let neighbors = &index.neighbors[candidate.id as usize];
+        let neighbors = &index.neighbors[current.id as usize];
         for &neighbor_id in neighbors.iter() {
-            // Skip if already visited
-            if visited.contains(&neighbor_id) {
-                continue;
-            }
-
-            // Skip if already in distance cache (already computed)
-            if distance_cache.contains_key(&neighbor_id) {
+            if !visited.insert(neighbor_id) {
                 continue;
             }
 
             let neighbor_vec = index.get_vector(neighbor_id as usize);
             let dist = hnsw_distance::cosine_distance_normalized(query, neighbor_vec);
 
-            // Filter out NaN and Infinity
             if !dist.is_finite() {
                 continue;
             }
 
-            // Cache distance and add to candidate queue
-            distance_cache.insert(neighbor_id, dist);
-            candidates.push(Candidate {
-                id: neighbor_id,
-                distance: dist,
-            });
+            let worst_dist = results.peek().map(|c| c.distance).unwrap_or(f32::INFINITY);
+            if dist < worst_dist || results.len() < ef {
+                let c = Candidate {
+                    id: neighbor_id,
+                    distance: dist,
+                };
+                candidates.push(Reverse(c));
+                results.push(c);
+
+                if results.len() > ef {
+                    results.pop();
+                }
+            }
         }
     }
 
-    // Extract top-k results from cache (already sorted by distance)
-    let mut results: Vec<(u32, f32)> = distance_cache.into_iter().collect();
-    results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
-    Ok(results.into_iter().take(k).collect())
+    let mut output: Vec<(u32, f32)> = results.into_iter().map(|c| (c.id, c.distance)).collect();
+    output.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+    Ok(output.into_iter().take(k).collect())
 }
