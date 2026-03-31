@@ -318,7 +318,6 @@ mod tests {
     use crate::persistence::wal::{WalEntry, WalWriter};
 
     #[test]
-    #[ignore = "WalReader not yet implemented for durability v0.2.0 -- recovery replay needs migration"]
     fn test_recovery_basic() {
         use std::sync::Arc;
         let mem_dir = MemoryDirectory::new();
@@ -341,6 +340,7 @@ mod tests {
                 doc_count: 200,
             })
             .unwrap();
+        wal_writer.flush().unwrap();
 
         // Recover using Arc
         let recovery = RecoveryManager::new(dir_arc);
