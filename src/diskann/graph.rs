@@ -154,7 +154,6 @@ impl DiskANNIndex {
 /// Operates on persisted index without loading the full graph into RAM.
 pub struct DiskANNSearcher {
     dimension: usize,
-    num_vectors: usize,
     start_node: u32,
     params: DiskANNParams,
 
@@ -211,11 +210,13 @@ impl DiskANNSearcher {
         let vectors_path = index_dir.join("vectors.bin");
         let vectors_file = std::fs::File::open(&vectors_path)?;
 
+        // num_vectors is loaded for validation but not stored (unused at search time).
+        let _ = num_vectors;
+
         Ok(Self {
             read_buf: vec![0u8; dimension * 4],
             vec_buf: vec![0.0f32; dimension],
             dimension,
-            num_vectors,
             start_node,
             params,
             graph_reader,
@@ -304,10 +305,6 @@ impl DiskANNSearcher {
             ]);
         }
         Ok(&self.vec_buf)
-    }
-
-    fn dist(&self, a: &[f32], b: &[f32]) -> f32 {
-        crate::simd::l2_distance_squared(a, b)
     }
 }
 

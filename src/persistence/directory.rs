@@ -35,6 +35,7 @@ pub trait Directory: Send + Sync {
     fn file_path(&self, path: &str) -> Option<PathBuf>;
 }
 
+#[cfg(not(feature = "persistence"))]
 fn disabled() -> PersistenceError {
     PersistenceError::NotSupported("persistence feature disabled".to_string())
 }
@@ -146,12 +147,16 @@ mod enabled {
     use super::*;
     use durability::storage::Directory as DurabilityDirectory;
 
+    /// In-memory directory backed by `durability::storage::MemoryDirectory`.
+    ///
+    /// Useful for testing persistence code without touching the filesystem.
     #[derive(Clone, Default)]
     pub struct MemoryDirectory {
         inner: durability::storage::MemoryDirectory,
     }
 
     impl MemoryDirectory {
+        /// Create a new empty in-memory directory.
         pub fn new() -> Self {
             Self {
                 inner: durability::storage::MemoryDirectory::new(),
@@ -198,12 +203,16 @@ mod enabled {
         }
     }
 
+    /// Filesystem-backed directory using `durability::storage::FsDirectory`.
+    ///
+    /// Wraps atomic write/rename operations for crash-safe persistence.
     pub struct FsDirectory {
         root: PathBuf,
         inner: durability::storage::FsDirectory,
     }
 
     impl FsDirectory {
+        /// Open (or create) a filesystem directory rooted at `root`.
         pub fn new(root: impl Into<PathBuf>) -> PersistenceResult<Self> {
             let root = root.into();
             let inner = durability::storage::FsDirectory::new(root.clone())
@@ -211,6 +220,7 @@ mod enabled {
             Ok(Self { root, inner })
         }
 
+        /// Return the root path.
         pub fn root(&self) -> &PathBuf {
             &self.root
         }
