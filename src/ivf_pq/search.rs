@@ -142,6 +142,7 @@ struct Cluster {
     /// Cache for decompressed IDs (temporary, cleared after use)
     #[cfg(feature = "id-compression")]
     #[serde(skip)]
+    #[allow(dead_code)]
     decompressed_cache: Option<Vec<u32>>,
 }
 
@@ -189,6 +190,7 @@ impl Cluster {
 
     /// Get IDs (decompress if needed).
     #[cfg(feature = "id-compression")]
+    #[allow(dead_code)]
     fn get_ids(&mut self) -> Result<&[u32], crate::compression::CompressionError> {
         match &self.storage {
             ClusterStorage::Uncompressed(ids) => Ok(ids),
@@ -245,6 +247,7 @@ impl Cluster {
     }
 
     /// Get number of IDs.
+    #[allow(dead_code)]
     fn len(&self) -> usize {
         match &self.storage {
             ClusterStorage::Uncompressed(ids) => ids.len(),
@@ -255,6 +258,7 @@ impl Cluster {
 
     /// Clear decompression cache (call after search).
     #[cfg(feature = "id-compression")]
+    #[allow(dead_code)]
     fn clear_cache(&mut self) {
         self.decompressed_cache = None;
     }

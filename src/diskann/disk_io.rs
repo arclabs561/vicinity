@@ -26,9 +26,7 @@ const GRAPH_MAGIC: &[u8; 8] = b"DANN\x00\x00\x00\x01";
 ///     - Neighbors (max_degree * 4 bytes)
 pub struct DiskGraphWriter {
     writer: BufWriter<File>,
-    num_nodes: usize,
     max_degree: usize,
-    start_node: u32,
 }
 
 impl DiskGraphWriter {
@@ -49,12 +47,10 @@ impl DiskGraphWriter {
         writer.write_all(&(start_node as u64).to_le_bytes())?;
         writer.write_all(&[0u8; 32])?; // Padding
 
-        Ok(Self {
-            writer,
-            num_nodes,
-            max_degree,
-            start_node,
-        })
+        // num_nodes already written to header; not needed at runtime.
+        let _ = num_nodes;
+
+        Ok(Self { writer, max_degree })
     }
 
     /// Write adjacency list for a node.

@@ -22,7 +22,8 @@ pub struct SAQQuantizer {
     bits_per_segment: Vec<usize>,        // Bit allocation per segment
     codebooks: Vec<Vec<Vec<f32>>>,       // [segment][codeword][dimension]
     segment_bounds: Vec<(usize, usize)>, // (start, end) for each segment
-    pca_matrix: Option<Vec<Vec<f32>>>,   // PCA projection matrix (optional)
+    #[allow(dead_code)]
+    pca_matrix: Option<Vec<Vec<f32>>>, // PCA projection matrix (optional, reserved)
 }
 
 impl SAQQuantizer {

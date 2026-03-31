@@ -68,14 +68,16 @@ impl Default for KMeansTreeParams {
 enum KMeansNode {
     /// Internal node: has cluster centers and children
     Internal {
-        centers: Vec<Vec<f32>>,          // Cluster centers
-        children: Vec<KMeansNode>,       // Child nodes for each cluster
-        cluster_assignments: Vec<usize>, // Vector index -> cluster index
+        centers: Vec<Vec<f32>>,    // Cluster centers
+        children: Vec<KMeansNode>, // Child nodes for each cluster
+        #[allow(dead_code)]
+        cluster_assignments: Vec<usize>, // Vector index -> cluster index (reserved for online updates)
     },
     /// Leaf node: contains vector indices
     Leaf {
         indices: Vec<u32>,
-        center: Vec<f32>, // Cluster center
+        #[allow(dead_code)]
+        center: Vec<f32>, // Cluster center (reserved for re-clustering)
     },
 }
 

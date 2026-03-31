@@ -73,7 +73,8 @@ enum TreeNode {
     },
     Internal {
         hyperplane: Vec<f32>, // Random hyperplane
-        threshold: f32,
+        #[allow(dead_code)]
+        threshold: f32, // Reserved for non-zero split thresholds
         left: Box<TreeNode>,
         right: Box<TreeNode>,
     },

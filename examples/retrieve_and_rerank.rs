@@ -68,7 +68,7 @@ fn main() -> vicinity::Result<()> {
     // -- Stage 1: ANN retrieval --
     // Query: uniform across all dims -> equidistant from all 4 topics.
     // Retrieve all 20 candidates (simulating an over-fetch from a larger index).
-    let query = normalize(&vec![1.0; DIM]);
+    let query = normalize(&[1.0; DIM]);
     let raw = index.search(&query, 20, 50)?;
 
     println!("--- Stage 1: HNSW retrieval (top 12 of 20) ---");

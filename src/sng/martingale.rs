@@ -41,11 +41,13 @@ impl CandidateEvolution {
     }
 
     /// Get current expected size.
+    #[allow(dead_code)]
     pub fn expected_size(&self) -> f32 {
         self.expected_size
     }
 
     /// Get variance estimate.
+    #[allow(dead_code)]
     pub fn variance(&self) -> f32 {
         self.variance
     }

@@ -65,7 +65,8 @@ pub struct MergeGraph {
     entry_point: Option<u32>,
     /// Maximum layer in the graph.
     max_layer: usize,
-    /// Configuration.
+    /// Configuration (reserved for merge-policy decisions).
+    #[allow(dead_code)]
     config: MergeConfig,
 }
 
