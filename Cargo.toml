@@ -1,6 +1,6 @@
 [package]
 name = "vicinity"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["Arc <attobop@gmail.com>"]
 edition = "2021"
 rust-version = "1.80"
@@ -10,6 +10,7 @@ documentation = "https://docs.rs/vicinity"
 license = "MIT OR Apache-2.0"
 keywords = ["ann", "hnsw", "vector-search", "similarity", "nearest-neighbor"]
 categories = ["algorithms", "science"]
+exclude = ["data/", "benches/", ".github/"]
 
 [lib]
 # Pure rlib for normal Rust usage.

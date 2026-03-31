@@ -8,7 +8,7 @@ Nearest-neighbor search.
 
 ```toml
 [dependencies]
-vicinity = { version = "0.2.0", features = ["hnsw"] }
+vicinity = { version = "0.3.0", features = ["hnsw"] }
 ```
 
 ## Minimal API
