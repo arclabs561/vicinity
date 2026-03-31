@@ -14,7 +14,7 @@
 //! ```ignore
 //! use vicinity::nsw::{NSWIndex, NSWParams};
 //!
-//! let params = NSWParams { m: 16, ef_construction: 200 };
+//! let params = NSWParams { m: 16, ..Default::default() };
 //! let mut index = NSWIndex::new(768, params);
 //!
 //! index.add(0, vec![0.1; 768])?;

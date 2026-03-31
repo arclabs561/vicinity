@@ -43,9 +43,6 @@ pub struct NSWParams {
     /// Maximum connections for newly inserted nodes (typically 16)
     pub m_max: usize,
 
-    /// Search width during construction (typically 200)
-    pub ef_construction: usize,
-
     /// Default search width during query (typically 50-200)
     pub ef_search: usize,
 }
@@ -55,7 +52,6 @@ impl Default for NSWParams {
         Self {
             m: 16,
             m_max: 16,
-            ef_construction: 200,
             ef_search: 50,
         }
     }
