@@ -292,7 +292,7 @@ pub fn greedy_search_layer(
 
         // Convert to sorted output
         let mut output: Vec<(u32, f32)> = results.into_iter().map(|r| (r.id, r.distance)).collect();
-        output.sort_by(|a, b| a.1.total_cmp(&b.1));
+        output.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
         output
     })
 }
@@ -387,7 +387,7 @@ pub fn greedy_search_layer_adaptive(
 
         let num_evaluated = oracle.num_evaluated();
         let mut output: Vec<(u32, f32)> = results.into_iter().map(|r| (r.id, r.distance)).collect();
-        output.sort_by(|a, b| a.1.total_cmp(&b.1));
+        output.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
         (output, num_evaluated)
     })
 }

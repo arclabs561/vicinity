@@ -169,7 +169,7 @@ impl ScalarQuantizedHNSW {
             .take(k)
             .map(|(internal_id, dist)| (self.index.doc_ids[internal_id as usize], dist))
             .collect();
-        output.sort_by(|a, b| a.1.total_cmp(&b.1));
+        output.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
         Ok(output)
     }
 
@@ -204,7 +204,7 @@ impl ScalarQuantizedHNSW {
             })
             .collect();
 
-        reranked.sort_by(|a, b| a.1.total_cmp(&b.1));
+        reranked.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
         reranked.truncate(k);
         Ok(reranked)
     }
@@ -408,7 +408,7 @@ impl ScalarQuantizedHNSW {
         }
 
         let mut output: Vec<(u32, f32)> = results.into_iter().map(|r| (r.id, r.distance)).collect();
-        output.sort_by(|a, b| a.1.total_cmp(&b.1));
+        output.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
         output
     }
 

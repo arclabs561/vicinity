@@ -210,7 +210,7 @@ pub fn estimate_lid_mle(sorted_distances: &[f32], config: &LidConfig) -> LidEsti
 #[must_use]
 pub fn estimate_lid(neighbor_distances: &[f32], config: &LidConfig) -> LidEstimate {
     let mut sorted = neighbor_distances.to_vec();
-    sorted.sort_by(|a, b| a.total_cmp(b));
+    sorted.sort_unstable_by(|a, b| a.total_cmp(b));
     estimate_lid_mle(&sorted, config)
 }
 
@@ -281,7 +281,7 @@ pub fn estimate_twonn(mu_ratios: &[f32], discard_fraction: f32) -> f32 {
         return f32::NAN;
     }
 
-    sorted.sort_by(|a, b| a.total_cmp(b));
+    sorted.sort_unstable_by(|a, b| a.total_cmp(b));
 
     // Discard largest ratios (boundary effects / outliers)
     let keep_count = ((sorted.len() as f32) * (1.0 - discard_fraction)).max(2.0) as usize;
@@ -382,7 +382,7 @@ pub fn estimate_twonn_with_ci(mu_ratios: &[f32], discard_fraction: f32) -> TwoNN
         };
     }
 
-    sorted.sort_by(|a, b| a.total_cmp(b));
+    sorted.sort_unstable_by(|a, b| a.total_cmp(b));
 
     let keep_count = ((sorted.len() as f32) * (1.0 - discard_fraction)).max(2.0) as usize;
     let sorted = &sorted[..keep_count.min(sorted.len())];
@@ -488,7 +488,7 @@ pub fn aggregate_lid(estimates: &[LidEstimate], method: LidAggregation) -> f32 {
         LidAggregation::Mean => valid.iter().sum::<f32>() / valid.len() as f32,
         LidAggregation::Median => {
             let mut sorted = valid.clone();
-            sorted.sort_by(|a, b| a.total_cmp(b));
+            sorted.sort_unstable_by(|a, b| a.total_cmp(b));
             let n = sorted.len();
             if n % 2 == 0 {
                 (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0
@@ -539,7 +539,7 @@ pub fn estimate_lid_batch(
             })
             .collect();
 
-        distances.sort_by(|a, b| a.total_cmp(b));
+        distances.sort_unstable_by(|a, b| a.total_cmp(b));
         results.push(estimate_lid_mle(&distances, config));
     }
 
@@ -610,7 +610,7 @@ impl LidStats {
         let std_dev = variance.sqrt();
 
         let mut sorted = valid.clone();
-        sorted.sort_by(|a, b| a.total_cmp(b));
+        sorted.sort_unstable_by(|a, b| a.total_cmp(b));
 
         let median = if count % 2 == 0 {
             (sorted[count / 2 - 1] + sorted[count / 2]) / 2.0

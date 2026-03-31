@@ -267,7 +267,7 @@ where
     }
 
     // Deduplicate by keeping best distance per ID
-    all_candidates.sort_by(|a, b| a.0.cmp(&b.0));
+    all_candidates.sort_unstable_by(|a, b| a.0.cmp(&b.0));
     all_candidates.dedup_by(|a, b| {
         if a.0 == b.0 {
             if a.1 < b.1 {
@@ -397,7 +397,7 @@ where
 
     // Sort by distance
     let mut sorted: Vec<(u32, f32)> = candidates.to_vec();
-    sorted.sort_by(|a, b| a.1.total_cmp(&b.1));
+    sorted.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
 
     let mut selected: Vec<u32> = Vec::new();
 
@@ -468,7 +468,7 @@ where
         }
 
         // Deduplicate
-        pool.sort_by(|a, b| a.0.cmp(&b.0));
+        pool.sort_unstable_by(|a, b| a.0.cmp(&b.0));
         pool.dedup_by(|a, b| a.0 == b.0);
 
         // Re-prune
@@ -496,7 +496,7 @@ where
     );
 
     let mut sorted = results;
-    sorted.sort_by(|a, b| a.1.total_cmp(&b.1));
+    sorted.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
     sorted.truncate(k);
     sorted
 }

@@ -1125,7 +1125,7 @@ impl HNSWIndex {
                     }
                 }
 
-                candidates.sort_by(|a, b| a.1.total_cmp(&b.1));
+                candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
                 let selected_neighbors: Vec<u32> = candidates
                     .iter()
                     .take(max_intra_edges)
@@ -1339,7 +1339,7 @@ impl HNSWIndex {
             // `base_results` is not guaranteed to be sorted (it may be in exploration order).
             // Sort by distance first, then take top-k.
             let mut base_results = base_results;
-            base_results.sort_by(|a, b| a.1.total_cmp(&b.1));
+            base_results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
             let results: Vec<(u32, f32)> = base_results.into_iter().take(k).collect();
 
             // Clear decompression caches after search
@@ -1574,7 +1574,7 @@ impl HNSWIndex {
             })
             .collect();
 
-        results.sort_by(|a, b| a.1.total_cmp(&b.1));
+        results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
         Ok(results.into_iter().take(k).collect())
     }
 
@@ -1663,7 +1663,7 @@ impl HNSWIndex {
             );
             num_evaluated = evaluated;
 
-            base_results.sort_by(|a, b| a.1.total_cmp(&b.1));
+            base_results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
 
             #[cfg(feature = "id-compression")]
             {

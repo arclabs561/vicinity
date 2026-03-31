@@ -277,7 +277,7 @@ impl BallTreeIndex {
 
         // Convert to output format: (index, distance)
         let mut results: Vec<(u32, f32)> = best_k.iter().map(|&(d, idx)| (idx, d)).collect();
-        results.sort_by(|a, b| a.1.total_cmp(&b.1));
+        results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
 
         Ok(results)
     }

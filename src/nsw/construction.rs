@@ -67,7 +67,7 @@ fn select_neighbors_rng(candidates: &[(u32, f32)], m: usize) -> Vec<u32> {
 
     // Sort by distance
     let mut sorted = candidates.to_vec();
-    sorted.sort_by(|a, b| a.1.total_cmp(&b.1));
+    sorted.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
 
     // RNG-based selection: prefer closer neighbors but allow some randomness
     let mut selected = Vec::new();

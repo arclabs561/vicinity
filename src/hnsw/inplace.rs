@@ -397,7 +397,7 @@ impl InPlaceIndex {
 
         let mut result_vec: Vec<(u32, f32)> =
             results.into_iter().map(|c| (c.id, c.distance)).collect();
-        result_vec.sort_by(|a, b| a.1.total_cmp(&b.1));
+        result_vec.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
         result_vec.truncate(k);
 
         Ok(result_vec)
@@ -450,7 +450,7 @@ impl InPlaceIndex {
             }
         }
 
-        results.sort_by(|a, b| a.1.total_cmp(&b.1));
+        results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
         results.truncate(self.config.beam_width);
         results
     }
@@ -508,7 +508,7 @@ impl InPlaceIndex {
             }
         }
 
-        candidates.sort_by(|a, b| a.1.total_cmp(&b.1));
+        candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
         candidates.first().map(|(id, _)| *id)
     }
 
@@ -679,7 +679,7 @@ impl InPlaceIndex {
                     }
                 }
             }
-            candidates.sort_by(|a, b| a.1.total_cmp(&b.1));
+            candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
 
             // Build new neighbor list: start from current valid, add best candidates
             let mut new_neighbors = current_valid;

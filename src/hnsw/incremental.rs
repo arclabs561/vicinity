@@ -154,7 +154,7 @@ impl EdgeStats {
             .map(|(&k, &v)| (k, v as f32 / self.total_searches as f32))
             .collect();
 
-        pairs.sort_by(|a, b| b.1.total_cmp(&a.1));
+        pairs.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
         pairs.truncate(n);
         pairs
     }
@@ -238,7 +238,7 @@ impl RefinementAnalyzer {
             *entry_counts.entry(ep).or_default() += 1;
         }
         let mut hot_entry_points: Vec<_> = entry_counts.into_iter().collect();
-        hot_entry_points.sort_by(|a, b| b.1.cmp(&a.1));
+        hot_entry_points.sort_unstable_by(|a, b| b.1.cmp(&a.1));
         let hot_entry_points: Vec<_> = hot_entry_points
             .into_iter()
             .take(10)

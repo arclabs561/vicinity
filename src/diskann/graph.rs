@@ -247,7 +247,7 @@ impl DiskANNSearcher {
         let mut current_idx = 0;
 
         while current_idx < retset.len() {
-            retset.sort_by(|a, b| a.dist.total_cmp(&b.dist));
+            retset.sort_unstable_by(|a, b| a.dist.total_cmp(&b.dist));
 
             if current_idx >= retset.len() {
                 break;
@@ -274,7 +274,7 @@ impl DiskANNSearcher {
             }
 
             // Keep top L
-            retset.sort_by(|a, b| a.dist.total_cmp(&b.dist));
+            retset.sort_unstable_by(|a, b| a.dist.total_cmp(&b.dist));
             if retset.len() > ef {
                 retset.truncate(ef);
             }
@@ -530,7 +530,7 @@ impl DiskANNIndex {
         }
 
         // 2. Sort by distance (ascending)
-        candidates_with_dist.sort_by(|a, b| a.dist.total_cmp(&b.dist));
+        candidates_with_dist.sort_unstable_by(|a, b| a.dist.total_cmp(&b.dist));
 
         // 3. Prune
         let mut new_neighbors: Vec<u32> = Vec::with_capacity(max_degree);

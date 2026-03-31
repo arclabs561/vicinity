@@ -223,7 +223,7 @@ impl NSWIndex {
                 Some((doc_id, dist))
             })
             .collect();
-        sorted_results.sort_by(|a, b| a.1.total_cmp(&b.1));
+        sorted_results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
         Ok(sorted_results)
     }
 

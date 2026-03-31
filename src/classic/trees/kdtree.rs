@@ -163,7 +163,7 @@ impl KDTreeIndex {
             })
             .collect();
 
-        values.sort_by(|a, b| a.0.total_cmp(&b.0));
+        values.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
         let median_idx = values.len() / 2;
         let split_value = values[median_idx].0;
 
@@ -226,7 +226,7 @@ impl KDTreeIndex {
             })
             .collect();
 
-        results.sort_by(|a, b| a.1.total_cmp(&b.1));
+        results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
         results.truncate(k);
 
         Ok(results)

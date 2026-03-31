@@ -306,7 +306,7 @@ impl DualBranchHNSW {
 
         // Convert to sorted vec
         let mut result_vec: Vec<(u32, f32)> = results.into_iter().map(|c| (c.id, c.dist)).collect();
-        result_vec.sort_by(|a, b| a.1.total_cmp(&b.1));
+        result_vec.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
         result_vec
     }
 
@@ -323,7 +323,7 @@ impl DualBranchHNSW {
             })
             .collect();
 
-        neighbors_with_dist.sort_by(|a, b| a.1.total_cmp(&b.1));
+        neighbors_with_dist.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
         self.neighbors[node] = neighbors_with_dist
             .into_iter()
             .take(m)
@@ -537,7 +537,7 @@ impl DualBranchHNSW {
 
         // Return top k
         let mut result_vec: Vec<(u32, f32)> = results.into_iter().map(|c| (c.id, c.dist)).collect();
-        result_vec.sort_by(|a, b| a.1.total_cmp(&b.1));
+        result_vec.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
         result_vec.truncate(k);
         Ok(result_vec)
     }
@@ -833,7 +833,7 @@ mod tests {
                     (i, distance::l2_distance(query, v))
                 })
                 .collect();
-            gt.sort_by(|a, b| a.1.total_cmp(&b.1));
+            gt.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
 
             let gt_set: HashSet<u32> = gt.iter().take(k).map(|&(id, _)| id as u32).collect();
             let result_set: HashSet<u32> = results.iter().map(|&(id, _)| id).collect();

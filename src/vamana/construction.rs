@@ -134,7 +134,7 @@ fn refine_with_rrnd(index: &mut VamanaIndex) -> Result<(), RetrieveError> {
                             )
                         })
                         .collect();
-                    scored.sort_by(|a, b| a.1.total_cmp(&b.1));
+                    scored.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
                     scored.truncate(max_deg);
                     *reverse = scored.iter().map(|(id, _)| *id).collect();
                 }
@@ -231,7 +231,7 @@ fn refine_with_rnd(index: &mut VamanaIndex) -> Result<(), RetrieveError> {
                             )
                         })
                         .collect();
-                    scored.sort_by(|a, b| a.1.total_cmp(&b.1));
+                    scored.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
                     scored.truncate(max_deg);
                     *reverse = scored.iter().map(|(id, _)| *id).collect();
                 }
