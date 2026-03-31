@@ -9,13 +9,16 @@ use serde::{Deserialize, Serialize};
 /// Product Quantizer.
 ///
 /// Decomposes vectors into subvectors and quantizes each subvector independently.
+/// Codebooks are stored in a flat contiguous buffer for cache-friendly access.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProductQuantizer {
     dimension: usize,
     num_codebooks: usize,
     codebook_size: usize,
     subvector_dim: usize,
-    codebooks: Vec<Vec<Vec<f32>>>, // [codebook][codeword][dimension]
+    /// Flat codebook storage: `[cb0_cw0_d0..d_sub, cb0_cw1_d0..d_sub, ..., cb1_cw0_d0..d_sub, ...]`
+    /// Total length: `num_codebooks * codebook_size * subvector_dim`.
+    codebooks: Vec<f32>,
 }
 
 impl ProductQuantizer {
@@ -48,40 +51,48 @@ impl ProductQuantizer {
 
     /// Train quantizer on vectors.
     pub fn fit(&mut self, vectors: &[f32], num_vectors: usize) -> Result<(), RetrieveError> {
-        // Train codebook for each subvector
-        self.codebooks = Vec::new();
+        let mut flat_codebooks =
+            Vec::with_capacity(self.num_codebooks * self.codebook_size * self.subvector_dim);
+        let mut actual_codebook_size = self.codebook_size;
 
         for codebook_idx in 0..self.num_codebooks {
             let start_dim = codebook_idx * self.subvector_dim;
             let end_dim = (codebook_idx + 1) * self.subvector_dim;
 
-            // Extract subvectors
-            let mut subvectors = Vec::new();
+            // Extract subvectors into flat buffer for k-means
+            let mut flat = Vec::with_capacity(num_vectors * self.subvector_dim);
             for i in 0..num_vectors {
                 let vec = get_vector(vectors, self.dimension, i);
-                subvectors.push(vec[start_dim..end_dim].to_vec());
+                flat.extend_from_slice(&vec[start_dim..end_dim]);
             }
 
             // Train k-means on subvectors
             let mut kmeans = KMeans::new(self.subvector_dim, self.codebook_size)?;
-
-            // Flatten subvectors for k-means (SoA format)
-            let mut flat = Vec::with_capacity(num_vectors * self.subvector_dim);
-            for subvec in &subvectors {
-                flat.extend_from_slice(subvec);
-            }
             kmeans.fit(&flat, num_vectors)?;
 
-            self.codebooks.push(kmeans.centroids().to_vec());
+            let centroids = kmeans.centroids();
+            if codebook_idx == 0 {
+                // k-means may produce fewer centroids than requested
+                actual_codebook_size = centroids.len();
+            }
+
+            // Flatten centroids into the contiguous buffer
+            for codeword in centroids {
+                flat_codebooks.extend_from_slice(codeword);
+            }
         }
 
-        // When num_vectors < codebook_size, k-means produces fewer centroids.
-        // Update codebook_size to the actual count so indexing stays consistent.
-        if let Some(first) = self.codebooks.first() {
-            self.codebook_size = first.len();
-        }
+        self.codebook_size = actual_codebook_size;
+        self.codebooks = flat_codebooks;
 
         Ok(())
+    }
+
+    /// Get a codeword slice from the flat codebook storage.
+    #[inline]
+    fn get_codeword(&self, codebook_idx: usize, code: usize) -> &[f32] {
+        let offset = (codebook_idx * self.codebook_size + code) * self.subvector_dim;
+        &self.codebooks[offset..offset + self.subvector_dim]
     }
 
     /// Quantize a vector.
@@ -99,7 +110,8 @@ impl ProductQuantizer {
             let mut best_code = 0u8;
             let mut best_dist = f32::INFINITY;
 
-            for (code, codeword) in self.codebooks[codebook_idx].iter().enumerate() {
+            for code in 0..self.codebook_size {
+                let codeword = self.get_codeword(codebook_idx, code);
                 let dist = l2_distance_squared(subvector, codeword);
                 if dist < best_dist {
                     best_dist = dist;
@@ -123,7 +135,7 @@ impl ProductQuantizer {
             let start_dim = codebook_idx * self.subvector_dim;
             let end_dim = (codebook_idx + 1) * self.subvector_dim;
             let query_subvector = &query[start_dim..end_dim];
-            let codeword = &self.codebooks[codebook_idx][code as usize];
+            let codeword = self.get_codeword(codebook_idx, code as usize);
 
             total_dist += l2_distance_squared(query_subvector, codeword);
         }
@@ -136,7 +148,7 @@ impl ProductQuantizer {
     /// Precomputes distances from query subvectors to all codebook centroids.
     /// Returns a flat table of size `num_codebooks * codebook_size`.
     ///
-    /// Table layout: [codebook_0_codeword_0, codebook_0_codeword_1, ..., codebook_1_codeword_0, ...]
+    /// Table layout: `[codebook_0_codeword_0, codebook_0_codeword_1, ..., codebook_1_codeword_0, ...]`
     pub fn compute_adc_table(&self, query: &[f32]) -> Result<Vec<f32>, RetrieveError> {
         if query.len() != self.dimension {
             return Err(RetrieveError::DimensionMismatch {
@@ -152,9 +164,8 @@ impl ProductQuantizer {
             let end_dim = (codebook_idx + 1) * self.subvector_dim;
             let query_subvector = &query[start_dim..end_dim];
 
-            for codeword in &self.codebooks[codebook_idx] {
-                // Compute distance (typically squared Euclidean or dot product depending on metric)
-                // For now, assuming cosine/dot product as used elsewhere
+            for code in 0..self.codebook_size {
+                let codeword = self.get_codeword(codebook_idx, code);
                 let dist = l2_distance_squared(query_subvector, codeword);
                 table.push(dist);
             }
@@ -170,23 +181,36 @@ impl ProductQuantizer {
     pub fn distance_with_table(&self, table: &[f32], codes: &[u8]) -> f32 {
         let mut total_dist = 0.0;
         for (codebook_idx, &code) in codes.iter().enumerate() {
-            // Table index = codebook_offset + code
             let idx = codebook_idx * self.codebook_size + code as usize;
-            // Unsafe access for speed? bounds check should be hoisted or optimized
-            // For now safe indexing
             total_dist += table[idx];
         }
         total_dist
     }
 
-    /// Get codebooks (for testing/debugging).
-    pub fn codebooks(&self) -> &[Vec<Vec<f32>>] {
-        &self.codebooks
+    /// Reconstruct a vector from PQ codes.
+    ///
+    /// Concatenates the codewords for each subvector.
+    pub fn reconstruct(&self, codes: &[u8]) -> Vec<f32> {
+        let mut result = Vec::with_capacity(self.dimension);
+        for (m, &code) in codes.iter().enumerate() {
+            result.extend_from_slice(self.get_codeword(m, code as usize));
+        }
+        result
     }
 
-    /// Get mutable codebooks (for online learning).
-    pub fn codebooks_mut(&mut self) -> &mut [Vec<Vec<f32>>] {
-        &mut self.codebooks
+    /// Number of codebooks.
+    pub fn num_codebooks(&self) -> usize {
+        self.num_codebooks
+    }
+
+    /// Subvector dimension.
+    pub fn subvector_dim(&self) -> usize {
+        self.subvector_dim
+    }
+
+    /// Codebook size (number of codewords per codebook).
+    pub fn codebook_size(&self) -> usize {
+        self.codebook_size
     }
 }
 

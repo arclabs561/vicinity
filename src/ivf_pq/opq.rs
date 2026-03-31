@@ -261,18 +261,8 @@ fn compute_optimal_rotation(
 }
 
 /// Reconstruct vector from PQ codes.
-fn reconstruct_vector(pq: &ProductQuantizer, codes: &[u8], dimension: usize) -> Vec<f32> {
-    let codebooks = pq.codebooks();
-    let num_codebooks = codebooks.len();
-    let subvector_dim = dimension / num_codebooks;
-
-    let mut result = vec![0.0f32; dimension];
-    for (m, &code) in codes.iter().enumerate() {
-        let codeword = &codebooks[m][code as usize];
-        let start = m * subvector_dim;
-        result[start..start + subvector_dim].copy_from_slice(codeword);
-    }
-    result
+fn reconstruct_vector(pq: &ProductQuantizer, codes: &[u8], _dimension: usize) -> Vec<f32> {
+    pq.reconstruct(codes)
 }
 
 #[cfg(test)]
