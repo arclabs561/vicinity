@@ -119,6 +119,17 @@ impl PackedLUT {
         }
     }
 
+    /// Create a packed LUT directly from a flat ADC table, avoiding
+    /// the intermediate `Vec<Vec<f32>>` allocation of `from_nested`.
+    pub fn from_flat(table: &[f32], num_codebooks: usize, codebook_size: usize) -> Self {
+        debug_assert_eq!(table.len(), num_codebooks * codebook_size);
+        Self {
+            data: table.to_vec(),
+            num_codebooks,
+            codebook_size,
+        }
+    }
+
     /// Look up a single value.
     #[inline]
     pub fn lookup(&self, codebook: usize, code: u8) -> f32 {

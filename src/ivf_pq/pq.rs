@@ -191,6 +191,7 @@ impl ProductQuantizer {
 }
 
 /// Get vector from SoA storage.
+#[inline]
 fn get_vector(vectors: &[f32], dimension: usize, idx: usize) -> &[f32] {
     let start = idx * dimension;
     let end = start + dimension;
