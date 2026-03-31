@@ -12,8 +12,8 @@
 //! # Feature Flags
 //!
 //! ```toml
-//! vicinity = { version = "0.1", features = ["rabitq"] }  # RaBitQ
-//! vicinity = { version = "0.1", features = ["saq"] }     # Ternary/Binary
+//! vicinity = { version = "0.3", features = ["rabitq"] }  # RaBitQ
+//! vicinity = { version = "0.3", features = ["saq"] }     # Ternary/Binary
 //! ```
 //!
 //! # The Problem: Memory at Scale

@@ -6,7 +6,7 @@
 //!
 //! Requires the `nsw` feature:
 //! ```toml
-//! vicinity = { version = "0.1", features = ["nsw"] }
+//! vicinity = { version = "0.3", features = ["nsw"] }
 //! ```
 //!
 //! # Quick Start
