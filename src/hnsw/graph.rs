@@ -199,12 +199,16 @@ impl Default for HNSWParams {
 
 /// Builder for [`HNSWIndex`].
 ///
-/// ```ignore
+/// ```no_run
+/// # fn main() -> Result<(), vicinity::RetrieveError> {
+/// use vicinity::hnsw::HNSWIndex;
 /// let index = HNSWIndex::builder(128)
 ///     .m(24)
 ///     .ef_construction(400)
 ///     .auto_normalize(true)
 ///     .build()?;
+/// # Ok(())
+/// # }
 /// ```
 pub struct HNSWBuilder {
     dimension: usize,
