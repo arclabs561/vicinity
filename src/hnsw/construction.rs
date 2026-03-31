@@ -258,6 +258,7 @@ pub fn select_neighbors(
 }
 
 /// Get vector from SoA storage.
+#[inline]
 pub fn get_vector(vectors: &[f32], dimension: usize, idx: usize) -> &[f32] {
     let start = idx * dimension;
     let end = start + dimension;
