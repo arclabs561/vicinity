@@ -469,9 +469,9 @@ impl IVFPQIndex {
         // Stage 2: Product Quantization on residual vectors
         // Compute residuals: vector[i] - centroid[assignment[i]]
         let mut residuals = Vec::with_capacity(self.num_vectors * self.dimension);
-        for i in 0..self.num_vectors {
+        for (i, &cluster_idx) in assignments.iter().enumerate() {
             let vec = self.get_vector(i);
-            let centroid = self.get_centroid(assignments[i]);
+            let centroid = self.get_centroid(cluster_idx);
             for (v, c) in vec.iter().zip(centroid.iter()) {
                 residuals.push(v - c);
             }

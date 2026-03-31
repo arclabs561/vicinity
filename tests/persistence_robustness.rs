@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 #![cfg(all(feature = "hnsw", feature = "serde"))]
 
 use vicinity::hnsw::HNSWIndex;

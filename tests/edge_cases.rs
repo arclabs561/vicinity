@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 #![cfg(feature = "hnsw")]
 #![allow(clippy::expect_used)]
 //! Edge case tests for vicinity.

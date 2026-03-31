@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Cross-crate integration tests for Tekne Stack.
 //!
 //! These tests verify that cross-crate dependencies work correctly:
