@@ -235,10 +235,10 @@ fn search_k_zero_returns_empty() {
     index.build().unwrap();
 
     let result = index.search(&normalize(&[1.0, 0.0, 0.0, 0.0]), 0, 10);
-    match result {
-        Ok(r) => assert!(r.is_empty(), "k=0 should return empty results"),
-        Err(_) => {} // also acceptable
+    if let Ok(r) = result {
+        assert!(r.is_empty(), "k=0 should return empty results");
     }
+    // Err is also acceptable
 }
 
 #[test]
@@ -250,14 +250,14 @@ fn search_k_larger_than_index_size() {
 
     // Ask for 100 neighbors when only 1 vector exists.
     let result = index.search(&normalize(&[1.0, 0.0, 0.0, 0.0]), 100, 200);
-    match result {
-        Ok(r) => assert!(
+    if let Ok(r) = result {
+        assert!(
             r.len() <= 1,
             "should return at most 1 result, got {}",
             r.len()
-        ),
-        Err(_) => {} // also acceptable
+        );
     }
+    // Err is also acceptable
 }
 
 #[test]
