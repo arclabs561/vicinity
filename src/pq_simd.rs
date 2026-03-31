@@ -197,30 +197,27 @@ pub mod x86_64 {
 
         for chunk in 0..chunks_8 {
             let base_idx = chunk * 8;
-            let mut sum: __m256 = _mm256_setzero_ps();
+            // SAFETY: target_feature(enable = "avx2") guarantees these intrinsics are available.
+            unsafe {
+                let mut sum: __m256 = _mm256_setzero_ps();
 
-            for m in 0..num_codebooks {
-                // Gather 8 codes for codebook m from 8 consecutive candidates
-                // codes[base_idx + i][m] = codes_batch[(base_idx + i) * num_codebooks + m]
-                let mut indices = [0i32; 8];
-                for i in 0..8 {
-                    indices[i] = codes_batch[(base_idx + i) * num_codebooks + m] as i32;
+                for m in 0..num_codebooks {
+                    let mut indices = [0i32; 8];
+                    for i in 0..8 {
+                        indices[i] = codes_batch[(base_idx + i) * num_codebooks + m] as i32;
+                    }
+
+                    let indices_ptr = indices.as_ptr() as *const __m256i;
+                    let idx_vec = std::ptr::read_unaligned(indices_ptr);
+
+                    let lut_base = lut.codebook_ptr(m);
+                    let gathered = _mm256_i32gather_ps(lut_base, idx_vec, 4);
+
+                    sum = _mm256_add_ps(sum, gathered);
                 }
 
-                // Load indices into SIMD register
-                let indices_ptr = indices.as_ptr() as *const __m256i;
-                let idx_vec = std::ptr::read_unaligned(indices_ptr);
-
-                // Gather from LUT
-                let lut_base = lut.codebook_ptr(m);
-                // Scale 4 = sizeof(f32). Must be constant.
-                let gathered = _mm256_i32gather_ps(lut_base, idx_vec, 4);
-
-                sum = _mm256_add_ps(sum, gathered);
+                _mm256_storeu_ps(distances.as_mut_ptr().add(base_idx), sum);
             }
-
-            // Store results
-            _mm256_storeu_ps(distances.as_mut_ptr().add(base_idx), sum);
         }
 
         // Handle remaining candidates
@@ -258,26 +255,27 @@ pub mod x86_64 {
 
         for chunk in 0..chunks_16 {
             let base_idx = chunk * 16;
-            let mut sum: __m512 = _mm512_setzero_ps();
+            // SAFETY: target_feature(enable = "avx512f") guarantees these intrinsics are available.
+            unsafe {
+                let mut sum: __m512 = _mm512_setzero_ps();
 
-            for m in 0..num_codebooks {
-                // Gather 16 codes for codebook m
-                let mut indices = [0i32; 16];
-                for i in 0..16 {
-                    indices[i] = codes_batch[(base_idx + i) * num_codebooks + m] as i32;
+                for m in 0..num_codebooks {
+                    let mut indices = [0i32; 16];
+                    for i in 0..16 {
+                        indices[i] = codes_batch[(base_idx + i) * num_codebooks + m] as i32;
+                    }
+
+                    let indices_ptr = indices.as_ptr() as *const __m512i;
+                    let idx_vec = std::ptr::read_unaligned(indices_ptr);
+
+                    let lut_base = lut.codebook_ptr(m);
+                    let gathered = _mm512_i32gather_ps(idx_vec, lut_base, 4);
+
+                    sum = _mm512_add_ps(sum, gathered);
                 }
 
-                let indices_ptr = indices.as_ptr() as *const __m512i;
-                let idx_vec = std::ptr::read_unaligned(indices_ptr);
-
-                let lut_base = lut.codebook_ptr(m);
-                // Scale=4 means each index step is 4 bytes (size of f32)
-                let gathered = _mm512_i32gather_ps(idx_vec, lut_base, 4);
-
-                sum = _mm512_add_ps(sum, gathered);
+                _mm512_storeu_ps(distances.as_mut_ptr().add(base_idx), sum);
             }
-
-            _mm512_storeu_ps(distances.as_mut_ptr().add(base_idx), sum);
         }
 
         // Handle tail
@@ -318,33 +316,32 @@ pub mod aarch64 {
 
         for chunk in 0..chunks_4 {
             let base_idx = chunk * 4;
-            let mut sum: float32x4_t = vdupq_n_f32(0.0);
+            // SAFETY: NEON is always available on aarch64.
+            unsafe {
+                let mut sum: float32x4_t = vdupq_n_f32(0.0);
 
-            for m in 0..num_codebooks {
-                // Manual gather: load 4 codes, look up, pack into f32x4
-                let c0 = codes_batch[base_idx * num_codebooks + m] as usize;
-                let c1 = codes_batch[(base_idx + 1) * num_codebooks + m] as usize;
-                let c2 = codes_batch[(base_idx + 2) * num_codebooks + m] as usize;
-                let c3 = codes_batch[(base_idx + 3) * num_codebooks + m] as usize;
+                for m in 0..num_codebooks {
+                    let c0 = codes_batch[base_idx * num_codebooks + m] as usize;
+                    let c1 = codes_batch[(base_idx + 1) * num_codebooks + m] as usize;
+                    let c2 = codes_batch[(base_idx + 2) * num_codebooks + m] as usize;
+                    let c3 = codes_batch[(base_idx + 3) * num_codebooks + m] as usize;
 
-                let lut_base = m * lut.codebook_size;
-                let v0 = lut.data[lut_base + c0];
-                let v1 = lut.data[lut_base + c1];
-                let v2 = lut.data[lut_base + c2];
-                let v3 = lut.data[lut_base + c3];
+                    let lut_base = m * lut.codebook_size;
+                    let v0 = lut.data[lut_base + c0];
+                    let v1 = lut.data[lut_base + c1];
+                    let v2 = lut.data[lut_base + c2];
+                    let v3 = lut.data[lut_base + c3];
 
-                // Pack 4 LUT values into vector (lane indices 0-3)
-                let lane0 = vsetq_lane_f32(v0, vdupq_n_f32(0.0), 0);
-                let lane01 = vsetq_lane_f32(v1, lane0, 1);
-                let lane012 = vsetq_lane_f32(v2, lane01, 2);
-                let gathered = vsetq_lane_f32(v3, lane012, 3);
+                    let lane0 = vsetq_lane_f32(v0, vdupq_n_f32(0.0), 0);
+                    let lane01 = vsetq_lane_f32(v1, lane0, 1);
+                    let lane012 = vsetq_lane_f32(v2, lane01, 2);
+                    let gathered = vsetq_lane_f32(v3, lane012, 3);
 
-                sum = vaddq_f32(sum, gathered);
+                    sum = vaddq_f32(sum, gathered);
+                }
+
+                vst1q_f32(distances.as_mut_ptr().add(base_idx), sum);
             }
-
-            // SAFETY: base_idx + 3 < distances.len() since chunk < chunks_4
-            // Store requires unsafe due to raw pointer arithmetic
-            unsafe { vst1q_f32(distances.as_mut_ptr().add(base_idx), sum) };
         }
 
         // Handle tail
