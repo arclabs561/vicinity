@@ -235,7 +235,6 @@ impl InPlaceIndex {
         // Collect in-neighbors before marking deleted
         let in_neighbors: Vec<u32> = node.in_neighbors.clone();
         let out_neighbors: Vec<u32> = node.out_neighbors.clone();
-        let _deleted_vector = node.vector.clone();
 
         // Mark as deleted
         node.mark_deleted();

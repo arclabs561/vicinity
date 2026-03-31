@@ -233,8 +233,6 @@ impl<'a> GraphRepairer<'a> {
         existing_neighbors: &[u32],
         needed: usize,
     ) -> Result<Vec<u32>, RetrieveError> {
-        let _existing_set: HashSet<u32> = existing_neighbors.iter().cloned().collect();
-
         // BFS from existing neighbors to find candidates
         let mut visited: HashSet<u32> = HashSet::new();
         visited.insert(from_node);
