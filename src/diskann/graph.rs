@@ -596,20 +596,12 @@ impl DiskANNIndex {
 
         let mut current_idx = 0;
 
+        // Sort once before the loop; maintained by sort+truncate at end of each iteration.
+        retset.sort_unstable_by(|a, b| a.dist.total_cmp(&b.dist));
+
         while current_idx < retset.len() {
-            // Find the closest unvisited node in retset
-            // (In optimized impl, we iterate sorted retset)
-            retset.sort_by(|a, b| a.dist.total_cmp(&b.dist));
-
-            if current_idx >= retset.len() {
-                break;
-            }
-
             let current = retset[current_idx];
             current_idx += 1;
-
-            // If closest unvisited is farther than our worst candidate (and list is full), stop?
-            // Vamana doesn't strictly stop, it explores all neighbors.
 
             for &neighbor in &self.adj[current.id as usize] {
                 if visited.contains(&neighbor) {
@@ -618,13 +610,11 @@ impl DiskANNIndex {
                 visited.insert(neighbor);
 
                 let dist = self.dist(query, self.get_vector(neighbor));
-
-                // Add to retset
                 retset.push(Candidate { id: neighbor, dist });
             }
 
-            // Keep only top L
-            retset.sort_by(|a, b| a.dist.total_cmp(&b.dist));
+            // Re-sort and keep only top L
+            retset.sort_unstable_by(|a, b| a.dist.total_cmp(&b.dist));
             if retset.len() > l_size {
                 retset.truncate(l_size);
             }
@@ -670,12 +660,14 @@ impl DiskANNIndex {
         Ok(result)
     }
 
+    #[inline]
     fn get_vector(&self, idx: u32) -> &[f32] {
         let start = idx as usize * self.dimension;
         &self.vectors[start..start + self.dimension]
     }
 
     // Euclidean distance (squared), using SIMD when available.
+    #[inline]
     fn dist(&self, a: &[f32], b: &[f32]) -> f32 {
         crate::simd::l2_distance_squared(a, b)
     }
