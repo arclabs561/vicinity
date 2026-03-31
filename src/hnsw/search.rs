@@ -86,6 +86,7 @@ impl VisitedSet {
     }
 
     /// Check whether a node has been visited.
+    #[cfg(test)]
     #[inline]
     fn contains(&self, id: u32) -> bool {
         match self {
