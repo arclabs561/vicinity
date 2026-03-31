@@ -564,11 +564,14 @@ mod tests {
     }
 
     fn rand_f32() -> f32 {
-        // Simple LCG for deterministic "random" in tests
-        static mut SEED: u32 = 12345;
-        unsafe {
-            SEED = SEED.wrapping_mul(1103515245).wrapping_add(12345);
-            (SEED as f32) / (u32::MAX as f32)
+        use std::cell::Cell;
+        thread_local! {
+            static SEED: Cell<u32> = const { Cell::new(12345) };
         }
+        SEED.with(|s| {
+            let next = s.get().wrapping_mul(1103515245).wrapping_add(12345);
+            s.set(next);
+            (next as f32) / (u32::MAX as f32)
+        })
     }
 }
