@@ -245,14 +245,9 @@ impl DiskANNSearcher {
         visited.insert(self.start_node);
 
         let mut current_idx = 0;
+        retset.sort_unstable_by(|a, b| a.dist.total_cmp(&b.dist));
 
         while current_idx < retset.len() {
-            retset.sort_unstable_by(|a, b| a.dist.total_cmp(&b.dist));
-
-            if current_idx >= retset.len() {
-                break;
-            }
-
             let current = retset[current_idx];
             current_idx += 1;
 
@@ -510,9 +505,10 @@ impl DiskANNIndex {
         let node_vec = self.get_vector(node);
 
         // 1. Calculate distances to all candidates
+        let candidate_set: HashSet<u32> = candidates.iter().copied().collect();
         let mut candidates_with_dist: Vec<Candidate> = candidates
             .iter()
-            .filter(|&&c| c != node) // distinct
+            .filter(|&&c| c != node)
             .map(|&c| Candidate {
                 id: c,
                 dist: self.dist(node_vec, self.get_vector(c)),
@@ -521,7 +517,7 @@ impl DiskANNIndex {
 
         // Add current neighbors to candidate set (to refine them)
         for &neighbor in &self.adj[node as usize] {
-            if !candidates.contains(&neighbor) {
+            if !candidate_set.contains(&neighbor) {
                 candidates_with_dist.push(Candidate {
                     id: neighbor,
                     dist: self.dist(node_vec, self.get_vector(neighbor)),
