@@ -847,7 +847,7 @@ mod tests {
         assert_eq!(quantized.len(), 8 * 16);
         // Min should map to ~0, max should map to ~255.
         assert_eq!(quantized[0], 0); // smallest value
-        assert_eq!(*quantized.last().unwrap(), 255); // largest value
+        assert_eq!(quantized[quantized.len() - 1], 255); // largest value
 
         // Reconstruct and check closeness.
         for (m, table) in lut.iter().enumerate() {
