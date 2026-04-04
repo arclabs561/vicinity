@@ -31,8 +31,11 @@ jobs:
       - name: Check formatting
         run: cargo fmt --check
 
-      - name: Clippy (strict)
+      - name: Clippy (hnsw)
         run: cargo clippy --no-default-features --features hnsw --all-targets -- -D clippy::correctness
+
+      - name: Clippy (all features)
+        run: cargo clippy --all-features --all-targets -- -D clippy::correctness
 
       - name: Build
         run: cargo build --no-default-features --features hnsw
