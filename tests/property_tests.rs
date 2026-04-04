@@ -11,6 +11,7 @@ use proptest::prelude::*;
 
 mod distance_props {
     use super::*;
+    use vicinity::distance::{cosine_distance_normalized, normalize};
 
     fn l2_distance_squared(a: &[f32], b: &[f32]) -> f32 {
         a.iter()
@@ -123,6 +124,49 @@ mod distance_props {
                 (d_ab - d_ba).abs() < 1e-5,
                 "Cosine distance not symmetric: {} vs {}",
                 d_ab, d_ba
+            );
+        }
+
+        /// cosine_distance_normalized is symmetric on unit vectors.
+        #[test]
+        fn cosine_distance_normalized_symmetric(
+            a in arb_vector(32).prop_filter("non-zero", |v| v.iter().any(|x| x.abs() > 1e-4)),
+            b in arb_vector(32).prop_filter("non-zero", |v| v.iter().any(|x| x.abs() > 1e-4)),
+        ) {
+            let a_n = normalize(&a);
+            let b_n = normalize(&b);
+            let d_ab = cosine_distance_normalized(&a_n, &b_n);
+            let d_ba = cosine_distance_normalized(&b_n, &a_n);
+            prop_assert!(
+                (d_ab - d_ba).abs() < 1e-5,
+                "cosine_distance_normalized not symmetric: {} vs {}",
+                d_ab, d_ba
+            );
+        }
+
+        /// cosine_distance_normalized is zero for identical unit vectors.
+        #[test]
+        fn cosine_distance_normalized_self_zero(
+            a in arb_vector(32).prop_filter("non-zero", |v| v.iter().any(|x| x.abs() > 1e-4)),
+        ) {
+            let a_n = normalize(&a);
+            let d = cosine_distance_normalized(&a_n, &a_n);
+            prop_assert!(d.abs() < 1e-5, "cosine_distance_normalized(a, a) = {}", d);
+        }
+
+        /// cosine_distance_normalized is in [0, 2] for unit vectors.
+        #[test]
+        fn cosine_distance_normalized_bounded(
+            a in arb_vector(32).prop_filter("non-zero", |v| v.iter().any(|x| x.abs() > 1e-4)),
+            b in arb_vector(32).prop_filter("non-zero", |v| v.iter().any(|x| x.abs() > 1e-4)),
+        ) {
+            let a_n = normalize(&a);
+            let b_n = normalize(&b);
+            let d = cosine_distance_normalized(&a_n, &b_n);
+            prop_assert!(
+                (-0.01..=2.01).contains(&d),
+                "cosine_distance_normalized out of [0,2]: {}",
+                d
             );
         }
     }
@@ -1162,6 +1206,73 @@ mod hnsw_props {
 
             prop_assert_eq!(&ids1, &ids2, "Results not deterministic (run 1 vs 2)");
             prop_assert_eq!(&ids2, &ids3, "Results not deterministic (run 2 vs 3)");
+        }
+
+        /// Searching with a pre-normalized query gives the same results as searching
+        /// with an unnormalized query when auto_normalize is enabled.
+        ///
+        /// Catches regressions in normalization paths (the IVF-PQ class of bug
+        /// where unnormalized vectors silently produce wrong results).
+        #[test]
+        fn auto_normalize_equivalent_to_manual_normalize(
+            n in 30usize..80,
+            seed in any::<u64>(),
+        ) {
+            let dim = 16;
+            let vectors = random_vectors(n, dim, seed);
+
+            // Build with auto_normalize
+            let mut hnsw_auto = HNSWIndex::builder(dim)
+                .m(8)
+                .ef_construction(64)
+                .auto_normalize(true)
+                .build()
+                .expect("builder failed");
+
+            // Build without auto_normalize (manual normalization at insert)
+            let mut hnsw_manual = HNSWIndex::new(dim, 8, 8).expect("new failed");
+
+            for (i, v) in vectors.iter().enumerate() {
+                // auto index: add unnormalized
+                let unnorm: Vec<f32> = v.iter().map(|x| x * 2.0 + 0.5).collect();
+                hnsw_auto.add_slice(i as u32, &unnorm).expect("add failed");
+                // manual index: add pre-normalized (same vectors as auto would normalize to)
+                let norm = normalize(&unnorm);
+                hnsw_manual.add_slice(i as u32, &norm).expect("add failed");
+            }
+            hnsw_auto.build().expect("build failed");
+            hnsw_manual.build().expect("build failed");
+
+            // Query: unnormalized for auto, pre-normalized for manual
+            let raw_q: Vec<f32> = vectors[0].iter().map(|x| x * 3.0 + 1.0).collect();
+            let norm_q = normalize(&raw_q);
+
+            let results_auto = hnsw_auto.search(&raw_q, 5, 100).expect("auto search failed");
+            let results_manual = hnsw_manual.search(&norm_q, 5, 100).expect("manual search failed");
+
+            let ids_auto: std::collections::HashSet<u32> =
+                results_auto.iter().map(|(id, _)| *id).collect();
+            let ids_manual: std::collections::HashSet<u32> =
+                results_manual.iter().map(|(id, _)| *id).collect();
+
+            // Top-1 must agree (less strict than full set due to tie-breaking)
+            if let (Some((id_auto, _)), Some((id_manual, _))) =
+                (results_auto.first(), results_manual.first())
+            {
+                prop_assert_eq!(
+                    id_auto, id_manual,
+                    "auto_normalize top-1={} but manual top-1={} (seed={})",
+                    id_auto, id_manual, seed
+                );
+            }
+
+            // At least 60% overlap in top-5 (not 100% due to tie-breaking at boundaries)
+            let overlap = ids_auto.intersection(&ids_manual).count();
+            prop_assert!(
+                overlap >= 3,
+                "auto_normalize and manual normalize disagree: overlap={}/5 (seed={})",
+                overlap, seed
+            );
         }
     }
 }
