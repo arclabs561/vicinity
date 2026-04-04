@@ -382,7 +382,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[test]
     fn test_segment_header_serde() {
         let header = SegmentHeader {
             segment_id: 1,
