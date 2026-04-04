@@ -1510,7 +1510,7 @@ impl HNSWIndex {
                 .enumerate()
                 .find(|(_, &cat)| cat == desired_category)
                 .map(|(idx, _)| idx as u32)
-                .ok_or(RetrieveError::EmptyQuery)?
+                .ok_or(RetrieveError::NotFound)?
         };
 
         let start_vec = self.get_vector(start_point as usize);

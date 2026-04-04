@@ -126,6 +126,4 @@ pub mod pq;
 pub mod search;
 pub use search::{IVFPQIndex, IVFPQParams};
 
-// NOTE: Advanced IVF-PQ components (OPQ, pure IVF) are stubs awaiting implementation.
-// The core IVFPQIndex in search.rs provides the main functionality.
-// TODO: Implement full OPQ (rotation matrix learning) and separate IVF index
+// OPQ (Optimized PQ) is implemented in opq.rs; enable via IVFPQParams::use_opq = true.
