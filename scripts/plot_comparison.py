@@ -30,6 +30,7 @@ ALGO_STYLE = {
     "hnsw-m32": {"color": "#4e9fd9", "marker": "o",  "label": "HNSW (M=32)"},
     "nsw":    {"color": "#d62728", "marker": "s",  "label": "NSW"},
     "ivfpq":  {"color": "#2ca02c", "marker": "^",  "label": "IVF-PQ"},
+    "ivfpq-1024L": {"color": "#2ca02c", "marker": "^",  "label": "IVF-PQ"},
     "vamana": {"color": "#ff7f0e", "marker": "D",  "label": "Vamana"},
     "scann":  {"color": "#9467bd", "marker": "v",  "label": "ScaNN"},
 }

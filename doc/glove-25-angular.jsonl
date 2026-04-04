@@ -11,3 +11,10 @@
 {"algorithm":"hnsw-m32","params":{"M":32,"ef_construction":200,"ef_search":200},"recall_at_10":0.983,"qps":943}
 {"algorithm":"hnsw-m32","params":{"M":32,"ef_construction":200,"ef_search":400},"recall_at_10":0.992,"qps":698}
 {"algorithm":"brute","params":{},"recall_at_10":1.000,"qps":42}
+{"algorithm":"ivfpq-1024L","recall_at_10":0.4134,"qps":8525.8}
+{"algorithm":"ivfpq-1024L","recall_at_10":0.4340,"qps":4208.2}
+{"algorithm":"ivfpq-1024L","recall_at_10":0.4438,"qps":2216.5}
+{"algorithm":"ivfpq-1024L","recall_at_10":0.4482,"qps":1094.2}
+{"algorithm":"ivfpq-1024L","recall_at_10":0.4495,"qps":545.5}
+{"algorithm":"ivfpq-1024L","recall_at_10":0.4498,"qps":273.3}
+{"algorithm":"ivfpq-1024L","recall_at_10":0.4498,"qps":135.1}
