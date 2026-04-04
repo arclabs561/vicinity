@@ -16,6 +16,10 @@ pub enum RetrieveError {
     #[error("index is empty")]
     EmptyIndex,
 
+    /// No results matched the query (e.g. filter excluded all candidates).
+    #[error("no results found")]
+    NotFound,
+
     /// Invalid parameter value.
     #[error("invalid parameter: {0}")]
     InvalidParameter(String),

@@ -53,6 +53,8 @@ pub struct IVFPQIndex {
     pub(crate) vectors: Vec<f32>,
     pub(crate) dimension: usize,
     pub(crate) num_vectors: usize,
+    /// Maps insertion index → caller-provided doc_id.
+    doc_ids: Vec<u32>,
     params: IVFPQParams,
     built: bool,
 
@@ -285,6 +287,7 @@ impl IVFPQIndex {
             vectors: Vec::new(),
             dimension,
             num_vectors: 0,
+            doc_ids: Vec::new(),
             params,
             built: false,
             clusters: Vec::new(),
@@ -312,6 +315,7 @@ impl IVFPQIndex {
             vectors: Vec::new(),
             dimension,
             num_vectors: 0,
+            doc_ids: Vec::new(),
             params,
             built: false,
             clusters: Vec::new(),
@@ -348,9 +352,9 @@ impl IVFPQIndex {
     ///
     /// Notes:
     /// - The index stores vectors internally, so it must copy the slice into its own storage.
-    /// - IVF-PQ currently ignores `doc_id` and uses insertion order as the internal ID.
+    /// - `doc_id` is preserved and returned in search results.
     /// - Vectors are L2-normalized on insertion (cosine similarity index).
-    pub fn add_slice(&mut self, _doc_id: u32, vector: &[f32]) -> Result<(), RetrieveError> {
+    pub fn add_slice(&mut self, doc_id: u32, vector: &[f32]) -> Result<(), RetrieveError> {
         if self.built {
             return Err(RetrieveError::InvalidParameter(
                 "cannot add vectors after index is built".into(),
@@ -370,6 +374,7 @@ impl IVFPQIndex {
         } else {
             self.vectors.extend_from_slice(vector);
         }
+        self.doc_ids.push(doc_id);
         self.num_vectors += 1;
         Ok(())
     }
@@ -406,11 +411,11 @@ impl IVFPQIndex {
         if let Some(ref metadata_store) = self.metadata {
             if let Some(ref field) = self.filter_field {
                 for (vector_idx, &cluster_idx) in assignments.iter().enumerate() {
-                    let doc_id = vector_idx as u32;
-                    temp_clusters[cluster_idx].0.push(doc_id);
+                    temp_clusters[cluster_idx].0.push(vector_idx as u32);
 
-                    // Update cluster bitmask with category
-                    if let Some(metadata) = metadata_store.get(doc_id) {
+                    // Update cluster bitmask with category (look up by real doc_id)
+                    let actual_doc_id = self.doc_ids[vector_idx];
+                    if let Some(metadata) = metadata_store.get(actual_doc_id) {
                         if let Some(&category_id) = metadata.get(field) {
                             if category_id < 64 {
                                 // Only support up to 64 categories (u64 bitmask)
@@ -599,7 +604,8 @@ impl IVFPQIndex {
                 let distances = adc_batch_dispatch(&codes_batch, num_cb, &packed_lut);
 
                 for (i, &vector_idx) in ids.iter().enumerate() {
-                    candidates.push((vector_idx, distances[i]));
+                    let doc_id = self.doc_ids[vector_idx as usize];
+                    candidates.push((doc_id, distances[i]));
                 }
             } else {
                 // Scalar fallback for small clusters
@@ -609,7 +615,8 @@ impl IVFPQIndex {
                     let codes = &self.quantized_codes[start..end];
 
                     let dist = pq.distance_with_table(&adc_table, codes);
-                    candidates.push((vector_idx, dist));
+                    let doc_id = self.doc_ids[vector_idx as usize];
+                    candidates.push((doc_id, dist));
                 }
             }
         }
@@ -732,13 +739,14 @@ impl IVFPQIndex {
             if let Some(ref metadata_store) = self.metadata {
                 let ids = cluster.get_ids_immut();
                 for &vector_idx in &ids {
-                    if metadata_store.matches(vector_idx, filter) {
+                    let actual_doc_id = self.doc_ids[vector_idx as usize];
+                    if metadata_store.matches(actual_doc_id, filter) {
                         let start = vector_idx as usize * self.params.num_codebooks;
                         let end = start + self.params.num_codebooks;
                         let codes = &self.quantized_codes[start..end];
 
                         let dist = pq.distance_with_table(&adc_table, codes);
-                        candidates.push((vector_idx, dist));
+                        candidates.push((actual_doc_id, dist));
                     }
                 }
             } else {
