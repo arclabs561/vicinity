@@ -12,6 +12,8 @@ pub struct SCANNIndex {
     pub(crate) vectors: Vec<f32>,
     pub(crate) dimension: usize,
     pub(crate) num_vectors: usize,
+    /// Maps insertion index → caller-provided doc_id.
+    doc_ids: Vec<u32>,
     params: SCANNParams,
     built: bool,
 
@@ -75,6 +77,7 @@ impl SCANNIndex {
             vectors: Vec::new(),
             dimension,
             num_vectors: 0,
+            doc_ids: Vec::new(),
             params,
             built: false,
             partitions: Vec::new(),
@@ -84,16 +87,16 @@ impl SCANNIndex {
     }
 
     /// Add a vector to the index.
-    pub fn add(&mut self, _doc_id: u32, vector: Vec<f32>) -> Result<(), RetrieveError> {
-        self.add_slice(_doc_id, &vector)
+    pub fn add(&mut self, doc_id: u32, vector: Vec<f32>) -> Result<(), RetrieveError> {
+        self.add_slice(doc_id, &vector)
     }
 
     /// Add a vector to the index from a borrowed slice.
     ///
     /// Notes:
     /// - The index stores vectors internally, so it must copy the slice into its own storage.
-    /// - ScaNN currently ignores `doc_id` and uses insertion order as the internal ID.
-    pub fn add_slice(&mut self, _doc_id: u32, vector: &[f32]) -> Result<(), RetrieveError> {
+    /// - `doc_id` is preserved and returned in search results.
+    pub fn add_slice(&mut self, doc_id: u32, vector: &[f32]) -> Result<(), RetrieveError> {
         if self.built {
             return Err(RetrieveError::InvalidParameter(
                 "index already built".into(),
@@ -106,6 +109,7 @@ impl SCANNIndex {
             });
         }
         self.vectors.extend_from_slice(vector);
+        self.doc_ids.push(doc_id);
         self.num_vectors += 1;
         Ok(())
     }
@@ -257,9 +261,15 @@ impl SCANNIndex {
             .take(self.params.num_reorder.max(k))
             .collect();
 
-        // Exact re-ranking
+        // Exact re-ranking (uses vector_idx to look up in self.vectors)
         let reranked = reranking::rerank(query, &top_candidates, &self.vectors, self.dimension, k);
-        Ok(reranked)
+
+        // Translate insertion-order indices to caller-provided doc_ids
+        let results = reranked
+            .into_iter()
+            .map(|(vector_idx, dist)| (self.doc_ids[vector_idx as usize], dist))
+            .collect();
+        Ok(results)
     }
 
     fn get_vector(&self, idx: usize) -> &[f32] {
