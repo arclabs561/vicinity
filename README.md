@@ -44,6 +44,8 @@ Experimental (behind feature flags): Vamana/DiskANN, SNG, DEG, ScaNN, KD-Tree, B
 
 Each algorithm is behind its own feature flag. Default: `hnsw`. Additional flags: `nsw`, `ivf_pq`, `scann`, `diskann`, `vamana`, `quantization`, `rabitq`, `saq`, `persistence`, `parallel`, `experimental`, `python`.
 
+See [docs.rs](https://docs.rs/vicinity) for the full API and [doc/benchmark-results.md](doc/benchmark-results.md) for numbers.
+
 ## License
 
 MIT OR Apache-2.0
