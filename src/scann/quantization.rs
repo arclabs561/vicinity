@@ -84,10 +84,14 @@ impl AnisotropicQuantizer {
                 subvectors.extend_from_slice(&residuals[vec_start..vec_start + self.subvector_dim]);
             }
 
-            // Train K-Means on this subspace
-            let mut kmeans =
-                crate::scann::partitioning::KMeans::new(self.subvector_dim, self.codebook_size)?
-                    .with_seed(self.seed.wrapping_add(m as u64));
+            // Train K-Means on this subspace using L2 distance.
+            // Residuals live in Euclidean space; cosine k-means would normalize away
+            // magnitude, distorting the codebook and mismatching the quantize() L2 assignment.
+            let mut kmeans = crate::partitioning::kmeans::KMeansEuclidean::new(
+                self.subvector_dim,
+                self.codebook_size,
+            )?
+            .with_seed(self.seed.wrapping_add(m as u64));
             kmeans.fit(&subvectors, num_vectors)?;
 
             let centroids = kmeans.centroids();
