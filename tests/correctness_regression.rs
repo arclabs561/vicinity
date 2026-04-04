@@ -220,8 +220,7 @@ mod ivf_pq_tests {
             ..IVFPQParams::default()
         };
 
-        let mut index =
-            IVFPQIndex::with_filtering(dim, params.clone(), "category").unwrap();
+        let mut index = IVFPQIndex::with_filtering(dim, params.clone(), "category").unwrap();
         let mut rng = Lcg::new(77);
 
         for i in 0..n {
