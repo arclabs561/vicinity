@@ -328,12 +328,27 @@ impl IVFPQIndex {
     }
 
     /// Add metadata for a document (required for filtering).
+    ///
+    /// Returns an error if the filter field's category ID is ≥ 64 (bitmask limit).
     pub fn add_metadata(
         &mut self,
         doc_id: u32,
         metadata: crate::filtering::DocumentMetadata,
     ) -> Result<(), RetrieveError> {
         if let Some(ref mut store) = self.metadata {
+            // Validate category range early so callers get a clear error at insert time,
+            // not silently discarded data at build time.
+            if let Some(ref field) = self.filter_field {
+                if let Some(&category_id) = metadata.get(field) {
+                    if category_id >= 64 {
+                        return Err(RetrieveError::InvalidParameter(format!(
+                            "category ID {} exceeds bitmask limit of 63; \
+                             use a category ID in 0..63",
+                            category_id
+                        )));
+                    }
+                }
+            }
             store.add(doc_id, metadata);
             Ok(())
         } else {
@@ -417,8 +432,9 @@ impl IVFPQIndex {
                     let actual_doc_id = self.doc_ids[vector_idx];
                     if let Some(metadata) = metadata_store.get(actual_doc_id) {
                         if let Some(&category_id) = metadata.get(field) {
+                            // Category range validated at add_metadata time; skip silently
+                            // if somehow out of range (defensive, should not occur).
                             if category_id < 64 {
-                                // Only support up to 64 categories (u64 bitmask)
                                 temp_clusters[cluster_idx].1 |= 1u64 << category_id;
                             }
                         }
