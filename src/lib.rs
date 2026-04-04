@@ -110,14 +110,17 @@ pub mod sng;
 #[cfg(feature = "vamana")]
 pub mod vamana;
 
+#[cfg(all(feature = "hnsw", feature = "experimental"))]
 pub(crate) mod adaptive;
 #[cfg(feature = "experimental")]
 pub(crate) mod matryoshka;
 pub mod partitioning;
+#[cfg(feature = "ivf_pq")]
 pub(crate) mod pq_simd;
 
 pub mod distance;
 pub mod filtering;
+#[cfg(feature = "hnsw")]
 pub mod lid;
 pub mod simd;
 
@@ -134,4 +137,5 @@ pub mod benchmark;
 pub mod compression;
 pub mod error;
 pub mod persistence;
+#[cfg(feature = "hnsw")]
 pub mod streaming;
