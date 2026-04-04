@@ -418,6 +418,7 @@ mod ground_truth_props {
 // LID (Local Intrinsic Dimensionality) Properties
 // =============================================================================
 
+#[cfg(feature = "hnsw")]
 mod lid_props {
     use super::*;
     use vicinity::lid::{estimate_lid_mle, LidConfig, LidEstimate, LidStats};
@@ -582,6 +583,7 @@ mod lid_props {
 // TwoNN Estimator Properties
 // =============================================================================
 
+#[cfg(feature = "hnsw")]
 mod twonn_props {
     use super::*;
     use vicinity::lid::{estimate_twonn, estimate_twonn_with_ci};
@@ -779,6 +781,7 @@ mod twonn_props {
 // LID Aggregation Properties
 // =============================================================================
 
+#[cfg(feature = "hnsw")]
 mod lid_aggregation_props {
     use super::*;
     use vicinity::lid::{aggregate_lid, LidAggregation, LidEstimate};
@@ -1468,6 +1471,7 @@ mod persistence_props {
 // HNSW Self-Retrieval Properties
 // =============================================================================
 
+#[cfg(feature = "hnsw")]
 mod hnsw_self_retrieval_props {
     use proptest::prelude::*;
     use vicinity::hnsw::HNSWIndex;
@@ -1519,6 +1523,7 @@ mod hnsw_self_retrieval_props {
 // HNSW ef_search Monotonicity Properties
 // =============================================================================
 
+#[cfg(feature = "hnsw")]
 mod hnsw_ef_monotonicity_props {
     use proptest::prelude::*;
     use std::collections::HashSet;
@@ -1596,6 +1601,7 @@ mod hnsw_ef_monotonicity_props {
 // HNSW Build-Order Independence Properties
 // =============================================================================
 
+#[cfg(feature = "hnsw")]
 mod hnsw_build_order_props {
     use proptest::prelude::*;
     use std::collections::HashSet;
@@ -1679,6 +1685,7 @@ mod hnsw_build_order_props {
     }
 }
 
+#[cfg(feature = "hnsw")]
 mod hnsw_neighbor_bound_props {
     use proptest::prelude::*;
     use vicinity::hnsw::HNSWIndex;
@@ -1722,6 +1729,7 @@ mod hnsw_neighbor_bound_props {
     }
 }
 
+#[cfg(feature = "hnsw")]
 mod hnsw_subset_props {
     use proptest::prelude::*;
     use std::collections::HashSet;
@@ -1770,6 +1778,120 @@ mod hnsw_subset_props {
             prop_assert!(missing.is_empty(),
                 "top-{} result(s) {:?} not in top-{} (seed={})",
                 k_small, missing, k_large, seed);
+        }
+    }
+}
+
+// =============================================================================
+// IVF-PQ Doc-ID Identity Properties
+// =============================================================================
+
+#[cfg(feature = "ivf_pq")]
+mod ivf_pq_props {
+    use vicinity::ivf_pq::{IVFPQIndex, IVFPQParams};
+
+    use proptest::prelude::*;
+
+    fn default_params() -> IVFPQParams {
+        IVFPQParams {
+            num_clusters: 4,
+            nprobe: 4,
+            num_codebooks: 2,
+            codebook_size: 16,
+            use_opq: false,
+            ..IVFPQParams::default()
+        }
+    }
+
+    fn normalize(v: &[f32]) -> Vec<f32> {
+        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm < 1e-10 {
+            v.to_vec()
+        } else {
+            v.iter().map(|x| x / norm).collect()
+        }
+    }
+
+    proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(20))]
+
+        /// Search results contain only doc_ids that were added.
+        /// Catches the insertion-order-index-as-doc_id bug: if ids are non-sequential
+        /// (e.g., starting at 100), insertion-order indices (0..n) are out of range.
+        #[test]
+        fn search_results_contain_only_inserted_doc_ids(
+            base_id in 100u32..200u32,
+            n in 20usize..40usize,
+            seed in 0u64..1000u64,
+        ) {
+            let dim = 8usize;
+            let params = default_params();
+            let mut index = IVFPQIndex::new(dim, params).unwrap();
+
+            let mut rng = seed;
+            let mut lcg = || -> f32 {
+                rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                ((rng >> 33) as f32 / u32::MAX as f32) * 2.0 - 1.0
+            };
+
+            let inserted_ids: std::collections::HashSet<u32> =
+                (base_id..base_id + n as u32).collect();
+
+            for doc_id in base_id..base_id + n as u32 {
+                let v: Vec<f32> = (0..dim).map(|_| lcg()).collect();
+                let v = normalize(&v);
+                index.add(doc_id, v).unwrap();
+            }
+            index.build().unwrap();
+
+            let query: Vec<f32> = (0..dim).map(|_| lcg()).collect();
+            let query = normalize(&query);
+
+            if let Ok(results) = index.search(&query, 5) {
+                for (returned_id, _dist) in &results {
+                    prop_assert!(
+                        inserted_ids.contains(returned_id),
+                        "search returned id={} which was not inserted (range {}..{})",
+                        returned_id, base_id, base_id + n as u32,
+                    );
+                }
+            }
+        }
+
+        /// Result count is bounded by k and by n.
+        #[test]
+        fn search_result_count_bounded(
+            n in 20usize..40usize,
+            k in 1usize..10usize,
+            seed in 0u64..1000u64,
+        ) {
+            let dim = 8usize;
+            let params = default_params();
+            let mut index = IVFPQIndex::new(dim, params).unwrap();
+
+            let mut rng = seed;
+            let mut lcg = || -> f32 {
+                rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                ((rng >> 33) as f32 / u32::MAX as f32) * 2.0 - 1.0
+            };
+
+            for i in 0u32..n as u32 {
+                let v: Vec<f32> = (0..dim).map(|_| lcg()).collect();
+                let v = normalize(&v);
+                index.add(i, v).unwrap();
+            }
+            index.build().unwrap();
+
+            let query: Vec<f32> = (0..dim).map(|_| lcg()).collect();
+            let query = normalize(&query);
+
+            if let Ok(results) = index.search(&query, k) {
+                prop_assert!(
+                    results.len() <= k,
+                    "returned {} results but k={}",
+                    results.len(), k
+                );
+            }
         }
     }
 }
