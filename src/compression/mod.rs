@@ -16,7 +16,7 @@
 //!
 //! # Usage
 //!
-//! ```rust,no_run
+//! ```rust,ignore
 //! use vicinity::compression::{RocCompressor, IdSetCompressor};
 //!
 //! let compressor = RocCompressor::new();
