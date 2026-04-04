@@ -82,7 +82,7 @@
 //!
 //! # Usage
 //!
-//! ```rust,ignore
+//! ```rust,no_run
 //! use vicinity::persistence::format::IndexPersistence;
 //!
 //! // Save/load via IndexPersistence trait
