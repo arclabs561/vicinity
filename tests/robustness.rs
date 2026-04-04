@@ -1,4 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![cfg(feature = "hnsw")]
 //! Robustness tests for vicinity.
 //!
 //! These tests verify graceful error handling for edge cases: NaN/Inf inputs,
@@ -39,8 +40,12 @@ fn nan_vector_rejected_or_handled_gracefully() {
             // Explicit error returned -- ideal behavior.
         }
         Ok(Ok(())) => {
-            // Silently accepted (release builds). Verify search still works.
-            let _ = index.build();
+            // Silently accepted (release builds). Build and search must not panic.
+            if index.build().is_ok() {
+                let q = normalize(&[1.0, 0.0, 0.0, 0.0]);
+                let _search = index.search(&q, 1, 10);
+                // Either Ok or Err is acceptable; an uncontrolled panic is not.
+            }
         }
     }
 }
@@ -67,8 +72,12 @@ fn inf_vector_rejected_or_handled_gracefully() {
             // Explicit error returned -- ideal behavior.
         }
         Ok(Ok(())) => {
-            // Silently accepted (release builds). Verify search still works.
-            let _ = index.build();
+            // Silently accepted (release builds). Build and search must not panic.
+            if index.build().is_ok() {
+                let q = normalize(&[0.0, 1.0, 0.0, 0.0]);
+                let _search = index.search(&q, 1, 10);
+                // Either Ok or Err is acceptable; an uncontrolled panic is not.
+            }
         }
     }
 }
