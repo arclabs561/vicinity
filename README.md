@@ -53,7 +53,7 @@ HNSW (M=16) on GloVe-25 (1.18M vectors, 25-d, cosine), Apple Silicon, single-thr
 | 400       | 99.1%     | 992   |
 
 <p align="center">
-  <img src="doc/plots/algorithm_comparison_glove-25-final.png" width="680" alt="HNSW recall vs QPS on GloVe-25" />
+  <img src="doc/plots/algorithm_comparison_glove-25-angular.png" width="680" alt="Recall vs QPS on GloVe-25 (HNSW M=16 and M=32, brute-force baseline)" />
 </p>
 
 Context: hnswlib (C++, AVX2) achieves ~95% recall at ~5K QPS on the same dataset. The gap is graph traversal overhead, not distance computation. Full numbers and M=32 results in [`doc/benchmark-results.md`](doc/benchmark-results.md).
