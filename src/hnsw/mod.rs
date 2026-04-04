@@ -222,9 +222,3 @@ pub mod incremental;
 #[cfg(all(feature = "hnsw", feature = "experimental"))]
 #[doc(hidden)]
 pub mod probabilistic_routing;
-
-/// Vamana graph construction (DiskANN-style alpha-pruning).
-/// Prefer the top-level `vamana` module for the integrated implementation.
-#[cfg(all(feature = "hnsw", feature = "experimental"))]
-#[doc(hidden)]
-pub mod vamana;
