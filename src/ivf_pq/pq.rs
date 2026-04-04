@@ -1,6 +1,6 @@
 //! Product Quantization (PQ) implementation.
 
-use crate::partitioning::kmeans::KMeans;
+use crate::partitioning::kmeans::KMeansEuclidean;
 use crate::simd::l2_distance_squared;
 use crate::RetrieveError;
 
@@ -66,8 +66,11 @@ impl ProductQuantizer {
                 flat.extend_from_slice(&vec[start_dim..end_dim]);
             }
 
-            // Train k-means on subvectors
-            let mut kmeans = KMeans::new(self.subvector_dim, self.codebook_size)?;
+            // Train k-means on subvectors using L2 distance.
+            // PQ codebooks live in residual space where magnitude matters;
+            // cosine k-means would normalize codewords to unit vectors and
+            // break the L2 ADC approximation.
+            let mut kmeans = KMeansEuclidean::new(self.subvector_dim, self.codebook_size)?;
             kmeans.fit(&flat, num_vectors)?;
 
             let centroids = kmeans.centroids();

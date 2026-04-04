@@ -106,10 +106,9 @@ impl KMeans {
 
 /// k-means clustering using Euclidean (L2) distance.
 ///
-/// Use this for residual vectors where magnitude matters (e.g. PQ codebook training
-/// inside ScaNN's anisotropic quantizer). Cosine k-means normalizes inputs, which
-/// discards scale information that is meaningful in residual space.
-#[cfg(feature = "scann")]
+/// Use this for residual vectors where magnitude matters (e.g. PQ codebook training).
+/// Cosine k-means normalizes centroids to unit vectors, which discards magnitude
+/// information that is essential when residuals have varying norms.
 pub(crate) struct KMeansEuclidean {
     dimension: usize,
     k: usize,
@@ -117,7 +116,6 @@ pub(crate) struct KMeansEuclidean {
     fit: Option<clump::KmeansFit<clump::Euclidean>>,
 }
 
-#[cfg(feature = "scann")]
 impl KMeansEuclidean {
     pub(crate) fn new(dimension: usize, k: usize) -> Result<Self, RetrieveError> {
         if dimension == 0 || k == 0 {
@@ -134,6 +132,7 @@ impl KMeansEuclidean {
     }
 
     #[must_use]
+    #[allow(dead_code)]
     pub(crate) fn with_seed(mut self, seed: u64) -> Self {
         self.seed = Some(seed);
         self
