@@ -3,17 +3,24 @@
 [![crates.io](https://img.shields.io/crates/v/vicinity.svg)](https://crates.io/crates/vicinity)
 [![docs.rs](https://docs.rs/vicinity/badge.svg)](https://docs.rs/vicinity)
 
-Nearest-neighbor search.
+Approximate nearest-neighbor search.
+
+## Install
+
+Each algorithm is a separate feature. Enable what you need:
 
 ```toml
 [dependencies]
-# Pick the algorithm(s) you need:
-vicinity = { version = "0.3", features = ["hnsw"] }
-# vicinity = { version = "0.3", features = ["ivf_pq"] }
-# vicinity = { version = "0.3", features = ["hnsw", "ivf_pq", "quantization"] }
+vicinity = { version = "0.3", features = ["hnsw"] }          # graph index
+# vicinity = { version = "0.3", features = ["ivf_pq"] }      # compressed index
+# vicinity = { version = "0.3", features = ["nsw"] }         # flat graph
 ```
 
-**HNSW** — graph index, high recall, in-memory:
+## Usage
+
+### HNSW
+
+High recall, in-memory. Best default choice.
 
 ```rust
 use vicinity::hnsw::HNSWIndex;
@@ -24,14 +31,17 @@ index.add_slice(1, &[0.2; 128])?;
 index.build()?;
 
 let results = index.search(&[0.1; 128], 5, 50)?;
+// results: Vec<(doc_id, distance)>
 ```
 
-**IVF-PQ** — compressed index, lower memory, larger datasets (`features = ["ivf_pq"]`):
+### IVF-PQ
+
+Compressed index. 32–64× less memory than HNSW, lower recall. Use for datasets that don't fit in RAM.
 
 ```rust
 use vicinity::ivf_pq::{IVFPQIndex, IVFPQParams};
 
-let params = IVFPQParams { num_clusters: 64, num_codebooks: 8, nprobe: 8, ..Default::default() };
+let params = IVFPQParams { num_clusters: 256, num_codebooks: 8, nprobe: 16, ..Default::default() };
 let mut index = IVFPQIndex::new(128, params)?;
 index.add_slice(0, &[0.1; 128])?;
 index.add_slice(1, &[0.2; 128])?;
@@ -42,27 +52,21 @@ let results = index.search(&[0.1; 128], 5)?;
 
 ## Benchmark
 
-HNSW (M=16) on GloVe-25 (1.18M vectors, 25-d, cosine), Apple Silicon, single-threaded:
-
-| ef_search | Recall@10 | QPS   |
-|-----------|-----------|-------|
-| 10        | 63.0%     | 1,496 |
-| 50        | 88.4%     | 1,409 |
-| 100       | 94.3%     | 1,326 |
-| 200       | 97.6%     | 1,189 |
-| 400       | 99.1%     | 992   |
+GloVe-25 (1.18M vectors, 25-d, cosine), Apple Silicon, single-threaded:
 
 <p align="center">
-  <img src="doc/plots/algorithm_comparison_glove-25-angular.png" width="680" alt="Recall vs QPS on GloVe-25 (HNSW M=16 and M=32, brute-force baseline)" />
+  <img src="doc/plots/algorithm_comparison_glove-25-angular.png" width="680" alt="Recall vs QPS on GloVe-25" />
 </p>
 
-Context: hnswlib (C++, AVX2) achieves ~95% recall at ~5K QPS on the same dataset. The gap is graph traversal overhead, not distance computation. Full numbers and M=32 results in [`doc/benchmark-results.md`](doc/benchmark-results.md).
+Full numbers in [`doc/benchmark-results.md`](doc/benchmark-results.md).
 
 ## Algorithms
 
-Stable: HNSW, NSW, IVF-PQ, PQ, RaBitQ, SQ8.
+Indexes: HNSW, NSW, IVF-PQ, Vamana/DiskANN, ScaNN, SNG, DEG, KD-Tree, Ball Tree, RP-Forest, K-Means Tree.
 
-Experimental (behind feature flags): Vamana/DiskANN, SNG, DEG, ScaNN, KD-Tree, Ball Tree, RP-Forest, K-Means Tree.
+Quantization: PQ, RaBitQ, SQ8.
+
+Stable algorithms ship via named feature flags (`hnsw`, `nsw`, `ivf_pq`, `quantization`). Others are behind `experimental`.
 
 See [docs.rs](https://docs.rs/vicinity) for the full API.
 
