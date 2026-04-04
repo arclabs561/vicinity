@@ -2,7 +2,7 @@
 //!
 //! Two variants:
 //! - [`KMeans`] — cosine distance, for partitioning normalized vectors (IVF-PQ, ScaNN coarse).
-//! - [`KMeansEuclidean`] — L2 distance, for clustering residual vectors (ScaNN PQ codebooks).
+//! - `KMeansEuclidean` — L2 distance, for clustering residual vectors (ScaNN PQ codebooks).
 //!
 //! All computation is delegated to `clump`. This module provides the same public API
 //! that vicinity's partitioning and IVF-PQ code expects (SoA flat-buffer input, mutable

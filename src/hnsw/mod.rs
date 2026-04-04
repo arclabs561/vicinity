@@ -224,7 +224,7 @@ pub mod incremental;
 pub mod probabilistic_routing;
 
 /// Vamana graph construction (DiskANN-style alpha-pruning).
-/// Prefer `crate::vamana` for the integrated implementation.
+/// Prefer the top-level `vamana` module for the integrated implementation.
 #[cfg(all(feature = "hnsw", feature = "experimental"))]
 #[doc(hidden)]
 pub mod vamana;

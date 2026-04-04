@@ -95,7 +95,7 @@
 //!
 //! - Jayaram Subramanya et al. (2019). "DiskANN: Fast Accurate Billion-point
 //!   Nearest Neighbor Search on a Single Node."
-//! - See also: [`vamana`](crate::vamana) for the graph construction algorithm
+//! - See also: `vamana` module for the graph construction algorithm
 //! - NeurIPS 2019 landing page: `https://proceedings.neurips.cc/paper/2019/hash/09853c7fb1d3f8ee67a61b6bf4a7f8e6-Abstract.html`
 
 pub mod cache;
