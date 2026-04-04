@@ -109,6 +109,7 @@ impl KMeans {
 /// Use this for residual vectors where magnitude matters (e.g. PQ codebook training
 /// inside ScaNN's anisotropic quantizer). Cosine k-means normalizes inputs, which
 /// discards scale information that is meaningful in residual space.
+#[cfg(feature = "scann")]
 pub(crate) struct KMeansEuclidean {
     dimension: usize,
     k: usize,
@@ -116,6 +117,7 @@ pub(crate) struct KMeansEuclidean {
     fit: Option<clump::KmeansFit<clump::Euclidean>>,
 }
 
+#[cfg(feature = "scann")]
 impl KMeansEuclidean {
     pub(crate) fn new(dimension: usize, k: usize) -> Result<Self, RetrieveError> {
         if dimension == 0 || k == 0 {
@@ -216,6 +218,7 @@ mod tests {
             prop_assert_eq!(a1, a2);
         }
 
+        #[cfg(feature = "scann")]
         #[test]
         fn prop_kmeans_euclidean_fit_is_deterministic(
             seed in any::<u64>(),
@@ -242,6 +245,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "scann")]
     #[test]
     fn kmeans_euclidean_clusters_by_distance_not_direction() {
         // Two clusters that differ in magnitude but point the same direction.

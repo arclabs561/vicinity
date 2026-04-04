@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used, dead_code)]
 //! Correctness regression tests for fixed algorithm bugs.
 //!
 //! - IVF-PQ: metric consistency (cosine on normalized vectors)
