@@ -1,55 +1,75 @@
 //! Flat NSW graph construction.
+//!
+//! Inserts nodes one at a time. For each new node, greedy search finds
+//! `ef_construction` candidates from the existing partial graph, then
+//! selects the `m` best neighbors. Bidirectional edges are added with
+//! degree trimming to `m_max`. Construction is O(n · ef · log n) rather
+//! than the O(n²) brute-force that a full-scan candidate set would require.
 
 use crate::simd;
 use crate::RetrieveError;
 use smallvec::SmallVec;
 
 use super::graph::NSWIndex;
+use super::search::greedy_search;
 
-/// Construct flat NSW graph.
-///
-/// Uses RNG-based neighbor selection similar to HNSW but without hierarchy.
+/// Construct flat NSW graph via incremental insertion.
 pub fn construct_graph(index: &mut NSWIndex) -> Result<(), RetrieveError> {
     if index.num_vectors == 0 {
         return Err(RetrieveError::EmptyIndex);
     }
 
-    // Initialize neighbor lists
-    index.neighbors = vec![SmallVec::new(); index.num_vectors];
+    let n = index.num_vectors;
+    let m = index.params.m;
+    let m_max = index.params.m_max;
+    let ef_construction = index.params.ef_construction.max(m);
 
-    // Set entry point (first vector) if not already set
-    if index.entry_point.is_none() {
-        index.entry_point = Some(0);
-    }
+    // Initialize neighbor lists for all nodes.
+    index.neighbors = vec![SmallVec::new(); n];
+    index.entry_point = Some(0);
 
-    // Build graph by inserting each vector
-    for current_id in 0..index.num_vectors {
-        let current_vector = index.get_vector(current_id);
+    // Node 0 is the entry point; no neighbors to add yet.
+    for current_id in 1..n {
+        let entry_point = index.entry_point.unwrap_or(0);
 
-        // Find candidates: all other vectors
-        let mut candidates = Vec::new();
-        for other_id in 0..index.num_vectors {
-            if other_id == current_id {
-                continue;
+        // Greedy search in the partial graph to get ef_construction candidates.
+        // Nodes current_id..n-1 have empty neighbor lists so the search stays
+        // in 0..current_id naturally.
+        let candidates = greedy_search(
+            index.get_vector(current_id),
+            entry_point,
+            &index.neighbors,
+            &index.vectors,
+            index.dimension,
+            ef_construction,
+        )?;
+
+        // Select best m neighbors from the candidate set.
+        let selected = select_neighbors(&candidates, m);
+
+        for &neighbor_id in &selected {
+            let j = neighbor_id as usize;
+
+            // Forward edge: current -> neighbor
+            if !index.neighbors[current_id].contains(&neighbor_id) {
+                index.neighbors[current_id].push(neighbor_id);
             }
 
-            let other_vector = index.get_vector(other_id);
-            let dist = 1.0 - simd::dot(current_vector, other_vector);
-            candidates.push((other_id as u32, dist));
-        }
+            // Reverse edge: neighbor -> current
+            let current_u32 = current_id as u32;
+            if !index.neighbors[j].contains(&current_u32) {
+                index.neighbors[j].push(current_u32);
+            }
 
-        // Select neighbors using RNG-based selection (similar to HNSW)
-        let selected = select_neighbors_rng(&candidates, index.params.m);
-
-        // Add bidirectional connections
-        for &neighbor_id in &selected {
-            // Add connection from current to neighbor
-            index.neighbors[current_id].push(neighbor_id);
-
-            // Add reverse connection (if not already present)
-            let reverse_neighbors = &mut index.neighbors[neighbor_id as usize];
-            if !reverse_neighbors.contains(&(current_id as u32)) {
-                reverse_neighbors.push(current_id as u32);
+            // Prune reverse edge list to m_max if over capacity.
+            if index.neighbors[j].len() > m_max {
+                prune_neighbors(
+                    j,
+                    m_max,
+                    &index.vectors,
+                    index.dimension,
+                    &mut index.neighbors,
+                );
             }
         }
     }
@@ -57,50 +77,36 @@ pub fn construct_graph(index: &mut NSWIndex) -> Result<(), RetrieveError> {
     Ok(())
 }
 
-/// Select neighbors using RNG-based selection.
-///
-/// Similar to HNSW's RNG selection but for flat graph.
-fn select_neighbors_rng(candidates: &[(u32, f32)], m: usize) -> Vec<u32> {
-    if candidates.is_empty() {
-        return Vec::new();
-    }
+/// Select the `m` closest candidates (deterministic, no randomness).
+fn select_neighbors(candidates: &[(u32, f32)], m: usize) -> Vec<u32> {
+    // candidates are already sorted by distance (greedy_search returns sorted)
+    candidates.iter().take(m).map(|&(id, _)| id).collect()
+}
 
-    // Sort by distance
-    let mut sorted = candidates.to_vec();
-    sorted.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+/// Prune a node's neighbor list to `m_max` by keeping the closest neighbors.
+fn prune_neighbors(
+    node_id: usize,
+    m_max: usize,
+    vectors: &[f32],
+    dimension: usize,
+    neighbors: &mut [SmallVec<[u32; 16]>],
+) {
+    let node_vec_start = node_id * dimension;
+    let node_vec = &vectors[node_vec_start..node_vec_start + dimension];
 
-    // RNG-based selection: prefer closer neighbors but allow some randomness
-    let mut selected = Vec::new();
-    let mut rng = rand::rng();
+    // Compute distances from this node to all its current neighbors.
+    let mut with_dist: Vec<(u32, f32)> = neighbors[node_id]
+        .iter()
+        .map(|&nb_id| {
+            let start = nb_id as usize * dimension;
+            let nb_vec = &vectors[start..start + dimension];
+            let dist = 1.0 - simd::dot(node_vec, nb_vec);
+            (nb_id, dist)
+        })
+        .collect();
 
-    // Always include closest
-    if !sorted.is_empty() {
-        selected.push(sorted[0].0);
-    }
+    with_dist.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+    with_dist.truncate(m_max);
 
-    // Select remaining with distance-biased probability
-    use rand::Rng;
-    for (id, dist) in sorted.iter().skip(1) {
-        if selected.len() >= m {
-            break;
-        }
-
-        // Probability decreases with distance
-        let prob = (-dist).exp().min(1.0);
-        if rng.random::<f32>() < prob {
-            selected.push(*id);
-        }
-    }
-
-    // If we still need more, add closest remaining
-    while selected.len() < m && selected.len() < sorted.len() {
-        for (id, _) in &sorted {
-            if !selected.contains(id) {
-                selected.push(*id);
-                break;
-            }
-        }
-    }
-
-    selected
+    neighbors[node_id] = with_dist.into_iter().map(|(id, _)| id).collect();
 }

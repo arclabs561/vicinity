@@ -349,6 +349,7 @@ impl IVFPQIndex {
     /// Notes:
     /// - The index stores vectors internally, so it must copy the slice into its own storage.
     /// - IVF-PQ currently ignores `doc_id` and uses insertion order as the internal ID.
+    /// - Vectors are L2-normalized on insertion (cosine similarity index).
     pub fn add_slice(&mut self, _doc_id: u32, vector: &[f32]) -> Result<(), RetrieveError> {
         if self.built {
             return Err(RetrieveError::InvalidParameter(
@@ -363,7 +364,12 @@ impl IVFPQIndex {
             });
         }
 
-        self.vectors.extend_from_slice(vector);
+        let norm: f32 = vector.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm > 1e-10 {
+            self.vectors.extend(vector.iter().map(|x| x / norm));
+        } else {
+            self.vectors.extend_from_slice(vector);
+        }
         self.num_vectors += 1;
         Ok(())
     }
@@ -529,6 +535,15 @@ impl IVFPQIndex {
             .as_ref()
             .ok_or(RetrieveError::InvalidParameter("PQ not initialized".into()))?;
 
+        // Normalize query (index operates on unit-length vectors)
+        let query_norm: f32 = query.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let query_normalized: Vec<f32> = if query_norm > 1e-10 {
+            query.iter().map(|x| x / query_norm).collect()
+        } else {
+            query.to_vec()
+        };
+        let query = query_normalized.as_slice();
+
         // Find closest clusters (partial sort: O(C log nprobe) instead of O(C log C))
         let num_centroids = self.centroids.len() / self.dimension;
         let mut cluster_distances: Vec<(usize, f32)> = (0..num_centroids)
@@ -661,6 +676,15 @@ impl IVFPQIndex {
         };
 
         let filter_bit = 1u64 << desired_category;
+
+        // Normalize query (index operates on unit-length vectors)
+        let query_norm: f32 = query.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let query_normalized: Vec<f32> = if query_norm > 1e-10 {
+            query.iter().map(|x| x / query_norm).collect()
+        } else {
+            query.to_vec()
+        };
+        let query = query_normalized.as_slice();
 
         // Find closest clusters (partial sort)
         let num_centroids = self.centroids.len() / self.dimension;

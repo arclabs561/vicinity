@@ -45,6 +45,12 @@ pub struct NSWParams {
 
     /// Default search width during query (typically 50-200)
     pub ef_search: usize,
+
+    /// Candidate set size during construction (higher = better graph quality, slower build).
+    ///
+    /// Controls how many neighbors are considered when inserting each new node.
+    /// Must be >= m. Default: 100.
+    pub ef_construction: usize,
 }
 
 impl Default for NSWParams {
@@ -53,6 +59,7 @@ impl Default for NSWParams {
             m: 16,
             m_max: 16,
             ef_search: 50,
+            ef_construction: 100,
         }
     }
 }
@@ -79,6 +86,7 @@ impl NSWIndex {
             params: NSWParams {
                 m,
                 m_max,
+                ef_construction: 100.max(m * 2),
                 ..Default::default()
             },
             doc_ids: Vec::new(),

@@ -4,6 +4,7 @@
 
 # Benchmark data (generated from HDF5, ~120MB)
 /data/**/*.bin
+/data/ann-benchmarks/
 
 # Local clone used during migration; never commit it.
 /vicinity/
