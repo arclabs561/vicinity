@@ -26,7 +26,8 @@ import matplotlib.ticker as ticker
 # Style: distill.pub-inspired
 ALGO_STYLE = {
     "brute":  {"color": "#999999", "marker": "x",  "label": "Brute Force"},
-    "hnsw":   {"color": "#1f77b4", "marker": "o",  "label": "HNSW"},
+    "hnsw":   {"color": "#1f77b4", "marker": "o",  "label": "HNSW (M=16)"},
+    "hnsw-m32": {"color": "#4e9fd9", "marker": "o",  "label": "HNSW (M=32)"},
     "nsw":    {"color": "#d62728", "marker": "s",  "label": "NSW"},
     "ivfpq":  {"color": "#2ca02c", "marker": "^",  "label": "IVF-PQ"},
     "vamana": {"color": "#ff7f0e", "marker": "D",  "label": "Vamana"},
@@ -131,7 +132,9 @@ def plot_comparison(results_path, output_dir=None):
     ax.set_xlabel("Recall@10", fontsize=10)
     ax.set_ylabel("Queries per second (QPS)", fontsize=10)
     ax.set_yscale("log")
-    ax.set_xlim(0, 1.05)
+    all_recalls = [r for pts in by_algo.values() for r, _ in pts]
+    x_min = max(0.0, min(all_recalls) - 0.05) if all_recalls else 0.0
+    ax.set_xlim(x_min, 1.02)
     # Ensure y-axis includes all data points (brute force can be very low)
     all_qps = [q for pts in by_algo.values() for _, q in pts]
     if all_qps:
