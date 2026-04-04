@@ -42,13 +42,21 @@ let results = index.search(&[0.1; 128], 5)?;
 
 ## Benchmark
 
-HNSW (M=16) on GloVe-25 (1.18M vectors, 25-d, cosine):
+HNSW (M=16) on GloVe-25 (1.18M vectors, 25-d, cosine), Apple Silicon, single-threaded:
+
+| ef_search | Recall@10 | QPS   |
+|-----------|-----------|-------|
+| 10        | 63.0%     | 1,496 |
+| 50        | 88.4%     | 1,409 |
+| 100       | 94.3%     | 1,326 |
+| 200       | 97.6%     | 1,189 |
+| 400       | 99.1%     | 992   |
 
 <p align="center">
-  <img src="doc/plots/algorithm_comparison_glove-25-final.png" width="720" alt="Recall vs QPS on GloVe-25" />
+  <img src="doc/plots/algorithm_comparison_glove-25-final.png" width="680" alt="HNSW recall vs QPS on GloVe-25" />
 </p>
 
-63–99% recall@10 at 800–1500 QPS. Full numbers in [`doc/benchmark-results.md`](doc/benchmark-results.md).
+Context: hnswlib (C++, AVX2) achieves ~95% recall at ~5K QPS on the same dataset. The gap is graph traversal overhead, not distance computation. Full numbers and M=32 results in [`doc/benchmark-results.md`](doc/benchmark-results.md).
 
 ## Algorithms
 
