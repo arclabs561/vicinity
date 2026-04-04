@@ -200,6 +200,53 @@ mod ivf_pq_tests {
         let bad_query = vec![1.0f32, 0.0, 0.0]; // wrong dim
         assert!(index.search(&bad_query, 1).is_err());
     }
+
+    #[test]
+    fn ivf_pq_search_with_filter_unnormalized_matches_normalized() {
+        // Regression: search_with_filter must normalize the query the same way
+        // search() does. If the normalization path is missing or diverges,
+        // the two results differ on the same underlying data.
+        use std::collections::HashMap;
+        use vicinity::filtering::MetadataFilter;
+
+        let dim = 16usize;
+        let n = 100usize;
+        let params = IVFPQParams {
+            num_clusters: 4,
+            nprobe: 4,
+            num_codebooks: 4,
+            codebook_size: 16,
+            use_opq: false,
+            ..IVFPQParams::default()
+        };
+
+        let mut index =
+            IVFPQIndex::with_filtering(dim, params.clone(), "category").unwrap();
+        let mut rng = Lcg::new(77);
+
+        for i in 0..n {
+            let v = rng.next_normalized(dim);
+            index.add(i as u32, v).unwrap();
+            let mut meta = HashMap::new();
+            meta.insert("category".to_string(), 0u32); // all in category 0
+            index.add_metadata(i as u32, meta).unwrap();
+        }
+        index.build().unwrap();
+
+        let raw_query: Vec<f32> = (0..dim).map(|i| (i + 1) as f32).collect(); // unnormalized
+        let norm_query = normalize(&raw_query);
+        let filter = MetadataFilter::equals("category", 0u32);
+
+        let raw_results = index.search_with_filter(&raw_query, 5, &filter).unwrap();
+        let norm_results = index.search_with_filter(&norm_query, 5, &filter).unwrap();
+
+        let raw_ids: Vec<u32> = raw_results.iter().map(|(id, _)| *id).collect();
+        let norm_ids: Vec<u32> = norm_results.iter().map(|(id, _)| *id).collect();
+        assert_eq!(
+            raw_ids, norm_ids,
+            "unnormalized and normalized queries must return identical results"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -342,6 +389,57 @@ mod nsw_tests {
         let query = rng.next_normalized(4);
         let results = index.search(&query, 3, 10).unwrap();
         assert!(!results.is_empty());
+    }
+
+    #[test]
+    fn nsw_higher_ef_construction_improves_recall() {
+        // ef_construction controls how many candidates are evaluated when adding
+        // each node during build. ef=100 should produce a better-connected graph
+        // than ef=2 and therefore higher recall on the same data.
+        let n = 150usize;
+        let dim = 8usize;
+        let seed = 555u64;
+        let mut rng_data = Lcg::new(seed);
+        let vecs: Vec<Vec<f32>> = (0..n).map(|_| rng_data.next_normalized(dim)).collect();
+
+        let build_and_recall = |ef_c: usize| {
+            let params = NSWParams {
+                m: 8,
+                m_max: 8,
+                ef_search: 50,
+                ef_construction: ef_c,
+            };
+            let mut index = NSWIndex::with_params(dim, params).unwrap();
+            for (i, v) in vecs.iter().enumerate() {
+                index.add(i as u32, v.clone()).unwrap();
+            }
+            index.build().unwrap();
+
+            let mut rng_q = Lcg::new(1111);
+            let num_q = 20;
+            let k = 5;
+            let mut total = 0.0f32;
+            for _ in 0..num_q {
+                let q = rng_q.next_normalized(dim);
+                let gt = brute_force_cosine(&q, &vecs, k);
+                let res = index.search(&q, k, 50).unwrap();
+                total += recall_at_k(&res, &gt);
+            }
+            total / num_q as f32
+        };
+
+        let recall_low = build_and_recall(2);
+        let recall_high = build_and_recall(100);
+
+        assert!(
+            recall_high >= recall_low,
+            "ef_construction=100 recall={recall_high:.3} should be >= ef_construction=2 recall={recall_low:.3}"
+        );
+        // High ef should achieve reasonable quality, not just marginally better than 2.
+        assert!(
+            recall_high >= 0.5,
+            "ef_construction=100 recall={recall_high:.3} below 0.5"
+        );
     }
 }
 

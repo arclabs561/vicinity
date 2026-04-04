@@ -86,8 +86,11 @@ mod idpaq_integration {
 mod feature_compilation {
     #[test]
     fn default_features_compile() {
-        // Just verify vicinity compiles with default features
-        let _ = std::any::type_name::<vicinity::compression::IdCompressionMethod>();
+        // IdCompressionMethod exists in both feature configurations (stub enum
+        // without id-compression, real type with it). Asserting on the name
+        // gives the test a runtime check rather than a silent pass.
+        let name = std::any::type_name::<vicinity::compression::IdCompressionMethod>();
+        assert!(name.contains("IdCompressionMethod"));
     }
 
     #[cfg(feature = "hnsw")]
