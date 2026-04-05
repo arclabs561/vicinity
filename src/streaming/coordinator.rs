@@ -37,7 +37,7 @@ impl Default for StreamingConfig {
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```rust,no_run
 /// use vicinity::streaming::StreamingCoordinator;
 /// use vicinity::hnsw::HNSWIndex;
 ///

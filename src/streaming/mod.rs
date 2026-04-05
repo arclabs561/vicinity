@@ -63,7 +63,7 @@
 //!
 //! # Example
 //!
-//! ```rust,ignore
+//! ```rust,no_run
 //! use vicinity::streaming::StreamingCoordinator;
 //! use vicinity::hnsw::{InPlaceIndex, InPlaceConfig};
 //!
