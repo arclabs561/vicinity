@@ -26,12 +26,12 @@ use std::time::Instant;
 #[cfg(feature = "diskann")]
 use vicinity::diskann::{DiskANNIndex, DiskANNParams};
 use vicinity::hnsw::{HNSWIndex, HNSWParams};
+#[cfg(feature = "ivf_avq")]
+use vicinity::ivf_avq::{IVFAVQIndex, IVFAVQParams};
 #[cfg(feature = "ivf_pq")]
 use vicinity::ivf_pq::{IVFPQIndex, IVFPQParams};
 #[cfg(feature = "nsw")]
 use vicinity::nsw::NSWIndex;
-#[cfg(feature = "ivf_avq")]
-use vicinity::ivf_avq::{IVFAVQIndex, IVFAVQParams};
 #[cfg(feature = "vamana")]
 use vicinity::vamana::{VamanaIndex, VamanaParams};
 
@@ -402,7 +402,12 @@ fn measure_diskann(
 }
 
 #[cfg(feature = "ivf_avq")]
-fn measure_ivf_avq(index: &IVFAVQIndex, test: &[Vec<f32>], gt: &[Vec<i32>], k: usize) -> (f64, f64) {
+fn measure_ivf_avq(
+    index: &IVFAVQIndex,
+    test: &[Vec<f32>],
+    gt: &[Vec<i32>],
+    k: usize,
+) -> (f64, f64) {
     let t = Instant::now();
     let mut recall_sum = 0.0;
     for (i, q) in test.iter().enumerate() {

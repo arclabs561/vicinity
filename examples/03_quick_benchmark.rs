@@ -119,7 +119,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let doc_id = i as u32;
         if let Some(ref topics) = train_topics {
             let mut md = HashMap::new();
-            md.insert("topic".to_string(), vicinity::filtering::MetadataValue::Int(topics[i] as i64));
+            md.insert(
+                "topic".to_string(),
+                vicinity::filtering::MetadataValue::Int(topics[i] as i64),
+            );
             index.add_metadata(doc_id, md)?;
         }
         index.add(doc_id, vec.clone())?;

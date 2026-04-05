@@ -440,8 +440,7 @@ impl IVFPQIndex {
                     // Update cluster bitmask with category (look up by real doc_id)
                     let actual_doc_id = self.doc_ids[vector_idx];
                     if let Some(metadata) = metadata_store.get(actual_doc_id) {
-                        if let Some(crate::filtering::MetadataValue::Int(n)) = metadata.get(field)
-                        {
+                        if let Some(crate::filtering::MetadataValue::Int(n)) = metadata.get(field) {
                             // Category range validated at add_metadata time; skip silently
                             // if somehow out of range (defensive, should not occur).
                             let category_id = *n as u64;
