@@ -226,7 +226,7 @@ fn refine_with_rrnd(index: &mut VamanaIndex) -> Result<(), RetrieveError> {
             if !index.neighbors[neighbor_id as usize].contains(&(current_id as u32)) {
                 // Build scored candidate set: existing neighbors + new back-edge.
                 let node_vec: Vec<f32> = index.get_vector(neighbor_id as usize).to_vec();
-                let mut rev_candidates: Vec<(u32, f32)> = index.neighbors[neighbor_id as usize]
+                let rev_candidates: Vec<(u32, f32)> = index.neighbors[neighbor_id as usize]
                     .iter()
                     .chain(std::iter::once(&(current_id as u32)))
                     .map(|&nid| {
@@ -303,7 +303,7 @@ fn refine_with_rnd(index: &mut VamanaIndex) -> Result<(), RetrieveError> {
         for &neighbor_id in &selected {
             if !index.neighbors[neighbor_id as usize].contains(&(current_id as u32)) {
                 let node_vec: Vec<f32> = index.get_vector(neighbor_id as usize).to_vec();
-                let mut rev_candidates: Vec<(u32, f32)> = index.neighbors[neighbor_id as usize]
+                let rev_candidates: Vec<(u32, f32)> = index.neighbors[neighbor_id as usize]
                     .iter()
                     .chain(std::iter::once(&(current_id as u32)))
                     .map(|&nid| {
