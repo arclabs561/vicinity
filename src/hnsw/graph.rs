@@ -70,8 +70,10 @@ pub struct HNSWIndex {
     /// Field name for filtering (e.g., "category")
     filter_field: Option<String>,
 
-    /// Category assignments: vector_idx -> category_id
-    category_assignments: Vec<Option<u32>>,
+    /// Category assignments: vector_idx -> category value (from metadata filter field).
+    /// Skipped during serialization -- rebuilt via `add_metadata` after load.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    category_assignments: Vec<Option<crate::filtering::MetadataValue>>,
 
     /// Soft-deleted nodes. Deleted internal IDs are excluded from search results
     /// but remain in the graph for navigation. Storage is not reclaimed until rebuild.
@@ -959,7 +961,7 @@ impl HNSWIndex {
         if let (Some(ref metadata_store), Some(ref field)) = (&self.metadata, &self.filter_field) {
             let category = metadata_store
                 .get(doc_id)
-                .and_then(|m| m.get(field).copied());
+                .and_then(|m| m.get(field).cloned());
             self.category_assignments.push(category);
         } else {
             self.category_assignments.push(None);
@@ -1059,13 +1061,15 @@ impl HNSWIndex {
         }
 
         // Group vectors by category
-        let mut category_vectors: std::collections::HashMap<u32, Vec<u32>> =
-            std::collections::HashMap::new();
+        let mut category_vectors: std::collections::HashMap<
+            crate::filtering::MetadataValue,
+            Vec<u32>,
+        > = std::collections::HashMap::new();
 
-        for (vector_idx, &category) in self.category_assignments.iter().enumerate() {
+        for (vector_idx, category) in self.category_assignments.iter().enumerate() {
             if let Some(cat) = category {
                 category_vectors
-                    .entry(cat)
+                    .entry(cat.clone())
                     .or_default()
                     .push(vector_idx as u32);
             }
@@ -1454,7 +1458,7 @@ impl HNSWIndex {
             ));
         }
 
-        // Extract category ID from filter
+        // Extract category value from filter
         let desired_category = match filter {
             crate::filtering::MetadataFilter::Equals { field, value } => {
                 if Some(field) != self.filter_field.as_ref() {
@@ -1463,7 +1467,7 @@ impl HNSWIndex {
                         field, self.filter_field
                     )));
                 }
-                Some(*value)
+                Some(value.clone())
             }
             _ => {
                 return Err(RetrieveError::InvalidParameter(
@@ -1499,16 +1503,16 @@ impl HNSWIndex {
         let entry_category = self
             .category_assignments
             .get(entry_point as usize)
-            .and_then(|&c| c);
+            .and_then(|c| c.as_ref());
 
-        let start_point = if entry_category == desired_category {
+        let start_point = if entry_category == desired_category.as_ref() {
             entry_point
         } else {
             // Find first vector matching filter
             self.category_assignments
                 .iter()
                 .enumerate()
-                .find(|(_, &cat)| cat == desired_category)
+                .find(|(_, cat)| cat.as_ref() == desired_category.as_ref())
                 .map(|(idx, _)| idx as u32)
                 .ok_or(RetrieveError::NotFound)?
         };
@@ -1528,8 +1532,8 @@ impl HNSWIndex {
             if self
                 .category_assignments
                 .get(vector_id as usize)
-                .and_then(|&c| c)
-                != desired_category
+                .and_then(|c| c.as_ref())
+                != desired_category.as_ref()
             {
                 continue;
             }
@@ -1545,8 +1549,8 @@ impl HNSWIndex {
                 if self
                     .category_assignments
                     .get(neighbor_id as usize)
-                    .and_then(|&c| c)
-                    != desired_category
+                    .and_then(|c| c.as_ref())
+                    != desired_category.as_ref()
                 {
                     continue;
                 }
@@ -1567,7 +1571,7 @@ impl HNSWIndex {
             .iter()
             .filter(|&&id| !self.tombstones.is_deleted(id as usize))
             .filter_map(|&id| {
-                if self.category_assignments.get(id as usize).and_then(|&c| c) == desired_category {
+                if self.category_assignments.get(id as usize).and_then(|c| c.as_ref()) == desired_category.as_ref() {
                     let vec = self.get_vector(id as usize);
                     let dist = crate::distance::cosine_distance_normalized(query, vec);
                     let doc_id = self.doc_ids.get(id as usize).copied()?;
