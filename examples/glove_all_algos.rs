@@ -173,8 +173,9 @@ fn run_ivfpq(
     dim: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("=== IVF-PQ ===");
-    // num_codebooks must divide dim (25): use 5 (5×5-d subspaces)
-    for (num_clusters, num_codebooks) in [(1024, 5)] {
+    // Two configs: 5 codebooks (5-d subspaces, low memory) and 25 codebooks
+    // (1-d subspaces, ~SQ8-equivalent, much better recall on low-dim data).
+    for (num_clusters, num_codebooks) in [(1024, 5), (1024, 25)] {
         print!("  Building (clusters={num_clusters}, codebooks={num_codebooks})... ");
         let _ = std::io::stdout().flush();
         let t0 = Instant::now();
@@ -192,7 +193,7 @@ fn run_ivfpq(
         index.build()?;
         println!("{:.0}s", t0.elapsed().as_secs_f64());
 
-        let algo_name = format!("ivfpq-{num_clusters}L");
+        let algo_name = format!("ivfpq-{num_clusters}L-cb{num_codebooks}");
         for nprobe in [4, 8, 16, 32, 64, 128, 256] {
             index.set_nprobe(nprobe);
             let (recall, qps) = measure_ivfpq(&index, test, gt, k);

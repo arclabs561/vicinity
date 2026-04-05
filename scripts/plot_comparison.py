@@ -29,8 +29,10 @@ ALGO_STYLE = {
     "hnsw-m16":    {"color": "#1f77b4", "marker": "o",  "label": "HNSW (M=16)"},
     "hnsw-m32":    {"color": "#4e9fd9", "marker": "o",  "label": "HNSW (M=32)"},
     "nsw":         {"color": "#d62728", "marker": "s",  "label": "NSW"},
-    "ivfpq":       {"color": "#2ca02c", "marker": "^",  "label": "IVF-PQ"},
-    "ivfpq-1024L": {"color": "#2ca02c", "marker": "^",  "label": "IVF-PQ"},
+    "ivfpq":                  {"color": "#2ca02c", "marker": "^",  "label": "IVF-PQ"},
+    "ivfpq-1024L":            {"color": "#2ca02c", "marker": "^",  "label": "IVF-PQ (cb5)"},
+    "ivfpq-1024L-cb5":        {"color": "#2ca02c", "marker": "^",  "label": "IVF-PQ (cb5)"},
+    "ivfpq-1024L-cb25":       {"color": "#17becf", "marker": "^",  "label": "IVF-PQ (cb25)"},
     "vamana":      {"color": "#ff7f0e", "marker": "D",  "label": "Vamana"},
     "scann":       {"color": "#9467bd", "marker": "v",  "label": "ScaNN"},
 }

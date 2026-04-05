@@ -73,7 +73,7 @@ Each algorithm has a named feature flag:
 | DiskANN | `diskann` | Vamana + disk I/O layout; for datasets that don't fit in RAM |
 | ScaNN | `scann` | PQ re-ranking; recall caps ~91% on 25-d, improves with higher-dim data |
 | SNG | `sng` | O(n²) construction; practical only for n < ~10K |
-| DEG | `hnsw` | Density-adaptive edge count; enabled alongside HNSW |
+| DEG | `hnsw` | Density-adaptive edge count; O(n²) construction; small datasets only |
 | KD-Tree | `kdtree` | Exact; fast for d ≤ 20, degrades with dimension |
 | Ball Tree | `balltree` | Exact; slightly better than KD-Tree in higher dimensions |
 | RP-Forest | `rptree` | Approximate; fast build, moderate recall |
