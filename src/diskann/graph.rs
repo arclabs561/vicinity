@@ -458,11 +458,33 @@ impl DiskANNIndex {
 
     /// Compute geometric medoid of the dataset.
     fn compute_medoid(&self) -> u32 {
-        // Approximate medoid by centroid of a sample
-        // For simplicity in this implementation, just pick a random node if N is large,
-        // or 0. A robust implementation would compute the true centroid.
-        // Using 0 is a common valid simplification for prototype.
-        0
+        let n = self.num_vectors;
+        let dim = self.dimension;
+
+        // Compute centroid of all vectors.
+        let mut centroid = vec![0.0f32; dim];
+        for i in 0..n {
+            let v = self.get_vector(i as u32);
+            for (c, &x) in centroid.iter_mut().zip(v.iter()) {
+                *c += x;
+            }
+        }
+        let inv_n = 1.0 / n as f32;
+        for c in centroid.iter_mut() {
+            *c *= inv_n;
+        }
+
+        // Find the vector closest to the centroid.
+        let mut best_id = 0u32;
+        let mut best_dist = f32::INFINITY;
+        for i in 0..n {
+            let d = self.dist(&centroid, self.get_vector(i as u32));
+            if d < best_dist {
+                best_dist = d;
+                best_id = i as u32;
+            }
+        }
+        best_id
     }
 
     /// Single pass of Vamana construction.
@@ -483,12 +505,21 @@ impl DiskANNIndex {
             // Run RobustPrune on V to find new neighbors for i
             let new_neighbors = self.robust_prune(i, &visited, alpha, self.params.m);
 
-            // Update graph: add directed edges
+            // Update graph: add directed edges from i to its new neighbors.
+            let neighbors_for_i = new_neighbors.clone();
             self.adj[i as usize] = new_neighbors.into_iter().collect();
 
-            // Note: In full DiskANN, we'd also add reverse edges to keep graph undirected/balanced,
-            // but vanilla Vamana works well with directed edges refined this way.
-            // For production, we'd enforce max degree on reverse updates.
+            // Add reverse edges: for each neighbor j of i, add i as a candidate
+            // for j's neighbor list and re-prune j to maintain max degree.
+            for j in neighbors_for_i {
+                if !self.adj[j as usize].contains(&i) {
+                    // Collect j's current neighbors plus i as candidates.
+                    let mut rev_candidates: Vec<u32> = self.adj[j as usize].to_vec();
+                    rev_candidates.push(i);
+                    let pruned = self.robust_prune(j, &rev_candidates, alpha, self.params.m);
+                    self.adj[j as usize] = pruned.into_iter().collect();
+                }
+            }
         }
 
         Ok(())

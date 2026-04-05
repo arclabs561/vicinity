@@ -232,10 +232,12 @@ impl DEGIndex {
                 break;
             }
 
-            // Alpha-pruning: skip if too close to existing neighbor
+            // Alpha-pruning (RobustPrune criterion): keep candidate p* if for every
+            // existing neighbor p', alpha * dist(p', p*) > dist(node, p*).
+            // Equivalently: no existing neighbor is "close enough" to make p* redundant.
             let is_diverse = neighbors.iter().all(|&n| {
                 let neighbor_dist = self.distance(candidate, n);
-                neighbor_dist > dist * self.config.alpha || neighbor_dist > dist
+                self.config.alpha * neighbor_dist > dist
             });
 
             if is_diverse {
