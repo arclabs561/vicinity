@@ -32,7 +32,6 @@ def apply_style(ax):
     ax.set_axisbelow(True)
 
 
-
 # ===================================================================
 # Plot 3: Memory scaling  (theoretical, dim=25 to match GloVe-25)
 # ===================================================================

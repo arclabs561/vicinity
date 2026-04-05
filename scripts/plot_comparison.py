@@ -12,7 +12,7 @@ Usage:
 Input: JSONL files where each line is:
     {"algorithm":"hnsw","params":{...},"recall_at_10":0.83,"qps":12345.6,...}
 
-Output: doc/plots/algorithm_comparison_<dataset>.png
+Output: docs/plots/algorithm_comparison_<dataset>.png
 """
 
 import json
@@ -24,19 +24,19 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 
 ALGO_STYLE = {
-    "brute":       {"color": "#aaaaaa", "marker": "x",  "label": "Brute Force"},
-    "hnsw":        {"color": "#1f77b4", "marker": "o",  "label": "HNSW (M=16)"},
-    "hnsw-m16":    {"color": "#1f77b4", "marker": "o",  "label": "HNSW (M=16)"},
-    "hnsw-m32":    {"color": "#4e9fd9", "marker": "o",  "label": "HNSW (M=32)"},
-    "nsw":         {"color": "#d62728", "marker": "s",  "label": "NSW"},
-    "ivfpq":                  {"color": "#2ca02c", "marker": "^",  "label": "IVF-PQ"},
-    "ivfpq-1024L":            {"color": "#2ca02c", "marker": "^",  "label": "IVF-PQ (cb5)"},
-    "ivfpq-1024L-cb5":        {"color": "#2ca02c", "marker": "^",  "label": "IVF-PQ (cb5)"},
-    "ivfpq-1024L-cb25":       {"color": "#17becf", "marker": "^",  "label": "IVF-PQ (cb25)"},
-    "vamana":      {"color": "#ff7f0e", "marker": "D",  "label": "Vamana"},
-    "scann":       {"color": "#9467bd", "marker": "v",  "label": "IVF-AVQ"},
-    "ivf_avq":     {"color": "#9467bd", "marker": "v",  "label": "IVF-AVQ"},
-    "diskann":     {"color": "#333333", "marker": "o",  "label": "DiskANN"},
+    "brute": {"color": "#aaaaaa", "marker": "x", "label": "Brute Force"},
+    "hnsw": {"color": "#1f77b4", "marker": "o", "label": "HNSW (M=16)"},
+    "hnsw-m16": {"color": "#1f77b4", "marker": "o", "label": "HNSW (M=16)"},
+    "hnsw-m32": {"color": "#4e9fd9", "marker": "o", "label": "HNSW (M=32)"},
+    "nsw": {"color": "#d62728", "marker": "s", "label": "NSW"},
+    "ivfpq": {"color": "#2ca02c", "marker": "^", "label": "IVF-PQ"},
+    "ivfpq-1024L": {"color": "#2ca02c", "marker": "^", "label": "IVF-PQ (cb5)"},
+    "ivfpq-1024L-cb5": {"color": "#2ca02c", "marker": "^", "label": "IVF-PQ (cb5)"},
+    "ivfpq-1024L-cb25": {"color": "#17becf", "marker": "^", "label": "IVF-PQ (cb25)"},
+    "vamana": {"color": "#ff7f0e", "marker": "D", "label": "Vamana"},
+    "scann": {"color": "#9467bd", "marker": "v", "label": "IVF-AVQ"},
+    "ivf_avq": {"color": "#9467bd", "marker": "v", "label": "IVF-AVQ"},
+    "diskann": {"color": "#333333", "marker": "o", "label": "DiskANN"},
 }
 
 
@@ -88,7 +88,7 @@ def load_results(path):
 def plot_comparison(results_path, output_dir=None):
     path = Path(results_path)
     if output_dir is None:
-        output_dir = Path("doc/plots")
+        output_dir = Path("docs/plots")
     else:
         output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -112,25 +112,32 @@ def plot_comparison(results_path, output_dir=None):
         if len(frontier) == 1:
             # Single point (e.g., brute force)
             ax.scatter(
-                [frontier[0][0]], [frontier[0][1]],
-                color=style["color"], marker=style["marker"],
-                s=80, zorder=5, label=style["label"],
+                [frontier[0][0]],
+                [frontier[0][1]],
+                color=style["color"],
+                marker=style["marker"],
+                s=80,
+                zorder=5,
+                label=style["label"],
             )
         else:
             recalls = [p[0] for p in frontier]
             qps_vals = [p[1] for p in frontier]
             ax.plot(
-                recalls, qps_vals,
+                recalls,
+                qps_vals,
                 color=style["color"],
                 marker=style["marker"],
-                markersize=5, linewidth=1.5,
+                markersize=5,
+                linewidth=1.5,
                 label=style["label"],
                 zorder=4,
             )
 
     ax.set_title(
         f"Recall-Queries per second (1/s) tradeoff — up and to the right is better",
-        fontsize=10, pad=8,
+        fontsize=10,
+        pad=8,
     )
     ax.set_xlabel("Recall@10", fontsize=10)
     ax.set_ylabel("Queries per second (1/s)", fontsize=10)
@@ -141,20 +148,28 @@ def plot_comparison(results_path, output_dir=None):
     if all_qps:
         ax.set_ylim(min(all_qps) * 0.5, max(all_qps) * 3)
 
-    ax.yaxis.set_major_formatter(ticker.FuncFormatter(
-        lambda x, _: f"{x:.0f}" if x < 1000 else f"{x/1000:.0f}K"
-    ))
+    ax.yaxis.set_major_formatter(
+        ticker.FuncFormatter(
+            lambda x, _: f"{x:.0f}" if x < 1000 else f"{x / 1000:.0f}K"
+        )
+    )
 
     # Legend outside the plot on the right, like ann-benchmarks.com
     ax.legend(
-        fontsize=8.5, frameon=False,
-        loc="upper left", bbox_to_anchor=(1.01, 1), borderaxespad=0,
+        fontsize=8.5,
+        frameon=False,
+        loc="upper left",
+        bbox_to_anchor=(1.01, 1),
+        borderaxespad=0,
     )
 
     fig.text(
-        0.45, -0.02,
+        0.45,
+        -0.02,
         f"Dataset: {dataset}",
-        ha="center", fontsize=8, color="#777777",
+        ha="center",
+        fontsize=8,
+        color="#777777",
     )
 
     fig.tight_layout()

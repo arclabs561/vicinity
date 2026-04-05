@@ -55,10 +55,10 @@ let results = index.search(&[0.1; 128], 5)?;
 GloVe-25 (1.18M vectors, 25-d, cosine), Apple Silicon, single-threaded:
 
 <p align="center">
-  <img src="doc/plots/algorithm_comparison_glove-25-angular.png" width="680" alt="Recall vs QPS on GloVe-25" />
+  <img src="docs/plots/algorithm_comparison_glove-25-angular.png" width="680" alt="Recall vs QPS on GloVe-25" />
 </p>
 
-Full numbers in [`doc/benchmark-results.md`](doc/benchmark-results.md).
+Full numbers in [`docs/benchmark-results.md`](docs/benchmark-results.md).
 
 ## Algorithms
 

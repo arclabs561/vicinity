@@ -1,20 +1,21 @@
 /target
 .cargo/
 .cursor/
+.ruff_cache/
 
-# Benchmark data (generated from HDF5, ~120MB)
-/data/**/*.bin
-/data/ann-benchmarks/
+# Benchmark data (generated)
+/data/
 
 # Local clone used during migration; never commit it.
 /vicinity/
 
 # Generated plots / reports
-/doc/plots/index.html
-/doc/plots/margin_distributions.png
+/docs/plots/index.html
+/docs/plots/margin_distributions.png
 
 # Python cache artifacts (scripts/)
 __pycache__/
 *.pyc
+
+# QA reports (generated)
 qa/
-/data/**/*.hdf5
