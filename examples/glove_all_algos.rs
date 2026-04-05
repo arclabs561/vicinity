@@ -12,8 +12,8 @@
 //! cargo run --example glove_all_algos --release --features "hnsw,nsw,ivf_pq,vamana,scann,diskann" -- --algo scann
 //! cargo run --example glove_all_algos --release --features "hnsw,nsw,ivf_pq,vamana,scann,diskann" -- --algo diskann
 //!
-//! # Output appended to doc/glove-25-angular.jsonl; regenerate plot with:
-//! # uv run scripts/plot_comparison.py doc/glove-25-angular.jsonl
+//! # Output appended to docs/glove-25-angular.jsonl; regenerate plot with:
+//! # uv run scripts/plot_comparison.py docs/glove-25-angular.jsonl
 //! ```
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -36,7 +36,7 @@ use vicinity::nsw::NSWIndex;
 use vicinity::vamana::{VamanaIndex, VamanaParams};
 
 const DATA_DIR: &str = "data/ann-benchmarks/glove-25-angular";
-const JSONL_OUT: &str = "doc/glove-25-angular.jsonl";
+const JSONL_OUT: &str = "docs/glove-25-angular.jsonl";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();

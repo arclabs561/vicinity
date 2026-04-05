@@ -74,7 +74,7 @@
 //!   `http://ann-benchmarks.com/`.
 //!
 //! For a curated bibliography covering HNSW/NSW/NSG/DiskANN/PQ/OPQ/ScaNN and related phenomena,
-//! see `doc/references.md` in the repo.
+//! see `docs/references.md` in the repo.
 
 pub mod ann;
 pub mod classic;

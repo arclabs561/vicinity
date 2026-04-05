@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-cd /Users/arc/Documents/dev/vicinity
+cd "$(dirname "$0")/.."
 
 # Ensure directories exist
 mkdir -p data/multiscale
@@ -19,10 +19,10 @@ run_scale() {
     echo "--------------------------------------------------------"
     
     echo "[1] Generating Data..."
-    uvx --with numpy python scripts/generate_multiscale_data.py --scale $scale
+    uvx --with numpy python scripts/generate_multiscale_data.py --scale "$scale"
     
     echo "[2] Running Benchmark..."
-    cargo run --example 04_rigorous_benchmark --release -- --scale $scale
+    cargo run --example 04_rigorous_benchmark --release -- --scale "$scale"
 }
 
 # Run scales

@@ -4,7 +4,7 @@ Practical insights from recent approximate nearest neighbor research.
 
 ## Key Papers Reviewed
 
-| Paper | Year | Key Idea | Status in Jin |
+| Paper | Year | Key Idea | Status |
 |-------|------|----------|---------------|
 | FreshDiskANN | 2021 | Tombstones + streaming merge for live updates | `hnsw::tombstones` |
 | IP-DiskANN | 2025 | In-place updates without rebuild (see paper for reported trade-offs) | `hnsw::inplace` |
