@@ -62,11 +62,24 @@ Full numbers in [`doc/benchmark-results.md`](doc/benchmark-results.md).
 
 ## Algorithms
 
-Indexes: HNSW, NSW, IVF-PQ, Vamana/DiskANN, ScaNN, SNG, DEG, KD-Tree, Ball Tree, RP-Forest, K-Means Tree.
+Each algorithm has a named feature flag:
 
-Quantization: PQ, RaBitQ, SQ8.
+| Algorithm | Feature | Notes |
+|-----------|---------|-------|
+| HNSW | `hnsw` (default) | |
+| NSW | `nsw` | |
+| IVF-PQ | `ivf_pq` | |
+| Vamana | `vamana` | |
+| DiskANN | `diskann` | |
+| ScaNN | `scann` | |
+| SNG | `sng` | O(n²) construction; use for small datasets |
+| DEG | `hnsw` | Enabled alongside HNSW |
+| KD-Tree | `kdtree` | |
+| Ball Tree | `balltree` | |
+| RP-Forest | `rptree` | |
+| K-Means Tree | `kmeans_tree` | |
 
-Stable algorithms ship via named feature flags (`hnsw`, `nsw`, `ivf_pq`, `quantization`). Others are behind `experimental`.
+Quantization: PQ, RaBitQ, SQ8 (feature: `quantization`).
 
 See [docs.rs](https://docs.rs/vicinity) for the full API.
 
