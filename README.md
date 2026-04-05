@@ -66,18 +66,18 @@ Each algorithm has a named feature flag:
 
 | Algorithm | Feature | Notes |
 |-----------|---------|-------|
-| HNSW | `hnsw` (default) | Best recall/QPS for in-memory search; tune M and ef_search |
+| HNSW | `hnsw` (default) | Best recall/QPS balance for in-memory search up to ~100M vectors |
 | NSW | `nsw` | ~10× faster search than HNSW at the same ef; 1–2 pp lower recall ceiling |
-| IVF-PQ | `ivf_pq` | 32–64× less memory; recall caps ~45% on low-dim data (set num_codebooks = dim/5) |
-| Vamana | `vamana` | ~8.7× faster search than HNSW at the same recall; longer build time |
-| DiskANN | `diskann` | Vamana + disk I/O layout; for datasets that don't fit in RAM |
-| ScaNN | `scann` | PQ re-ranking; recall caps ~91% on 25-d, improves with higher-dim data |
-| SNG | `sng` | O(n²) construction; practical only for n < ~10K |
-| DEG | `hnsw` | Density-adaptive edge count; O(n²) construction; small datasets only |
-| KD-Tree | `kdtree` | Exact; fast for d ≤ 20, degrades with dimension |
-| Ball Tree | `balltree` | Exact; slightly better than KD-Tree in higher dimensions |
-| RP-Forest | `rptree` | Approximate; fast build, moderate recall |
-| K-Means Tree | `kmeans_tree` | Hierarchical clustering index; good for clustered data |
+| IVF-PQ | `ivf_pq` | ~25× less memory than HNSW; recall depends on codebooks — use num_codebooks ≥ dim/5 |
+| Vamana | `vamana` | ~8.7× faster search than HNSW at same recall; higher build time than HNSW |
+| DiskANN | `diskann` | Vamana + disk I/O layout; suited for datasets > available RAM |
+| ScaNN | `scann` | PQ re-ranking; recall caps ~91% on 25-d, higher on ≥100-d data |
+| SNG | `sng` | O(n²) construction; seconds at n=10K, hours at n=100K — not for large datasets |
+| DEG | `hnsw` | Density-adaptive edge count; O(n²) construction — same scale limits as SNG |
+| KD-Tree | `kdtree` | Exact; fast for d ≤ 20, recall degrades sharply above d=30 |
+| Ball Tree | `balltree` | Exact; slightly better than KD-Tree for d=20–50 |
+| RP-Forest | `rptree` | Approximate; fast build, moderate recall; good for high-d data |
+| K-Means Tree | `kmeans_tree` | Hierarchical clustering index; suited for clustered or categorical data |
 
 Quantization: PQ, RaBitQ, SQ8 (feature: `quantization`).
 
