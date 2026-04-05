@@ -342,6 +342,68 @@ mod tests {
         }
     }
 
+    /// Recall regression test: greedy beam search construction must produce
+    /// recall@10 > 70% on synthetic data.
+    ///
+    /// The prior BFS-based construction gave ~3–48% recall (measured on GloVe-25).
+    /// This test catches a regression to that incorrect algorithm.
+    #[test]
+    fn test_construction_recall_regression() {
+        let n = 400;
+        let dim = 16;
+        let k = 10;
+        let ef = 200;
+        let vecs = generate_normalized_vectors(n, dim, 123);
+
+        let params = VamanaParams {
+            max_degree: 32,
+            alpha: 1.3,
+            ef_construction: 200,
+            ef_search: ef,
+        };
+        let mut index = VamanaIndex::new(dim, params).unwrap();
+        for (i, v) in vecs.iter().enumerate() {
+            index.add(i as u32, v.clone()).unwrap();
+        }
+        index.build().unwrap();
+
+        // Compute recall against brute-force for 20 evenly spaced query vectors.
+        let step = (n / 20).max(1);
+        let mut total_recall = 0.0f64;
+        let mut num_queries = 0usize;
+
+        for qi in (0..n).step_by(step) {
+            let query = &vecs[qi];
+
+            let mut all_dists: Vec<(u32, f32)> = (0..n)
+                .filter(|&j| j != qi)
+                .map(|j| {
+                    (
+                        j as u32,
+                        distance::cosine_distance_normalized(query, &vecs[j]),
+                    )
+                })
+                .collect();
+            all_dists.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+            let true_nn: std::collections::HashSet<u32> =
+                all_dists.iter().take(k).map(|&(id, _)| id).collect();
+
+            let results = index.search(query, k, ef).unwrap();
+            let found: std::collections::HashSet<u32> =
+                results.iter().map(|&(id, _)| id).collect();
+
+            total_recall += true_nn.intersection(&found).count() as f64 / k as f64;
+            num_queries += 1;
+        }
+
+        let mean_recall = total_recall / num_queries as f64;
+        assert!(
+            mean_recall >= 0.70,
+            "Recall@{k} = {:.1}% < 70% (construction quality regression; BFS construction gave ~40%)",
+            mean_recall * 100.0,
+        );
+    }
+
     #[test]
     fn test_vamana_graph_connected() {
         // After construction, every node should be reachable from the medoid
