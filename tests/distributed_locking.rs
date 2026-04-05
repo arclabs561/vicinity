@@ -20,4 +20,3 @@ fn test_local_file_lock_invariant() {
         "Local exclusive lock should prevent second acquisition"
     );
 }
-

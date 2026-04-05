@@ -35,4 +35,3 @@ async fn test_crash_recovery_invariant() -> anyhow::Result<()> {
     println!("Crash recovery verified via WAL replay.");
     Ok(())
 }
-

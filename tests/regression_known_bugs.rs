@@ -44,7 +44,6 @@ fn cosine_distance_handles_unnormalized_query() {
     );
 }
 
-
 /// Test inspired by faiss #4295: Integer overflow on large datasets.
 ///
 /// Compile-time assertion that the faiss #4295 graph-size calculation
