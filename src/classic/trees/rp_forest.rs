@@ -18,6 +18,10 @@
 //! - Complementary to graph-based methods (HNSW, SNG)
 //! - Tree-based space partitioning (different from graph-based proximity)
 //!
+//! **vs hash-bucket LSH**: if you need near-duplicate detection or set similarity
+//! (MinHash/SimHash) rather than ranked k-NN retrieval, see the [`sketchir`](https://docs.rs/sketchir)
+//! crate, which provides banding LSH and random-projection LSH over hash buckets.
+//!
 //! # References
 //!
 //! - Dasgupta & Freund (2008): "Random projection trees and low dimensional manifolds"
