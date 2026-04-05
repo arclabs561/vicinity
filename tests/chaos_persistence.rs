@@ -36,12 +36,3 @@ async fn test_crash_recovery_invariant() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[tokio::test]
-async fn test_lock_timeout_after_crash() -> anyhow::Result<()> {
-    // This test would ideally use hiqlite, but since it requires a real cluster,
-    // we document the intended behavior:
-    // If a node crashes while holding a hiqlite::DLock,
-    // the lock is automatically released by hiqlite after its TTL (10s in current impl).
-    println!("Distributed lock timeout (10s) verified by design documentation.");
-    Ok(())
-}

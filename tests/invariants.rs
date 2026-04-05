@@ -552,14 +552,13 @@ fn incremental_additions_dont_corrupt_earlier_data() {
     let results_large = index_large.search(query, k, ef_search).unwrap();
     let ids_large: HashSet<u32> = results_large.iter().map(|(id, _)| *id).collect();
 
-    // Ground truth: brute-force k-NN among original vectors
+    // Ground truth: brute-force k-NN among original vectors only.
+    // The large index should still find most of these -- adding vectors
+    // should not corrupt the graph for earlier entries.
     let gt_small = ground_truth_cosine(query, &all_vecs[..n_initial], k);
     let gt_set: HashSet<u32> = gt_small.iter().copied().collect();
 
-    // The large index should still find most of the true nearest neighbors
-    // from the original set. Some may be displaced by genuinely closer new
-    // vectors, so we check overlap with ground truth, not with the small
-    // index's approximate results.
+    // Filter large-index results to original-range IDs only
     let ids_large_original: HashSet<u32> = ids_large
         .iter()
         .filter(|&&id| (id as usize) < n_initial)

@@ -21,10 +21,3 @@ fn test_local_file_lock_invariant() {
     );
 }
 
-#[tokio::test]
-async fn test_distributed_lock_interface() -> anyhow::Result<()> {
-    // This test verifies the DistributedLock structure exists and has the right API.
-    // In a real environment, we'd pass a hiqlite::Client.
-    println!("Distributed lock integration verified via compilation.");
-    Ok(())
-}
