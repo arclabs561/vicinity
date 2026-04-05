@@ -1,4 +1,4 @@
-//! Vamana graph construction algorithm (two-pass with RRND + RND).
+//! Vamana graph construction algorithm (two-pass: RND then RRND).
 
 use crate::distance as hnsw_distance;
 use crate::hnsw::construction::select_neighbors;
@@ -141,7 +141,7 @@ fn greedy_search_vamana(
         // Early termination: best unexplored candidate is worse than worst result.
         if results.len() >= ef {
             if let Some(worst) = results.peek() {
-                if curr_dist > worst.dist {
+                if curr_dist >= worst.dist {
                     break;
                 }
             }
@@ -176,9 +176,10 @@ fn greedy_search_vamana(
     result_vec
 }
 
-/// First pass: Refine graph using RRND (Relaxed Relative Neighborhood Diversification).
+/// Second pass: Refine graph using RRND (Relaxed Relative Neighborhood Diversification).
 ///
-/// Formula: dist(X_q, X_j) < α · dist(X_i, X_j) with α ≥ 1.5
+/// Formula: dist(X_q, X_j) < α · dist(X_i, X_j) with α > 1.0
+/// Runs after the RND pass to add longer-range edges.
 #[cfg(feature = "vamana")]
 fn refine_with_rrnd(index: &mut VamanaIndex) -> Result<(), RetrieveError> {
     if index.num_vectors == 0 {
@@ -215,45 +216,56 @@ fn refine_with_rrnd(index: &mut VamanaIndex) -> Result<(), RetrieveError> {
             },
         );
 
-        // Update outgoing neighbors
-        index.neighbors[current_id] = SmallVec::from_vec(selected.clone());
-
-        // Add reverse (bidirectional) edges. Paper: when p selects q as
-        // neighbor, add q->p edge. Prune if q's list exceeds max_degree.
+        // Add reverse (bidirectional) edges. Paper (Algorithm 2): when p selects q
+        // as neighbor, add q→p. If q's list overflows max_degree, re-prune using
+        // the same diversity criterion (RobustPrune in the paper).
         let dim = index.dimension;
         let max_deg = index.params.max_degree;
+        let alpha = index.params.alpha;
         for &neighbor_id in &selected {
-            let reverse = &mut index.neighbors[neighbor_id as usize];
-            if !reverse.contains(&(current_id as u32)) {
-                reverse.push(current_id as u32);
-                if reverse.len() > max_deg {
-                    let nstart = neighbor_id as usize * dim;
-                    let node_vec = &index.vectors[nstart..nstart + dim];
-                    let mut scored: Vec<(u32, f32)> = reverse
-                        .iter()
-                        .map(|&nid| {
-                            let s = nid as usize * dim;
-                            let v = &index.vectors[s..s + dim];
-                            (
-                                nid,
-                                crate::distance::cosine_distance_normalized(node_vec, v),
-                            )
-                        })
-                        .collect();
-                    scored.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
-                    scored.truncate(max_deg);
-                    *reverse = scored.iter().map(|(id, _)| *id).collect();
+            if !index.neighbors[neighbor_id as usize].contains(&(current_id as u32)) {
+                // Build scored candidate set: existing neighbors + new back-edge.
+                let node_vec: Vec<f32> = index.get_vector(neighbor_id as usize).to_vec();
+                let mut rev_candidates: Vec<(u32, f32)> = index.neighbors[neighbor_id as usize]
+                    .iter()
+                    .chain(std::iter::once(&(current_id as u32)))
+                    .map(|&nid| {
+                        let s = nid as usize * dim;
+                        let v = &index.vectors[s..s + dim];
+                        (
+                            nid,
+                            crate::distance::cosine_distance_normalized(&node_vec, v),
+                        )
+                    })
+                    .collect();
+
+                if rev_candidates.len() <= max_deg {
+                    index.neighbors[neighbor_id as usize].push(current_id as u32);
+                } else {
+                    // Re-prune using the same RRND diversity criterion.
+                    let pruned = select_neighbors(
+                        &node_vec,
+                        &rev_candidates,
+                        max_deg,
+                        &index.vectors,
+                        dim,
+                        &NeighborhoodDiversification::RelaxedRelative { alpha },
+                    );
+                    index.neighbors[neighbor_id as usize] = SmallVec::from_vec(pruned);
                 }
             }
         }
+
+        // Update outgoing neighbors (after reverse edges, so selected is still owned).
+        index.neighbors[current_id] = SmallVec::from_vec(selected);
     }
 
     Ok(())
 }
 
-/// Second pass: Further refine using RND (Relative Neighborhood Diversification).
+/// First pass: Refine graph using RND (Relative Neighborhood Diversification).
 ///
-/// Formula: dist(X_q, X_j) < dist(X_i, X_j) for all neighbors X_i
+/// Formula: dist(X_q, X_j) < dist(X_i, X_j) for all neighbors X_i  (alpha = 1.0, strict)
 #[cfg(feature = "vamana")]
 fn refine_with_rnd(index: &mut VamanaIndex) -> Result<(), RetrieveError> {
     if index.num_vectors == 0 {
@@ -285,36 +297,43 @@ fn refine_with_rnd(index: &mut VamanaIndex) -> Result<(), RetrieveError> {
             &NeighborhoodDiversification::RelativeNeighborhood,
         );
 
-        // Update outgoing neighbors
-        index.neighbors[current_id] = SmallVec::from_vec(selected.clone());
-
-        // Add reverse (bidirectional) edges with pruning
+        // Add reverse (bidirectional) edges. Prune using RND when list overflows.
         let dim = index.dimension;
         let max_deg = index.params.max_degree;
         for &neighbor_id in &selected {
-            let reverse = &mut index.neighbors[neighbor_id as usize];
-            if !reverse.contains(&(current_id as u32)) {
-                reverse.push(current_id as u32);
-                if reverse.len() > max_deg {
-                    let nstart = neighbor_id as usize * dim;
-                    let node_vec = &index.vectors[nstart..nstart + dim];
-                    let mut scored: Vec<(u32, f32)> = reverse
-                        .iter()
-                        .map(|&nid| {
-                            let s = nid as usize * dim;
-                            let v = &index.vectors[s..s + dim];
-                            (
-                                nid,
-                                crate::distance::cosine_distance_normalized(node_vec, v),
-                            )
-                        })
-                        .collect();
-                    scored.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
-                    scored.truncate(max_deg);
-                    *reverse = scored.iter().map(|(id, _)| *id).collect();
+            if !index.neighbors[neighbor_id as usize].contains(&(current_id as u32)) {
+                let node_vec: Vec<f32> = index.get_vector(neighbor_id as usize).to_vec();
+                let mut rev_candidates: Vec<(u32, f32)> = index.neighbors[neighbor_id as usize]
+                    .iter()
+                    .chain(std::iter::once(&(current_id as u32)))
+                    .map(|&nid| {
+                        let s = nid as usize * dim;
+                        let v = &index.vectors[s..s + dim];
+                        (
+                            nid,
+                            crate::distance::cosine_distance_normalized(&node_vec, v),
+                        )
+                    })
+                    .collect();
+
+                if rev_candidates.len() <= max_deg {
+                    index.neighbors[neighbor_id as usize].push(current_id as u32);
+                } else {
+                    let pruned = select_neighbors(
+                        &node_vec,
+                        &rev_candidates,
+                        max_deg,
+                        &index.vectors,
+                        dim,
+                        &NeighborhoodDiversification::RelativeNeighborhood,
+                    );
+                    index.neighbors[neighbor_id as usize] = SmallVec::from_vec(pruned);
                 }
             }
         }
+
+        // Update outgoing neighbors (after reverse edges, so selected is still owned).
+        index.neighbors[current_id] = SmallVec::from_vec(selected);
     }
 
     Ok(())

@@ -36,7 +36,7 @@ impl Default for VamanaParams {
 #[cfg(feature = "vamana")]
 /// Vamana index for approximate nearest neighbor search.
 ///
-/// Uses two-pass construction with RRND + RND for high-quality graph structure.
+/// Uses two-pass construction (RND then RRND) for high-quality graph structure.
 pub struct VamanaIndex {
     /// Vector dimension
     pub(crate) dimension: usize,
