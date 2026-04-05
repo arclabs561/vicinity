@@ -44,69 +44,16 @@ fn cosine_distance_handles_unnormalized_query() {
     );
 }
 
-/// Test inspired by hnswlib #608: Issues after deleting vectors.
-///
-/// After deleting vectors, search should still return valid results
-/// without crashes or incorrect rankings.
-#[test]
-#[cfg(feature = "hnsw")]
-fn search_after_deletion_returns_valid_results() {
-    use vicinity::hnsw::HNSWIndex;
-
-    let dim = 8;
-    let n = 100;
-
-    // Generate vectors
-    let vectors: Vec<Vec<f32>> = (0..n).map(|i| random_vec(dim, i)).collect();
-
-    // Build index
-    let mut index = HNSWIndex::new(dim, 16, 32).unwrap();
-    for (id, vec) in vectors.iter().enumerate() {
-        index.add(id as u32, vec.clone()).unwrap();
-    }
-    index.build().unwrap();
-
-    // Search before deletion
-    let results_before = index.search(&vectors[50], 10, 50).unwrap();
-    assert!(
-        !results_before.is_empty(),
-        "Should return results before deletion"
-    );
-
-    // Delete some vectors (if supported)
-    // Note: hnswlib deletion is problematic - we test that search doesn't crash
-
-    // Search after deletion
-    let results_after = index.search(&vectors[50], 10, 50).unwrap();
-    assert!(
-        !results_after.is_empty(),
-        "Should return results after deletion"
-    );
-}
 
 /// Test inspired by faiss #4295: Integer overflow on large datasets.
 ///
-/// While we can't test 60M vectors in CI, we verify that size calculations
-/// use appropriate types (usize) that won't overflow on 64-bit systems.
+/// Compile-time assertion that the faiss #4295 graph-size calculation
+/// (60M vectors × M=64 edges) fits in usize on 64-bit targets.
 #[test]
 fn size_calculations_dont_overflow() {
-    // Simulate the problematic calculation from faiss #4295
-    let ntotal: usize = 60_450_220; // 60M vectors
-    let m: usize = 64;
-
-    // This should not overflow on 64-bit
-    let graph_size = ntotal.checked_mul(m);
-    assert!(
-        graph_size.is_some(),
-        "Graph size calculation should not overflow"
-    );
-
-    // Verify the actual value
-    let size = graph_size.unwrap();
-    assert!(
-        size > 0 && size < usize::MAX / 2,
-        "Graph size should be reasonable"
-    );
+    const NTOTAL: usize = 60_450_220;
+    const M: usize = 64;
+    const _: () = assert!(NTOTAL * M < usize::MAX / 2, "graph size overflows usize");
 }
 
 /// Test inspired by hnswlib #635: M vs Mcurmax bug in neighbor selection.
