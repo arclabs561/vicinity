@@ -2,14 +2,15 @@
 //!
 //! ```bash
 //! # All algorithms
-//! cargo run --example glove_all_algos --release --features "hnsw,nsw,ivf_pq,vamana,scann" -- --algo all
+//! cargo run --example glove_all_algos --release --features "hnsw,nsw,ivf_pq,vamana,scann,diskann" -- --algo all
 //!
 //! # Individual algorithms
-//! cargo run --example glove_all_algos --release --features "hnsw,nsw,ivf_pq,vamana,scann" -- --algo hnsw
-//! cargo run --example glove_all_algos --release --features "hnsw,nsw,ivf_pq,vamana,scann" -- --algo nsw
-//! cargo run --example glove_all_algos --release --features "hnsw,nsw,ivf_pq,vamana,scann" -- --algo ivfpq
-//! cargo run --example glove_all_algos --release --features "hnsw,nsw,ivf_pq,vamana,scann" -- --algo vamana
-//! cargo run --example glove_all_algos --release --features "hnsw,nsw,ivf_pq,vamana,scann" -- --algo scann
+//! cargo run --example glove_all_algos --release --features "hnsw,nsw,ivf_pq,vamana,scann,diskann" -- --algo hnsw
+//! cargo run --example glove_all_algos --release --features "hnsw,nsw,ivf_pq,vamana,scann,diskann" -- --algo nsw
+//! cargo run --example glove_all_algos --release --features "hnsw,nsw,ivf_pq,vamana,scann,diskann" -- --algo ivfpq
+//! cargo run --example glove_all_algos --release --features "hnsw,nsw,ivf_pq,vamana,scann,diskann" -- --algo vamana
+//! cargo run --example glove_all_algos --release --features "hnsw,nsw,ivf_pq,vamana,scann,diskann" -- --algo scann
+//! cargo run --example glove_all_algos --release --features "hnsw,nsw,ivf_pq,vamana,scann,diskann" -- --algo diskann
 //!
 //! # Output appended to doc/glove-25-angular.jsonl; regenerate plot with:
 //! # uv run scripts/plot_comparison.py doc/glove-25-angular.jsonl
@@ -22,6 +23,8 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::time::Instant;
 
+#[cfg(feature = "diskann")]
+use vicinity::diskann::{DiskANNIndex, DiskANNParams};
 use vicinity::hnsw::{HNSWIndex, HNSWParams};
 #[cfg(feature = "ivf_pq")]
 use vicinity::ivf_pq::{IVFPQIndex, IVFPQParams};
@@ -66,6 +69,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "vamana" => run_vamana(&train, &test, &gt, k, dim)?,
         #[cfg(feature = "scann")]
         "scann" => run_scann(&train, &test, &gt, k, dim)?,
+        #[cfg(feature = "diskann")]
+        "diskann" => run_diskann(&train, &test, &gt, k, dim)?,
         "all" => {
             #[cfg(feature = "ivf_pq")]
             run_ivfpq(&train, &test, &gt, k, dim)?;
@@ -76,9 +81,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             run_vamana(&train, &test, &gt, k, dim)?;
             #[cfg(feature = "scann")]
             run_scann(&train, &test, &gt, k, dim)?;
+            #[cfg(feature = "diskann")]
+            run_diskann(&train, &test, &gt, k, dim)?;
         }
         other => {
-            eprintln!("Unknown algorithm: {other}. Use: hnsw | nsw | ivfpq | vamana | scann | all");
+            eprintln!(
+                "Unknown algorithm: {other}. Use: hnsw | nsw | ivfpq | vamana | scann | diskann | all"
+            );
             std::process::exit(1);
         }
     }
@@ -325,6 +334,57 @@ fn measure_ivfpq(index: &IVFPQIndex, test: &[Vec<f32>], gt: &[Vec<i32>], k: usiz
 #[cfg(feature = "vamana")]
 fn measure_vamana(
     index: &VamanaIndex,
+    test: &[Vec<f32>],
+    gt: &[Vec<i32>],
+    k: usize,
+    ef: usize,
+) -> (f64, f64) {
+    let t = Instant::now();
+    let mut recall_sum = 0.0;
+    for (i, q) in test.iter().enumerate() {
+        let res = index.search(q, k, ef).unwrap_or_default();
+        recall_sum += recall_at_k(&res, &gt[i], k);
+    }
+    let elapsed = t.elapsed().as_secs_f64();
+    (recall_sum / test.len() as f64, test.len() as f64 / elapsed)
+}
+
+#[cfg(feature = "diskann")]
+fn run_diskann(
+    train: &[Vec<f32>],
+    test: &[Vec<f32>],
+    gt: &[Vec<i32>],
+    k: usize,
+    dim: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    println!("=== DiskANN ===");
+    let params = DiskANNParams {
+        m: 64,
+        alpha: 1.3,
+        ef_construction: 200,
+        ef_search: 50,
+    };
+    print!("  Building (m=64, alpha=1.3, ef_construction=200)... ");
+    let _ = std::io::stdout().flush();
+    let t0 = Instant::now();
+    let mut index = DiskANNIndex::new(dim, params)?;
+    for (i, v) in train.iter().enumerate() {
+        index.add(i as u32, v.clone())?;
+    }
+    index.build()?;
+    println!("{:.0}s", t0.elapsed().as_secs_f64());
+
+    for ef in [10, 20, 50, 100, 200, 400] {
+        let (recall, qps) = measure_diskann(&index, test, gt, k, ef);
+        println!("  ef={ef:4}  recall={:.1}%  qps={:.0}", recall * 100.0, qps);
+        append_jsonl("diskann", recall, qps)?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "diskann")]
+fn measure_diskann(
+    index: &DiskANNIndex,
     test: &[Vec<f32>],
     gt: &[Vec<i32>],
     k: usize,
