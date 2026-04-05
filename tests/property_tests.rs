@@ -259,7 +259,6 @@ mod recall_props {
     }
 }
 
-
 // =============================================================================
 // LID (Local Intrinsic Dimensionality) Properties
 // =============================================================================
@@ -1023,16 +1022,25 @@ mod hnsw_props {
             let dim = 16;
             let vectors = random_vectors(n, dim, seed);
 
+            // Both indices must use identical graph parameters so the only
+            // difference is auto_normalize vs manual normalize.
+            let m = 8;
+            let ef_c = 64;
+
             // Build with auto_normalize
             let mut hnsw_auto = HNSWIndex::builder(dim)
-                .m(8)
-                .ef_construction(64)
+                .m(m)
+                .ef_construction(ef_c)
                 .auto_normalize(true)
                 .build()
                 .expect("builder failed");
 
             // Build without auto_normalize (manual normalization at insert)
-            let mut hnsw_manual = HNSWIndex::new(dim, 8, 8).expect("new failed");
+            let mut hnsw_manual = HNSWIndex::builder(dim)
+                .m(m)
+                .ef_construction(ef_c)
+                .build()
+                .expect("builder failed");
 
             for (i, v) in vectors.iter().enumerate() {
                 // auto index: add unnormalized
@@ -1045,11 +1053,12 @@ mod hnsw_props {
             hnsw_auto.build().expect("build failed");
             hnsw_manual.build().expect("build failed");
 
-            // Query: unnormalized for auto, pre-normalized for manual
+            // auto_normalize only applies to add, not search.
+            // Both indices must be searched with a normalized query.
             let raw_q: Vec<f32> = vectors[0].iter().map(|x| x * 3.0 + 1.0).collect();
             let norm_q = normalize(&raw_q);
 
-            let results_auto = hnsw_auto.search(&raw_q, 5, 100).expect("auto search failed");
+            let results_auto = hnsw_auto.search(&norm_q, 5, 100).expect("auto search failed");
             let results_manual = hnsw_manual.search(&norm_q, 5, 100).expect("manual search failed");
 
             let ids_auto: std::collections::HashSet<u32> =
