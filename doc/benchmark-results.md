@@ -63,6 +63,24 @@ Vamana at ef=10 reaches 86.4% recall at 12,763 QPS — ~8.7× faster than HNSW M
 (which achieves 87.4% recall at 1,461 QPS). Trade-off: HNSW has a flatter latency
 curve (less degradation at lower ef). Vamana's recall ceiling matches HNSW at ef≥200.
 
+### DiskANN (R=64, α=1.3, ef_construction=200)
+
+Build: ~1853s (same as Vamana; DiskANN is Vamana + disk I/O layout)
+
+| ef_search | Recall@10 | QPS |
+|-----------|-----------|-----|
+| 10 | 86.5% | 10,874 |
+| 20 | 94.2% | 6,883 |
+| 50 | 98.7% | 3,400 |
+| 100 | 99.7% | 1,904 |
+| 200 | 100.0% | 1,044 |
+| 400 | 100.0% | 582 |
+
+DiskANN and Vamana use the same graph (Vamana construction). DiskANN adds a disk
+layout for datasets larger than available RAM; on this in-memory benchmark the graph
+is fully resident, so QPS is slightly lower than Vamana (~15%) due to the disk I/O
+abstraction layer. Recall trajectory is essentially identical.
+
 ## GloVe-25 — Partition-based indexes
 
 ### ScaNN (512 partitions, 5 codebooks, reorder=500)
