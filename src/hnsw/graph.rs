@@ -1571,7 +1571,12 @@ impl HNSWIndex {
             .iter()
             .filter(|&&id| !self.tombstones.is_deleted(id as usize))
             .filter_map(|&id| {
-                if self.category_assignments.get(id as usize).and_then(|c| c.as_ref()) == desired_category.as_ref() {
+                if self
+                    .category_assignments
+                    .get(id as usize)
+                    .and_then(|c| c.as_ref())
+                    == desired_category.as_ref()
+                {
                     let vec = self.get_vector(id as usize);
                     let dist = crate::distance::cosine_distance_normalized(query, vec);
                     let doc_id = self.doc_ids.get(id as usize).copied()?;

@@ -227,7 +227,10 @@ mod ivf_pq_tests {
             let v = rng.next_normalized(dim);
             index.add(i as u32, v).unwrap();
             let mut meta = HashMap::new();
-            meta.insert("category".to_string(), vicinity::filtering::MetadataValue::Int(0));
+            meta.insert(
+                "category".to_string(),
+                vicinity::filtering::MetadataValue::Int(0),
+            );
             index.add_metadata(i as u32, meta).unwrap();
         }
         index.build().unwrap();

@@ -152,7 +152,9 @@ impl MetadataFilter {
                     return false;
                 };
                 if let Some(lo) = min {
-                    if v.partial_cmp(lo).map_or(true, |o| o == std::cmp::Ordering::Less) {
+                    if v.partial_cmp(lo)
+                        .map_or(true, |o| o == std::cmp::Ordering::Less)
+                    {
                         return false;
                     }
                 }
