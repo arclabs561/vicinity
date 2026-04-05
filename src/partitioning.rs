@@ -2,5 +2,5 @@
 //!
 //! Provides k-means clustering used by IVF-PQ and ScaNN.
 
-#[cfg(any(feature = "scann", feature = "ivf_pq"))]
+#[cfg(any(feature = "ivf_avq", feature = "ivf_pq"))]
 pub mod kmeans;

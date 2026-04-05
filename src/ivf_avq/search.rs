@@ -1,20 +1,20 @@
-//! SCANN search implementation.
+//! IVF-AVQ search implementation.
 
-use crate::scann::partitioning::KMeans;
-use crate::scann::quantization::AnisotropicQuantizer;
-use crate::scann::reranking;
+use crate::ivf_avq::partitioning::KMeans;
+use crate::ivf_avq::quantization::AnisotropicQuantizer;
+use crate::ivf_avq::reranking;
 use crate::RetrieveError;
 
 /// Anisotropic Vector Quantization with k-means Partitioning index.
 #[derive(Debug)]
-pub struct SCANNIndex {
+pub struct IVFAVQIndex {
     /// Full vectors (for re-ranking)
     pub(crate) vectors: Vec<f32>,
     pub(crate) dimension: usize,
     pub(crate) num_vectors: usize,
     /// Maps insertion index → caller-provided doc_id.
     doc_ids: Vec<u32>,
-    params: SCANNParams,
+    params: IVFAVQParams,
     built: bool,
 
     // Partitioning
@@ -25,9 +25,9 @@ pub struct SCANNIndex {
     quantizer: Option<AnisotropicQuantizer>,
 }
 
-/// Parameters for ScaNN index construction and search.
+/// Parameters for IVF-AVQ index construction and search.
 #[derive(Clone, Debug)]
-pub struct SCANNParams {
+pub struct IVFAVQParams {
     /// Number of k-means partitions for coarse quantization.
     pub num_partitions: usize,
     /// Number of partitions to probe during search (higher = better recall, slower).
@@ -42,7 +42,7 @@ pub struct SCANNParams {
     pub seed: u64,
 }
 
-impl Default for SCANNParams {
+impl Default for IVFAVQParams {
     fn default() -> Self {
         Self {
             num_partitions: 256,
@@ -65,9 +65,9 @@ struct Partition {
     codes: Vec<u8>,
 }
 
-impl SCANNIndex {
-    /// Create a new ScaNN index with the given vector dimension and parameters.
-    pub fn new(dimension: usize, params: SCANNParams) -> Result<Self, RetrieveError> {
+impl IVFAVQIndex {
+    /// Create a new IVF-AVQ index with the given vector dimension and parameters.
+    pub fn new(dimension: usize, params: IVFAVQParams) -> Result<Self, RetrieveError> {
         if dimension == 0 {
             return Err(RetrieveError::InvalidParameter(
                 "dimension must be > 0".into(),
@@ -295,7 +295,7 @@ mod tests {
 
     #[test]
     fn test_create_index() {
-        let params = SCANNParams {
+        let params = IVFAVQParams {
             num_partitions: 2,
             nprobe: 2,
             num_reorder: 10,
@@ -303,7 +303,7 @@ mod tests {
             codebook_size: 256,
             seed: 42,
         };
-        let index = SCANNIndex::new(4, params);
+        let index = IVFAVQIndex::new(4, params);
         assert!(index.is_ok());
         let index = index.unwrap();
         assert_eq!(index.dimension, 4);
@@ -312,7 +312,7 @@ mod tests {
 
     #[test]
     fn test_add_and_search() {
-        let params = SCANNParams {
+        let params = IVFAVQParams {
             num_partitions: 2,
             nprobe: 2,
             num_reorder: 10,
@@ -320,7 +320,7 @@ mod tests {
             codebook_size: 256,
             seed: 42,
         };
-        let mut index = SCANNIndex::new(4, params).unwrap();
+        let mut index = IVFAVQIndex::new(4, params).unwrap();
 
         // Add 20 vectors (need enough for k-means partitioning)
         for i in 0..20u32 {
@@ -339,7 +339,7 @@ mod tests {
 
     #[test]
     fn test_zero_dimension_error() {
-        let result = SCANNIndex::new(0, SCANNParams::default());
+        let result = IVFAVQIndex::new(0, IVFAVQParams::default());
         assert!(result.is_err());
         match result.unwrap_err() {
             RetrieveError::InvalidParameter(_) => {}

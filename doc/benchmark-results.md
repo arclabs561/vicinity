@@ -83,7 +83,7 @@ abstraction layer. Recall trajectory is essentially identical.
 
 ## GloVe-25 — Partition-based indexes
 
-### ScaNN (512 partitions, 5 codebooks, reorder=500)
+### IVF-AVQ (512 partitions, 5 codebooks, reorder=500)
 
 Build: ~708s
 

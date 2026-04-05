@@ -1,4 +1,4 @@
-//! Re-ranking stage for SCANN.
+//! Re-ranking stage for IVF-AVQ.
 
 use crate::distance::cosine_distance_normalized;
 

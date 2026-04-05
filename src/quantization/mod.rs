@@ -113,7 +113,7 @@
 //!
 //! - Gao et al. (2024). "RaBitQ: Quantizing High-Dimensional Vectors with
 //!   Randomized Binary Quantization."
-//! - See also: Product Quantization (`ivf_pq`), ScaNN (`scann`).
+//! - See also: Product Quantization (`ivf_pq`), IVF-AVQ (`ivf_avq`).
 
 #[cfg(feature = "rabitq")]
 pub use qntz::rabitq;
