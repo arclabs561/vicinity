@@ -150,3 +150,6 @@ Exact k-NN via exhaustive cosine search: 100% recall @ 42 QPS. Baseline.
 - **NSW speed**: NSW's flat graph search is significantly faster than HNSW at the same
   ef, consistent with Munyampirwa et al. (2024) (arXiv:2412.01940). The recall ceiling
   is ~1-2 pp lower than HNSW at the same ef.
+- **DiskANN vs Vamana**: same recall trajectory (both use the Vamana graph); DiskANN
+  is ~15% slower QPS due to the disk I/O layout abstraction. On datasets that fit in
+  RAM, Vamana is the better choice; DiskANN's advantage is for datasets > available RAM.
