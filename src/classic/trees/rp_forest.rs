@@ -424,4 +424,23 @@ mod tests {
         let mut index = RpForestIndex::new(4, RpForestParams::default()).unwrap();
         assert!(index.add(0, vec![1.0, 0.0]).is_err());
     }
+
+    #[test]
+    fn test_degenerate_split_does_not_recurse_infinitely() {
+        // All vectors identical → every random hyperplane sends all points to one side.
+        // Regression guard: the degenerate-split guard must fall back to a leaf node
+        // rather than recursing until stack overflow.
+        let params = RpForestParams {
+            num_trees: 3,
+            tree_params: RPTreeParams { max_leaf_size: 2 },
+        };
+        let mut index = RpForestIndex::new(4, params).unwrap();
+        for i in 0..20u32 {
+            index.add(i, vec![1.0, 0.0, 0.0, 0.0]).unwrap();
+        }
+        // Must complete without stack overflow.
+        index.build().unwrap();
+        let results = index.search(&[1.0, 0.0, 0.0, 0.0], 5).unwrap();
+        assert!(!results.is_empty());
+    }
 }
