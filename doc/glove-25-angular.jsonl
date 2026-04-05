@@ -1,11 +1,4 @@
 {"algorithm": "brute", "params": {}, "recall_at_10": 1.0, "qps": 42}
-{"algorithm": "ivfpq-1024L", "recall_at_10": 0.4134, "qps": 8525.8}
-{"algorithm": "ivfpq-1024L", "recall_at_10": 0.434, "qps": 4208.2}
-{"algorithm": "ivfpq-1024L", "recall_at_10": 0.4438, "qps": 2216.5}
-{"algorithm": "ivfpq-1024L", "recall_at_10": 0.4482, "qps": 1094.2}
-{"algorithm": "ivfpq-1024L", "recall_at_10": 0.4495, "qps": 545.5}
-{"algorithm": "ivfpq-1024L", "recall_at_10": 0.4498, "qps": 273.3}
-{"algorithm": "ivfpq-1024L", "recall_at_10": 0.4498, "qps": 135.1}
 {"algorithm": "nsw", "recall_at_10": 0.6673, "qps": 18443.8}
 {"algorithm": "nsw", "recall_at_10": 0.7898, "qps": 11971.8}
 {"algorithm": "nsw", "recall_at_10": 0.9007, "qps": 6379.6}
@@ -37,3 +30,17 @@
 {"algorithm":"vamana","recall_at_10":0.9910,"qps":2401.0}
 {"algorithm":"vamana","recall_at_10":0.9970,"qps":1361.0}
 {"algorithm":"vamana","recall_at_10":0.9990,"qps":751.0}
+{"algorithm":"ivfpq-1024L-cb5","recall_at_10":0.4129,"qps":7237.7}
+{"algorithm":"ivfpq-1024L-cb5","recall_at_10":0.4341,"qps":3588.6}
+{"algorithm":"ivfpq-1024L-cb5","recall_at_10":0.4447,"qps":1810.6}
+{"algorithm":"ivfpq-1024L-cb5","recall_at_10":0.4490,"qps":937.2}
+{"algorithm":"ivfpq-1024L-cb5","recall_at_10":0.4503,"qps":450.6}
+{"algorithm":"ivfpq-1024L-cb5","recall_at_10":0.4506,"qps":239.7}
+{"algorithm":"ivfpq-1024L-cb5","recall_at_10":0.4507,"qps":105.6}
+{"algorithm":"ivfpq-1024L-cb25","recall_at_10":0.7628,"qps":2920.2}
+{"algorithm":"ivfpq-1024L-cb25","recall_at_10":0.8619,"qps":1484.0}
+{"algorithm":"ivfpq-1024L-cb25","recall_at_10":0.9262,"qps":738.3}
+{"algorithm":"ivfpq-1024L-cb25","recall_at_10":0.9615,"qps":369.2}
+{"algorithm":"ivfpq-1024L-cb25","recall_at_10":0.9792,"qps":187.7}
+{"algorithm":"ivfpq-1024L-cb25","recall_at_10":0.9857,"qps":98.7}
+{"algorithm":"ivfpq-1024L-cb25","recall_at_10":0.9869,"qps":54.4}

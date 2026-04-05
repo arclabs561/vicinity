@@ -82,21 +82,40 @@ Build: ~708s
 Recall ceiling of ~91% is a known limitation of PQ-based re-ranking on 25-d data:
 the PQ residual quantization error is significant relative to the vector dimension.
 
-### IVF-PQ (1024 clusters, 5 codebooks, 256 codebook size)
+### IVF-PQ (1024 clusters, 5 codebooks)
+
+Build: ~1096s
 
 | nprobe | Recall@10 | QPS |
 |--------|-----------|-----|
-| 4 | 41.3% | 8,526 |
-| 8 | 43.4% | 4,208 |
-| 16 | 44.4% | 2,216 |
-| 32 | 44.8% | 1,094 |
-| 64 | 45.0% | 546 |
-| 128 | 45.0% | 273 |
-| 256 | 45.0% | 135 |
+| 4 | 41.3% | 7,238 |
+| 8 | 43.4% | 3,589 |
+| 16 | 44.5% | 1,811 |
+| 32 | 44.9% | 937 |
+| 64 | 45.0% | 451 |
+| 128 | 45.1% | 240 |
+| 256 | 45.1% | 106 |
 
-Recall caps at ~45% on this dataset. Same PQ dimension issue as ScaNN: 5 codebooks
-over 25 dims = 5-d subspaces, which is marginal. Increasing codebooks (e.g., 25) or
-clusters would improve recall at the cost of build time and memory.
+Recall caps at ~45%: 5 codebooks over 25 dims = 5-d subspaces, which is too coarse
+for 25-d data. The ceiling is not a bug — it is inherent to quantization granularity.
+
+### IVF-PQ (1024 clusters, 25 codebooks — 1-d subspaces, equivalent to SQ8)
+
+Build: ~5520s
+
+| nprobe | Recall@10 | QPS |
+|--------|-----------|-----|
+| 4 | 76.3% | 2,920 |
+| 8 | 86.2% | 1,484 |
+| 16 | 92.6% | 738 |
+| 32 | 96.2% | 369 |
+| 64 | 97.9% | 188 |
+| 128 | 98.6% | 99 |
+
+With 25 codebooks (1-d subspaces, equivalent to SQ8 scalar quantization), recall
+reaches 98.6% at the cost of build time (~5× longer) and memory (~5× more for codes).
+This validates that the 45% cb5 ceiling was entirely due to quantization granularity,
+not a structural limitation of IVF-PQ.
 
 ## Brute Force
 
