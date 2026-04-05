@@ -30,8 +30,8 @@ use vicinity::hnsw::{HNSWIndex, HNSWParams};
 use vicinity::ivf_pq::{IVFPQIndex, IVFPQParams};
 #[cfg(feature = "nsw")]
 use vicinity::nsw::NSWIndex;
-#[cfg(feature = "scann")]
-use vicinity::scann::{SCANNIndex, SCANNParams};
+#[cfg(feature = "ivf_avq")]
+use vicinity::ivf_avq::{IVFAVQIndex, IVFAVQParams};
 #[cfg(feature = "vamana")]
 use vicinity::vamana::{VamanaIndex, VamanaParams};
 
@@ -67,8 +67,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "ivfpq" => run_ivfpq(&train, &test, &gt, k, dim)?,
         #[cfg(feature = "vamana")]
         "vamana" => run_vamana(&train, &test, &gt, k, dim)?,
-        #[cfg(feature = "scann")]
-        "scann" => run_scann(&train, &test, &gt, k, dim)?,
+        #[cfg(feature = "ivf_avq")]
+        "ivf_avq" => run_ivf_avq(&train, &test, &gt, k, dim)?,
         #[cfg(feature = "diskann")]
         "diskann" => run_diskann(&train, &test, &gt, k, dim)?,
         "all" => {
@@ -79,14 +79,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             run_hnsw(&train, &test, &gt, k, dim)?;
             #[cfg(feature = "vamana")]
             run_vamana(&train, &test, &gt, k, dim)?;
-            #[cfg(feature = "scann")]
-            run_scann(&train, &test, &gt, k, dim)?;
+            #[cfg(feature = "ivf_avq")]
+            run_ivf_avq(&train, &test, &gt, k, dim)?;
             #[cfg(feature = "diskann")]
             run_diskann(&train, &test, &gt, k, dim)?;
         }
         other => {
             eprintln!(
-                "Unknown algorithm: {other}. Use: hnsw | nsw | ivfpq | vamana | scann | diskann | all"
+                "Unknown algorithm: {other}. Use: hnsw | nsw | ivfpq | vamana | ivf_avq | diskann | all"
             );
             std::process::exit(1);
         }
@@ -242,8 +242,8 @@ fn run_vamana(
     Ok(())
 }
 
-#[cfg(feature = "scann")]
-fn run_scann(
+#[cfg(feature = "ivf_avq")]
+fn run_ivf_avq(
     train: &[Vec<f32>],
     test: &[Vec<f32>],
     gt: &[Vec<i32>],
@@ -252,7 +252,7 @@ fn run_scann(
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("=== ScaNN ===");
     // dim=25: num_codebooks must divide 25; use 5 (5×5-d subspaces)
-    let params = SCANNParams {
+    let params = IVFAVQParams {
         num_partitions: 512,
         nprobe: 1,
         num_reorder: 500,
@@ -263,7 +263,7 @@ fn run_scann(
     print!("  Building (partitions=512, codebooks=5, reorder=500)... ");
     let _ = std::io::stdout().flush();
     let t0 = Instant::now();
-    let mut index = SCANNIndex::new(dim, params)?;
+    let mut index = IVFAVQIndex::new(dim, params)?;
     for (i, v) in train.iter().enumerate() {
         index.add(i as u32, v.clone())?;
     }
@@ -272,13 +272,13 @@ fn run_scann(
 
     for nprobe in [4, 8, 16, 32, 64, 128, 256] {
         index.set_nprobe(nprobe);
-        let (recall, qps) = measure_scann(&index, test, gt, k);
+        let (recall, qps) = measure_ivf_avq(&index, test, gt, k);
         println!(
             "  nprobe={nprobe:4}  recall={:.1}%  qps={:.0}",
             recall * 100.0,
             qps
         );
-        append_jsonl("scann", recall, qps)?;
+        append_jsonl("ivf_avq", recall, qps)?;
     }
     Ok(())
 }
@@ -401,8 +401,8 @@ fn measure_diskann(
     (recall_sum / test.len() as f64, test.len() as f64 / elapsed)
 }
 
-#[cfg(feature = "scann")]
-fn measure_scann(index: &SCANNIndex, test: &[Vec<f32>], gt: &[Vec<i32>], k: usize) -> (f64, f64) {
+#[cfg(feature = "ivf_avq")]
+fn measure_ivf_avq(index: &IVFAVQIndex, test: &[Vec<f32>], gt: &[Vec<i32>], k: usize) -> (f64, f64) {
     let t = Instant::now();
     let mut recall_sum = 0.0;
     for (i, q) in test.iter().enumerate() {

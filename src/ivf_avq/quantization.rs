@@ -1,4 +1,4 @@
-//! Anisotropic vector quantization for SCANN.
+//! Anisotropic vector quantization for IVF-AVQ.
 
 use crate::simd;
 use crate::RetrieveError;

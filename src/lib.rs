@@ -6,7 +6,7 @@
 //! Provides implementations of ANN algorithms:
 //!
 //! - **Graph-based**: [`hnsw`], `nsw`, `sng`, `vamana`
-//! - **Partition-based**: `ivf_pq`, `scann`
+//! - **Partition-based**: `ivf_pq`, `ivf_avq`
 //! - **Quantization**: `quantization` (RaBitQ, SAQ), `ivf_pq` (Product Quantization)
 //!
 //! # Which Index Should I Use?
@@ -83,7 +83,7 @@ pub mod classic;
 pub mod diskann;
 
 // Shared helpers for clump-backed modules (evoc, kmeans partitioning).
-#[cfg(any(feature = "evoc", feature = "scann", feature = "ivf_pq"))]
+#[cfg(any(feature = "evoc", feature = "ivf_pq", feature = "ivf_avq"))]
 pub(crate) mod clump_compat;
 
 #[cfg(feature = "evoc")]
@@ -101,8 +101,8 @@ pub mod nsw;
 #[cfg(feature = "quantization")]
 pub mod quantization;
 
-#[cfg(feature = "scann")]
-pub mod scann;
+#[cfg(feature = "ivf_avq")]
+pub mod ivf_avq;
 
 #[cfg(feature = "sng")]
 pub mod sng;

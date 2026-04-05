@@ -71,7 +71,7 @@ Each algorithm has a named feature flag:
 | IVF-PQ | `ivf_pq` | ~25× less memory than HNSW; recall depends on codebooks — use num_codebooks ≥ dim/5 |
 | Vamana | `vamana` | ~8.7× faster search than HNSW at same recall; higher build time than HNSW |
 | DiskANN | `diskann` | Vamana + disk I/O layout; suited for datasets > available RAM |
-| ScaNN | `scann` | PQ re-ranking; recall caps ~91% on 25-d, higher on ≥100-d data |
+| IVF-AVQ | `ivf_avq` | Anisotropic VQ + reranking; optimized for inner product search (MIPS) |
 | SNG | `sng` | O(n²) construction; seconds at n=10K, hours at n=100K — not for large datasets |
 | DEG | `hnsw` | Density-adaptive edge count; O(n²) construction — same scale limits as SNG |
 | KD-Tree | `kdtree` | Exact; fast for d ≤ 20, recall degrades sharply above d=30 |

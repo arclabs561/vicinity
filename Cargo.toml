@@ -4,7 +4,7 @@ version = "0.3.4"
 authors = ["Arc <attobop@gmail.com>"]
 edition = "2021"
 rust-version = "1.80"
-description = "Approximate Nearest Neighbor Search: HNSW, DiskANN, IVF-PQ, ScaNN, quantization"
+description = "Approximate Nearest Neighbor Search: HNSW, DiskANN, IVF-PQ, IVF-AVQ, quantization"
 repository = "https://github.com/arclabs561/vicinity"
 documentation = "https://docs.rs/vicinity"
 license = "MIT OR Apache-2.0"
@@ -104,7 +104,7 @@ ivf_pq = [
   "smallvec/serde",
 ]
 diskann = ["dep:serde_json"]
-scann = ["dep:clump"]
+ivf_avq = ["dep:clump"]
 sng = []
 vamana = ["hnsw"]
 quantization = ["qntz"]

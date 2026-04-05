@@ -34,7 +34,9 @@ ALGO_STYLE = {
     "ivfpq-1024L-cb5":        {"color": "#2ca02c", "marker": "^",  "label": "IVF-PQ (cb5)"},
     "ivfpq-1024L-cb25":       {"color": "#17becf", "marker": "^",  "label": "IVF-PQ (cb25)"},
     "vamana":      {"color": "#ff7f0e", "marker": "D",  "label": "Vamana"},
-    "scann":       {"color": "#9467bd", "marker": "v",  "label": "ScaNN"},
+    "scann":       {"color": "#9467bd", "marker": "v",  "label": "IVF-AVQ"},
+    "ivf_avq":     {"color": "#9467bd", "marker": "v",  "label": "IVF-AVQ"},
+    "diskann":     {"color": "#333333", "marker": "o",  "label": "DiskANN"},
 }
 
 

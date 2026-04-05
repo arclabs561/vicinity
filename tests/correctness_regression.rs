@@ -446,13 +446,13 @@ mod nsw_tests {
 // ScaNN: residual codebook uses L2 metric
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "scann")]
-mod scann_tests {
+#[cfg(feature = "ivf_avq")]
+mod ivf_avq_tests {
     use super::*;
-    use vicinity::scann::{SCANNIndex, SCANNParams};
+    use vicinity::ivf_avq::{IVFAVQIndex, IVFAVQParams};
 
-    fn build_scann(n: usize, dim: usize, seed: u64) -> (SCANNIndex, Vec<Vec<f32>>) {
-        let params = SCANNParams {
+    fn build_scann(n: usize, dim: usize, seed: u64) -> (IVFAVQIndex, Vec<Vec<f32>>) {
+        let params = IVFAVQParams {
             num_partitions: 4,
             nprobe: 4,
             num_reorder: 20,
@@ -460,7 +460,7 @@ mod scann_tests {
             codebook_size: 16,
             seed,
         };
-        let mut index = SCANNIndex::new(dim, params).unwrap();
+        let mut index = IVFAVQIndex::new(dim, params).unwrap();
         let mut rng = Lcg::new(seed);
         let mut vecs = Vec::new();
         for i in 0..n {
@@ -530,6 +530,6 @@ mod scann_tests {
 
     #[test]
     fn scann_dimension_zero_error() {
-        assert!(SCANNIndex::new(0, SCANNParams::default()).is_err());
+        assert!(IVFAVQIndex::new(0, IVFAVQParams::default()).is_err());
     }
 }

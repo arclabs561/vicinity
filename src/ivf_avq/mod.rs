@@ -1,23 +1,19 @@
-//! ScaNN: Google's algorithm for Maximum Inner Product Search (MIPS).
+//! IVF-AVQ: k-means partitioning + Anisotropic Vector Quantization + reranking.
 //!
-//! Optimized for **recommendations and retrieval** where you need inner products.
+//! Optimized for **inner product search** (MIPS): recommendations, two-tower retrieval.
 //!
 //! # Feature Flag
 //!
 //! ```toml
-//! vicinity = { version = "0.3", features = ["scann"] }
+//! vicinity = { version = "0.3", features = ["ivf_avq"] }
 //! ```
-//!
-//! # Status: Experimental
-//!
-//! Google Research's ScaNN algorithm. Under active development.
 //!
 //! # Quick Start
 //!
 //! ```ignore
-//! use vicinity::scann::{SCANNIndex, SCANNParams};
+//! use vicinity::ivf_avq::{IVFAVQIndex, IVFAVQParams};
 //!
-//! let params = SCANNParams {
+//! let params = IVFAVQParams {
 //!     num_partitions: 256,
 //!     nprobe: 20,
 //!     num_reorder: 100,
@@ -26,7 +22,7 @@
 //!     seed: 42,
 //! };
 //!
-//! let mut index = SCANNIndex::new(128, params);
+//! let mut index = IVFAVQIndex::new(128, params);
 //! index.train(&training_vectors)?;
 //! index.add_batch(&database)?;
 //! index.build()?;
@@ -68,9 +64,9 @@
 //! 2. **Fine search**: AVQ codes for fast approximate inner products
 //! 3. **Rerank**: Exact computation on top candidates
 //!
-//! # ScaNN vs IVF-PQ
+//! # IVF-AVQ vs IVF-PQ
 //!
-//! | | IVF-PQ | ScaNN |
+//! | | IVF-PQ | IVF-AVQ |
 //! |-|--------|-------|
 //! | **Optimized for** | L2 distance | Inner product |
 //! | **Quantization** | Standard PQ | Anisotropic (AVQ) |
@@ -99,18 +95,18 @@
 //! - L2/Euclidean distance → use IVF-PQ
 //! - Cosine similarity → normalize vectors, use any index
 //! - Small datasets (< 100K) → brute force is fine
-//! - Need real-time updates → ScaNN requires batch rebuild
+//! - Need real-time updates → IVF-AVQ requires batch rebuild
 //!
 //! # References
 //!
 //! - Guo et al. (2020). "Accelerating Large-Scale Inference with Anisotropic Vector Quantization." `https://arxiv.org/abs/1908.10396`
-//! - (ScaNN overview page) `https://github.com/google-research/google-research/tree/master/scann`
+//! - Guo et al. (2020). ScaNN paper with AVQ algorithm details: `https://arxiv.org/abs/1908.10396`
 //! - Sun et al. (2023). "SOAR: Improved Indexing for Approximate Nearest Neighbor Search."
 
-/// K-means partitioning for ScaNN coarse quantization.
+/// K-means partitioning for IVF-AVQ coarse quantization.
 pub mod partitioning;
 mod quantization;
 mod reranking;
 pub mod search;
 
-pub use search::{SCANNIndex, SCANNParams};
+pub use search::{IVFAVQIndex, IVFAVQParams};

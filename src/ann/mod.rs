@@ -4,7 +4,7 @@
 //! - **HNSW**: Hierarchical Navigable Small World (graph-based) - see [`crate::hnsw`]
 //! - **NSW**: Flat Navigable Small World (single-layer graph) - see `crate::nsw`
 //! - **AnisotropicVQ-kmeans**: Anisotropic Vector Quantization with k-means Partitioning
-//!   (vendor name: SCANN/ScaNN) - see `crate::scann`
+//!   (vendor name: IVF-AVQ (Anisotropic Vector Quantization) - see `crate::ivf_avq`
 //! - **IVF-PQ**: Inverted File Index with Product Quantization - see `crate::ivf_pq`
 //! - **DiskANN**: Disk-based ANN for very large datasets - see `crate::diskann`
 //!

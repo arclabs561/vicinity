@@ -217,7 +217,7 @@ mod tests {
             prop_assert_eq!(a1, a2);
         }
 
-        #[cfg(feature = "scann")]
+        #[cfg(feature = "ivf_avq")]
         #[test]
         fn prop_kmeans_euclidean_fit_is_deterministic(
             seed in any::<u64>(),
@@ -244,7 +244,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "scann")]
+    #[cfg(feature = "ivf_avq")]
     #[test]
     fn kmeans_euclidean_clusters_by_distance_not_direction() {
         // Two clusters that differ in magnitude but point the same direction.
