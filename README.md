@@ -66,18 +66,18 @@ Each algorithm has a named feature flag:
 
 | Algorithm | Feature | Notes |
 |-----------|---------|-------|
-| HNSW | `hnsw` (default) | |
-| NSW | `nsw` | |
-| IVF-PQ | `ivf_pq` | |
-| Vamana | `vamana` | |
-| DiskANN | `diskann` | |
-| ScaNN | `scann` | |
-| SNG | `sng` | O(n²) construction; use for small datasets |
-| DEG | `hnsw` | Enabled alongside HNSW |
-| KD-Tree | `kdtree` | |
-| Ball Tree | `balltree` | |
-| RP-Forest | `rptree` | |
-| K-Means Tree | `kmeans_tree` | |
+| HNSW | `hnsw` (default) | Best recall/QPS for in-memory search; tune M and ef_search |
+| NSW | `nsw` | ~10× faster search than HNSW at the same ef; 1–2 pp lower recall ceiling |
+| IVF-PQ | `ivf_pq` | 32–64× less memory; recall caps ~45% on low-dim data (set num_codebooks = dim/5) |
+| Vamana | `vamana` | ~8.7× faster search than HNSW at the same recall; longer build time |
+| DiskANN | `diskann` | Vamana + disk I/O layout; for datasets that don't fit in RAM |
+| ScaNN | `scann` | PQ re-ranking; recall caps ~91% on 25-d, improves with higher-dim data |
+| SNG | `sng` | O(n²) construction; practical only for n < ~10K |
+| DEG | `hnsw` | Density-adaptive edge count; enabled alongside HNSW |
+| KD-Tree | `kdtree` | Exact; fast for d ≤ 20, degrades with dimension |
+| Ball Tree | `balltree` | Exact; slightly better than KD-Tree in higher dimensions |
+| RP-Forest | `rptree` | Approximate; fast build, moderate recall |
+| K-Means Tree | `kmeans_tree` | Hierarchical clustering index; good for clustered data |
 
 Quantization: PQ, RaBitQ, SQ8 (feature: `quantization`).
 
