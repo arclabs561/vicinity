@@ -339,13 +339,22 @@ impl IVFPQIndex {
             // Validate category range early so callers get a clear error at insert time,
             // not silently discarded data at build time.
             if let Some(ref field) = self.filter_field {
-                if let Some(&category_id) = metadata.get(field) {
-                    if category_id >= 64 {
-                        return Err(RetrieveError::InvalidParameter(format!(
-                            "category ID {} exceeds bitmask limit of 63; \
-                             use a category ID in 0..63",
-                            category_id
-                        )));
+                if let Some(category_val) = metadata.get(field) {
+                    match category_val {
+                        crate::filtering::MetadataValue::Int(n) if *n >= 0 && *n < 64 => {}
+                        crate::filtering::MetadataValue::Int(n) => {
+                            return Err(RetrieveError::InvalidParameter(format!(
+                                "category ID {} exceeds bitmask limit of 63; \
+                                 use an integer in 0..63",
+                                n
+                            )));
+                        }
+                        _ => {
+                            return Err(RetrieveError::InvalidParameter(
+                                "category ID must be an integer in 0..63 for bitmask filtering"
+                                    .into(),
+                            ));
+                        }
                     }
                 }
             }
@@ -431,9 +440,11 @@ impl IVFPQIndex {
                     // Update cluster bitmask with category (look up by real doc_id)
                     let actual_doc_id = self.doc_ids[vector_idx];
                     if let Some(metadata) = metadata_store.get(actual_doc_id) {
-                        if let Some(&category_id) = metadata.get(field) {
+                        if let Some(crate::filtering::MetadataValue::Int(n)) = metadata.get(field)
+                        {
                             // Category range validated at add_metadata time; skip silently
                             // if somehow out of range (defensive, should not occur).
+                            let category_id = *n as u64;
                             if category_id < 64 {
                                 temp_clusters[cluster_idx].1 |= 1u64 << category_id;
                             }
@@ -675,8 +686,8 @@ impl IVFPQIndex {
             });
         }
 
-        // Extract category ID from filter (only supports equality on filter_field)
-        let desired_category = match filter {
+        // Extract category ID from filter (only supports integer equality on filter_field)
+        let desired_category: u64 = match filter {
             crate::filtering::MetadataFilter::Equals { field, value } => {
                 if Some(field) != self.filter_field.as_ref() {
                     return Err(RetrieveError::InvalidParameter(format!(
@@ -684,12 +695,20 @@ impl IVFPQIndex {
                         field, self.filter_field
                     )));
                 }
-                if *value >= 64 {
-                    return Err(RetrieveError::InvalidParameter(
-                        "category ID must be < 64 for bitmask filtering".into(),
-                    ));
+                match value {
+                    crate::filtering::MetadataValue::Int(n) if *n >= 0 && *n < 64 => *n as u64,
+                    crate::filtering::MetadataValue::Int(n) => {
+                        return Err(RetrieveError::InvalidParameter(format!(
+                            "category ID {} exceeds bitmask limit of 63",
+                            n
+                        )));
+                    }
+                    _ => {
+                        return Err(RetrieveError::InvalidParameter(
+                            "category ID must be an integer in 0..63 for bitmask filtering".into(),
+                        ));
+                    }
                 }
-                *value
             }
             _ => {
                 return Err(RetrieveError::InvalidParameter(

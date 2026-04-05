@@ -47,7 +47,7 @@ impl<F: Fn(u32) -> bool + Sync> FilterPredicate for FnFilter<F> {
 /// use vicinity::hnsw::filtered::MetadataFilterAdapter;
 /// use vicinity::filtering::{MetadataFilter, MetadataStore};
 ///
-/// let filter = MetadataFilter::equals("color", 1);
+/// let filter = MetadataFilter::equals("color", "red");
 /// let store = MetadataStore::new();
 /// let adapter = MetadataFilterAdapter::new(&filter, &store);
 /// // `adapter` implements `FilterPredicate` and can be passed to `acorn_search`
