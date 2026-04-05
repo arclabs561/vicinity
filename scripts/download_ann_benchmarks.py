@@ -15,7 +15,7 @@ Usage:
 Output: data/ann-benchmarks/<name>/{train,test,neighbors}.bin (VEC1/NBR1 format)
 
 These files can be used directly with:
-    JIN_DATASET=ann cargo run --example 03_quick_benchmark --release
+    VICINITY_DATASET=ann cargo run --example 03_quick_benchmark --release
 """
 
 import argparse

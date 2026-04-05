@@ -591,7 +591,7 @@ def main():
     print("\n3. hard (10K x 768) - Stress test for ANN algorithms")
     print("   Hard: realistic embeddings (topic mixture + anisotropy + duplicates) + hard tail queries")
     
-    hard_dup_frac = float(os.getenv("JIN_HARD_DUP_FRAC", "0.10"))
+    hard_dup_frac = float(os.getenv("VICINITY_HARD_DUP_FRAC", "0.10"))
 
     # Key hardness knob for cosine search:
     # - realistic anisotropy + confusable topics (mixture)
@@ -744,7 +744,7 @@ This dataset aims to resemble *real embedding corpora* rather than being purely 
 
 2. **Near-duplicates**
    - We inject near-duplicate vectors to mimic repeated/templated content.
-   - Controlled by `JIN_HARD_DUP_FRAC` (default: 0.10).
+   - Controlled by `VICINITY_HARD_DUP_FRAC` (default: 0.10).
 
 3. **Hard-tail queries**
    - Most queries are in-distribution.
@@ -760,24 +760,24 @@ numbers as stale unless they come from a fresh run.
 
 ```sh
 cargo run --example 03_quick_benchmark --release
-JIN_DATASET=hard cargo run --example 03_quick_benchmark --release
+VICINITY_DATASET=hard cargo run --example 03_quick_benchmark --release
 
 # Scenarios
-JIN_DATASET=hard JIN_TEST_VARIANT=drift cargo run --example 03_quick_benchmark --release
-JIN_DATASET=hard JIN_TEST_VARIANT=filter cargo run --example 03_quick_benchmark --release
+VICINITY_DATASET=hard VICINITY_TEST_VARIANT=drift cargo run --example 03_quick_benchmark --release
+VICINITY_DATASET=hard VICINITY_TEST_VARIANT=filter cargo run --example 03_quick_benchmark --release
 ```
 
 ## Usage
 
 ```sh
 # Easy (CI)
-JIN_DATASET=quick cargo run --example 03_quick_benchmark --release
+VICINITY_DATASET=quick cargo run --example 03_quick_benchmark --release
 
 # Medium (default)
 cargo run --example 03_quick_benchmark --release
 
 # Hard (stress test)
-JIN_DATASET=hard cargo run --example 03_quick_benchmark --release
+VICINITY_DATASET=hard cargo run --example 03_quick_benchmark --release
 ```
 
 ## File Format
