@@ -23,7 +23,9 @@ use std::io::{BufReader, BufWriter, Read, Write};
 use std::time::Instant;
 
 use vicinity::hnsw::{HNSWIndex, HNSWParams};
+#[cfg(feature = "ivf_pq")]
 use vicinity::ivf_pq::{IVFPQIndex, IVFPQParams};
+#[cfg(feature = "nsw")]
 use vicinity::nsw::NSWIndex;
 #[cfg(feature = "scann")]
 use vicinity::scann::{SCANNIndex, SCANNParams};
@@ -56,14 +58,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match algo {
         "hnsw" => run_hnsw(&train, &test, &gt, k, dim)?,
+        #[cfg(feature = "nsw")]
         "nsw" => run_nsw(&train, &test, &gt, k, dim)?,
+        #[cfg(feature = "ivf_pq")]
         "ivfpq" => run_ivfpq(&train, &test, &gt, k, dim)?,
         #[cfg(feature = "vamana")]
         "vamana" => run_vamana(&train, &test, &gt, k, dim)?,
         #[cfg(feature = "scann")]
         "scann" => run_scann(&train, &test, &gt, k, dim)?,
         "all" => {
+            #[cfg(feature = "ivf_pq")]
             run_ivfpq(&train, &test, &gt, k, dim)?;
+            #[cfg(feature = "nsw")]
             run_nsw(&train, &test, &gt, k, dim)?;
             run_hnsw(&train, &test, &gt, k, dim)?;
             #[cfg(feature = "vamana")]
@@ -121,6 +127,7 @@ fn run_hnsw(
     Ok(())
 }
 
+#[cfg(feature = "nsw")]
 fn run_nsw(
     train: &[Vec<f32>],
     test: &[Vec<f32>],
@@ -148,6 +155,7 @@ fn run_nsw(
     Ok(())
 }
 
+#[cfg(feature = "ivf_pq")]
 fn run_ivfpq(
     train: &[Vec<f32>],
     test: &[Vec<f32>],
@@ -284,6 +292,7 @@ fn measure(
     (recall_sum / test.len() as f64, test.len() as f64 / elapsed)
 }
 
+#[cfg(feature = "nsw")]
 fn measure_nsw(
     index: &NSWIndex,
     test: &[Vec<f32>],
@@ -301,6 +310,7 @@ fn measure_nsw(
     (recall_sum / test.len() as f64, test.len() as f64 / elapsed)
 }
 
+#[cfg(feature = "ivf_pq")]
 fn measure_ivfpq(index: &IVFPQIndex, test: &[Vec<f32>], gt: &[Vec<i32>], k: usize) -> (f64, f64) {
     let t = Instant::now();
     let mut recall_sum = 0.0;
