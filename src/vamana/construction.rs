@@ -5,45 +5,160 @@ use crate::hnsw::construction::select_neighbors;
 use crate::hnsw::graph::NeighborhoodDiversification;
 use crate::vamana::graph::VamanaIndex;
 use crate::RetrieveError;
-use rand::seq::IndexedRandom;
+use rand::Rng;
 use smallvec::SmallVec;
 
 /// Initialize random graph with minimum degree >= log(n).
 ///
 /// Creates initial graph structure by connecting each node to log(n) random neighbors.
+/// Uses O(k) rejection sampling per node (expected), where k = log(n).
 fn initialize_random_graph(index: &mut VamanaIndex) -> Result<(), RetrieveError> {
     if index.num_vectors == 0 {
         return Err(RetrieveError::EmptyIndex);
     }
 
-    let min_degree = (index.num_vectors as f64).ln().ceil() as usize;
+    let n = index.num_vectors;
+    let min_degree = (n as f64).ln().ceil() as usize;
     let mut rng = rand::rng();
 
-    // Pre-allocate all_ids once (optimized: avoid recreating for each node)
-    let all_ids: Vec<u32> = (0..index.num_vectors as u32).collect();
+    for i in 0..n {
+        let k = min_degree.min(n - 1);
+        // Rejection sampling: draw random IDs until we have k distinct ones != i.
+        // Expected draws per slot ≈ n/(n-k) ≈ 1 for k << n.  O(k) expected total.
+        let mut selected = std::collections::HashSet::with_capacity(k + 1);
+        selected.insert(i as u32); // sentinel: never pick self
 
-    // For each vector, connect to min_degree random neighbors
-    for i in 0..index.num_vectors {
-        let mut neighbors: SmallVec<[u32; 16]> = SmallVec::with_capacity(min_degree);
-
-        // Sample random neighbors (excluding self) - optimized: filter inline
-        let candidate_ids: Vec<u32> = all_ids
-            .iter()
-            .filter(|&&id| id != i as u32)
-            .copied()
-            .collect();
-
-        let num_neighbors = min_degree.min(candidate_ids.len());
-        let selected: Vec<u32> = candidate_ids
-            .choose_multiple(&mut rng, num_neighbors)
-            .copied()
-            .collect();
-
-        neighbors.extend(selected);
+        let mut neighbors: SmallVec<[u32; 16]> = SmallVec::with_capacity(k);
+        while neighbors.len() < k {
+            let j = rng.random_range(0u32..n as u32);
+            if selected.insert(j) {
+                neighbors.push(j);
+            }
+        }
         index.neighbors[i] = neighbors;
     }
 
     Ok(())
+}
+
+/// Greedy beam search on the flat Vamana neighbor graph.
+///
+/// Starting from `entry_point` (typically the medoid), explores the graph
+/// closest-first using a min-heap until `ef` candidates are accumulated or
+/// no candidate closer than the worst result remains.
+///
+/// Returns up to `ef` candidates sorted by distance (closest first),
+/// with `query_id` always excluded (self is not a valid neighbor).
+#[cfg(feature = "vamana")]
+fn greedy_search_vamana(
+    query: &[f32],
+    entry_point: u32,
+    query_id: u32,
+    neighbors: &[SmallVec<[u32; 16]>],
+    vectors: &[f32],
+    dimension: usize,
+    ef: usize,
+) -> Vec<(u32, f32)> {
+    use std::collections::BinaryHeap;
+
+    // Min-heap: always expand the closest unexplored candidate.
+    #[derive(PartialEq)]
+    struct MinCand {
+        id: u32,
+        dist: f32,
+    }
+    impl Eq for MinCand {}
+    impl Ord for MinCand {
+        fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+            other.dist.total_cmp(&self.dist)
+        }
+    }
+    impl PartialOrd for MinCand {
+        fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+            Some(self.cmp(other))
+        }
+    }
+
+    // Max-heap: track the worst result so we can prune distant candidates.
+    #[derive(PartialEq)]
+    struct MaxRes {
+        id: u32,
+        dist: f32,
+    }
+    impl Eq for MaxRes {}
+    impl Ord for MaxRes {
+        fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+            self.dist.total_cmp(&other.dist)
+        }
+    }
+    impl PartialOrd for MaxRes {
+        fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+            Some(self.cmp(other))
+        }
+    }
+
+    let get_vec = |id: u32| -> &[f32] {
+        let s = id as usize * dimension;
+        &vectors[s..s + dimension]
+    };
+
+    let mut visited = std::collections::HashSet::<u32>::with_capacity(ef * 4);
+    let mut candidates: BinaryHeap<MinCand> = BinaryHeap::with_capacity(ef * 2);
+    let mut results: BinaryHeap<MaxRes> = BinaryHeap::with_capacity(ef + 1);
+
+    // Mark self as visited so it is never returned as a candidate.
+    visited.insert(query_id);
+
+    // Seed the search from the entry point.
+    if entry_point != query_id {
+        let d = hnsw_distance::cosine_distance_normalized(query, get_vec(entry_point));
+        visited.insert(entry_point);
+        candidates.push(MinCand { id: entry_point, dist: d });
+        results.push(MaxRes { id: entry_point, dist: d });
+    } else {
+        // Entry point is the query node itself; seed with its current neighbors.
+        visited.insert(entry_point);
+        for &nb in &neighbors[entry_point as usize] {
+            if visited.insert(nb) {
+                let d = hnsw_distance::cosine_distance_normalized(query, get_vec(nb));
+                candidates.push(MinCand { id: nb, dist: d });
+                results.push(MaxRes { id: nb, dist: d });
+            }
+        }
+    }
+
+    while let Some(MinCand { id: curr_id, dist: curr_dist }) = candidates.pop() {
+        // Early termination: best unexplored candidate is worse than worst result.
+        if results.len() >= ef {
+            if let Some(worst) = results.peek() {
+                if curr_dist > worst.dist {
+                    break;
+                }
+            }
+        }
+
+        for &nb_id in &neighbors[curr_id as usize] {
+            if visited.insert(nb_id) {
+                let nb_dist =
+                    hnsw_distance::cosine_distance_normalized(query, get_vec(nb_id));
+
+                let should_add =
+                    results.len() < ef || results.peek().map_or(true, |w| nb_dist < w.dist);
+
+                if should_add {
+                    candidates.push(MinCand { id: nb_id, dist: nb_dist });
+                    results.push(MaxRes { id: nb_id, dist: nb_dist });
+                    if results.len() > ef {
+                        results.pop();
+                    }
+                }
+            }
+        }
+    }
+
+    let mut result_vec: Vec<(u32, f32)> = results.into_iter().map(|r| (r.id, r.dist)).collect();
+    result_vec.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+    result_vec
 }
 
 /// First pass: Refine graph using RRND (Relaxed Relative Neighborhood Diversification).
@@ -55,51 +170,27 @@ fn refine_with_rrnd(index: &mut VamanaIndex) -> Result<(), RetrieveError> {
         return Err(RetrieveError::EmptyIndex);
     }
 
-    // For each vector, refine its neighbors using RRND
+    let medoid = index.medoid;
+
     for current_id in 0..index.num_vectors {
-        let current_vector = index.get_vector(current_id);
+        // Greedy beam search from medoid to collect candidates for this node.
+        // Clone the query vector to release the borrow on index.vectors before
+        // we pass &index.neighbors and &index.vectors to greedy_search_vamana.
+        let current_vector: Vec<f32> = index.get_vector(current_id).to_vec();
 
-        // Collect all current neighbors and their distances
-        let mut candidates: Vec<(u32, f32)> = Vec::with_capacity(index.params.ef_construction);
-        for &neighbor_id in &index.neighbors[current_id] {
-            let neighbor_vec = index.get_vector(neighbor_id as usize);
-            let dist = hnsw_distance::cosine_distance_normalized(current_vector, neighbor_vec);
-            candidates.push((neighbor_id, dist));
-        }
-
-        // Also explore neighbors of neighbors (up to ef_construction)
-        // Use VecDeque for O(1) pop_front instead of O(n) remove(0)
-        use std::collections::VecDeque;
-        let mut to_explore: VecDeque<u32> = index.neighbors[current_id].iter().copied().collect();
-        let mut visited = std::collections::HashSet::with_capacity(index.params.ef_construction);
-        visited.insert(current_id as u32);
-
-        while let Some(explore_id) = to_explore.pop_front() {
-            if visited.contains(&explore_id) {
-                continue;
-            }
-            visited.insert(explore_id);
-
-            if candidates.len() >= index.params.ef_construction {
-                break;
-            }
-
-            let explore_vec = index.get_vector(explore_id as usize);
-            let dist = hnsw_distance::cosine_distance_normalized(current_vector, explore_vec);
-            candidates.push((explore_id, dist));
-
-            // Add neighbors to explore
-            for &neighbor_id in &index.neighbors[explore_id as usize] {
-                if !visited.contains(&neighbor_id) {
-                    to_explore.push_back(neighbor_id);
-                }
-            }
-        }
+        let candidates = greedy_search_vamana(
+            &current_vector,
+            medoid,
+            current_id as u32,
+            &index.neighbors,
+            &index.vectors,
+            index.dimension,
+            index.params.ef_construction,
+        );
 
         // Select neighbors using RRND
-        // Note: vamana feature requires hnsw feature, so we can always use select_neighbors
         let selected = select_neighbors(
-            current_vector,
+            &current_vector,
             &candidates,
             index.params.max_degree,
             &index.vectors,
@@ -128,10 +219,7 @@ fn refine_with_rrnd(index: &mut VamanaIndex) -> Result<(), RetrieveError> {
                         .map(|&nid| {
                             let s = nid as usize * dim;
                             let v = &index.vectors[s..s + dim];
-                            (
-                                nid,
-                                crate::distance::cosine_distance_normalized(node_vec, v),
-                            )
+                            (nid, crate::distance::cosine_distance_normalized(node_vec, v))
                         })
                         .collect();
                     scored.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
@@ -154,52 +242,24 @@ fn refine_with_rnd(index: &mut VamanaIndex) -> Result<(), RetrieveError> {
         return Err(RetrieveError::EmptyIndex);
     }
 
-    // For each vector, refine its neighbors using RND
+    let medoid = index.medoid;
+
     for current_id in 0..index.num_vectors {
-        let current_vector = index.get_vector(current_id);
+        let current_vector: Vec<f32> = index.get_vector(current_id).to_vec();
 
-        // Collect all current neighbors and their distances
-        // Avoid clone: use reference to neighbors
-        let mut candidates: Vec<(u32, f32)> = Vec::with_capacity(index.params.ef_construction);
-        for &neighbor_id in &index.neighbors[current_id] {
-            let neighbor_vec = index.get_vector(neighbor_id as usize);
-            let dist = hnsw_distance::cosine_distance_normalized(current_vector, neighbor_vec);
-            candidates.push((neighbor_id, dist));
-        }
-
-        // Also explore neighbors of neighbors (up to ef_construction)
-        // Use VecDeque for O(1) pop_front instead of O(n) remove(0)
-        use std::collections::VecDeque;
-        let mut to_explore: VecDeque<u32> = index.neighbors[current_id].iter().copied().collect();
-        let mut visited = std::collections::HashSet::with_capacity(index.params.ef_construction);
-        visited.insert(current_id as u32);
-
-        while let Some(explore_id) = to_explore.pop_front() {
-            if visited.contains(&explore_id) {
-                continue;
-            }
-            visited.insert(explore_id);
-
-            if candidates.len() >= index.params.ef_construction {
-                break;
-            }
-
-            let explore_vec = index.get_vector(explore_id as usize);
-            let dist = hnsw_distance::cosine_distance_normalized(current_vector, explore_vec);
-            candidates.push((explore_id, dist));
-
-            // Add neighbors to explore (avoid clone: use reference)
-            for &neighbor_id in &index.neighbors[explore_id as usize] {
-                if !visited.contains(&neighbor_id) {
-                    to_explore.push_back(neighbor_id);
-                }
-            }
-        }
+        let candidates = greedy_search_vamana(
+            &current_vector,
+            medoid,
+            current_id as u32,
+            &index.neighbors,
+            &index.vectors,
+            index.dimension,
+            index.params.ef_construction,
+        );
 
         // Select neighbors using RND
-        // Note: vamana feature requires hnsw feature, so we can always use select_neighbors
         let selected = select_neighbors(
-            current_vector,
+            &current_vector,
             &candidates,
             index.params.max_degree,
             &index.vectors,
@@ -225,10 +285,7 @@ fn refine_with_rnd(index: &mut VamanaIndex) -> Result<(), RetrieveError> {
                         .map(|&nid| {
                             let s = nid as usize * dim;
                             let v = &index.vectors[s..s + dim];
-                            (
-                                nid,
-                                crate::distance::cosine_distance_normalized(node_vec, v),
-                            )
+                            (nid, crate::distance::cosine_distance_normalized(node_vec, v))
                         })
                         .collect();
                     scored.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
@@ -278,6 +335,177 @@ fn compute_medoid(index: &VamanaIndex) -> u32 {
     }
 
     best_id
+}
+
+#[cfg(all(test, feature = "vamana"))]
+mod tests {
+    use super::*;
+    use crate::distance;
+    use crate::vamana::graph::{VamanaIndex, VamanaParams};
+
+    fn normalized_vecs(n: usize, dim: usize, seed: u64) -> Vec<Vec<f32>> {
+        let mut state = seed;
+        (0..n)
+            .map(|_| {
+                let raw: Vec<f32> = (0..dim)
+                    .map(|_| {
+                        state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+                        ((state >> 33) as f32 / (u32::MAX as f32 / 2.0)) - 1.0
+                    })
+                    .collect();
+                distance::normalize(&raw)
+            })
+            .collect()
+    }
+
+    /// Regression test: initialize_random_graph must not add any node as its own neighbor.
+    ///
+    /// The old O(n²) implementation filtered correctly; this test guards against
+    /// a regression where rejection sampling fails to exclude self.
+    #[test]
+    fn test_init_no_self_loops() {
+        let n = 200;
+        let dim = 8;
+        let vecs = normalized_vecs(n, dim, 42);
+        let params = VamanaParams {
+            max_degree: 16,
+            alpha: 1.3,
+            ef_construction: 50,
+            ef_search: 20,
+        };
+        let mut index = VamanaIndex::new(dim, params).unwrap();
+        for (i, v) in vecs.iter().enumerate() {
+            index.add(i as u32, v.clone()).unwrap();
+        }
+        initialize_random_graph(&mut index).unwrap();
+
+        for (i, nbrs) in index.neighbors.iter().enumerate() {
+            assert!(
+                !nbrs.contains(&(i as u32)),
+                "Node {} is its own neighbor after initialization",
+                i
+            );
+        }
+    }
+
+    /// Regression test: each node gets exactly ceil(ln(n)) neighbors from initialization.
+    #[test]
+    fn test_init_degree_is_log_n() {
+        let n = 200;
+        let dim = 8;
+        let expected = (n as f64).ln().ceil() as usize;
+        let vecs = normalized_vecs(n, dim, 17);
+        let params = VamanaParams {
+            max_degree: 32,
+            alpha: 1.3,
+            ef_construction: 50,
+            ef_search: 20,
+        };
+        let mut index = VamanaIndex::new(dim, params).unwrap();
+        for (i, v) in vecs.iter().enumerate() {
+            index.add(i as u32, v.clone()).unwrap();
+        }
+        initialize_random_graph(&mut index).unwrap();
+
+        for (i, nbrs) in index.neighbors.iter().enumerate() {
+            assert_eq!(
+                nbrs.len(),
+                expected.min(n - 1),
+                "Node {} has {} neighbors, expected {}",
+                i,
+                nbrs.len(),
+                expected
+            );
+        }
+    }
+
+    /// Regression test: greedy_search_vamana must never return query_id in results.
+    ///
+    /// This tests the `visited.insert(query_id)` sentinel added to fix self-loops.
+    #[test]
+    fn test_greedy_search_excludes_self() {
+        let n = 80;
+        let dim = 8;
+        let vecs = normalized_vecs(n, dim, 55);
+        let params = VamanaParams {
+            max_degree: 16,
+            alpha: 1.3,
+            ef_construction: 40,
+            ef_search: 20,
+        };
+        let mut index = VamanaIndex::new(dim, params).unwrap();
+        for (i, v) in vecs.iter().enumerate() {
+            index.add(i as u32, v.clone()).unwrap();
+        }
+        index.neighbors = vec![smallvec::SmallVec::new(); n]; // reset
+        let medoid = compute_medoid(&index);
+        index.medoid = medoid;
+        initialize_random_graph(&mut index).unwrap();
+
+        // Test for first node, the medoid, and the last node.
+        for &qid in &[0u32, medoid, (n - 1) as u32] {
+            let query: Vec<f32> = index.get_vector(qid as usize).to_vec();
+            let results = greedy_search_vamana(
+                &query,
+                medoid,
+                qid,
+                &index.neighbors,
+                &index.vectors,
+                index.dimension,
+                20,
+            );
+            assert!(
+                results.iter().all(|&(id, _)| id != qid),
+                "greedy_search returned query_id {} in results: {:?}",
+                qid,
+                results
+            );
+        }
+    }
+
+    /// Regression test: greedy_search_vamana results must be sorted closest-first.
+    #[test]
+    fn test_greedy_search_sorted() {
+        let n = 100;
+        let dim = 8;
+        let vecs = normalized_vecs(n, dim, 99);
+        let params = VamanaParams {
+            max_degree: 16,
+            alpha: 1.3,
+            ef_construction: 50,
+            ef_search: 20,
+        };
+        let mut index = VamanaIndex::new(dim, params).unwrap();
+        for (i, v) in vecs.iter().enumerate() {
+            index.add(i as u32, v.clone()).unwrap();
+        }
+        let medoid = compute_medoid(&index);
+        index.medoid = medoid;
+        initialize_random_graph(&mut index).unwrap();
+
+        let query: Vec<f32> = index.get_vector(0).to_vec();
+        let results = greedy_search_vamana(
+            &query,
+            medoid,
+            0,
+            &index.neighbors,
+            &index.vectors,
+            index.dimension,
+            20,
+        );
+
+        assert!(!results.is_empty(), "greedy_search returned no results");
+        for i in 1..results.len() {
+            assert!(
+                results[i - 1].1 <= results[i].1,
+                "Results not sorted: dist[{}]={} > dist[{}]={}",
+                i - 1,
+                results[i - 1].1,
+                i,
+                results[i].1
+            );
+        }
+    }
 }
 
 /// Construct Vamana graph using two-pass algorithm.
