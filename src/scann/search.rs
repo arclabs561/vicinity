@@ -272,6 +272,16 @@ impl SCANNIndex {
         Ok(results)
     }
 
+    /// Set the number of partitions probed during search.
+    pub fn set_nprobe(&mut self, nprobe: usize) {
+        self.params.nprobe = nprobe;
+    }
+
+    /// Set the number of candidates re-ranked with exact distances.
+    pub fn set_num_reorder(&mut self, num_reorder: usize) {
+        self.params.num_reorder = num_reorder;
+    }
+
     fn get_vector(&self, idx: usize) -> &[f32] {
         let start = idx * self.dimension;
         &self.vectors[start..start + self.dimension]

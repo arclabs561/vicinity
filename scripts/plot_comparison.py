@@ -23,16 +23,16 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 
-# Style: distill.pub-inspired
 ALGO_STYLE = {
-    "brute":  {"color": "#999999", "marker": "x",  "label": "Brute Force"},
-    "hnsw":   {"color": "#1f77b4", "marker": "o",  "label": "HNSW (M=16)"},
-    "hnsw-m32": {"color": "#4e9fd9", "marker": "o",  "label": "HNSW (M=32)"},
-    "nsw":    {"color": "#d62728", "marker": "s",  "label": "NSW"},
-    "ivfpq":  {"color": "#2ca02c", "marker": "^",  "label": "IVF-PQ"},
+    "brute":       {"color": "#aaaaaa", "marker": "x",  "label": "Brute Force"},
+    "hnsw":        {"color": "#1f77b4", "marker": "o",  "label": "HNSW (M=16)"},
+    "hnsw-m16":    {"color": "#1f77b4", "marker": "o",  "label": "HNSW (M=16)"},
+    "hnsw-m32":    {"color": "#4e9fd9", "marker": "o",  "label": "HNSW (M=32)"},
+    "nsw":         {"color": "#d62728", "marker": "s",  "label": "NSW"},
+    "ivfpq":       {"color": "#2ca02c", "marker": "^",  "label": "IVF-PQ"},
     "ivfpq-1024L": {"color": "#2ca02c", "marker": "^",  "label": "IVF-PQ"},
-    "vamana": {"color": "#ff7f0e", "marker": "D",  "label": "Vamana"},
-    "scann":  {"color": "#9467bd", "marker": "v",  "label": "ScaNN"},
+    "vamana":      {"color": "#ff7f0e", "marker": "D",  "label": "Vamana"},
+    "scann":       {"color": "#9467bd", "marker": "v",  "label": "ScaNN"},
 }
 
 
@@ -42,7 +42,7 @@ def apply_style(ax):
     ax.spines["left"].set_linewidth(0.6)
     ax.spines["bottom"].set_linewidth(0.6)
     ax.tick_params(width=0.6, labelsize=9)
-    ax.grid(True, linewidth=0.3, color="#cccccc", alpha=0.7)
+    ax.grid(True, linewidth=0.3, color="#dddddd", alpha=0.8)
     ax.set_axisbelow(True)
 
 
@@ -97,7 +97,8 @@ def plot_comparison(results_path, output_dir=None):
     # Infer dataset name from filename
     dataset = path.stem
 
-    fig, ax = plt.subplots(figsize=(7, 4.5), dpi=150)
+    # Wider figure to leave room for legend outside the plot
+    fig, ax = plt.subplots(figsize=(9, 5), dpi=150)
     apply_style(ax)
 
     for algo, points in sorted(by_algo.items()):
@@ -116,40 +117,40 @@ def plot_comparison(results_path, output_dir=None):
             qps_vals = [p[1] for p in frontier]
             ax.plot(
                 recalls, qps_vals,
-                f'{style["marker"]}-',
                 color=style["color"],
+                marker=style["marker"],
                 markersize=5, linewidth=1.5,
                 label=style["label"],
                 zorder=4,
             )
-            # Also plot non-frontier points as faded dots
-            all_recalls = [p[0] for p in points]
-            all_qps = [p[1] for p in points]
-            ax.scatter(
-                all_recalls, all_qps,
-                color=style["color"], alpha=0.15, s=15, zorder=2,
-            )
 
+    ax.set_title(
+        f"Recall-Queries per second (1/s) tradeoff — up and to the right is better",
+        fontsize=10, pad=8,
+    )
     ax.set_xlabel("Recall@10", fontsize=10)
-    ax.set_ylabel("Queries per second (QPS)", fontsize=10)
+    ax.set_ylabel("Queries per second (1/s)", fontsize=10)
     ax.set_yscale("log")
-    all_recalls = [r for pts in by_algo.values() for r, _ in pts]
-    x_min = max(0.0, min(all_recalls) - 0.05) if all_recalls else 0.0
-    ax.set_xlim(x_min, 1.02)
-    # Ensure y-axis includes all data points (brute force can be very low)
+    ax.set_xlim(0.0, 1.02)
+
     all_qps = [q for pts in by_algo.values() for _, q in pts]
     if all_qps:
         ax.set_ylim(min(all_qps) * 0.5, max(all_qps) * 3)
+
     ax.yaxis.set_major_formatter(ticker.FuncFormatter(
         lambda x, _: f"{x:.0f}" if x < 1000 else f"{x/1000:.0f}K"
     ))
-    ax.legend(fontsize=9, frameon=False, loc="lower right")
+
+    # Legend outside the plot on the right, like ann-benchmarks.com
+    ax.legend(
+        fontsize=8.5, frameon=False,
+        loc="upper left", bbox_to_anchor=(1.01, 1), borderaxespad=0,
+    )
 
     fig.text(
-        0.5, -0.02,
-        f"Dataset: {dataset}. Pareto frontier per algorithm. "
-        f"Higher and further right is better.",
-        ha="center", fontsize=8, color="#555555",
+        0.45, -0.02,
+        f"Dataset: {dataset}",
+        ha="center", fontsize=8, color="#777777",
     )
 
     fig.tight_layout()

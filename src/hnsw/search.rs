@@ -35,8 +35,10 @@ use crate::distance::cosine_distance_normalized as cosine_distance;
 // ─── Visited set ─────────────────────────────────────────────────────────────
 
 /// Threshold below which we use a dense generation-counter array instead of HashSet.
-/// 100K nodes = 100KB Vec<u8>, fits comfortably in L1/L2 cache.
-const DENSE_VISITED_THRESHOLD: usize = 100_000;
+/// 4M nodes = 4MB Vec<u8>, fits in L3 cache on most hardware (L3 is typically 8-32MB).
+/// The dense array has O(1) clear (generation bump) vs O(capacity) for HashSet, and
+/// avoids hashing overhead on every visited-node check.
+const DENSE_VISITED_THRESHOLD: usize = 4_000_000;
 
 /// Fast visited-node tracker using the generation-counter pattern.
 ///
