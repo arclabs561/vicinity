@@ -6,7 +6,7 @@
 //!
 //! ```bash
 //! cargo run --example 03_quick_benchmark --release
-//! JIN_DATASET=quick cargo run --example 03_quick_benchmark --release
+//! VICINITY_DATASET=quick cargo run --example 03_quick_benchmark --release
 //! ```
 //!
 //! Datasets:
@@ -24,8 +24,8 @@ use vicinity::hnsw::HNSWIndex;
 use vicinity::hnsw::HNSWParams;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let dataset = std::env::var("JIN_DATASET").unwrap_or_else(|_| "bench".to_string());
-    let variant = std::env::var("JIN_TEST_VARIANT").unwrap_or_default();
+    let dataset = std::env::var("VICINITY_DATASET").unwrap_or_else(|_| "bench".to_string());
+    let variant = std::env::var("VICINITY_TEST_VARIANT").unwrap_or_default();
 
     println!("Quick Benchmark");
     println!("===============\n");

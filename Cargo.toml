@@ -10,7 +10,7 @@ documentation = "https://docs.rs/vicinity"
 license = "MIT OR Apache-2.0"
 keywords = ["ann", "hnsw", "vector-search", "similarity", "nearest-neighbor"]
 categories = ["algorithms", "science"]
-exclude = ["data/", "benches/", ".github/"]
+exclude = ["data/", "benches/", "docs/", "scripts/", ".github/"]
 
 [lib]
 # Pure rlib for normal Rust usage.

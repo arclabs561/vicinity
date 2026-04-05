@@ -50,7 +50,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!(
             "  1. Download: curl -o glove.hdf5 http://ann-benchmarks.com/glove-25-angular.hdf5"
         );
-        eprintln!("  2. Convert (see scripts/convert_hdf5.py)");
+        eprintln!("  2. Convert: uv run scripts/download_ann_benchmarks.py glove-25-angular");
         eprintln!();
         eprintln!("Or run with synthetic data: cargo run --example hnsw_benchmark --release");
         std::process::exit(1);

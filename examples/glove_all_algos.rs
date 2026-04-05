@@ -2,15 +2,15 @@
 //!
 //! ```bash
 //! # All algorithms
-//! cargo run --example glove_all_algos --release --features "hnsw,nsw,ivf_pq,vamana,scann,diskann" -- --algo all
+//! cargo run --example glove_all_algos --release --features "hnsw,nsw,ivf_pq,vamana,ivf_avq,diskann" -- --algo all
 //!
 //! # Individual algorithms
-//! cargo run --example glove_all_algos --release --features "hnsw,nsw,ivf_pq,vamana,scann,diskann" -- --algo hnsw
-//! cargo run --example glove_all_algos --release --features "hnsw,nsw,ivf_pq,vamana,scann,diskann" -- --algo nsw
-//! cargo run --example glove_all_algos --release --features "hnsw,nsw,ivf_pq,vamana,scann,diskann" -- --algo ivfpq
-//! cargo run --example glove_all_algos --release --features "hnsw,nsw,ivf_pq,vamana,scann,diskann" -- --algo vamana
-//! cargo run --example glove_all_algos --release --features "hnsw,nsw,ivf_pq,vamana,scann,diskann" -- --algo scann
-//! cargo run --example glove_all_algos --release --features "hnsw,nsw,ivf_pq,vamana,scann,diskann" -- --algo diskann
+//! cargo run --example glove_all_algos --release --features "hnsw,nsw,ivf_pq,vamana,ivf_avq,diskann" -- --algo hnsw
+//! cargo run --example glove_all_algos --release --features "hnsw,nsw,ivf_pq,vamana,ivf_avq,diskann" -- --algo nsw
+//! cargo run --example glove_all_algos --release --features "hnsw,nsw,ivf_pq,vamana,ivf_avq,diskann" -- --algo ivfpq
+//! cargo run --example glove_all_algos --release --features "hnsw,nsw,ivf_pq,vamana,ivf_avq,diskann" -- --algo vamana
+//! cargo run --example glove_all_algos --release --features "hnsw,nsw,ivf_pq,vamana,ivf_avq,diskann" -- --algo ivf_avq
+//! cargo run --example glove_all_algos --release --features "hnsw,nsw,ivf_pq,vamana,ivf_avq,diskann" -- --algo diskann
 //!
 //! # Output appended to docs/glove-25-angular.jsonl; regenerate plot with:
 //! # uv run scripts/plot_comparison.py docs/glove-25-angular.jsonl

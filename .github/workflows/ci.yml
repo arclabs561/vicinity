@@ -17,7 +17,7 @@ env:
 # - hnswlib #608: Issues after deleting vectors
 # - faiss #4295: Integer overflow on large datasets
 # - usearch #405: Quantization issues with i8 + inner product
-# See TESTING.md for full details
+# See docs/TESTING.md for full details
 
 jobs:
   # Primary test suite (x86)
