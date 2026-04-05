@@ -159,12 +159,29 @@ impl RpForestIndex {
 
     /// Build a single random projection tree.
     fn build_tree(&self) -> Result<RPTree, RetrieveError> {
+        let indices: Vec<u32> = (0..self.num_vectors as u32).collect();
+        let root = self.build_tree_recursive(&indices)?;
+        Ok(RPTree { root })
+    }
+
+    /// Build tree recursively. Each call independently samples a fresh random hyperplane.
+    fn build_tree_recursive(&self, indices: &[u32]) -> Result<Option<TreeNode>, RetrieveError> {
+        if indices.is_empty() {
+            return Ok(None);
+        }
+
+        // Leaf node if small enough
+        if indices.len() <= self.params.tree_params.max_leaf_size {
+            return Ok(Some(TreeNode::Leaf {
+                indices: indices.to_vec(),
+            }));
+        }
+
+        // Generate a fresh random hyperplane for this split
         use rand::Rng;
         let mut rng = rand::rng();
-
-        // Generate random hyperplane
-        let mut hyperplane = Vec::new();
-        let mut norm = 0.0;
+        let mut hyperplane = Vec::with_capacity(self.dimension);
+        let mut norm = 0.0f32;
         for _ in 0..self.dimension {
             let val = rng.random::<f32>() * 2.0 - 1.0;
             norm += val * val;
@@ -177,39 +194,13 @@ impl RpForestIndex {
             }
         }
 
-        // Build tree recursively
-        let indices: Vec<u32> = (0..self.num_vectors as u32).collect();
-        let root = self.build_tree_recursive(&indices, &hyperplane, 0)?;
-
-        Ok(RPTree { root })
-    }
-
-    /// Build tree recursively.
-    fn build_tree_recursive(
-        &self,
-        indices: &[u32],
-        hyperplane: &[f32],
-        _depth: usize,
-    ) -> Result<Option<TreeNode>, RetrieveError> {
-        if indices.is_empty() {
-            return Ok(None);
-        }
-
-        // Leaf node if small enough
-        if indices.len() <= self.params.tree_params.max_leaf_size {
-            return Ok(Some(TreeNode::Leaf {
-                indices: indices.to_vec(),
-            }));
-        }
-
         // Split by hyperplane
         let mut left_indices = Vec::new();
         let mut right_indices = Vec::new();
 
         for &idx in indices {
             let vec = self.get_vector(idx as usize);
-            let projection = simd::dot(vec, hyperplane);
-
+            let projection = simd::dot(vec, &hyperplane);
             if projection < 0.0 {
                 left_indices.push(idx);
             } else {
@@ -217,28 +208,20 @@ impl RpForestIndex {
             }
         }
 
-        // Generate new hyperplane for children
-        use rand::Rng;
-        let mut rng = rand::rng();
-        let mut new_hyperplane = Vec::new();
-        let mut norm = 0.0;
-        for _ in 0..self.dimension {
-            let val = rng.random::<f32>() * 2.0 - 1.0;
-            norm += val * val;
-            new_hyperplane.push(val);
-        }
-        let norm = norm.sqrt();
-        if norm > 0.0 {
-            for val in &mut new_hyperplane {
-                *val /= norm;
-            }
+        // Degenerate split: all points went to one side (e.g., duplicate or collinear vectors).
+        // Fall back to a leaf rather than recursing infinitely.
+        if left_indices.is_empty() || right_indices.is_empty() {
+            return Ok(Some(TreeNode::Leaf {
+                indices: indices.to_vec(),
+            }));
         }
 
-        let left = self.build_tree_recursive(&left_indices, &new_hyperplane, _depth + 1)?;
-        let right = self.build_tree_recursive(&right_indices, &new_hyperplane, _depth + 1)?;
+        // Each child independently picks its own split hyperplane
+        let left = self.build_tree_recursive(&left_indices)?;
+        let right = self.build_tree_recursive(&right_indices)?;
 
         Ok(Some(TreeNode::Internal {
-            hyperplane: hyperplane.to_vec(),
+            hyperplane,
             threshold: 0.0,
             left: Box::new(left.unwrap_or(TreeNode::Leaf {
                 indices: Vec::new(),
@@ -316,5 +299,129 @@ impl RpForestIndex {
         let start = idx * self.dimension;
         let end = start + self.dimension;
         &self.vectors[start..end]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn build_index(n: usize, dim: usize) -> RpForestIndex {
+        let params = RpForestParams {
+            num_trees: 5,
+            tree_params: RPTreeParams { max_leaf_size: 10 },
+        };
+        let mut index = RpForestIndex::new(dim, params).unwrap();
+        for i in 0..n {
+            let mut v = vec![0.0f32; dim];
+            v[i % dim] = 1.0;
+            index.add(i as u32, v).unwrap();
+        }
+        index.build().unwrap();
+        index
+    }
+
+    #[test]
+    fn test_basic_search_returns_results() {
+        let index = build_index(50, 4);
+        let query = vec![1.0, 0.0, 0.0, 0.0];
+        let results = index.search(&query, 5).unwrap();
+        assert!(!results.is_empty());
+        assert!(results.len() <= 5);
+    }
+
+    #[test]
+    fn test_search_returns_at_most_k() {
+        let index = build_index(50, 4);
+        let query = vec![1.0, 0.0, 0.0, 0.0];
+        for k in [1, 3, 5, 10] {
+            let results = index.search(&query, k).unwrap();
+            assert!(results.len() <= k);
+        }
+    }
+
+    #[test]
+    fn test_results_sorted_by_distance() {
+        let index = build_index(50, 4);
+        let query = vec![1.0, 0.0, 0.0, 0.0];
+        let results = index.search(&query, 10).unwrap();
+        for w in results.windows(2) {
+            assert!(w[0].1 <= w[1].1, "results not sorted: {:?}", results);
+        }
+    }
+
+    #[test]
+    fn test_ids_in_bounds() {
+        let n = 50usize;
+        let index = build_index(n, 4);
+        let query = vec![1.0, 0.0, 0.0, 0.0];
+        let results = index.search(&query, 10).unwrap();
+        for (id, _) in results {
+            assert!((id as usize) < n, "id {} out of bounds (n={})", id, n);
+        }
+    }
+
+    #[test]
+    fn test_multiple_trees_improve_coverage() {
+        // With many trees, the candidate set should cover a reasonable fraction of
+        // close vectors. Regression guard: ensures each tree uses an independent
+        // hyperplane (the bug was both children shared one hyperplane per level).
+        let dim = 8;
+        let n = 100;
+        let params = RpForestParams {
+            num_trees: 20,
+            tree_params: RPTreeParams { max_leaf_size: 5 },
+        };
+        let mut index = RpForestIndex::new(dim, params).unwrap();
+        // Add clustered data: half near [1,0,...], half near [0,1,0,...]
+        for i in 0..n {
+            let mut v = vec![0.0f32; dim];
+            if i < n / 2 {
+                v[0] = 1.0;
+                v[1] = 0.01 * (i as f32);
+            } else {
+                v[1] = 1.0;
+                v[0] = 0.01 * (i as f32);
+            }
+            // normalize
+            let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+            for x in &mut v {
+                *x /= norm;
+            }
+            index.add(i as u32, v).unwrap();
+        }
+        index.build().unwrap();
+
+        let query = vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let results = index.search(&query, 10).unwrap();
+        // All top-10 should come from the [1,0,...] cluster (ids 0..50)
+        let correct = results
+            .iter()
+            .filter(|(id, _)| *id < (n / 2) as u32)
+            .count();
+        assert!(
+            correct >= 5,
+            "only {correct}/10 results from correct cluster — hyperplane independence may be broken"
+        );
+    }
+
+    #[test]
+    fn test_build_errors_on_empty_index() {
+        let mut index = RpForestIndex::new(4, RpForestParams::default()).unwrap();
+        assert!(index.build().is_err());
+    }
+
+    #[test]
+    fn test_add_after_build_errors() {
+        let mut index = RpForestIndex::new(4, RpForestParams::default()).unwrap();
+        index.add(0, vec![1.0, 0.0, 0.0, 0.0]).unwrap();
+        index.build().unwrap();
+        assert!(index.add(1, vec![0.0, 1.0, 0.0, 0.0]).is_err());
+    }
+
+    #[test]
+    fn test_dimension_mismatch_errors() {
+        let mut index = RpForestIndex::new(4, RpForestParams::default()).unwrap();
+        assert!(index.add(0, vec![1.0, 0.0]).is_err());
     }
 }
