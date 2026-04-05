@@ -25,39 +25,44 @@ use std::time::Instant;
 use vicinity::hnsw::{HNSWIndex, HNSWParams};
 use vicinity::ivf_pq::{IVFPQIndex, IVFPQParams};
 use vicinity::nsw::NSWIndex;
-#[cfg(feature = "vamana")]
-use vicinity::vamana::{VamanaIndex, VamanaParams};
 #[cfg(feature = "scann")]
 use vicinity::scann::{SCANNIndex, SCANNParams};
+#[cfg(feature = "vamana")]
+use vicinity::vamana::{VamanaIndex, VamanaParams};
 
 const DATA_DIR: &str = "data/ann-benchmarks/glove-25-angular";
 const JSONL_OUT: &str = "doc/glove-25-angular.jsonl";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
-    let algo = args.windows(2)
+    let algo = args
+        .windows(2)
         .find(|w| w[0] == "--algo")
         .map(|w| w[1].as_str())
         .unwrap_or("all");
 
     println!("Loading GloVe-25 data...");
     let (train, dim) = load_vectors(&format!("{DATA_DIR}/train.bin"))?;
-    let (test, _)  = load_vectors(&format!("{DATA_DIR}/test.bin"))?;
+    let (test, _) = load_vectors(&format!("{DATA_DIR}/test.bin"))?;
     let (gt, k_gt) = load_neighbors(&format!("{DATA_DIR}/neighbors.bin"))?;
     let k = 10;
 
-    println!("  train: {}×{dim}  test: {}  gt: top-{k_gt}", train.len(), test.len());
+    println!(
+        "  train: {}×{dim}  test: {}  gt: top-{k_gt}",
+        train.len(),
+        test.len()
+    );
     println!("  output → {JSONL_OUT}\n");
 
     match algo {
-        "hnsw"   => run_hnsw(&train, &test, &gt, k, dim)?,
-        "nsw"    => run_nsw(&train, &test, &gt, k, dim)?,
-        "ivfpq"  => run_ivfpq(&train, &test, &gt, k, dim)?,
+        "hnsw" => run_hnsw(&train, &test, &gt, k, dim)?,
+        "nsw" => run_nsw(&train, &test, &gt, k, dim)?,
+        "ivfpq" => run_ivfpq(&train, &test, &gt, k, dim)?,
         #[cfg(feature = "vamana")]
         "vamana" => run_vamana(&train, &test, &gt, k, dim)?,
         #[cfg(feature = "scann")]
-        "scann"  => run_scann(&train, &test, &gt, k, dim)?,
-        "all"    => {
+        "scann" => run_scann(&train, &test, &gt, k, dim)?,
+        "all" => {
             run_ivfpq(&train, &test, &gt, k, dim)?;
             run_nsw(&train, &test, &gt, k, dim)?;
             run_hnsw(&train, &test, &gt, k, dim)?;
@@ -78,13 +83,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 // ─── Algorithm runners ────────────────────────────────────────────────────────
 
 fn run_hnsw(
-    train: &[Vec<f32>], test: &[Vec<f32>], gt: &[Vec<i32>], k: usize, dim: usize,
+    train: &[Vec<f32>],
+    test: &[Vec<f32>],
+    gt: &[Vec<i32>],
+    k: usize,
+    dim: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("=== HNSW ===");
     for (m, m_max, ef_construction) in [(16, 32, 200), (32, 64, 200)] {
         print!("  Building (M={m}, ef_construction={ef_construction})... ");
         let _ = std::io::stdout().flush();
-        let params = HNSWParams { m, m_max, ef_construction, ..Default::default() };
+        let params = HNSWParams {
+            m,
+            m_max,
+            ef_construction,
+            ..Default::default()
+        };
         let mut index = HNSWIndex::with_params(dim, params)?;
         for (i, v) in train.iter().enumerate() {
             index.add(i as u32, v.clone())?;
@@ -96,7 +110,11 @@ fn run_hnsw(
         let algo_name = format!("hnsw-m{m}");
         for ef in [10, 20, 50, 100, 200, 400] {
             let (recall, qps) = measure(&index, test, gt, k, ef);
-            println!("    ef={ef:4}  recall={:.1}%  qps={:.0}", recall * 100.0, qps);
+            println!(
+                "    ef={ef:4}  recall={:.1}%  qps={:.0}",
+                recall * 100.0,
+                qps
+            );
             append_jsonl(&algo_name, recall, qps)?;
         }
     }
@@ -104,7 +122,11 @@ fn run_hnsw(
 }
 
 fn run_nsw(
-    train: &[Vec<f32>], test: &[Vec<f32>], gt: &[Vec<i32>], k: usize, dim: usize,
+    train: &[Vec<f32>],
+    test: &[Vec<f32>],
+    gt: &[Vec<i32>],
+    k: usize,
+    dim: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("=== NSW ===");
     let m = 16;
@@ -127,7 +149,11 @@ fn run_nsw(
 }
 
 fn run_ivfpq(
-    train: &[Vec<f32>], test: &[Vec<f32>], gt: &[Vec<i32>], k: usize, dim: usize,
+    train: &[Vec<f32>],
+    test: &[Vec<f32>],
+    gt: &[Vec<i32>],
+    k: usize,
+    dim: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("=== IVF-PQ ===");
     // num_codebooks must divide dim (25): use 5 (5×5-d subspaces)
@@ -137,7 +163,7 @@ fn run_ivfpq(
         let t0 = Instant::now();
         let params = IVFPQParams {
             num_clusters,
-            nprobe: 1,  // will be overridden per measurement
+            nprobe: 1, // will be overridden per measurement
             num_codebooks,
             codebook_size: 256,
             ..Default::default()
@@ -153,7 +179,11 @@ fn run_ivfpq(
         for nprobe in [4, 8, 16, 32, 64, 128, 256] {
             index.set_nprobe(nprobe);
             let (recall, qps) = measure_ivfpq(&index, test, gt, k);
-            println!("  nprobe={nprobe:4}  recall={:.1}%  qps={:.0}", recall * 100.0, qps);
+            println!(
+                "  nprobe={nprobe:4}  recall={:.1}%  qps={:.0}",
+                recall * 100.0,
+                qps
+            );
             append_jsonl(&algo_name, recall, qps)?;
         }
     }
@@ -162,7 +192,11 @@ fn run_ivfpq(
 
 #[cfg(feature = "vamana")]
 fn run_vamana(
-    train: &[Vec<f32>], test: &[Vec<f32>], gt: &[Vec<i32>], k: usize, dim: usize,
+    train: &[Vec<f32>],
+    test: &[Vec<f32>],
+    gt: &[Vec<i32>],
+    k: usize,
+    dim: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Vamana ===");
     let params = VamanaParams {
@@ -192,7 +226,11 @@ fn run_vamana(
 
 #[cfg(feature = "scann")]
 fn run_scann(
-    train: &[Vec<f32>], test: &[Vec<f32>], gt: &[Vec<i32>], k: usize, dim: usize,
+    train: &[Vec<f32>],
+    test: &[Vec<f32>],
+    gt: &[Vec<i32>],
+    k: usize,
+    dim: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("=== ScaNN ===");
     // dim=25: num_codebooks must divide 25; use 5 (5×5-d subspaces)
@@ -217,7 +255,11 @@ fn run_scann(
     for nprobe in [4, 8, 16, 32, 64, 128, 256] {
         index.set_nprobe(nprobe);
         let (recall, qps) = measure_scann(&index, test, gt, k);
-        println!("  nprobe={nprobe:4}  recall={:.1}%  qps={:.0}", recall * 100.0, qps);
+        println!(
+            "  nprobe={nprobe:4}  recall={:.1}%  qps={:.0}",
+            recall * 100.0,
+            qps
+        );
         append_jsonl("scann", recall, qps)?;
     }
     Ok(())
@@ -226,7 +268,11 @@ fn run_scann(
 // ─── Measurement helpers ──────────────────────────────────────────────────────
 
 fn measure(
-    index: &HNSWIndex, test: &[Vec<f32>], gt: &[Vec<i32>], k: usize, ef: usize,
+    index: &HNSWIndex,
+    test: &[Vec<f32>],
+    gt: &[Vec<i32>],
+    k: usize,
+    ef: usize,
 ) -> (f64, f64) {
     let t = Instant::now();
     let mut recall_sum = 0.0;
@@ -239,7 +285,11 @@ fn measure(
 }
 
 fn measure_nsw(
-    index: &NSWIndex, test: &[Vec<f32>], gt: &[Vec<i32>], k: usize, ef: usize,
+    index: &NSWIndex,
+    test: &[Vec<f32>],
+    gt: &[Vec<i32>],
+    k: usize,
+    ef: usize,
 ) -> (f64, f64) {
     let t = Instant::now();
     let mut recall_sum = 0.0;
@@ -251,9 +301,7 @@ fn measure_nsw(
     (recall_sum / test.len() as f64, test.len() as f64 / elapsed)
 }
 
-fn measure_ivfpq(
-    index: &IVFPQIndex, test: &[Vec<f32>], gt: &[Vec<i32>], k: usize,
-) -> (f64, f64) {
+fn measure_ivfpq(index: &IVFPQIndex, test: &[Vec<f32>], gt: &[Vec<i32>], k: usize) -> (f64, f64) {
     let t = Instant::now();
     let mut recall_sum = 0.0;
     for (i, q) in test.iter().enumerate() {
@@ -266,7 +314,11 @@ fn measure_ivfpq(
 
 #[cfg(feature = "vamana")]
 fn measure_vamana(
-    index: &VamanaIndex, test: &[Vec<f32>], gt: &[Vec<i32>], k: usize, ef: usize,
+    index: &VamanaIndex,
+    test: &[Vec<f32>],
+    gt: &[Vec<i32>],
+    k: usize,
+    ef: usize,
 ) -> (f64, f64) {
     let t = Instant::now();
     let mut recall_sum = 0.0;
@@ -279,9 +331,7 @@ fn measure_vamana(
 }
 
 #[cfg(feature = "scann")]
-fn measure_scann(
-    index: &SCANNIndex, test: &[Vec<f32>], gt: &[Vec<i32>], k: usize,
-) -> (f64, f64) {
+fn measure_scann(index: &SCANNIndex, test: &[Vec<f32>], gt: &[Vec<i32>], k: usize) -> (f64, f64) {
     let t = Instant::now();
     let mut recall_sum = 0.0;
     for (i, q) in test.iter().enumerate() {
@@ -302,7 +352,10 @@ fn append_jsonl(algorithm: &str, recall: f64, qps: f64) -> Result<(), Box<dyn st
     let line = format!(
         "{{\"algorithm\":\"{algorithm}\",\"recall_at_10\":{recall:.4},\"qps\":{qps:.1}}}\n"
     );
-    let file = OpenOptions::new().create(true).append(true).open(JSONL_OUT)?;
+    let file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(JSONL_OUT)?;
     let mut w = BufWriter::new(file);
     w.write_all(line.as_bytes())?;
     Ok(())
@@ -325,7 +378,7 @@ fn load_vectors(path: &str) -> Result<(Vec<Vec<f32>>, usize), Box<dyn std::error
             (0..d)
                 .map(|j| {
                     let o = (i * d + j) * 4;
-                    f32::from_le_bytes([buf[o], buf[o+1], buf[o+2], buf[o+3]])
+                    f32::from_le_bytes([buf[o], buf[o + 1], buf[o + 2], buf[o + 3]])
                 })
                 .collect()
         })
@@ -348,7 +401,7 @@ fn load_neighbors(path: &str) -> Result<(Vec<Vec<i32>>, usize), Box<dyn std::err
             (0..k)
                 .map(|j| {
                     let o = (i * k + j) * 4;
-                    i32::from_le_bytes([buf[o], buf[o+1], buf[o+2], buf[o+3]])
+                    i32::from_le_bytes([buf[o], buf[o + 1], buf[o + 2], buf[o + 3]])
                 })
                 .collect()
         })

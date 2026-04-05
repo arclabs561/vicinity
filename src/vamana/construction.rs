@@ -113,8 +113,14 @@ fn greedy_search_vamana(
     if entry_point != query_id {
         let d = hnsw_distance::cosine_distance_normalized(query, get_vec(entry_point));
         visited.insert(entry_point);
-        candidates.push(MinCand { id: entry_point, dist: d });
-        results.push(MaxRes { id: entry_point, dist: d });
+        candidates.push(MinCand {
+            id: entry_point,
+            dist: d,
+        });
+        results.push(MaxRes {
+            id: entry_point,
+            dist: d,
+        });
     } else {
         // Entry point is the query node itself; seed with its current neighbors.
         visited.insert(entry_point);
@@ -127,7 +133,11 @@ fn greedy_search_vamana(
         }
     }
 
-    while let Some(MinCand { id: curr_id, dist: curr_dist }) = candidates.pop() {
+    while let Some(MinCand {
+        id: curr_id,
+        dist: curr_dist,
+    }) = candidates.pop()
+    {
         // Early termination: best unexplored candidate is worse than worst result.
         if results.len() >= ef {
             if let Some(worst) = results.peek() {
@@ -139,15 +149,20 @@ fn greedy_search_vamana(
 
         for &nb_id in &neighbors[curr_id as usize] {
             if visited.insert(nb_id) {
-                let nb_dist =
-                    hnsw_distance::cosine_distance_normalized(query, get_vec(nb_id));
+                let nb_dist = hnsw_distance::cosine_distance_normalized(query, get_vec(nb_id));
 
                 let should_add =
                     results.len() < ef || results.peek().map_or(true, |w| nb_dist < w.dist);
 
                 if should_add {
-                    candidates.push(MinCand { id: nb_id, dist: nb_dist });
-                    results.push(MaxRes { id: nb_id, dist: nb_dist });
+                    candidates.push(MinCand {
+                        id: nb_id,
+                        dist: nb_dist,
+                    });
+                    results.push(MaxRes {
+                        id: nb_id,
+                        dist: nb_dist,
+                    });
                     if results.len() > ef {
                         results.pop();
                     }
@@ -219,7 +234,10 @@ fn refine_with_rrnd(index: &mut VamanaIndex) -> Result<(), RetrieveError> {
                         .map(|&nid| {
                             let s = nid as usize * dim;
                             let v = &index.vectors[s..s + dim];
-                            (nid, crate::distance::cosine_distance_normalized(node_vec, v))
+                            (
+                                nid,
+                                crate::distance::cosine_distance_normalized(node_vec, v),
+                            )
                         })
                         .collect();
                     scored.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
@@ -285,7 +303,10 @@ fn refine_with_rnd(index: &mut VamanaIndex) -> Result<(), RetrieveError> {
                         .map(|&nid| {
                             let s = nid as usize * dim;
                             let v = &index.vectors[s..s + dim];
-                            (nid, crate::distance::cosine_distance_normalized(node_vec, v))
+                            (
+                                nid,
+                                crate::distance::cosine_distance_normalized(node_vec, v),
+                            )
                         })
                         .collect();
                     scored.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));

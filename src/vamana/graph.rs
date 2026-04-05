@@ -389,8 +389,7 @@ mod tests {
                 all_dists.iter().take(k).map(|&(id, _)| id).collect();
 
             let results = index.search(query, k, ef).unwrap();
-            let found: std::collections::HashSet<u32> =
-                results.iter().map(|&(id, _)| id).collect();
+            let found: std::collections::HashSet<u32> = results.iter().map(|&(id, _)| id).collect();
 
             total_recall += true_nn.intersection(&found).count() as f64 / k as f64;
             num_queries += 1;
