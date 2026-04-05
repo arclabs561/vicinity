@@ -198,9 +198,10 @@ pub mod tombstones;
 #[doc(hidden)]
 pub mod fused;
 
-/// Dynamic Edge Navigation Graph (DEG) for bimodal data.
-#[cfg(all(feature = "hnsw", feature = "experimental"))]
-#[doc(hidden)]
+/// Dynamic Edge Navigation Graph (DEG) — density-adaptive edge count.
+///
+/// Requires the `hnsw` feature. O(n²) construction; suitable for n < ~10K.
+#[cfg(feature = "hnsw")]
 pub mod deg;
 
 /// HNSW index merging algorithms (NGM, IGTM, CGTM).
