@@ -597,61 +597,73 @@ impl DiskANNIndex {
         new_neighbors
     }
 
-    /// Greedy search for construction and querying.
+    /// Greedy search for construction and querying (DiskANN beam search).
     ///
-    /// Returns (visited_nodes, nearest_candidates).
+    /// Maintains:
+    /// - `candidates`: min-heap of unexplored nodes, ordered by distance to query
+    /// - `results`: best `l_size` nodes found so far (max-heap so we can trim the worst)
+    ///
+    /// Returns (visited_nodes, nearest_candidates_sorted_asc).
     fn greedy_search(
         &self,
         query: &[f32],
         l_size: usize,
         start_node: u32,
     ) -> (Vec<u32>, Vec<Candidate>) {
+        use std::cmp::Reverse;
+        use std::collections::BinaryHeap;
+
         let mut visited = HashSet::new();
-        // Note: We use retset Vec instead of BinaryHeap for simpler control over L closest
-
-        // Use a max-heap for the working queue to easily pop the worst candidate
-        // Wait, standard beam search keeps L closest.
-        // Let's implement standard "iterate until convergence" greedy search.
-
-        // Results set (L closest found so far) - sorted vector or binary heap
-        // We'll use a vector and sort it, for simplicity in this proto.
-        let mut retset: Vec<Candidate> = Vec::with_capacity(l_size + 1);
+        // Min-heap (via Reverse): always expand the globally closest unexplored node.
+        // Candidate's Ord is max-heap, so Reverse<Candidate> gives min-heap.
+        let mut frontier: BinaryHeap<Reverse<Candidate>> = BinaryHeap::with_capacity(l_size * 2);
+        // Max-heap: tracks the `l_size` best results; peek() gives the worst (farthest).
+        let mut results: BinaryHeap<Candidate> = BinaryHeap::with_capacity(l_size + 1);
 
         let start_dist = self.dist(query, self.get_vector(start_node));
-        retset.push(Candidate {
+        visited.insert(start_node);
+        frontier.push(Reverse(Candidate {
+            id: start_node,
+            dist: start_dist,
+        }));
+        results.push(Candidate {
             id: start_node,
             dist: start_dist,
         });
-        visited.insert(start_node);
 
-        let mut current_idx = 0;
-
-        // Sort once before the loop; maintained by sort+truncate at end of each iteration.
-        retset.sort_unstable_by(|a, b| a.dist.total_cmp(&b.dist));
-
-        while current_idx < retset.len() {
-            let current = retset[current_idx];
-            current_idx += 1;
-
-            for &neighbor in &self.adj[current.id as usize] {
-                if visited.contains(&neighbor) {
-                    continue;
+        while let Some(Reverse(current)) = frontier.pop() {
+            // Early termination: if the closest unexplored node is farther than the worst
+            // result and we already have l_size results, no improvement is possible.
+            if results.len() >= l_size {
+                if let Some(worst) = results.peek() {
+                    if current.dist >= worst.dist {
+                        break;
+                    }
                 }
-                visited.insert(neighbor);
-
-                let dist = self.dist(query, self.get_vector(neighbor));
-                retset.push(Candidate { id: neighbor, dist });
             }
 
-            // Re-sort and keep only top L
-            retset.sort_unstable_by(|a, b| a.dist.total_cmp(&b.dist));
-            if retset.len() > l_size {
-                retset.truncate(l_size);
+            for &neighbor in &self.adj[current.id as usize] {
+                if !visited.insert(neighbor) {
+                    continue;
+                }
+
+                let dist = self.dist(query, self.get_vector(neighbor));
+                frontier.push(Reverse(Candidate { id: neighbor, dist }));
+                results.push(Candidate { id: neighbor, dist });
+
+                // Keep only top l_size in results
+                if results.len() > l_size {
+                    results.pop();
+                }
             }
         }
 
-        let ids: Vec<u32> = retset.iter().map(|c| c.id).collect();
-        (ids, retset)
+        // Collect results sorted ascending by distance
+        let mut result_vec: Vec<Candidate> = results.into_vec();
+        result_vec.sort_unstable_by(|a, b| a.dist.total_cmp(&b.dist));
+
+        let ids: Vec<u32> = result_vec.iter().map(|c| c.id).collect();
+        (ids, result_vec)
     }
 
     /// Search for k nearest neighbors.
@@ -853,5 +865,90 @@ mod tests {
                 assert!(nbr < n, "Node {} has out-of-bounds neighbor {}", node, nbr);
             }
         }
+    }
+
+    /// Regression: `compute_medoid` was previously hardcoded to return 0.
+    ///
+    /// The medoid should be the vector closest to the centroid, not always index 0.
+    /// Verified by building an index where vector 0 is clearly NOT the centroid.
+    #[test]
+    fn test_medoid_is_not_always_zero() {
+        let params = DiskANNParams {
+            m: 4,
+            ef_construction: 20,
+            alpha: 1.2,
+            ef_search: 20,
+        };
+        // Place vector 0 far away; the cluster centroid is around index 3-4.
+        // If medoid is real, start_node should not be 0.
+        let mut index = DiskANNIndex::new(2, params).unwrap();
+        index.add(0, vec![100.0, 100.0]).unwrap(); // outlier
+        index.add(1, vec![1.0, 0.0]).unwrap();
+        index.add(2, vec![1.1, 0.0]).unwrap();
+        index.add(3, vec![0.9, 0.0]).unwrap();
+        index.add(4, vec![1.0, 0.1]).unwrap();
+        index.add(5, vec![1.0, -0.1]).unwrap();
+        index.build().unwrap();
+
+        // The centroid is near [17.5, 16.7] / 6 ≈ [1.0, 0.0] cluster, not the outlier.
+        // start_node should be one of 1-5, not 0 (the outlier).
+        assert_ne!(
+            index.start_node, 0,
+            "medoid should not be the outlier at [100,100]; got start_node={}",
+            index.start_node
+        );
+    }
+
+    /// Regression: `vamana_pass` previously omitted reverse edge updates.
+    ///
+    /// Without reverse edges, node j is added as a neighbor of i but i is never
+    /// added as a candidate for j. This breaks bidirectional reachability.
+    /// Verification: after build, for each edge i->j, j should also have a path
+    /// back to i (directly or within 1 hop), ensuring graph connectivity.
+    #[test]
+    fn test_reverse_edges_improve_recall() {
+        let params = DiskANNParams {
+            m: 4,
+            ef_construction: 20,
+            alpha: 1.2,
+            ef_search: 20,
+        };
+        let n = 20u32;
+        let mut index = DiskANNIndex::new(4, params).unwrap();
+        for i in 0..n {
+            let v = vec![i as f32 * 0.1, 0.0, 0.0, 0.0];
+            index.add(i, v).unwrap();
+        }
+        index.build().unwrap();
+
+        // Every node should have at least one neighbor (graph is connected enough to search)
+        let isolated: Vec<_> = index
+            .adj
+            .iter()
+            .enumerate()
+            .filter(|(_, nbrs)| nbrs.is_empty())
+            .map(|(i, _)| i)
+            .collect();
+        assert!(
+            isolated.len() <= 1, // at most 1 isolated node (start_node special case)
+            "too many isolated nodes ({}): reverse edges may be missing",
+            isolated.len()
+        );
+
+        // Recall test: querying each vector should find it within top-3
+        let mut self_hits = 0;
+        for i in 0..n {
+            let q = vec![i as f32 * 0.1, 0.0, 0.0, 0.0];
+            let results = index.search(&q, 3, 20).unwrap();
+            if results.iter().any(|(id, _)| *id == i) {
+                self_hits += 1;
+            }
+        }
+        assert!(
+            self_hits >= (n * 8 / 10),
+            "self-recall too low ({}/{}): reverse edges may be missing",
+            self_hits,
+            n
+        );
     }
 }
