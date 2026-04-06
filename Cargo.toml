@@ -12,6 +12,8 @@ keywords = ["ann", "hnsw", "vector-search", "similarity", "nearest-neighbor"]
 categories = ["algorithms", "science"]
 exclude = ["data/", "benches/", "docs/", "scripts/", ".github/"]
 
+[workspace]
+
 [lib]
 # Pure rlib for normal Rust usage.
 # PyO3 cdylib is built by maturin (sets PYO3_BUILD_EXTENSION_MODULE=1).
