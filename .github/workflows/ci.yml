@@ -1,15 +1,12 @@
 name: CI
-
 on:
   push:
     branches: [main, master]
   pull_request:
     branches: [main, master]
-
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -Dwarnings
-
 # Testing strategy grounded in real-world ANN library issues:
 # - hnswlib #635: M vs Mcurmax bug in neighbor selection
 # - hnswlib #626: Use-after-free in deletion
@@ -18,7 +15,6 @@ env:
 # - faiss #4295: Integer overflow on large datasets
 # - usearch #405: Quantization issues with i8 + inner product
 # See docs/TESTING.md for full details
-
 jobs:
   # Primary test suite (x86)
   test:
@@ -27,27 +23,26 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-
       - name: Check formatting
         run: cargo fmt --check
-
       - name: Clippy (hnsw)
         run: cargo clippy --no-default-features --features hnsw --all-targets -- -D clippy::correctness
-
       - name: Clippy (all features)
         run: cargo clippy --all-features --all-targets -- -D clippy::correctness
         env:
-          RUSTFLAGS: ""  # don't escalate pre-existing warnings in feature-gated code to errors
-
+          RUSTFLAGS: "" # don't escalate pre-existing warnings in feature-gated code to errors
       - name: Build
         run: cargo build --no-default-features --features hnsw
-
       - name: Test (unit + integration)
         run: cargo test --no-default-features --features hnsw
-
+      - name: Test (all features)
+        run: cargo test --all-features
+        env:
+          RUSTFLAGS: ""
+      - name: Doc tests
+        run: cargo test --doc --no-default-features --features hnsw
       - name: Property tests
         run: cargo test --no-default-features --features hnsw property_
-
   # ARM native testing (M1/M2 - tests NEON code paths)
   test-arm:
     runs-on: macos-latest
@@ -55,13 +50,10 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-
       - name: Build (ARM)
         run: cargo build --no-default-features --features hnsw
-
       - name: Test (ARM)
         run: cargo test --no-default-features --features hnsw
-
   # MSRV check
   msrv:
     runs-on: ubuntu-latest
@@ -69,12 +61,10 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@1.80.0
       - uses: Swatinem/rust-cache@v2
-
       - name: Check MSRV
         run: |
           rm -f Cargo.lock  # v4 lock requires Cargo 1.83+
           cargo check --no-default-features --features hnsw
-
   # Feature-matrix compilation (catches cfg + optional-dep drift)
   feature-matrix:
     runs-on: ubuntu-latest
@@ -82,13 +72,10 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-
       - name: Install cargo-hack
         run: cargo install cargo-hack --locked
-
       - name: Compile each feature (no dev-deps)
         run: cargo hack check --each-feature --no-dev-deps --exclude-features persistence
-
   # Cross-compilation check for different targets
   cross-compile:
     runs-on: ubuntu-latest
@@ -103,10 +90,8 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
-
       - name: Check ${{ matrix.target }}
         run: cargo check --target ${{ matrix.target }} --no-default-features --features hnsw
-
   # Recall regression detection
   recall-regression:
     runs-on: ubuntu-latest
@@ -114,20 +99,18 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-
       - name: Build release
         run: cargo build --release --no-default-features --features hnsw
-
       - name: Run recall benchmark
         run: |
           cargo run --release --example 02_measure_recall --no-default-features --features hnsw 2>&1 | tee recall_output.txt
           # Fail if recall@10 drops below 80% at ef=100
           # This catches issues like hnswlib #635 (wrong M parameter)
-          if ! grep -q "recall" recall_output.txt; then
-            echo "Recall test did not run properly"
-            exit 1
-          fi
-
+          awk '/^[[:space:]]*100[[:space:]]/ {
+            gsub(/%/, "", $2); found=1
+            if ($2 + 0 < 80.0) { print "FAIL: ef=100 recall " $2 "% < 80%"; exit 1 }
+          }
+          END { if (!found) { print "FAIL: ef=100 row missing from output"; exit 1 } }' recall_output.txt
   # Regression tests for known bugs
   regression:
     runs-on: ubuntu-latest
@@ -135,10 +118,8 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-
       - name: Run regression tests
         run: cargo test --test regression_known_bugs --no-default-features --features hnsw
-
   # Documentation build
   docs:
     runs-on: ubuntu-latest
@@ -146,7 +127,6 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-
       - name: Build docs
         run: cargo doc --no-default-features --features hnsw --no-deps
         env:
