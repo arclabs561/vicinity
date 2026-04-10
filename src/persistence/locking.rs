@@ -66,8 +66,8 @@ impl FileLock {
             let fd = file.as_raw_fd();
             let lock = libc::flock {
                 l_type: match lock_type {
-                    LockType::Shared => libc::LOCK_SH as i16,
-                    LockType::Exclusive => libc::LOCK_EX as i16,
+                    LockType::Shared => libc::F_RDLCK as i16,
+                    LockType::Exclusive => libc::F_WRLCK as i16,
                 },
                 l_whence: libc::SEEK_SET as i16,
                 l_start: 0,
@@ -155,7 +155,7 @@ impl Drop for FileLock {
                 use std::os::unix::io::AsRawFd;
                 let fd = self.file.as_raw_fd();
                 let unlock = libc::flock {
-                    l_type: libc::LOCK_UN as i16,
+                    l_type: libc::F_UNLCK as i16,
                     l_whence: libc::SEEK_SET as i16,
                     l_start: 0,
                     l_len: 0,
