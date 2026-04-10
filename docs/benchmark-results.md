@@ -4,6 +4,7 @@ Machine: Apple Silicon (M-series), single-threaded, `--release`.
 Dataset: GloVe-25 (1.18M vectors, 25-d, cosine / angular), from ann-benchmarks.com.
 Ground truth: brute-force cosine k-NN on L2-normalized vectors.
 SIMD: `innr` (pure Rust SIMD, default feature).
+QPS: sequential single-query throughput (queries / wall-clock seconds). 50-query warmup before measurement.
 
 ## GloVe-25 — Graph indexes
 
@@ -141,15 +142,27 @@ Exact k-NN via exhaustive cosine search: 100% recall @ 42 QPS. Baseline.
 
 ## Context
 
-- **hnswlib (C++)**: ~95% recall @ ~5K QPS on same dataset (AVX2, optimized C++).
-  vicinity is ~3-4× slower on graph traversal — expected for pure Rust without
-  hand-tuned AVX2. The `simsimd` feature is not yet benchmarked here.
-- **Vamana vs HNSW**: at the same recall level (~87%), Vamana is ~8.7× faster.
-  Vamana's search is a single greedy beam (no hierarchy traversal), which amortizes
-  better at low ef. HNSW has a smaller QPS range across the ef sweep.
-- **NSW speed**: NSW's flat graph search is significantly faster than HNSW at the same
-  ef, consistent with Munyampirwa et al. (2024) (arXiv:2412.01940). The recall ceiling
-  is ~1-2 pp lower than HNSW at the same ef.
+- **hnswlib (C++)**: ~95% recall @ ~5K QPS is the approximate ann-benchmarks.com
+  number for GloVe-25 (different machine, AVX2, ef_construction=500 vs our 200).
+  Not a direct comparison -- run both on the same machine for valid numbers.
+- **Vamana vs HNSW**: at the same recall level (~87%), Vamana is ~8.7x faster at
+  ef=10. At high recall (>=99%), the advantage narrows to ~1.2x. Vamana's single
+  greedy beam amortizes better at low ef; HNSW's hierarchy provides more consistent
+  QPS across the ef sweep.
+- **NSW speed**: NSW's flat graph search is faster than HNSW at the same ef,
+  consistent with Munyampirwa et al. (2024) (arXiv:2412.01940). The recall ceiling
+  is ~1-2 pp lower than HNSW at the same ef. Note: ef is not semantically equivalent
+  between flat and hierarchical graphs; compare at the same recall, not the same ef.
 - **DiskANN vs Vamana**: same recall trajectory (both use the Vamana graph); DiskANN
   is ~15% slower QPS due to the disk I/O layout abstraction. On datasets that fit in
   RAM, Vamana is the better choice; DiskANN's advantage is for datasets > available RAM.
+  This benchmark runs entirely in memory and does not exercise DiskANN's disk path.
+
+### Caveats
+
+- All results are on GloVe-25 (25 dimensions). Algorithm rankings may differ at
+  higher dimensions (768+) where distance computation cost per graph edge increases.
+- Build times and QPS are single-run wall-clock measurements on a lightly loaded machine.
+- Memory numbers in the README are formula-based estimates, not measured RSS.
+- IVF-PQ with 5 codebooks on 25-d data is a known misconfiguration; the 45% recall
+  ceiling is not representative of IVF-PQ on higher-dimensional data.
