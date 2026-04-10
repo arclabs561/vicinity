@@ -1763,6 +1763,9 @@ impl HNSWIndex {
 
             // Paper formula (Algorithm 1, line 4): l = floor(-ln(uniform) * mL)
             let u: f64 = {
+                // Safety: lock is only held briefly during layer assignment;
+                // poisoning would require a panic inside this critical section.
+                #[allow(clippy::expect_used)]
                 let mut rng_guard = self.rng.lock().expect("rng lock poisoned");
                 if let Some(ref mut seeded_rng) = *rng_guard {
                     seeded_rng.random()
