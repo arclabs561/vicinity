@@ -8,52 +8,13 @@
 //! still uses insertion-order indices for graph navigation, but those are not
 //! exposed in the public search results. The index uses cosine distance internally.
 
+#[path = "common/mod.rs"]
+mod common;
+use common::*;
+
 use std::collections::HashSet;
 use vicinity::hnsw::filtered::{acorn_search, AcornConfig, FnFilter};
 use vicinity::hnsw::{HNSWIndex, HNSWParams};
-
-/// Generate random vectors for testing.
-fn random_vectors(n: usize, dim: usize, seed: u64) -> Vec<Vec<f32>> {
-    use std::hash::{Hash, Hasher};
-
-    (0..n)
-        .map(|i| {
-            (0..dim)
-                .map(|j| {
-                    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                    seed.hash(&mut hasher);
-                    i.hash(&mut hasher);
-                    j.hash(&mut hasher);
-                    let h = hasher.finish();
-                    (h as f64 / u64::MAX as f64 * 2.0 - 1.0) as f32
-                })
-                .collect()
-        })
-        .collect()
-}
-
-/// Normalize a vector to unit length (for cosine similarity).
-fn normalize(v: &[f32]) -> Vec<f32> {
-    let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm < 1e-10 {
-        v.to_vec()
-    } else {
-        v.iter().map(|x| x / norm).collect()
-    }
-}
-
-/// Cosine distance: 1 - cosine_similarity.
-fn cosine_distance(a: &[f32], b: &[f32]) -> f32 {
-    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-
-    if norm_a < 1e-10 || norm_b < 1e-10 {
-        return 1.0;
-    }
-
-    1.0 - dot / (norm_a * norm_b)
-}
 
 /// Compute exact k-NN using cosine distance.
 fn exact_knn_cosine(vectors: &[Vec<f32>], query: &[f32], k: usize) -> Vec<(u32, f32)> {
@@ -61,7 +22,7 @@ fn exact_knn_cosine(vectors: &[Vec<f32>], query: &[f32], k: usize) -> Vec<(u32, 
         .iter()
         .enumerate()
         .map(|(i, v)| {
-            let dist = cosine_distance(v, query);
+            let dist = vicinity::distance::cosine_distance(v, query);
             (i as u32, dist)
         })
         .collect();
@@ -69,13 +30,6 @@ fn exact_knn_cosine(vectors: &[Vec<f32>], query: &[f32], k: usize) -> Vec<(u32, 
     distances.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
     distances.truncate(k);
     distances
-}
-
-/// Calculate recall@k.
-fn recall_at_k(exact: &[(u32, f32)], approx: &[(u32, f32)], k: usize) -> f32 {
-    let exact_set: HashSet<u32> = exact.iter().take(k).map(|(i, _)| *i).collect();
-    let approx_set: HashSet<u32> = approx.iter().take(k).map(|(i, _)| *i).collect();
-    exact_set.intersection(&approx_set).count() as f32 / k as f32
 }
 
 const DEFAULT_EF: usize = 50;
@@ -146,7 +100,7 @@ fn test_hnsw_recall_quality() {
         let exact = exact_knn_cosine(&vectors, query, k);
         let approx = hnsw.search(query, k, 150).expect("Search failed");
 
-        let recall = recall_at_k(&exact, &approx, k);
+        let recall = recall_at_k_sets(&exact, &approx, k);
         total_recall += recall;
     }
 
@@ -370,8 +324,8 @@ fn test_hnsw_ef_tradeoff() {
     // High ef_search
     let approx_high = hnsw.search(&query, k, 200).expect("Search failed");
 
-    let recall_low = recall_at_k(&exact, &approx_low, k);
-    let recall_high = recall_at_k(&exact, &approx_high, k);
+    let recall_low = recall_at_k_sets(&exact, &approx_low, k);
+    let recall_high = recall_at_k_sets(&exact, &approx_high, k);
 
     // Higher ef should give equal or better recall (with small tolerance for randomness)
     assert!(
@@ -497,7 +451,7 @@ fn test_hnsw_recall_monotonic_with_ef() {
 
         for &ef in &ef_values {
             let results = hnsw.search(query, k, ef).expect("Search failed");
-            let recall = recall_at_k(&exact, &results, k);
+            let recall = recall_at_k_sets(&exact, &results, k);
 
             // Recall should not decrease as ef increases
             // Allow small tolerance for floating point and edge cases
@@ -776,7 +730,12 @@ fn test_filtered_search_oracle() {
     for i in 0..n {
         let mut dists: Vec<(u32, f32)> = (0..n)
             .filter(|&j| j != i)
-            .map(|j| (j as u32, cosine_distance(&vectors[i], &vectors[j])))
+            .map(|j| {
+                (
+                    j as u32,
+                    vicinity::distance::cosine_distance(&vectors[i], &vectors[j]),
+                )
+            })
             .collect();
         dists.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
         for &(j, _) in dists.iter().take(neighbors_per_node) {
@@ -800,7 +759,12 @@ fn test_filtered_search_oracle() {
         // Brute-force filtered ground truth: exact k-NN among vectors with target category.
         let mut gt: Vec<(u32, f32)> = (0..n as u32)
             .filter(|&id| category_of(id) == target_category)
-            .map(|id| (id, cosine_distance(&vectors[id as usize], query)))
+            .map(|id| {
+                (
+                    id,
+                    vicinity::distance::cosine_distance(&vectors[id as usize], query),
+                )
+            })
             .collect();
         gt.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
         gt.truncate(k);
@@ -810,8 +774,8 @@ fn test_filtered_search_oracle() {
         // Pick the entry point closest to the query (simulates HNSW upper-layer routing).
         let entry_point = (0..n as u32)
             .min_by(|&a, &b| {
-                let da = cosine_distance(&vectors[a as usize], query);
-                let db = cosine_distance(&vectors[b as usize], query);
+                let da = vicinity::distance::cosine_distance(&vectors[a as usize], query);
+                let db = vicinity::distance::cosine_distance(&vectors[b as usize], query);
                 da.partial_cmp(&db).unwrap()
             })
             .unwrap();
@@ -830,7 +794,7 @@ fn test_filtered_search_oracle() {
             &config,
             &filter,
             |id| graph[id as usize].clone(),
-            |id| cosine_distance(&vectors[id as usize], query),
+            |id| vicinity::distance::cosine_distance(&vectors[id as usize], query),
             entry_point,
         )
         .expect("acorn_search failed");

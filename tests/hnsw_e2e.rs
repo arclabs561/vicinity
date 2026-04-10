@@ -9,48 +9,11 @@
 
 #![cfg(feature = "hnsw")]
 
-use std::collections::HashSet;
+#[path = "common/mod.rs"]
+mod common;
+use common::*;
 
 use vicinity::hnsw::{HNSWIndex, HNSWParams};
-
-fn dot(a: &[f32], b: &[f32]) -> f32 {
-    a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
-}
-
-fn norm(v: &[f32]) -> f32 {
-    dot(v, v).sqrt()
-}
-
-fn normalize(v: &[f32]) -> Vec<f32> {
-    let n = norm(v);
-    if n < 1e-10 {
-        v.to_vec()
-    } else {
-        v.iter().map(|x| x / n).collect()
-    }
-}
-
-/// Cosine distance = 1 - cosine_similarity
-/// For normalized vectors: cosine_similarity = dot product
-fn cosine_distance(a: &[f32], b: &[f32]) -> f32 {
-    1.0 - dot(a, b)
-}
-
-fn compute_ground_truth(query: &[f32], database: &[Vec<f32>], k: usize) -> Vec<u32> {
-    let mut distances: Vec<(u32, f32)> = database
-        .iter()
-        .enumerate()
-        .map(|(i, vec)| (i as u32, cosine_distance(query, vec)))
-        .collect();
-    distances.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
-    distances.into_iter().take(k).map(|(id, _)| id).collect()
-}
-
-fn recall_at_k(ground_truth: &[u32], retrieved: &[u32], k: usize) -> f32 {
-    let gt_set: HashSet<u32> = ground_truth.iter().take(k).copied().collect();
-    let ret_set: HashSet<u32> = retrieved.iter().take(k).copied().collect();
-    gt_set.intersection(&ret_set).count() as f32 / k as f32
-}
 
 /// Create clustered dataset with normalized vectors (required for cosine distance).
 fn create_clustered_dataset(
@@ -119,10 +82,9 @@ fn test_hnsw_achieves_reasonable_recall() {
     // Compute ground truth and measure recall
     let mut total_recall = 0.0;
     for query in &queries {
-        let gt = compute_ground_truth(query, &database, k);
+        let gt = brute_force_knn(query, &database, k);
         let results = index.search(query, k, 100).expect("Search failed");
-        let retrieved: Vec<u32> = results.iter().map(|(id, _)| *id).collect();
-        total_recall += recall_at_k(&gt, &retrieved, k);
+        total_recall += recall_at_k(&results, &gt);
     }
 
     let mean_recall = total_recall / queries.len() as f32;
@@ -166,7 +128,7 @@ fn test_hnsw_recall_increases_with_ef() {
     // Compute ground truth once
     let ground_truths: Vec<Vec<u32>> = queries
         .iter()
-        .map(|q| compute_ground_truth(q, &database, k))
+        .map(|q| brute_force_knn(q, &database, k))
         .collect();
 
     // Measure recall at different ef values
@@ -177,8 +139,7 @@ fn test_hnsw_recall_increases_with_ef() {
         let mut total_recall = 0.0;
         for (query, gt) in queries.iter().zip(&ground_truths) {
             let results = index.search(query, k, ef).expect("Search failed");
-            let retrieved: Vec<u32> = results.iter().map(|(id, _)| *id).collect();
-            total_recall += recall_at_k(gt, &retrieved, k);
+            total_recall += recall_at_k(&results, gt);
         }
         let mean_recall = total_recall / queries.len() as f32;
         recalls.push(mean_recall);
@@ -304,14 +265,13 @@ fn test_scaling_recall() {
 
         let ground_truths: Vec<Vec<u32>> = queries
             .iter()
-            .map(|q| compute_ground_truth(q, &database, k))
+            .map(|q| brute_force_knn(q, &database, k))
             .collect();
 
         let mut total_recall = 0.0;
         for (query, gt) in queries.iter().zip(&ground_truths) {
             let results = index.search(query, k, ef).expect("Search failed");
-            let retrieved: Vec<u32> = results.iter().map(|(id, _)| *id).collect();
-            total_recall += recall_at_k(gt, &retrieved, k);
+            total_recall += recall_at_k(&results, gt);
         }
         let mean_recall = total_recall / queries.len() as f32;
         eprintln!("n={}: recall@{}={:.1}%", n, k, mean_recall * 100.0);
@@ -332,7 +292,7 @@ fn test_compare_neighbor_selection() {
 
     let ground_truths: Vec<Vec<u32>> = queries
         .iter()
-        .map(|q| compute_ground_truth(q, &database, k))
+        .map(|q| brute_force_knn(q, &database, k))
         .collect();
 
     // Test different diversification strategies
@@ -371,8 +331,7 @@ fn test_compare_neighbor_selection() {
         let mut total_recall = 0.0;
         for (query, gt) in queries.iter().zip(&ground_truths) {
             let results = index.search(query, k, ef).expect("Search failed");
-            let retrieved: Vec<u32> = results.iter().map(|(id, _)| *id).collect();
-            total_recall += recall_at_k(gt, &retrieved, k);
+            total_recall += recall_at_k(&results, gt);
         }
         let mean_recall = total_recall / queries.len() as f32;
         eprintln!("{}: recall@{}={:.1}%", name, k, mean_recall * 100.0);
@@ -425,14 +384,13 @@ fn test_uniform_random_data() {
 
     let ground_truths: Vec<Vec<u32>> = queries
         .iter()
-        .map(|q| compute_ground_truth(q, &database, k))
+        .map(|q| brute_force_knn(q, &database, k))
         .collect();
 
     let mut total_recall = 0.0;
     for (query, gt) in queries.iter().zip(&ground_truths) {
         let results = index.search(query, k, 200).expect("Search failed");
-        let retrieved: Vec<u32> = results.iter().map(|(id, _)| *id).collect();
-        total_recall += recall_at_k(gt, &retrieved, k);
+        total_recall += recall_at_k(&results, gt);
     }
     let mean_recall = total_recall / queries.len() as f32;
 
@@ -468,7 +426,7 @@ fn test_returned_distances_correct() {
     // Verify each returned distance matches our computation
     for (id, returned_dist) in &results {
         let vec = &database[*id as usize];
-        let expected_dist = cosine_distance(query, vec);
+        let expected_dist = vicinity::distance::cosine_distance(query, vec);
 
         assert!(
             (returned_dist - expected_dist).abs() < 1e-5,
@@ -490,7 +448,7 @@ fn test_high_ef_search() {
 
     let ground_truths: Vec<Vec<u32>> = queries
         .iter()
-        .map(|q| compute_ground_truth(q, &database, k))
+        .map(|q| brute_force_knn(q, &database, k))
         .collect();
 
     let params = HNSWParams {
@@ -513,8 +471,7 @@ fn test_high_ef_search() {
         let mut total_recall = 0.0;
         for (query, gt) in queries.iter().zip(&ground_truths) {
             let results = index.search(query, k, ef).expect("Search failed");
-            let retrieved: Vec<u32> = results.iter().map(|(id, _)| *id).collect();
-            total_recall += recall_at_k(gt, &retrieved, k);
+            total_recall += recall_at_k(&results, gt);
         }
         let mean_recall = total_recall / queries.len() as f32;
         eprintln!("ef={}: recall@{}={:.1}%", ef, k, mean_recall * 100.0);
@@ -662,14 +619,11 @@ fn test_streaming_recall_after_updates() {
         let query = &all_vectors[query_idx * 10];
 
         // Compute ground truth
-        let gt = compute_ground_truth(query, &all_vectors, k);
+        let gt = brute_force_knn(query, &all_vectors, k);
 
         // Search via index
         let results = index.search(query, k).unwrap();
-        let retrieved: Vec<u32> = results.iter().map(|(id, _)| *id).collect();
-
-        let recall = recall_at_k(&gt, &retrieved, k);
-        total_recall += recall;
+        total_recall += recall_at_k(&results, &gt);
     }
 
     let mean_recall = total_recall / n_queries as f32;

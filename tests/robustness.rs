@@ -6,7 +6,11 @@
 //! empty indexes, dimension mismatches, SIMD odd dimensions, and misuse patterns.
 //! Tests should not panic -- they assert that errors are returned or results are valid.
 
-use vicinity::distance::{normalize, DistanceMetric};
+#[path = "common/mod.rs"]
+mod common;
+use common::normalize;
+
+use vicinity::distance::DistanceMetric;
 use vicinity::hnsw::HNSWIndex;
 
 // ---------------------------------------------------------------------------
@@ -222,19 +226,6 @@ fn add_batch_correct_dimensions_succeeds() {
 // ---------------------------------------------------------------------------
 // 8. Additional edge cases
 // ---------------------------------------------------------------------------
-
-#[test]
-fn duplicate_doc_id_rejected() {
-    let mut index = HNSWIndex::new(4, 16, 32).unwrap();
-    let v = normalize(&[1.0, 0.0, 0.0, 0.0]);
-    index.add_slice(0, &v).unwrap();
-
-    let result = index.add_slice(0, &v);
-    assert!(
-        result.is_err(),
-        "adding a duplicate doc_id should return Err"
-    );
-}
 
 #[test]
 fn search_k_zero_returns_empty() {

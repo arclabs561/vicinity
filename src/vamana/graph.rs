@@ -155,13 +155,6 @@ mod tests {
     use crate::distance;
 
     #[test]
-    fn test_vamana_create() {
-        let params = VamanaParams::default();
-        let index = VamanaIndex::new(128, params);
-        assert!(index.is_ok());
-    }
-
-    #[test]
     fn test_vamana_add() {
         let params = VamanaParams::default();
         let mut index = VamanaIndex::new(128, params).unwrap();

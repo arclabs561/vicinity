@@ -10,6 +10,10 @@
 
 #![cfg(feature = "hnsw")]
 
+#[path = "common/mod.rs"]
+mod common;
+use common::*;
+
 use std::collections::HashSet;
 use vicinity::distance;
 use vicinity::hnsw::filtered::{acorn_search, AcornConfig, FnFilter, NoFilter};
@@ -18,15 +22,6 @@ use vicinity::hnsw::HNSWIndex;
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-fn normalize(v: &[f32]) -> Vec<f32> {
-    let n: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if n < 1e-10 {
-        v.to_vec()
-    } else {
-        v.iter().map(|x| x / n).collect()
-    }
-}
 
 /// Brute-force ground truth using cosine distance for normalized vectors.
 fn ground_truth_cosine(query: &[f32], database: &[Vec<f32>], k: usize) -> Vec<u32> {
@@ -37,33 +32,6 @@ fn ground_truth_cosine(query: &[f32], database: &[Vec<f32>], k: usize) -> Vec<u3
         .collect();
     dists.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
     dists.iter().take(k).map(|(id, _)| *id).collect()
-}
-
-fn recall_at_k(retrieved: &[(u32, f32)], ground_truth: &[u32]) -> f32 {
-    let gt_set: HashSet<u32> = ground_truth.iter().copied().collect();
-    let hits = retrieved
-        .iter()
-        .filter(|(id, _)| gt_set.contains(id))
-        .count();
-    hits as f32 / ground_truth.len().max(1) as f32
-}
-
-/// Generate a synthetic dataset of normalized random vectors.
-fn random_normalized_vectors(n: usize, dim: usize, seed: u64) -> Vec<Vec<f32>> {
-    // Simple LCG for determinism without importing rand in tests
-    let mut state = seed;
-    let mut next_f32 = || -> f32 {
-        state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
-        // Map to [-1, 1]
-        ((state >> 33) as f32) / (u32::MAX as f32 / 2.0) - 1.0
-    };
-
-    (0..n)
-        .map(|_| {
-            let raw: Vec<f32> = (0..dim).map(|_| next_f32()).collect();
-            normalize(&raw)
-        })
-        .collect()
 }
 
 // ---------------------------------------------------------------------------
