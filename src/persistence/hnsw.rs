@@ -218,6 +218,7 @@ impl HNSWSegmentReader {
             auto_normalize: false,
             seed_selection: SeedSelectionStrategy::default(),
             neighborhood_diversification: NeighborhoodDiversification::default(),
+            seed: None,
             #[cfg(feature = "id-compression")]
             id_compression: None,
             #[cfg(feature = "id-compression")]

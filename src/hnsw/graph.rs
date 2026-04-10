@@ -6,7 +6,9 @@ use crate::RetrieveError;
 #[cfg(feature = "hnsw")]
 use smallvec::SmallVec;
 
+use rand::SeedableRng;
 use std::collections::HashMap;
+use std::sync::Mutex;
 
 /// HNSW index for approximate nearest neighbor search.
 ///
@@ -80,6 +82,11 @@ pub struct HNSWIndex {
     /// Skipped during serialization -- starts empty on deserialization.
     #[cfg_attr(feature = "serde", serde(skip))]
     tombstones: TombstoneSet,
+
+    /// Internal RNG for layer assignment. Seeded from `params.seed` when set,
+    /// otherwise uses thread-local RNG.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    rng: Mutex<Option<rand::rngs::StdRng>>,
 }
 
 /// Seed selection strategy for HNSW search initialization.
@@ -160,6 +167,10 @@ pub struct HNSWParams {
     /// Neighborhood diversification strategy (default: RND for best performance)
     pub neighborhood_diversification: NeighborhoodDiversification,
 
+    /// Optional RNG seed for reproducible layer assignments.
+    /// When `None` (default), uses thread-local RNG.
+    pub seed: Option<u64>,
+
     /// ID compression method (optional)
     #[cfg(feature = "id-compression")]
     #[cfg_attr(feature = "serde", serde(skip))]
@@ -191,6 +202,7 @@ impl Default for HNSWParams {
             auto_normalize: false,
             seed_selection: SeedSelectionStrategy::default(),
             neighborhood_diversification: NeighborhoodDiversification::default(),
+            seed: None,
             #[cfg(feature = "id-compression")]
             id_compression: None,
             #[cfg(feature = "id-compression")]
@@ -551,6 +563,7 @@ impl HNSWIndex {
             filter_field: None,
             category_assignments: Vec::new(),
             tombstones: TombstoneSet::default(),
+            rng: Mutex::new(None),
         })
     }
 
@@ -575,6 +588,7 @@ impl HNSWIndex {
             num_vectors: 0,
             layers: Vec::new(),
             layer_assignments: Vec::new(),
+            rng: Mutex::new(params.seed.map(rand::rngs::StdRng::seed_from_u64)),
             params,
             built: false,
             metadata: None,
@@ -627,6 +641,7 @@ impl HNSWIndex {
             filter_field: Some(filter_field.into()),
             category_assignments: Vec::new(),
             tombstones: TombstoneSet::default(),
+            rng: Mutex::new(None),
         })
     }
 
@@ -832,6 +847,7 @@ impl HNSWIndex {
         built: bool,
         doc_ids: Vec<u32>,
     ) -> Result<Self, RetrieveError> {
+        let seed = params.seed;
         // Build reverse map (validate_structure checks for duplicates).
         let doc_id_to_internal: HashMap<u32, u32> = doc_ids
             .iter()
@@ -853,6 +869,7 @@ impl HNSWIndex {
             filter_field: None,
             category_assignments: Vec::new(),
             tombstones: TombstoneSet::default(),
+            rng: Mutex::new(seed.map(rand::rngs::StdRng::seed_from_u64)),
         };
 
         // Reuse shared validation. Map FormatError to InvalidParameter to
@@ -1743,10 +1760,16 @@ impl HNSWIndex {
         #[cfg(feature = "hnsw")]
         {
             use rand::Rng;
-            let mut rng = rand::rng();
 
             // Paper formula (Algorithm 1, line 4): l = floor(-ln(uniform) * mL)
-            let u: f64 = rng.random();
+            let u: f64 = {
+                let mut rng_guard = self.rng.lock().expect("rng lock poisoned");
+                if let Some(ref mut seeded_rng) = *rng_guard {
+                    seeded_rng.random()
+                } else {
+                    rand::rng().random()
+                }
+            };
             (-u.ln() * self.params.m_l).floor() as u8
         }
         #[cfg(not(feature = "hnsw"))]
