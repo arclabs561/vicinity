@@ -292,6 +292,10 @@ fn measure(
     k: usize,
     ef: usize,
 ) -> (f64, f64) {
+    // Warmup: populate caches before timed run
+    for q in test.iter().take(50) {
+        let _ = index.search(q, k, ef);
+    }
     let t = Instant::now();
     let mut recall_sum = 0.0;
     for (i, q) in test.iter().enumerate() {
@@ -310,6 +314,9 @@ fn measure_nsw(
     k: usize,
     ef: usize,
 ) -> (f64, f64) {
+    for q in test.iter().take(50) {
+        let _ = index.search(q, k, ef);
+    }
     let t = Instant::now();
     let mut recall_sum = 0.0;
     for (i, q) in test.iter().enumerate() {
@@ -322,6 +329,9 @@ fn measure_nsw(
 
 #[cfg(feature = "ivf_pq")]
 fn measure_ivfpq(index: &IVFPQIndex, test: &[Vec<f32>], gt: &[Vec<i32>], k: usize) -> (f64, f64) {
+    for q in test.iter().take(50) {
+        let _ = index.search(q, k);
+    }
     let t = Instant::now();
     let mut recall_sum = 0.0;
     for (i, q) in test.iter().enumerate() {
@@ -340,6 +350,9 @@ fn measure_vamana(
     k: usize,
     ef: usize,
 ) -> (f64, f64) {
+    for q in test.iter().take(50) {
+        let _ = index.search(q, k, ef);
+    }
     let t = Instant::now();
     let mut recall_sum = 0.0;
     for (i, q) in test.iter().enumerate() {
@@ -391,6 +404,9 @@ fn measure_diskann(
     k: usize,
     ef: usize,
 ) -> (f64, f64) {
+    for q in test.iter().take(50) {
+        let _ = index.search(q, k, ef);
+    }
     let t = Instant::now();
     let mut recall_sum = 0.0;
     for (i, q) in test.iter().enumerate() {
@@ -408,6 +424,9 @@ fn measure_ivf_avq(
     gt: &[Vec<i32>],
     k: usize,
 ) -> (f64, f64) {
+    for q in test.iter().take(50) {
+        let _ = index.search(q, k);
+    }
     let t = Instant::now();
     let mut recall_sum = 0.0;
     for (i, q) in test.iter().enumerate() {
