@@ -74,6 +74,12 @@ pub struct IVFPQIndex {
     metadata: Option<crate::filtering::MetadataStore>,
     /// Field name for filtering (e.g., "category")
     filter_field: Option<String>,
+
+    /// HNSW index over centroids for O(log nlist) coarse lookup.
+    /// Built automatically during `build()` when both `ivf_pq` and `hnsw` features are enabled.
+    /// Falls back to brute-force centroid scan when `None`.
+    #[cfg(feature = "hnsw")]
+    coarse_quantizer: Option<crate::hnsw::HNSWIndex>,
 }
 
 /// IVF-PQ parameters.
@@ -296,6 +302,8 @@ impl IVFPQIndex {
             quantized_codes: Vec::new(),
             metadata: None,
             filter_field: None,
+            #[cfg(feature = "hnsw")]
+            coarse_quantizer: None,
         })
     }
 
@@ -324,6 +332,8 @@ impl IVFPQIndex {
             quantized_codes: Vec::new(),
             metadata: Some(crate::filtering::MetadataStore::new()),
             filter_field: Some(filter_field.into()),
+            #[cfg(feature = "hnsw")]
+            coarse_quantizer: None,
         })
     }
 
@@ -423,6 +433,23 @@ impl IVFPQIndex {
             .iter()
             .flat_map(|c| c.iter().copied())
             .collect();
+
+        // Build HNSW coarse quantizer over centroids for fast lookup.
+        #[cfg(feature = "hnsw")]
+        {
+            let num_centroids = self.centroids.len() / self.dimension;
+            let mut hnsw = crate::hnsw::HNSWIndex::builder(self.dimension)
+                .m(16)
+                .ef_construction(200)
+                .auto_normalize(true)
+                .build()?;
+            for i in 0..num_centroids {
+                let centroid = self.get_centroid(i);
+                hnsw.add_slice(i as u32, centroid)?;
+            }
+            hnsw.build()?;
+            self.coarse_quantizer = Some(hnsw);
+        }
 
         // Assign vectors to clusters
         let assignments = kmeans.assign_clusters(&self.vectors, self.num_vectors);
@@ -575,22 +602,8 @@ impl IVFPQIndex {
         };
         let query = query_normalized.as_slice();
 
-        // Find closest clusters (partial sort: O(C log nprobe) instead of O(C log C))
-        let num_centroids = self.centroids.len() / self.dimension;
-        let mut cluster_distances: Vec<(usize, f32)> = (0..num_centroids)
-            .map(|idx| {
-                let centroid = self.get_centroid(idx);
-                let dist = crate::distance::cosine_distance_normalized(query, centroid);
-                (idx, dist)
-            })
-            .collect();
-
-        let nprobe = self.params.nprobe.min(cluster_distances.len());
-        if nprobe < cluster_distances.len() {
-            cluster_distances.select_nth_unstable_by(nprobe, |a, b| a.1.total_cmp(&b.1));
-            cluster_distances.truncate(nprobe);
-        }
-        cluster_distances.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+        // Find closest clusters
+        let cluster_distances = self.find_nearest_centroids(query, self.params.nprobe);
 
         // Pre-allocate reusable buffers for the nprobe loop
         let mut candidates = Vec::new();
@@ -727,22 +740,8 @@ impl IVFPQIndex {
         };
         let query = query_normalized.as_slice();
 
-        // Find closest clusters (partial sort)
-        let num_centroids = self.centroids.len() / self.dimension;
-        let mut cluster_distances: Vec<(usize, f32)> = (0..num_centroids)
-            .map(|idx| {
-                let centroid = self.get_centroid(idx);
-                let dist = crate::distance::cosine_distance_normalized(query, centroid);
-                (idx, dist)
-            })
-            .collect();
-
-        let nprobe = self.params.nprobe.min(cluster_distances.len());
-        if nprobe < cluster_distances.len() {
-            cluster_distances.select_nth_unstable_by(nprobe, |a, b| a.1.total_cmp(&b.1));
-            cluster_distances.truncate(nprobe);
-        }
-        cluster_distances.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+        // Find closest clusters
+        let cluster_distances = self.find_nearest_centroids(query, self.params.nprobe);
 
         // Search in top nprobe clusters, skipping those without matching vectors
         let mut candidates = Vec::new();
@@ -809,5 +808,35 @@ impl IVFPQIndex {
         let start = idx * self.dimension;
         let end = start + self.dimension;
         &self.centroids[start..end]
+    }
+
+    /// Find the nprobe nearest centroid indices to `query`, sorted by distance.
+    /// Uses HNSW coarse quantizer when available, brute-force otherwise.
+    fn find_nearest_centroids(&self, query: &[f32], nprobe: usize) -> Vec<(usize, f32)> {
+        #[cfg(feature = "hnsw")]
+        if let Some(ref hnsw) = self.coarse_quantizer {
+            let ef = nprobe * 2;
+            if let Ok(results) = hnsw.search(query, nprobe, ef.max(nprobe)) {
+                return results
+                    .into_iter()
+                    .map(|(id, d)| (id as usize, d))
+                    .collect();
+            }
+        }
+
+        let num_centroids = self.centroids.len() / self.dimension;
+        let mut dists: Vec<(usize, f32)> = (0..num_centroids)
+            .map(|idx| {
+                let c = self.get_centroid(idx);
+                (idx, crate::distance::cosine_distance_normalized(query, c))
+            })
+            .collect();
+        let nprobe = nprobe.min(dists.len());
+        if nprobe < dists.len() {
+            dists.select_nth_unstable_by(nprobe, |a, b| a.1.total_cmp(&b.1));
+            dists.truncate(nprobe);
+        }
+        dists.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+        dists
     }
 }
