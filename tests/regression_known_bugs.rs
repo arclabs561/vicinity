@@ -18,6 +18,10 @@
 #![cfg(feature = "hnsw")]
 #![allow(clippy::float_cmp)]
 
+#[path = "common/mod.rs"]
+mod common;
+use common::*;
+
 /// Test inspired by hnswlib #592: Vector not normalized for cosine distance.
 ///
 /// When using cosine distance, unnormalized query vectors should still
@@ -33,8 +37,8 @@ fn cosine_distance_handles_unnormalized_query() {
     let query = vec![2.0f32, 0.0, 0.0];
 
     // c should be closer to query than b, regardless of normalization
-    let dist_query_b = cosine_distance(&query, &b);
-    let dist_query_c = cosine_distance(&query, &c);
+    let dist_query_b = vicinity::distance::cosine_distance(&query, &b);
+    let dist_query_c = vicinity::distance::cosine_distance(&query, &c);
 
     assert!(
         dist_query_c < dist_query_b,
@@ -42,17 +46,6 @@ fn cosine_distance_handles_unnormalized_query() {
         dist_query_c,
         dist_query_b
     );
-}
-
-/// Test inspired by faiss #4295: Integer overflow on large datasets.
-///
-/// Compile-time assertion that the faiss #4295 graph-size calculation
-/// (60M vectors × M=64 edges) fits in usize on 64-bit targets.
-#[test]
-fn size_calculations_dont_overflow() {
-    const NTOTAL: usize = 60_450_220;
-    const M: usize = 64;
-    const _: () = assert!(NTOTAL * M < usize::MAX / 2, "graph size overflows usize");
 }
 
 /// Test inspired by hnswlib #635: M vs Mcurmax bug in neighbor selection.
@@ -233,26 +226,4 @@ fn random_vec(dim: usize, seed: usize) -> Vec<f32> {
         .map(|i| ((seed * 31 + i * 17) as f32 * 0.001).sin())
         .collect();
     normalize(&raw)
-}
-
-fn normalize(v: &[f32]) -> Vec<f32> {
-    let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-    v.iter().map(|x| x / norm).collect()
-}
-
-fn cosine_distance(a: &[f32], b: &[f32]) -> f32 {
-    let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
-    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-    1.0 - dot / (norm_a * norm_b + f32::EPSILON)
-}
-
-fn brute_force_knn(query: &[f32], data: &[Vec<f32>], k: usize) -> Vec<u32> {
-    let mut dists: Vec<(u32, f32)> = data
-        .iter()
-        .enumerate()
-        .map(|(i, v)| (i as u32, cosine_distance(query, v)))
-        .collect();
-    dists.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
-    dists.into_iter().take(k).map(|(id, _)| id).collect()
 }

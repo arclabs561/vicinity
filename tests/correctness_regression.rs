@@ -5,18 +5,13 @@
 //! - NSW: construction quality (recall ≥ threshold)
 //! - ScaNN: residual codebook alignment
 
+#[path = "common/mod.rs"]
+mod common;
+use common::*;
+
 // ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
-
-fn normalize(v: &[f32]) -> Vec<f32> {
-    let n: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if n < 1e-10 {
-        v.to_vec()
-    } else {
-        v.iter().map(|x| x / n).collect()
-    }
-}
 
 /// Deterministic LCG.
 struct Lcg(u64);
@@ -35,25 +30,6 @@ impl Lcg {
         let v: Vec<f32> = (0..dim).map(|_| self.next_f32()).collect();
         normalize(&v)
     }
-}
-
-fn brute_force_cosine(query: &[f32], database: &[Vec<f32>], k: usize) -> Vec<u32> {
-    let mut dists: Vec<(u32, f32)> = database
-        .iter()
-        .enumerate()
-        .map(|(i, v)| {
-            let dot: f32 = query.iter().zip(v.iter()).map(|(a, b)| a * b).sum();
-            (i as u32, 1.0 - dot)
-        })
-        .collect();
-    dists.sort_by(|a, b| a.1.total_cmp(&b.1));
-    dists.iter().take(k).map(|(id, _)| *id).collect()
-}
-
-fn recall_at_k(retrieved: &[(u32, f32)], ground_truth: &[u32]) -> f32 {
-    let gt: std::collections::HashSet<u32> = ground_truth.iter().copied().collect();
-    let hits = retrieved.iter().filter(|(id, _)| gt.contains(id)).count();
-    hits as f32 / ground_truth.len().max(1) as f32
 }
 
 // ---------------------------------------------------------------------------
@@ -288,7 +264,7 @@ mod nsw_tests {
 
         for _ in 0..num_queries {
             let query = rng.next_normalized(16);
-            let gt = brute_force_cosine(&query, &vecs, 5);
+            let gt = brute_force_knn(&query, &vecs, 5);
             let results = index.search(&query, 5, 50).unwrap();
             total_recall += recall_at_k(&results, &gt);
         }
@@ -423,7 +399,7 @@ mod nsw_tests {
             let mut total = 0.0f32;
             for _ in 0..num_q {
                 let q = rng_q.next_normalized(dim);
-                let gt = brute_force_cosine(&q, &vecs, k);
+                let gt = brute_force_knn(&q, &vecs, k);
                 let res = index.search(&q, k, 50).unwrap();
                 total += recall_at_k(&res, &gt);
             }

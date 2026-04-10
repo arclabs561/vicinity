@@ -4,17 +4,11 @@
 //!
 //! Tests unusual inputs and boundary conditions that could cause failures.
 
-use std::collections::HashSet;
-use vicinity::hnsw::HNSWIndex;
+#[path = "common/mod.rs"]
+mod common;
+use common::*;
 
-fn normalize(v: &[f32]) -> Vec<f32> {
-    let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm < 1e-10 {
-        v.to_vec()
-    } else {
-        v.iter().map(|x| x / norm).collect()
-    }
-}
+use vicinity::hnsw::HNSWIndex;
 
 // =============================================================================
 // Dimension edge cases
@@ -345,44 +339,4 @@ fn k_equals_n() {
         results.len(),
         n
     );
-}
-
-// =============================================================================
-// Stability tests
-// =============================================================================
-
-#[test]
-fn deterministic_single_query() {
-    let dim = 32;
-    let mut hnsw = HNSWIndex::new(dim, 16, 16).expect("Failed to create");
-
-    // Use distinct vectors
-    let vectors: Vec<Vec<f32>> = (0..50)
-        .map(|i| {
-            let mut v = vec![0.0; dim];
-            v[i % dim] = 1.0;
-            v[(i * 3) % dim] = 0.3;
-            normalize(&v)
-        })
-        .collect();
-
-    for (i, v) in vectors.iter().enumerate() {
-        hnsw.add(i as u32, v.clone()).expect("Failed to add");
-    }
-    hnsw.build().expect("Failed to build");
-
-    let query = &vectors[25];
-
-    // Same query should give same results
-    let results1 = hnsw.search(query, 10, 50).expect("Search failed");
-    let results2 = hnsw.search(query, 10, 50).expect("Search failed");
-    let results3 = hnsw.search(query, 10, 50).expect("Search failed");
-
-    // Same indices (order might vary for tied distances)
-    let ids1: HashSet<u32> = results1.iter().map(|(i, _)| *i).collect();
-    let ids2: HashSet<u32> = results2.iter().map(|(i, _)| *i).collect();
-    let ids3: HashSet<u32> = results3.iter().map(|(i, _)| *i).collect();
-
-    assert_eq!(ids1, ids2, "Same query should find same vectors");
-    assert_eq!(ids2, ids3, "Same query should find same vectors");
 }

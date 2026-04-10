@@ -12,7 +12,10 @@
 //! dataset. Algorithms use different distance metrics internally, but on
 //! normalized vectors the nearest-neighbor rankings are identical.
 
-use std::collections::HashSet;
+#[path = "common/mod.rs"]
+mod common;
+use common::*;
+
 use vicinity::diskann::{DiskANNIndex, DiskANNParams};
 use vicinity::hnsw::HNSWIndex;
 use vicinity::nsw::NSWIndex;
@@ -22,46 +25,6 @@ use vicinity::sng::{SNGIndex, SNGParams};
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Deterministic pseudo-random vectors via std hash.
-fn random_vectors(n: usize, dim: usize, seed: u64) -> Vec<Vec<f32>> {
-    use std::hash::{Hash, Hasher};
-
-    (0..n)
-        .map(|i| {
-            (0..dim)
-                .map(|j| {
-                    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                    seed.hash(&mut hasher);
-                    i.hash(&mut hasher);
-                    j.hash(&mut hasher);
-                    let h = hasher.finish();
-                    (h as f64 / u64::MAX as f64 * 2.0 - 1.0) as f32
-                })
-                .collect()
-        })
-        .collect()
-}
-
-fn normalize(v: &[f32]) -> Vec<f32> {
-    let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm < 1e-10 {
-        v.to_vec()
-    } else {
-        v.iter().map(|x| x / norm).collect()
-    }
-}
-
-/// Cosine distance: 1 - cosine_similarity.
-fn cosine_distance(a: &[f32], b: &[f32]) -> f32 {
-    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm_a < 1e-10 || norm_b < 1e-10 {
-        return 1.0;
-    }
-    1.0 - dot / (norm_a * norm_b)
-}
-
 /// Brute-force exact k-NN using cosine distance.
 ///
 /// For normalized vectors the ranking is the same regardless of whether the
@@ -70,18 +33,11 @@ fn exact_knn(vectors: &[Vec<f32>], query: &[f32], k: usize) -> Vec<(u32, f32)> {
     let mut dists: Vec<(u32, f32)> = vectors
         .iter()
         .enumerate()
-        .map(|(i, v)| (i as u32, cosine_distance(v, query)))
+        .map(|(i, v)| (i as u32, vicinity::distance::cosine_distance(v, query)))
         .collect();
     dists.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
     dists.truncate(k);
     dists
-}
-
-/// Recall@k between exact and approximate result sets (by doc_id).
-fn recall_at_k(exact: &[(u32, f32)], approx: &[(u32, f32)], k: usize) -> f32 {
-    let exact_set: HashSet<u32> = exact.iter().take(k).map(|(id, _)| *id).collect();
-    let approx_set: HashSet<u32> = approx.iter().take(k).map(|(id, _)| *id).collect();
-    exact_set.intersection(&approx_set).count() as f32 / k as f32
 }
 
 // ---------------------------------------------------------------------------
@@ -185,10 +141,10 @@ fn cross_algorithm_recall_vs_brute_force() {
         let r_diskann = diskann.search(q, K, ef).expect("diskann search");
         let r_sng = sng.search(q, K).expect("sng search");
 
-        recall_hnsw_total += recall_at_k(&gt, &r_hnsw, K);
-        recall_nsw_total += recall_at_k(&gt, &r_nsw, K);
-        recall_diskann_total += recall_at_k(&gt, &r_diskann, K);
-        recall_sng_total += recall_at_k(&gt, &r_sng, K);
+        recall_hnsw_total += recall_at_k_sets(&gt, &r_hnsw, K);
+        recall_nsw_total += recall_at_k_sets(&gt, &r_nsw, K);
+        recall_diskann_total += recall_at_k_sets(&gt, &r_diskann, K);
+        recall_sng_total += recall_at_k_sets(&gt, &r_sng, K);
     }
 
     let n_q = N_QUERIES as f32;

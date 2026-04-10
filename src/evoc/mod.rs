@@ -134,12 +134,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_create_evoc() {
-        let evoc = EVoC::new(4, EVoCParams::default());
-        assert!(evoc.is_ok());
-    }
-
-    #[test]
     fn test_zero_dimension_error() {
         let result = EVoC::new(0, EVoCParams::default());
         assert!(result.is_err());

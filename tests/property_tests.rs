@@ -7,6 +7,9 @@
 //! - Memory estimates are consistent
 //! - Ground truth computation is correct
 
+#[path = "common/mod.rs"]
+mod common;
+
 use proptest::prelude::*;
 
 mod distance_props {
@@ -699,19 +702,11 @@ mod lid_aggregation_props {
 // =============================================================================
 
 mod metric_space_props {
+    use super::common::normalize;
     use super::*;
 
     fn arb_vec(dim: usize) -> impl Strategy<Value = Vec<f32>> {
         prop::collection::vec(-10.0f32..10.0, dim)
-    }
-
-    fn normalize(v: &[f32]) -> Vec<f32> {
-        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-        if norm < 1e-10 {
-            v.to_vec()
-        } else {
-            v.iter().map(|x| x / norm).collect()
-        }
     }
 
     fn l2_squared(a: &[f32], b: &[f32]) -> f32 {
@@ -864,37 +859,9 @@ mod metric_space_props {
 
 #[cfg(feature = "hnsw")]
 mod hnsw_props {
+    use super::common::{normalize, random_normalized_vectors, random_vectors};
     use super::*;
     use vicinity::hnsw::HNSWIndex;
-
-    fn normalize(v: &[f32]) -> Vec<f32> {
-        let n: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-        if n < 1e-10 {
-            v.to_vec()
-        } else {
-            v.iter().map(|x| x / n).collect()
-        }
-    }
-
-    fn random_vectors(n: usize, dim: usize, seed: u64) -> Vec<Vec<f32>> {
-        use std::hash::{Hash, Hasher};
-
-        (0..n)
-            .map(|i| {
-                let raw: Vec<f32> = (0..dim)
-                    .map(|j| {
-                        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                        seed.hash(&mut hasher);
-                        i.hash(&mut hasher);
-                        j.hash(&mut hasher);
-                        let h = hasher.finish();
-                        (h as f64 / u64::MAX as f64 * 2.0 - 1.0) as f32
-                    })
-                    .collect();
-                normalize(&raw)
-            })
-            .collect()
-    }
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(50))]
@@ -908,7 +875,7 @@ mod hnsw_props {
         ) {
             let dim = 16;
             let k = k.min(n);
-            let vectors = random_vectors(n, dim, seed);
+            let vectors = random_normalized_vectors(n, dim, seed);
 
             let mut hnsw = HNSWIndex::new(dim, 16, 16).expect("Failed to create");
             for (i, v) in vectors.iter().enumerate() {
@@ -934,7 +901,7 @@ mod hnsw_props {
             seed in any::<u64>(),
         ) {
             let dim = 16;
-            let vectors = random_vectors(n, dim, seed);
+            let vectors = random_normalized_vectors(n, dim, seed);
 
             let mut hnsw = HNSWIndex::new(dim, 16, 16).expect("Failed to create");
             for (i, v) in vectors.iter().enumerate() {
@@ -962,7 +929,7 @@ mod hnsw_props {
             seed in any::<u64>(),
         ) {
             let dim = 16;
-            let vectors = random_vectors(n, dim, seed);
+            let vectors = random_normalized_vectors(n, dim, seed);
 
             let mut hnsw = HNSWIndex::new(dim, 16, 16).expect("Failed to create");
             for (i, v) in vectors.iter().enumerate() {
@@ -987,7 +954,7 @@ mod hnsw_props {
             seed in any::<u64>(),
         ) {
             let dim = 16;
-            let vectors = random_vectors(n, dim, seed);
+            let vectors = random_normalized_vectors(n, dim, seed);
 
             let mut hnsw = HNSWIndex::new(dim, 16, 16).expect("Failed to create");
             for (i, v) in vectors.iter().enumerate() {
@@ -1109,40 +1076,12 @@ mod hnsw_props {
 
 #[cfg(all(feature = "persistence", feature = "hnsw"))]
 mod persistence_props {
+    use super::common::{normalize, random_vectors};
     use super::*;
     use std::collections::HashSet;
     use vicinity::hnsw::HNSWIndex;
     use vicinity::persistence::directory::MemoryDirectory;
     use vicinity::persistence::hnsw::{HNSWSegmentReader, HNSWSegmentWriter};
-
-    fn normalize(v: &[f32]) -> Vec<f32> {
-        let n: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-        if n < 1e-10 {
-            v.to_vec()
-        } else {
-            v.iter().map(|x| x / n).collect()
-        }
-    }
-
-    fn random_vectors(n: usize, dim: usize, seed: u64) -> Vec<Vec<f32>> {
-        use std::hash::{Hash, Hasher};
-
-        (0..n)
-            .map(|i| {
-                let raw: Vec<f32> = (0..dim)
-                    .map(|j| {
-                        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                        seed.hash(&mut hasher);
-                        i.hash(&mut hasher);
-                        j.hash(&mut hasher);
-                        let h = hasher.finish();
-                        (h as f64 / u64::MAX as f64 * 2.0 - 1.0) as f32
-                    })
-                    .collect();
-                normalize(&raw)
-            })
-            .collect()
-    }
 
     /// Generate unique doc_ids that are NOT sequential from 0.
     /// This tests that we're truly using external IDs, not internal indices.
@@ -1395,19 +1334,9 @@ mod persistence_props {
 
 #[cfg(feature = "hnsw")]
 mod hnsw_self_retrieval_props {
+    use super::common::random_normalized_vectors;
     use proptest::prelude::*;
     use vicinity::hnsw::HNSWIndex;
-
-    fn random_normalized_vectors(n: usize, dim: usize, seed: u64) -> Vec<Vec<f32>> {
-        use rand::prelude::*;
-        let mut rng = StdRng::seed_from_u64(seed);
-        (0..n)
-            .map(|_| {
-                let v: Vec<f32> = (0..dim).map(|_| rng.random::<f32>() - 0.5).collect();
-                vicinity::distance::normalize(&v)
-            })
-            .collect()
-    }
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(20))]
@@ -1447,36 +1376,9 @@ mod hnsw_self_retrieval_props {
 
 #[cfg(feature = "hnsw")]
 mod hnsw_ef_monotonicity_props {
+    use super::common::{brute_force_knn, random_normalized_vectors, recall_at_k};
     use proptest::prelude::*;
-    use std::collections::HashSet;
     use vicinity::hnsw::HNSWIndex;
-
-    fn random_normalized_vectors(n: usize, dim: usize, seed: u64) -> Vec<Vec<f32>> {
-        use rand::prelude::*;
-        let mut rng = StdRng::seed_from_u64(seed);
-        (0..n)
-            .map(|_| {
-                let v: Vec<f32> = (0..dim).map(|_| rng.random::<f32>() - 0.5).collect();
-                vicinity::distance::normalize(&v)
-            })
-            .collect()
-    }
-
-    fn brute_force_knn(query: &[f32], vectors: &[Vec<f32>], k: usize) -> Vec<u32> {
-        let mut dists: Vec<(u32, f32)> = vectors
-            .iter()
-            .enumerate()
-            .map(|(i, v)| (i as u32, vicinity::distance::cosine_distance(query, v)))
-            .collect();
-        dists.sort_by(|a, b| a.1.total_cmp(&b.1));
-        dists.into_iter().take(k).map(|(id, _)| id).collect()
-    }
-
-    fn recall_at_k(results: &[(u32, f32)], ground_truth: &[u32]) -> f32 {
-        let gt: HashSet<u32> = ground_truth.iter().copied().collect();
-        let found: HashSet<u32> = results.iter().map(|(id, _)| *id).collect();
-        gt.intersection(&found).count() as f32 / ground_truth.len().max(1) as f32
-    }
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(15))]
@@ -1525,36 +1427,9 @@ mod hnsw_ef_monotonicity_props {
 
 #[cfg(feature = "hnsw")]
 mod hnsw_build_order_props {
+    use super::common::{brute_force_knn, random_normalized_vectors, recall_at_k};
     use proptest::prelude::*;
-    use std::collections::HashSet;
     use vicinity::hnsw::HNSWIndex;
-
-    fn random_normalized_vectors(n: usize, dim: usize, seed: u64) -> Vec<Vec<f32>> {
-        use rand::prelude::*;
-        let mut rng = StdRng::seed_from_u64(seed);
-        (0..n)
-            .map(|_| {
-                let v: Vec<f32> = (0..dim).map(|_| rng.random::<f32>() - 0.5).collect();
-                vicinity::distance::normalize(&v)
-            })
-            .collect()
-    }
-
-    fn brute_force_knn(query: &[f32], vectors: &[Vec<f32>], k: usize) -> Vec<u32> {
-        let mut dists: Vec<(u32, f32)> = vectors
-            .iter()
-            .enumerate()
-            .map(|(i, v)| (i as u32, vicinity::distance::cosine_distance(query, v)))
-            .collect();
-        dists.sort_by(|a, b| a.1.total_cmp(&b.1));
-        dists.into_iter().take(k).map(|(id, _)| id).collect()
-    }
-
-    fn recall_at_k(results: &[(u32, f32)], ground_truth: &[u32]) -> f32 {
-        let gt: HashSet<u32> = ground_truth.iter().copied().collect();
-        let found: HashSet<u32> = results.iter().map(|(id, _)| *id).collect();
-        gt.intersection(&found).count() as f32 / ground_truth.len().max(1) as f32
-    }
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(10))]
@@ -1609,19 +1484,9 @@ mod hnsw_build_order_props {
 
 #[cfg(feature = "hnsw")]
 mod hnsw_neighbor_bound_props {
+    use super::common::random_normalized_vectors;
     use proptest::prelude::*;
     use vicinity::hnsw::HNSWIndex;
-
-    fn random_normalized_vectors(n: usize, dim: usize, seed: u64) -> Vec<Vec<f32>> {
-        use rand::prelude::*;
-        let mut rng = StdRng::seed_from_u64(seed);
-        (0..n)
-            .map(|_| {
-                let v: Vec<f32> = (0..dim).map(|_| rng.random::<f32>() - 0.5).collect();
-                vicinity::distance::normalize(&v)
-            })
-            .collect()
-    }
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(20))]
@@ -1653,20 +1518,10 @@ mod hnsw_neighbor_bound_props {
 
 #[cfg(feature = "hnsw")]
 mod hnsw_subset_props {
+    use super::common::random_normalized_vectors;
     use proptest::prelude::*;
     use std::collections::HashSet;
     use vicinity::hnsw::HNSWIndex;
-
-    fn random_normalized_vectors(n: usize, dim: usize, seed: u64) -> Vec<Vec<f32>> {
-        use rand::prelude::*;
-        let mut rng = StdRng::seed_from_u64(seed);
-        (0..n)
-            .map(|_| {
-                let v: Vec<f32> = (0..dim).map(|_| rng.random::<f32>() - 0.5).collect();
-                vicinity::distance::normalize(&v)
-            })
-            .collect()
-    }
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(30))]
@@ -1710,9 +1565,9 @@ mod hnsw_subset_props {
 
 #[cfg(feature = "ivf_pq")]
 mod ivf_pq_props {
-    use vicinity::ivf_pq::{IVFPQIndex, IVFPQParams};
-
+    use super::common::normalize;
     use proptest::prelude::*;
+    use vicinity::ivf_pq::{IVFPQIndex, IVFPQParams};
 
     fn default_params() -> IVFPQParams {
         IVFPQParams {
@@ -1722,15 +1577,6 @@ mod ivf_pq_props {
             codebook_size: 16,
             use_opq: false,
             ..IVFPQParams::default()
-        }
-    }
-
-    fn normalize(v: &[f32]) -> Vec<f32> {
-        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-        if norm < 1e-10 {
-            v.to_vec()
-        } else {
-            v.iter().map(|x| x / norm).collect()
         }
     }
 
@@ -1824,17 +1670,9 @@ mod ivf_pq_props {
 
 #[cfg(feature = "nsw")]
 mod nsw_props {
+    use super::common::normalize;
     use proptest::prelude::*;
     use vicinity::nsw::{NSWIndex, NSWParams};
-
-    fn normalize(v: &[f32]) -> Vec<f32> {
-        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-        if norm < 1e-10 {
-            v.to_vec()
-        } else {
-            v.iter().map(|x| x / norm).collect()
-        }
-    }
 
     proptest! {
         #![proptest_config(proptest::test_runner::Config::with_cases(30))]
