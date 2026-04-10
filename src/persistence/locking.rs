@@ -75,7 +75,10 @@ impl FileLock {
                 l_pid: 0,
             };
 
-            if unsafe { libc::fcntl(fd, libc::F_SETLK, &lock) } != 0 {
+            // F_OFD_SETLK: Open File Description locks (per-fd, not per-process).
+            // Available on Linux 3.15+ (2014). Unlike F_SETLK, two fds in the
+            // same process correctly conflict with each other.
+            if unsafe { libc::fcntl(fd, libc::F_OFD_SETLK, &lock) } != 0 {
                 return Err(PersistenceError::LockFailed {
                     resource: path.display().to_string(),
                     reason: format!("fcntl failed: {}", io::Error::last_os_error()),
@@ -162,7 +165,7 @@ impl Drop for FileLock {
                     l_pid: 0,
                 };
                 unsafe {
-                    libc::fcntl(fd, libc::F_SETLK, &unlock);
+                    libc::fcntl(fd, libc::F_OFD_SETLK, &unlock);
                 }
             }
         }
