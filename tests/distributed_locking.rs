@@ -5,7 +5,6 @@ use tempfile::tempdir;
 use vicinity::persistence::locking::{FileLock, LockType};
 
 #[test]
-#[ignore = "Linux fcntl locking uses wrong constants (LOCK_EX vs F_WRLCK); fix in persistence::locking"]
 fn test_local_file_lock_invariant() {
     let tmp = tempdir().unwrap();
     let path = tmp.path().join("local.lock");
