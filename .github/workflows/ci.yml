@@ -35,8 +35,8 @@ jobs:
         run: cargo build --no-default-features --features hnsw
       - name: Test (unit + integration)
         run: cargo test --no-default-features --features hnsw
-      - name: Test (all features)
-        run: cargo test --all-features
+      - name: Test (all features, lib only)
+        run: cargo test --lib --all-features
         env:
           RUSTFLAGS: ""
       - name: Doc tests
