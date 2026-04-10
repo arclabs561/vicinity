@@ -2,7 +2,7 @@
 //!
 //! ```bash
 //! # All algorithms
-//! cargo run --example glove_all_algos --release --features "hnsw,nsw,ivf_pq,vamana,ivf_avq,diskann" -- --algo all
+//! cargo run --example glove_all_algos --release --features "hnsw,nsw,ivf_pq,vamana,ivf_avq,diskann,kdtree,balltree,rptree" -- --algo all
 //!
 //! # Individual algorithms
 //! cargo run --example glove_all_algos --release --features "hnsw,nsw,ivf_pq,vamana,ivf_avq,diskann" -- --algo hnsw
@@ -11,6 +11,9 @@
 //! cargo run --example glove_all_algos --release --features "hnsw,nsw,ivf_pq,vamana,ivf_avq,diskann" -- --algo vamana
 //! cargo run --example glove_all_algos --release --features "hnsw,nsw,ivf_pq,vamana,ivf_avq,diskann" -- --algo ivf_avq
 //! cargo run --example glove_all_algos --release --features "hnsw,nsw,ivf_pq,vamana,ivf_avq,diskann" -- --algo diskann
+//! cargo run --example glove_all_algos --release --features "kdtree" -- --algo kdtree
+//! cargo run --example glove_all_algos --release --features "balltree" -- --algo balltree
+//! cargo run --example glove_all_algos --release --features "rptree" -- --algo rptree
 //!
 //! # Output appended to docs/glove-25-angular.jsonl; regenerate plot with:
 //! # uv run scripts/plot_comparison.py docs/glove-25-angular.jsonl
@@ -23,6 +26,12 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::time::Instant;
 
+#[cfg(feature = "balltree")]
+use vicinity::classic::trees::balltree::{BallTreeIndex, BallTreeParams};
+#[cfg(feature = "kdtree")]
+use vicinity::classic::trees::kdtree::{KDTreeIndex, KDTreeParams};
+#[cfg(feature = "rptree")]
+use vicinity::classic::trees::rp_forest::{RPTreeParams, RpForestIndex, RpForestParams};
 #[cfg(feature = "diskann")]
 use vicinity::diskann::{DiskANNIndex, DiskANNParams};
 use vicinity::hnsw::{HNSWIndex, HNSWParams};
@@ -71,6 +80,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "ivf_avq" => run_ivf_avq(&train, &test, &gt, k, dim)?,
         #[cfg(feature = "diskann")]
         "diskann" => run_diskann(&train, &test, &gt, k, dim)?,
+        #[cfg(feature = "kdtree")]
+        "kdtree" => run_kdtree(&train, &test, &gt, k, dim)?,
+        #[cfg(feature = "balltree")]
+        "balltree" => run_balltree(&train, &test, &gt, k, dim)?,
+        #[cfg(feature = "rptree")]
+        "rptree" => run_rptree(&train, &test, &gt, k, dim)?,
         "all" => {
             #[cfg(feature = "ivf_pq")]
             run_ivfpq(&train, &test, &gt, k, dim)?;
@@ -83,10 +98,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             run_ivf_avq(&train, &test, &gt, k, dim)?;
             #[cfg(feature = "diskann")]
             run_diskann(&train, &test, &gt, k, dim)?;
+            #[cfg(feature = "kdtree")]
+            run_kdtree(&train, &test, &gt, k, dim)?;
+            #[cfg(feature = "balltree")]
+            run_balltree(&train, &test, &gt, k, dim)?;
+            #[cfg(feature = "rptree")]
+            run_rptree(&train, &test, &gt, k, dim)?;
         }
         other => {
             eprintln!(
-                "Unknown algorithm: {other}. Use: hnsw | nsw | ivfpq | vamana | ivf_avq | diskann | all"
+                "Unknown algorithm: {other}. Use: hnsw | nsw | ivfpq | vamana | ivf_avq | diskann | kdtree | balltree | rptree | all"
             );
             std::process::exit(1);
         }
@@ -420,6 +441,146 @@ fn measure_diskann(
 #[cfg(feature = "ivf_avq")]
 fn measure_ivf_avq(
     index: &IVFAVQIndex,
+    test: &[Vec<f32>],
+    gt: &[Vec<i32>],
+    k: usize,
+) -> (f64, f64) {
+    for q in test.iter().take(50) {
+        let _ = index.search(q, k);
+    }
+    let t = Instant::now();
+    let mut recall_sum = 0.0;
+    for (i, q) in test.iter().enumerate() {
+        let res = index.search(q, k).unwrap_or_default();
+        recall_sum += recall_at_k(&res, &gt[i], k);
+    }
+    let elapsed = t.elapsed().as_secs_f64();
+    (recall_sum / test.len() as f64, test.len() as f64 / elapsed)
+}
+
+#[cfg(feature = "kdtree")]
+fn run_kdtree(
+    train: &[Vec<f32>],
+    test: &[Vec<f32>],
+    gt: &[Vec<i32>],
+    k: usize,
+    dim: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    println!("=== KD-Tree ===");
+    print!("  Building... ");
+    let _ = std::io::stdout().flush();
+    let t0 = Instant::now();
+    let mut index = KDTreeIndex::new(dim, KDTreeParams::default())?;
+    for (i, v) in train.iter().enumerate() {
+        index.add(i as u32, v.clone())?;
+    }
+    index.build()?;
+    println!("{:.0}s", t0.elapsed().as_secs_f64());
+
+    let (recall, qps) = measure_kdtree(&index, test, gt, k);
+    println!("  recall={:.1}%  qps={:.0}", recall * 100.0, qps);
+    append_jsonl("kdtree", recall, qps)?;
+    Ok(())
+}
+
+#[cfg(feature = "kdtree")]
+fn measure_kdtree(index: &KDTreeIndex, test: &[Vec<f32>], gt: &[Vec<i32>], k: usize) -> (f64, f64) {
+    for q in test.iter().take(50) {
+        let _ = index.search(q, k);
+    }
+    let t = Instant::now();
+    let mut recall_sum = 0.0;
+    for (i, q) in test.iter().enumerate() {
+        let res = index.search(q, k).unwrap_or_default();
+        recall_sum += recall_at_k(&res, &gt[i], k);
+    }
+    let elapsed = t.elapsed().as_secs_f64();
+    (recall_sum / test.len() as f64, test.len() as f64 / elapsed)
+}
+
+#[cfg(feature = "balltree")]
+fn run_balltree(
+    train: &[Vec<f32>],
+    test: &[Vec<f32>],
+    gt: &[Vec<i32>],
+    k: usize,
+    dim: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    println!("=== Ball Tree ===");
+    print!("  Building... ");
+    let _ = std::io::stdout().flush();
+    let t0 = Instant::now();
+    let mut index = BallTreeIndex::new(dim, BallTreeParams::default())?;
+    for (i, v) in train.iter().enumerate() {
+        index.add(i as u32, v.clone())?;
+    }
+    index.build()?;
+    println!("{:.0}s", t0.elapsed().as_secs_f64());
+
+    let (recall, qps) = measure_balltree(&index, test, gt, k);
+    println!("  recall={:.1}%  qps={:.0}", recall * 100.0, qps);
+    append_jsonl("balltree", recall, qps)?;
+    Ok(())
+}
+
+#[cfg(feature = "balltree")]
+fn measure_balltree(
+    index: &BallTreeIndex,
+    test: &[Vec<f32>],
+    gt: &[Vec<i32>],
+    k: usize,
+) -> (f64, f64) {
+    for q in test.iter().take(50) {
+        let _ = index.search(q, k);
+    }
+    let t = Instant::now();
+    let mut recall_sum = 0.0;
+    for (i, q) in test.iter().enumerate() {
+        let res = index.search(q, k).unwrap_or_default();
+        recall_sum += recall_at_k(&res, &gt[i], k);
+    }
+    let elapsed = t.elapsed().as_secs_f64();
+    (recall_sum / test.len() as f64, test.len() as f64 / elapsed)
+}
+
+#[cfg(feature = "rptree")]
+fn run_rptree(
+    train: &[Vec<f32>],
+    test: &[Vec<f32>],
+    gt: &[Vec<i32>],
+    k: usize,
+    dim: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    println!("=== RP-Forest ===");
+    for num_trees in [5, 10, 20, 50] {
+        let params = RpForestParams {
+            num_trees,
+            tree_params: RPTreeParams::default(),
+        };
+        print!("  Building (num_trees={num_trees})... ");
+        let _ = std::io::stdout().flush();
+        let t0 = Instant::now();
+        let mut index = RpForestIndex::new(dim, params)?;
+        for (i, v) in train.iter().enumerate() {
+            index.add(i as u32, v.clone())?;
+        }
+        index.build()?;
+        println!("{:.0}s", t0.elapsed().as_secs_f64());
+
+        let (recall, qps) = measure_rptree(&index, test, gt, k);
+        println!(
+            "  num_trees={num_trees:3}  recall={:.1}%  qps={:.0}",
+            recall * 100.0,
+            qps
+        );
+        append_jsonl("rptree", recall, qps)?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "rptree")]
+fn measure_rptree(
+    index: &RpForestIndex,
     test: &[Vec<f32>],
     gt: &[Vec<i32>],
     k: usize,

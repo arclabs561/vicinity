@@ -37,6 +37,9 @@ ALGO_STYLE = {
     "scann": {"color": "#9467bd", "marker": "v", "label": "IVF-AVQ"},
     "ivf_avq": {"color": "#9467bd", "marker": "v", "label": "IVF-AVQ"},
     "diskann": {"color": "#333333", "marker": "o", "label": "DiskANN"},
+    "kdtree": {"color": "#8c564b", "marker": "+", "label": "KD-Tree"},
+    "balltree": {"color": "#e377c2", "marker": "P", "label": "Ball Tree"},
+    "rptree": {"color": "#7f7f7f", "marker": "*", "label": "RP-Forest"},
 }
 
 
