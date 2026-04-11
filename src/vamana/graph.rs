@@ -151,6 +151,7 @@ impl VamanaIndex {
                 }
             }
         }
+        #[allow(clippy::needless_range_loop)]
         for i in 0..n {
             if !visited[i] {
                 new_order.push(i as u32);

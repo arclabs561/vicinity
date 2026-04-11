@@ -109,6 +109,7 @@ impl KMeans {
 /// Use this for residual vectors where magnitude matters (e.g. PQ codebook training).
 /// Cosine k-means normalizes centroids to unit vectors, which discards magnitude
 /// information that is essential when residuals have varying norms.
+#[allow(dead_code)]
 pub(crate) struct KMeansEuclidean {
     dimension: usize,
     k: usize,
@@ -116,6 +117,7 @@ pub(crate) struct KMeansEuclidean {
     fit: Option<clump::KmeansFit<clump::Euclidean>>,
 }
 
+#[allow(dead_code)]
 impl KMeansEuclidean {
     pub(crate) fn new(dimension: usize, k: usize) -> Result<Self, RetrieveError> {
         if dimension == 0 || k == 0 {

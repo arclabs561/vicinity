@@ -481,6 +481,7 @@ impl EmgIndex {
     }
 
     /// Connect unreachable nodes to medoid's neighbors.
+    #[allow(clippy::needless_range_loop)]
     fn ensure_connectivity(&mut self) {
         let n = self.num_vectors;
         let mut visited = vec![false; n];
