@@ -115,6 +115,9 @@ pub mod quantization;
 #[cfg(feature = "ivf_avq")]
 pub mod ivf_avq;
 
+#[cfg(feature = "pipnn")]
+pub mod pipnn;
+
 #[cfg(feature = "ivf_rabitq")]
 pub mod ivf_rabitq;
 
