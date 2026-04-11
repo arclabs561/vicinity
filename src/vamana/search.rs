@@ -111,7 +111,10 @@ pub fn search(
         }
     }
 
-    let mut output: Vec<(u32, f32)> = results.into_iter().map(|c| (c.id, c.distance)).collect();
+    let mut output: Vec<(u32, f32)> = results
+        .into_iter()
+        .map(|c| (index.doc_ids[c.id as usize], c.distance))
+        .collect();
     output.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
     Ok(output.into_iter().take(k).collect())
 }

@@ -53,6 +53,9 @@ pub struct VamanaIndex {
     /// Number of vectors added
     pub(crate) num_vectors: usize,
 
+    /// External doc IDs (maps internal index -> caller-provided ID)
+    pub(crate) doc_ids: Vec<u32>,
+
     /// Whether index has been built
     built: bool,
 
@@ -77,13 +80,14 @@ impl VamanaIndex {
             neighbors: Vec::new(),
             params,
             num_vectors: 0,
+            doc_ids: Vec::new(),
             built: false,
             medoid: 0,
         })
     }
 
     /// Add a vector to the index.
-    pub fn add(&mut self, _id: u32, vector: Vec<f32>) -> Result<(), RetrieveError> {
+    pub fn add(&mut self, id: u32, vector: Vec<f32>) -> Result<(), RetrieveError> {
         if self.built {
             return Err(RetrieveError::InvalidParameter(
                 "cannot add vectors after build".into(),
@@ -100,6 +104,7 @@ impl VamanaIndex {
         // Extend vectors array (SoA layout)
         self.vectors.extend_from_slice(&vector);
         self.neighbors.push(SmallVec::new());
+        self.doc_ids.push(id);
         self.num_vectors += 1;
 
         Ok(())
@@ -172,6 +177,13 @@ impl VamanaIndex {
             new_vectors[dst..dst + dim].copy_from_slice(&self.vectors[src..src + dim]);
         }
         self.vectors = new_vectors;
+
+        // Permute doc_ids
+        let mut new_doc_ids = vec![0u32; n];
+        for (new_idx, &old_idx) in new_order.iter().enumerate() {
+            new_doc_ids[new_idx] = self.doc_ids[old_idx as usize];
+        }
+        self.doc_ids = new_doc_ids;
 
         // Permute and remap neighbor lists
         let mut new_neighbors = vec![SmallVec::new(); n];
