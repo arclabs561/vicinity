@@ -1117,6 +1117,7 @@ impl HNSWIndex {
 
         self.built = true;
         self.cached_entry_point = self.compute_entry_point();
+        self.reorder_for_locality();
 
         Ok(())
     }
