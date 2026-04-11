@@ -83,6 +83,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Set output path for append_jsonl (used by all runners)
     std::env::set_var("VICINITY_JSONL_OUT", &jsonl_out);
 
+    // Detect distance metric from dataset name
+    let metric = if dataset_name.contains("euclidean") {
+        vicinity::distance::DistanceMetric::L2
+    } else {
+        vicinity::distance::DistanceMetric::Cosine
+    };
+    std::env::set_var(
+        "VICINITY_METRIC",
+        if matches!(metric, vicinity::distance::DistanceMetric::L2) {
+            "l2"
+        } else {
+            "cosine"
+        },
+    );
+
     match algo {
         "hnsw" => run_hnsw(&train, &test, &gt, k, dim)?,
         #[cfg(feature = "nsw")]
@@ -144,10 +159,16 @@ fn run_hnsw(
     for (m, m_max, ef_construction) in [(16, 32, 200), (32, 64, 200)] {
         print!("  Building (M={m}, ef_construction={ef_construction})... ");
         let _ = std::io::stdout().flush();
+        let metric = if std::env::var("VICINITY_METRIC").as_deref() == Ok("l2") {
+            vicinity::distance::DistanceMetric::L2
+        } else {
+            vicinity::distance::DistanceMetric::Cosine
+        };
         let params = HNSWParams {
             m,
             m_max,
             ef_construction,
+            metric,
             ..Default::default()
         };
         let mut index = HNSWIndex::with_params(dim, params)?;
