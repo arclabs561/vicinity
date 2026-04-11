@@ -932,6 +932,62 @@ fn run_pathfinder(
     }
 }
 
+#[cfg(feature = "qmp")]
+fn run_qmp(
+    cfg: &Config,
+    train: &[Vec<f32>],
+    test: &[Vec<f32>],
+    neighbors: &[Vec<i32>],
+    dim: usize,
+) {
+    use vicinity::qmp::{QmpIndex, QmpParams};
+
+    let projected_dim = 64.min(dim);
+
+    if !cfg.json {
+        println!("--- QMP (projected_dim={}, rerank=10) ---", projected_dim);
+    }
+
+    let params = QmpParams {
+        projected_dim,
+        rerank_factor: 10,
+        seed: 42,
+    };
+
+    let build_start = Instant::now();
+    let mut index = QmpIndex::new(dim, params).unwrap();
+    for (i, vec) in train.iter().enumerate() {
+        index.add_slice(i as u32, vec).unwrap();
+    }
+    index.build().unwrap();
+    let build_time_s = build_start.elapsed().as_secs_f64();
+    let rss = current_rss_kb();
+
+    if !cfg.json {
+        println!(
+            "Build: {:.2}s ({:.0} vectors/sec)\n",
+            build_time_s,
+            train.len() as f64 / build_time_s
+        );
+        print_header();
+    }
+
+    let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
+    if cfg.json {
+        let params_json = format!(
+            "{{\"projected_dim\":{},\"rerank_factor\":10}}",
+            projected_dim
+        );
+        println!(
+            "{}",
+            json_line("qmp", &params_json, build_time_s, rss, &result)
+        );
+    } else {
+        print_row("--", &result);
+        println!();
+    }
+}
+
 fn run_brute(cfg: &Config, train: &[Vec<f32>], test: &[Vec<f32>], neighbors: &[Vec<i32>]) {
     if !cfg.json {
         println!("--- Brute Force (linear scan) ---");
@@ -1084,11 +1140,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 eprintln!("PathFinder not available (compile with --features pathfinder)");
             }
 
+            #[cfg(feature = "qmp")]
+            "qmp" => run_qmp(&cfg, &train, &test, &neighbors, dim),
+
+            #[cfg(not(feature = "qmp"))]
+            "qmp" => {
+                eprintln!("QMP not available (compile with --features qmp)");
+            }
+
             "brute" => run_brute(&cfg, &train, &test, &neighbors),
 
             other => {
                 eprintln!(
-                    "Unknown algorithm: {}. Options: hnsw, nsw, ivfpq, emg, nsg, pipnn, sng, vamana, ivf_rabitq, pag, cleann, pathfinder, brute",
+                    "Unknown algorithm: {}. Options: hnsw, nsw, ivfpq, emg, nsg, pipnn, sng, vamana, ivf_rabitq, pag, cleann, pathfinder, qmp, brute",
                     other
                 );
             }
