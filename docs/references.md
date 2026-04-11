@@ -181,9 +181,39 @@ It is intended to backstop claims in module docs and to give you a starting poin
 - Baranchuk, Babenko, Malkov (2018). *Revisiting the Inverted Indices for Billion-Scale Approximate Nearest Neighbors.* (improved IVF coarse quantization)
   `https://arxiv.org/abs/1802.02422`
 
-## Projection-based ANN
+## Projection-based distance bounds (FINGER / PAG)
 
-- Dong, Moses, Li (2019). *Efficient k-nearest neighbor graph construction for generic similarity measures.* (NN-descent)
+- Chen, Wei-cheng, Yu, Dhillon, Hsieh (2022). *FINGER: Fast Inference for Graph-based Approximate Nearest Neighbor Search.* (edge-projection distance bounds; basis for `finger` module)
+  `https://arxiv.org/abs/2206.11408`
+
+## Projection-quantization fusion (MRQ / QMP)
+
+- Yang, Jing, Li, Wang (2024). *Quantization Meets Projection: A Happy Marriage for Approximate k-Nearest Neighbor Search.* (projection concentrates info in leading dims; basis for `rp_quant` module)
+  `https://arxiv.org/abs/2411.06158`
+
+## Rotation-based quantization
+
+- Zandieh, Daliri, Hadian, Mirrokni (2025). *TurboQuant: Online Vector Quantization with Near-optimal Distortion Rate.* (orthogonal rotation + 1-bit QJL residual; near Shannon lower bound)
+  `https://arxiv.org/abs/2504.19874`
+
+## Declarative recall / early termination
+
+- Chatzakis, Papakonstantinou, Palpanas (2025). *DARTH: Declarative Recall Through Early Termination for Approximate Nearest Neighbor Search.* (ML-driven recall predictor; 6-14x speedups)
+  `https://arxiv.org/abs/2505.19001`
+
+## Adaptive indexing
+
+- Mohoney, Sarda, Tang, Chowdhury, Pacaci, Ilyas, Rekatsinas, Venkataraman (2025). *Quake: Adaptive Indexing for Vector Search.* (ML cost model for adaptive partitioning under data drift)
+  `https://arxiv.org/abs/2506.03437`
+
+## Adaptive entry point selection
+
+- Oguri, Matsui (2024). *Theoretical and Empirical Analysis of Adaptive Entry Point Selection for Graph-based Approximate Nearest Neighbor Search.* (b-monotonic paths, B-MSNET)
+  `https://arxiv.org/abs/2402.04713`
+
+## NN-descent
+
+- Dong, Moses, Li (2011). *Efficient k-nearest neighbor graph construction for generic similarity measures.* (NN-descent)
   `https://doi.org/10.1145/1963405.1963487`
 
 ## Practical benchmarking references
