@@ -276,6 +276,48 @@ impl FingerIndex {
             .collect())
     }
 
+    /// Search with a custom `ef_search` beam width, overriding the params default.
+    pub fn search_with_ef(
+        &self,
+        query: &[f32],
+        k: usize,
+        ef_search: usize,
+    ) -> Result<Vec<(u32, f32)>, RetrieveError> {
+        if !self.built {
+            return Err(RetrieveError::InvalidParameter(
+                "index must be built before search".into(),
+            ));
+        }
+        if query.len() != self.dimension {
+            return Err(RetrieveError::DimensionMismatch {
+                query_dim: query.len(),
+                doc_dim: self.dimension,
+            });
+        }
+
+        let norm: f32 = query.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let q_norm: Vec<f32> = if norm > 1e-10 {
+            query.iter().map(|x| x / norm).collect()
+        } else {
+            query.to_vec()
+        };
+
+        let query_proj: f32 = q_norm
+            .iter()
+            .zip(self.direction.iter())
+            .map(|(a, b)| a * b)
+            .sum();
+
+        let ef = ef_search.max(k);
+        let results = self.beam_search_with_pruning(&q_norm, query_proj, ef);
+
+        Ok(results
+            .into_iter()
+            .take(k)
+            .map(|(id, dist)| (self.doc_ids[id as usize], dist))
+            .collect())
+    }
+
     /// Number of indexed vectors.
     pub fn len(&self) -> usize {
         self.num_vectors

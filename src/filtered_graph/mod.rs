@@ -321,6 +321,36 @@ impl FilteredGraphIndex {
             .collect())
     }
 
+    /// Unfiltered search with a custom `ef_search` beam width.
+    pub fn search_with_ef(
+        &self,
+        query: &[f32],
+        k: usize,
+        ef_search: usize,
+    ) -> Result<Vec<(u32, f32)>, RetrieveError> {
+        if !self.built {
+            return Err(RetrieveError::InvalidParameter(
+                "index must be built before search".into(),
+            ));
+        }
+        if query.len() != self.dimension {
+            return Err(RetrieveError::DimensionMismatch {
+                query_dim: query.len(),
+                doc_dim: self.dimension,
+            });
+        }
+
+        let qn = normalize(query);
+        let ef = ef_search.max(k);
+        let candidates = self.beam_search(&qn, ef);
+
+        Ok(candidates
+            .into_iter()
+            .take(k)
+            .map(|(id, d)| (self.doc_ids[id as usize], d))
+            .collect())
+    }
+
     /// Number of vectors in the index.
     pub fn len(&self) -> usize {
         self.num_vectors
