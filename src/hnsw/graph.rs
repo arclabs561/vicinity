@@ -64,6 +64,11 @@ pub struct HNSWIndex {
     /// Whether index has been built
     built: bool,
 
+    /// Cached entry point (node with highest layer assignment).
+    /// Set during `build()`, avoids O(n) scan on every search.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    cached_entry_point: Option<u32>,
+
     /// Optional metadata store for filtering.
     /// Skipped during serialization -- must be re-added after load for filtered search.
     #[cfg_attr(feature = "serde", serde(skip))]
@@ -559,6 +564,7 @@ impl HNSWIndex {
                 ..Default::default()
             },
             built: false,
+            cached_entry_point: None,
             metadata: None,
             filter_field: None,
             category_assignments: Vec::new(),
@@ -591,6 +597,7 @@ impl HNSWIndex {
             rng: Mutex::new(params.seed.map(rand::rngs::StdRng::seed_from_u64)),
             params,
             built: false,
+            cached_entry_point: None,
             metadata: None,
             filter_field: None,
             category_assignments: Vec::new(),
@@ -637,6 +644,7 @@ impl HNSWIndex {
                 ..Default::default()
             },
             built: false,
+            cached_entry_point: None,
             metadata: Some(crate::filtering::MetadataStore::new()),
             filter_field: Some(filter_field.into()),
             category_assignments: Vec::new(),
@@ -855,7 +863,7 @@ impl HNSWIndex {
             .map(|(i, &doc_id)| (doc_id, i as u32))
             .collect();
 
-        let index = Self {
+        let mut index = Self {
             vectors,
             doc_ids,
             doc_id_to_internal,
@@ -865,12 +873,17 @@ impl HNSWIndex {
             layer_assignments,
             params,
             built,
+            cached_entry_point: None,
             metadata: None,
             filter_field: None,
             category_assignments: Vec::new(),
             tombstones: TombstoneSet::default(),
             rng: Mutex::new(seed.map(rand::rngs::StdRng::seed_from_u64)),
         };
+        // Cache entry point if already built
+        if built {
+            index.cached_entry_point = index.compute_entry_point();
+        }
 
         // Reuse shared validation. Map FormatError to InvalidParameter to
         // preserve the existing error variant contract for from_parts callers.
@@ -1064,6 +1077,7 @@ impl HNSWIndex {
         }
 
         self.built = true;
+        self.cached_entry_point = self.compute_entry_point();
 
         Ok(())
     }
@@ -1361,10 +1375,7 @@ impl HNSWIndex {
                     )
                 };
 
-            // `base_results` is not guaranteed to be sorted (it may be in exploration order).
-            // Sort by distance first, then take top-k.
-            let mut base_results = base_results;
-            base_results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+            // greedy_search_layer returns results sorted by distance; take top-k.
             let results: Vec<(u32, f32)> = base_results.into_iter().take(k).collect();
 
             // Clear decompression caches after search
@@ -1791,20 +1802,26 @@ impl HNSWIndex {
 
     /// Get entry point (vector in highest layer).
     fn get_entry_point(&self) -> Option<u32> {
+        if let Some(ep) = self.cached_entry_point {
+            return Some(ep);
+        }
+        self.compute_entry_point()
+    }
+
+    /// O(n) scan to find the node with the highest layer assignment.
+    /// Called once at build time; result is cached in `cached_entry_point`.
+    fn compute_entry_point(&self) -> Option<u32> {
         if self.num_vectors == 0 {
             return None;
         }
-
         let mut entry_point = 0u32;
         let mut entry_layer = 0u8;
-
         for (idx, &layer) in self.layer_assignments.iter().enumerate() {
             if layer > entry_layer {
                 entry_point = idx as u32;
                 entry_layer = layer;
             }
         }
-
         Some(entry_point)
     }
 }
