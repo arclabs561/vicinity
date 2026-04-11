@@ -96,7 +96,7 @@ persistence = [
   "dep:libc",
 ]
 serde = ["dep:serde", "dep:serde_json", "smallvec/serde"]
-hnsw = ["innr"]
+hnsw = []
 experimental = []
 ivf_pq = [
   "dep:clump",
