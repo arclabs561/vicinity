@@ -1,5 +1,6 @@
 //! HNSW graph structure and core types.
 
+use crate::distance::DistanceMetric;
 use crate::hnsw::tombstones::TombstoneSet;
 use crate::RetrieveError;
 
@@ -166,6 +167,9 @@ pub struct HNSWParams {
     /// Useful when callers cannot guarantee pre-normalized input.
     pub auto_normalize: bool,
 
+    /// Distance metric used for all comparisons (default: Cosine).
+    pub metric: DistanceMetric,
+
     /// Seed selection strategy (default: StackedNSW for large-scale)
     pub seed_selection: SeedSelectionStrategy,
 
@@ -205,6 +209,7 @@ impl Default for HNSWParams {
             ef_construction: 200,
             ef_search: 50,
             auto_normalize: false,
+            metric: DistanceMetric::Cosine,
             seed_selection: SeedSelectionStrategy::default(),
             neighborhood_diversification: NeighborhoodDiversification::default(),
             seed: None,
@@ -236,6 +241,7 @@ pub struct HNSWBuilder {
     ef_construction: usize,
     ef_search: usize,
     auto_normalize: bool,
+    metric: DistanceMetric,
 }
 
 impl HNSWBuilder {
@@ -269,6 +275,12 @@ impl HNSWBuilder {
         self
     }
 
+    /// Set the distance metric (default: Cosine).
+    pub fn metric(mut self, metric: DistanceMetric) -> Self {
+        self.metric = metric;
+        self
+    }
+
     /// Build the index.
     pub fn build(self) -> Result<HNSWIndex, RetrieveError> {
         let m_max = self.m_max.unwrap_or(2 * self.m); // Paper: m_max0 = 2*M
@@ -278,6 +290,7 @@ impl HNSWBuilder {
             ef_construction: self.ef_construction,
             ef_search: self.ef_search,
             auto_normalize: self.auto_normalize,
+            metric: self.metric,
             ..Default::default()
         };
         HNSWIndex::with_params(self.dimension, params)
@@ -563,6 +576,7 @@ impl HNSWIndex {
             ef_construction: 200,
             ef_search: 50,
             auto_normalize: false,
+            metric: DistanceMetric::Cosine,
         }
     }
 
@@ -997,10 +1011,10 @@ impl HNSWIndex {
             vector
         };
 
-        // HNSW cosine distance uses 1 - dot(a,b), which only equals cosine distance
-        // when vectors are L2-normalized. Reject clearly un-normalized vectors in release
-        // builds to prevent silent wrong results.
-        {
+        // Cosine distance uses 1 - dot(a,b), which only equals cosine distance when
+        // vectors are L2-normalized. Reject clearly un-normalized vectors to prevent
+        // silent wrong results. Skip this check for metrics that don't require it (e.g. L2).
+        if self.params.metric == DistanceMetric::Cosine {
             let norm_sq: f32 = vector.iter().map(|x| x * x).sum();
             if (norm_sq - 1.0).abs() > 0.1 {
                 return Err(RetrieveError::InvalidParameter(format!(
@@ -1290,8 +1304,7 @@ impl HNSWIndex {
                             continue;
                         }
                         let other_vector = self.get_vector(other_id as usize);
-                        let dist =
-                            crate::distance::cosine_distance_normalized(vector, other_vector);
+                        let dist = self.dist(vector, other_vector);
                         candidates.push((other_id, dist));
                         sampled += 1;
                     }
@@ -1302,8 +1315,7 @@ impl HNSWIndex {
                             continue;
                         }
                         let other_vector = self.get_vector(other_id as usize);
-                        let dist =
-                            crate::distance::cosine_distance_normalized(vector, other_vector);
+                        let dist = self.dist(vector, other_vector);
                         candidates.push((other_id, dist));
                     }
                 }
@@ -1422,7 +1434,7 @@ impl HNSWIndex {
                 let mut best_dist = f32::INFINITY;
                 for &seed_id in &seeds {
                     let seed_vec = self.get_vector(seed_id as usize);
-                    let dist = crate::distance::cosine_distance_normalized(query, seed_vec);
+                    let dist = self.dist(query, seed_vec);
                     if dist < best_dist {
                         best_dist = dist;
                         best_seed = seed_id;
@@ -1436,10 +1448,7 @@ impl HNSWIndex {
 
         // Navigate from top layer down to base layer
         let mut current_closest = entry_point;
-        let mut current_dist = crate::distance::cosine_distance_normalized(
-            query,
-            self.get_vector(entry_point as usize),
-        );
+        let mut current_dist = self.dist(query, self.get_vector(entry_point as usize));
 
         // Search in upper layers (coarse search)
         for layer_idx in (1..=entry_layer).rev() {
@@ -1463,7 +1472,7 @@ impl HNSWIndex {
                     }
 
                     let neighbor_vec = self.get_vector(neighbor_id as usize);
-                    let dist = crate::distance::cosine_distance_normalized(query, neighbor_vec);
+                    let dist = self.dist(query, neighbor_vec);
 
                     if dist < current_dist {
                         current_dist = dist;
@@ -1483,15 +1492,9 @@ impl HNSWIndex {
                     // Find the best seed (closest to query) among KSampled seeds
                     // and the greedy-descended entry point, then run standard beam search.
                     let mut best_entry = current_closest;
-                    let mut best_dist = crate::distance::cosine_distance_normalized(
-                        query,
-                        self.get_vector(current_closest as usize),
-                    );
+                    let mut best_dist = self.dist(query, self.get_vector(current_closest as usize));
                     for &seed_id in &initial_seeds {
-                        let dist = crate::distance::cosine_distance_normalized(
-                            query,
-                            self.get_vector(seed_id as usize),
-                        );
+                        let dist = self.dist(query, self.get_vector(seed_id as usize));
                         if dist < best_dist {
                             best_dist = dist;
                             best_entry = seed_id;
@@ -1506,6 +1509,7 @@ impl HNSWIndex {
                         &self.vectors,
                         self.dimension,
                         ef.max(k),
+                        self.dist_fn(),
                     )
                 } else {
                     // Default: Use greedy search from entry point
@@ -1516,6 +1520,7 @@ impl HNSWIndex {
                         &self.vectors,
                         self.dimension,
                         ef.max(k),
+                        self.dist_fn(),
                     )
                 };
 
@@ -1690,7 +1695,7 @@ impl HNSWIndex {
         };
 
         let start_vec = self.get_vector(start_point as usize);
-        let start_dist = crate::distance::cosine_distance_normalized(query, start_vec);
+        let start_dist = self.dist(query, start_vec);
         candidates.push(std::cmp::Reverse((FloatOrd(start_dist), start_point)));
 
         // Greedy search in base layer, only exploring filtered neighbors
@@ -1728,8 +1733,7 @@ impl HNSWIndex {
                 }
 
                 let neighbor_vec = self.get_vector(neighbor_id as usize);
-                let neighbor_dist =
-                    crate::distance::cosine_distance_normalized(query, neighbor_vec);
+                let neighbor_dist = self.dist(query, neighbor_vec);
                 candidates.push(std::cmp::Reverse((FloatOrd(neighbor_dist), neighbor_id)));
             }
 
@@ -1750,7 +1754,7 @@ impl HNSWIndex {
                     == desired_category.as_ref()
                 {
                     let vec = self.get_vector(id as usize);
-                    let dist = crate::distance::cosine_distance_normalized(query, vec);
+                    let dist = self.dist(query, vec);
                     let doc_id = self.doc_ids.get(id as usize).copied()?;
                     Some((doc_id, dist))
                 } else {
@@ -1802,8 +1806,7 @@ impl HNSWIndex {
         let entry_layer = self.layer_assignments[ep as usize] as usize;
 
         let mut current_closest = ep;
-        let mut current_dist =
-            crate::distance::cosine_distance_normalized(query, self.get_vector(ep as usize));
+        let mut current_dist = self.dist(query, self.get_vector(ep as usize));
 
         for layer_idx in (1..=entry_layer).rev() {
             if layer_idx >= self.layers.len() {
@@ -1823,7 +1826,7 @@ impl HNSWIndex {
                         continue;
                     }
                     let neighbor_vec = self.get_vector(neighbor_id as usize);
-                    let dist = crate::distance::cosine_distance_normalized(query, neighbor_vec);
+                    let dist = self.dist(query, neighbor_vec);
                     if dist < current_dist {
                         current_dist = dist;
                         current_closest = neighbor_id;
@@ -1845,6 +1848,7 @@ impl HNSWIndex {
                 ef.max(k),
                 k,
                 config,
+                self.dist_fn(),
             );
             num_evaluated = evaluated;
 
@@ -1933,6 +1937,25 @@ impl HNSWIndex {
         #[cfg(not(feature = "hnsw"))]
         {
             0
+        }
+    }
+
+    /// Compute distance between two vectors using the configured metric.
+    #[inline(always)]
+    pub(crate) fn dist(&self, a: &[f32], b: &[f32]) -> f32 {
+        self.params.metric.distance(a, b)
+    }
+
+    /// Return a plain function pointer for the configured metric.
+    ///
+    /// Used when passing a distance function to free functions that can't take `&self`.
+    #[inline(always)]
+    pub(crate) fn dist_fn(&self) -> fn(&[f32], &[f32]) -> f32 {
+        match self.params.metric {
+            DistanceMetric::L2 => crate::distance::l2_distance,
+            DistanceMetric::Cosine => crate::distance::cosine_distance_normalized,
+            DistanceMetric::Angular => crate::distance::angular_distance,
+            DistanceMetric::InnerProduct => crate::distance::inner_product_distance,
         }
     }
 
@@ -2393,5 +2416,26 @@ mod tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+#[cfg(feature = "hnsw")]
+#[allow(clippy::unwrap_used)]
+mod tests_l2 {
+    use super::*;
+
+    #[test]
+    fn test_hnsw_l2_distance() {
+        let mut index = HNSWIndex::builder(4)
+            .metric(DistanceMetric::L2)
+            .build()
+            .unwrap();
+        index.add_slice(0, &[1.0, 0.0, 0.0, 0.0]).unwrap();
+        index.add_slice(1, &[0.0, 1.0, 0.0, 0.0]).unwrap();
+        index.add_slice(2, &[100.0, 100.0, 0.0, 0.0]).unwrap();
+        index.build().unwrap();
+        let results = index.search(&[1.0, 0.1, 0.0, 0.0], 2, 10).unwrap();
+        assert_eq!(results[0].0, 0, "closest to [1,0,0,0] should be doc 0");
     }
 }

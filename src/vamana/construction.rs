@@ -214,6 +214,7 @@ fn refine_with_rrnd(index: &mut VamanaIndex) -> Result<(), RetrieveError> {
             &NeighborhoodDiversification::RelaxedRelative {
                 alpha: index.params.alpha,
             },
+            hnsw_distance::cosine_distance_normalized,
         );
 
         // Add reverse (bidirectional) edges. Paper (Algorithm 2): when p selects q
@@ -250,6 +251,7 @@ fn refine_with_rrnd(index: &mut VamanaIndex) -> Result<(), RetrieveError> {
                         &index.vectors,
                         dim,
                         &NeighborhoodDiversification::RelaxedRelative { alpha },
+                        hnsw_distance::cosine_distance_normalized,
                     );
                     index.neighbors[neighbor_id as usize] = SmallVec::from_vec(pruned);
                 }
@@ -295,6 +297,7 @@ fn refine_with_rnd(index: &mut VamanaIndex) -> Result<(), RetrieveError> {
             &index.vectors,
             index.dimension,
             &NeighborhoodDiversification::RelativeNeighborhood,
+            hnsw_distance::cosine_distance_normalized,
         );
 
         // Add reverse (bidirectional) edges. Prune using RND when list overflows.
@@ -326,6 +329,7 @@ fn refine_with_rnd(index: &mut VamanaIndex) -> Result<(), RetrieveError> {
                         &index.vectors,
                         dim,
                         &NeighborhoodDiversification::RelativeNeighborhood,
+                        hnsw_distance::cosine_distance_normalized,
                     );
                     index.neighbors[neighbor_id as usize] = SmallVec::from_vec(pruned);
                 }
