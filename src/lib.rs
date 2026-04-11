@@ -82,6 +82,9 @@ pub mod classic;
 #[cfg(feature = "diskann")]
 pub mod diskann;
 
+#[cfg(feature = "emg")]
+pub mod emg;
+
 // Shared helpers for clump-backed modules (evoc, kmeans partitioning).
 #[cfg(any(
     feature = "evoc",
