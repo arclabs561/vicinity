@@ -115,6 +115,13 @@ pub struct EmgIndex {
 
     /// Medoid (closest to centroid), used as search entry point.
     medoid: u32,
+
+    /// Scalar-quantized vectors: n * dimension bytes (populated during build).
+    quantized_vectors: Vec<u8>,
+    /// Per-dimension min values for dequantization.
+    quant_mins: Vec<f32>,
+    /// Per-dimension scale factors for dequantization.
+    quant_scales: Vec<f32>,
 }
 
 impl EmgIndex {
@@ -135,6 +142,9 @@ impl EmgIndex {
             doc_ids: Vec::new(),
             neighbors: Vec::new(),
             medoid: 0,
+            quantized_vectors: Vec::new(),
+            quant_mins: Vec::new(),
+            quant_scales: Vec::new(),
         })
     }
 
@@ -188,6 +198,9 @@ impl EmgIndex {
             self.refine_pass()?;
         }
 
+        // Quantize all vectors for fast approximate search
+        self.quantize_vectors();
+
         self.built = true;
         Ok(())
     }
@@ -233,6 +246,75 @@ impl EmgIndex {
             .collect())
     }
 
+    /// Search using scalar-quantized distance for beam expansion, then rerank
+    /// the top `k * rerank_factor` candidates with exact cosine distance.
+    ///
+    /// Faster than `search_with_ef` at the cost of a small accuracy reduction.
+    /// `rerank_factor` controls the accuracy/speed tradeoff: 1 is fastest
+    /// (no reranking headroom), 4–8 recovers most of the accuracy loss.
+    pub fn search_quantized(
+        &self,
+        query: &[f32],
+        k: usize,
+        rerank_factor: usize,
+    ) -> Result<Vec<(u32, f32)>, RetrieveError> {
+        if !self.built {
+            return Err(RetrieveError::InvalidParameter(
+                "index must be built before search".into(),
+            ));
+        }
+        if query.len() != self.dimension {
+            return Err(RetrieveError::DimensionMismatch {
+                query_dim: query.len(),
+                doc_dim: self.dimension,
+            });
+        }
+
+        // Normalize query
+        let query_norm: f32 = query.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let query_normalized: Vec<f32> = if query_norm > 1e-10 {
+            query.iter().map(|x| x / query_norm).collect()
+        } else {
+            query.to_vec()
+        };
+
+        // Quantize query using stored per-dimension min/scale
+        let dim = self.dimension;
+        let mut query_quantized = vec![0u8; dim];
+        for d in 0..dim {
+            let scale = self.quant_scales[d];
+            if scale > 1e-10 {
+                let q = (query_normalized[d] - self.quant_mins[d]) * scale;
+                query_quantized[d] = q.clamp(0.0, 255.0) as u8;
+            }
+        }
+
+        // Beam search with quantized distances
+        let ef = (k * rerank_factor).max(k).max(self.params.ef_search);
+        let candidates = self.greedy_search_quantized(&query_quantized, ef);
+
+        // Rerank top k*rerank_factor with exact distance
+        let rerank_pool = k * rerank_factor.max(1);
+        let mut reranked: Vec<(u32, f32)> = candidates
+            .into_iter()
+            .take(rerank_pool)
+            .map(|(internal_id, _approx)| {
+                let exact = cosine_distance_normalized(
+                    &query_normalized,
+                    self.get_vector(internal_id as usize),
+                );
+                (internal_id, exact)
+            })
+            .collect();
+        reranked.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+
+        Ok(reranked
+            .into_iter()
+            .take(k)
+            .map(|(id, dist)| (self.doc_ids[id as usize], dist))
+            .collect())
+    }
+
     /// Number of indexed vectors.
     pub fn len(&self) -> usize {
         self.num_vectors
@@ -249,6 +331,113 @@ impl EmgIndex {
     fn get_vector(&self, idx: usize) -> &[f32] {
         let start = idx * self.dimension;
         &self.vectors[start..start + self.dimension]
+    }
+
+    /// Compute per-dimension min/max and quantize all stored vectors to u8.
+    fn quantize_vectors(&mut self) {
+        let dim = self.dimension;
+        let n = self.num_vectors;
+
+        let mut mins = vec![f32::INFINITY; dim];
+        let mut maxs = vec![f32::NEG_INFINITY; dim];
+
+        for i in 0..n {
+            let v = self.get_vector(i);
+            for d in 0..dim {
+                if v[d] < mins[d] {
+                    mins[d] = v[d];
+                }
+                if v[d] > maxs[d] {
+                    maxs[d] = v[d];
+                }
+            }
+        }
+
+        let mut scales = vec![0.0f32; dim];
+        for d in 0..dim {
+            let range = maxs[d] - mins[d];
+            if range > 1e-10 {
+                scales[d] = 255.0 / range;
+            }
+        }
+
+        let mut qvecs = vec![0u8; n * dim];
+        for i in 0..n {
+            let v = self.get_vector(i);
+            for d in 0..dim {
+                let q = if scales[d] > 1e-10 {
+                    ((v[d] - mins[d]) * scales[d]).clamp(0.0, 255.0) as u8
+                } else {
+                    0u8
+                };
+                qvecs[i * dim + d] = q;
+            }
+        }
+
+        self.quant_mins = mins;
+        self.quant_scales = scales;
+        self.quantized_vectors = qvecs;
+    }
+
+    /// L2 distance on quantized (u8) vectors.
+    ///
+    /// Used as a fast approximation during beam search. Integer arithmetic
+    /// avoids f32 multiply-accumulate for every neighbor expansion.
+    #[inline]
+    fn quantized_distance(&self, qa: &[u8], qb: &[u8]) -> f32 {
+        let mut sum: u32 = 0;
+        for (&a, &b) in qa.iter().zip(qb.iter()) {
+            let diff = a as i32 - b as i32;
+            sum += (diff * diff) as u32;
+        }
+        sum as f32
+    }
+
+    /// Greedy search using quantized distances for fast expansion.
+    fn greedy_search_quantized(&self, query_quantized: &[u8], ef: usize) -> Vec<(u32, f32)> {
+        let n = self.num_vectors;
+        if n == 0 {
+            return Vec::new();
+        }
+        let dim = self.dimension;
+
+        let mut visited = HashSet::new();
+        let mut frontier: BinaryHeap<std::cmp::Reverse<(FloatOrd, u32)>> = BinaryHeap::new();
+        let mut candidates: Vec<(u32, f32)> = Vec::new();
+
+        let entry = self.medoid;
+        let entry_q = &self.quantized_vectors[entry as usize * dim..entry as usize * dim + dim];
+        let entry_dist = self.quantized_distance(query_quantized, entry_q);
+        visited.insert(entry);
+        frontier.push(std::cmp::Reverse((FloatOrd(entry_dist), entry)));
+        candidates.push((entry, entry_dist));
+
+        while let Some(std::cmp::Reverse((FloatOrd(current_dist), current_id))) = frontier.pop() {
+            if candidates.len() >= ef {
+                candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+                if current_dist > candidates[ef - 1].1 * self.params.alpha {
+                    break;
+                }
+            }
+
+            for &neighbor in &self.neighbors[current_id as usize] {
+                if visited.insert(neighbor) {
+                    let nidx = neighbor as usize;
+                    let nq = &self.quantized_vectors[nidx * dim..nidx * dim + dim];
+                    let dist = self.quantized_distance(query_quantized, nq);
+                    candidates.push((neighbor, dist));
+                    frontier.push(std::cmp::Reverse((FloatOrd(dist), neighbor)));
+                }
+            }
+
+            if visited.len() > ef * 10 {
+                break;
+            }
+        }
+
+        candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+        candidates.dedup_by_key(|c| c.0);
+        candidates
     }
 
     fn compute_medoid(&self) -> u32 {
@@ -731,6 +920,96 @@ mod tests {
         assert_eq!(
             reachable, n,
             "expected all {n} nodes reachable, got {reachable}"
+        );
+    }
+
+    #[test]
+    fn quantized_search_basic() {
+        let dim = 16;
+        let n = 100;
+        let data = make_vectors(n, dim, 77);
+
+        let mut index = EmgIndex::new(
+            dim,
+            EmgParams {
+                max_degree: 16,
+                candidate_size: 32,
+                scale_t: 16,
+                iterations: 2,
+                alpha: 1.5,
+                ef_search: 50,
+            },
+        )
+        .unwrap();
+
+        for i in 0..n {
+            let start = i * dim;
+            index
+                .add_slice(i as u32, &data[start..start + dim])
+                .unwrap();
+        }
+        index.build().unwrap();
+
+        let query = &data[0..dim];
+        let results = index.search_quantized(query, 5, 4).unwrap();
+        assert!(!results.is_empty());
+        assert!(results.len() <= 5);
+        // Self-match should appear (reranking with exact distance recovers it)
+        assert!(
+            results.iter().any(|(id, _)| *id == 0),
+            "expected doc_id 0 in quantized results: {:?}",
+            results
+        );
+    }
+
+    #[test]
+    fn quantized_vs_exact_recall() {
+        let dim = 16;
+        let n = 100;
+        let k = 10;
+        let data = make_vectors(n, dim, 55);
+
+        let mut index = EmgIndex::new(
+            dim,
+            EmgParams {
+                max_degree: 16,
+                candidate_size: 40,
+                scale_t: 20,
+                iterations: 2,
+                alpha: 1.5,
+                ef_search: 60,
+            },
+        )
+        .unwrap();
+
+        for i in 0..n {
+            let start = i * dim;
+            index
+                .add_slice(i as u32, &data[start..start + dim])
+                .unwrap();
+        }
+        index.build().unwrap();
+
+        let mut total_hits = 0usize;
+        let num_queries = 20usize;
+        for q in 0..num_queries {
+            let query = &data[q * dim..(q + 1) * dim];
+            let exact: std::collections::HashSet<u32> = index
+                .search_with_ef(query, k, 200)
+                .unwrap()
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect();
+            let approx = index.search_quantized(query, k, 4).unwrap();
+            let hits = approx.iter().filter(|(id, _)| exact.contains(id)).count();
+            total_hits += hits;
+        }
+
+        let recall = total_hits as f64 / (num_queries * k) as f64;
+        assert!(
+            recall > 0.3,
+            "quantized recall@{k} too low: {recall:.2} ({total_hits}/{} hits)",
+            num_queries * k
         );
     }
 }
