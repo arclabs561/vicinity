@@ -261,11 +261,20 @@ pub fn greedy_search_layer(
             // Explore neighbors
             let neighbors = layer.get_neighbors(candidate.id);
             for (i, &neighbor_id) in neighbors.iter().enumerate() {
-                // Prefetch next neighbor's vector while processing current
+                // Prefetch upcoming neighbors' vectors to hide DRAM latency.
+                // Two cache lines for vectors >64 bytes; 4-ahead for pipeline depth.
                 if i + 1 < neighbors.len() {
                     let next_id = neighbors[i + 1] as usize;
                     if next_id < num_vectors {
-                        prefetch_read_data(vectors.as_ptr().wrapping_add(next_id * dimension));
+                        let ptr = vectors.as_ptr().wrapping_add(next_id * dimension);
+                        prefetch_read_data(ptr);
+                        prefetch_read_data(ptr.wrapping_add(16));
+                    }
+                }
+                if i + 4 < neighbors.len() {
+                    let far_id = neighbors[i + 4] as usize;
+                    if far_id < num_vectors {
+                        prefetch_read_data(vectors.as_ptr().wrapping_add(far_id * dimension));
                     }
                 }
                 if visited.insert(neighbor_id) {
@@ -352,11 +361,20 @@ pub fn greedy_search_layer_adaptive(
             // Explore neighbors
             let neighbors = layer.get_neighbors(candidate.id);
             for (i, &neighbor_id) in neighbors.iter().enumerate() {
-                // Prefetch next neighbor's vector while processing current
+                // Prefetch upcoming neighbors' vectors to hide DRAM latency.
+                // Two cache lines for vectors >64 bytes; 4-ahead for pipeline depth.
                 if i + 1 < neighbors.len() {
                     let next_id = neighbors[i + 1] as usize;
                     if next_id < num_vectors {
-                        prefetch_read_data(vectors.as_ptr().wrapping_add(next_id * dimension));
+                        let ptr = vectors.as_ptr().wrapping_add(next_id * dimension);
+                        prefetch_read_data(ptr);
+                        prefetch_read_data(ptr.wrapping_add(16));
+                    }
+                }
+                if i + 4 < neighbors.len() {
+                    let far_id = neighbors[i + 4] as usize;
+                    if far_id < num_vectors {
+                        prefetch_read_data(vectors.as_ptr().wrapping_add(far_id * dimension));
                     }
                 }
                 if visited.insert(neighbor_id) {
