@@ -144,6 +144,7 @@ ivf_rabitq = ["rabitq", "dep:clump", "hnsw"]
 saq = ["qntz", "qntz/ternary"]
 # Re-exported quantizers (from `qntz`)
 qntz = ["dep:qntz"]
+binary_index = ["dep:qntz", "qntz/binary"]
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
@@ -324,3 +325,7 @@ type_complexity = "allow"
 multiple_crate_versions = "allow"
 wrong_self_convention = "allow"
 module_name_repetitions = "allow"
+
+# DEV-ONLY: remove before publishing. qntz binary feature not yet on crates.io.
+[patch.crates-io]
+qntz = { path = "../qntz" }
