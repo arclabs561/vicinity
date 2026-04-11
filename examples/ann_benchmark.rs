@@ -772,6 +772,166 @@ fn run_ivf_rabitq(
     }
 }
 
+#[cfg(feature = "pag")]
+fn run_pag(
+    cfg: &Config,
+    train: &[Vec<f32>],
+    test: &[Vec<f32>],
+    neighbors: &[Vec<i32>],
+    dim: usize,
+) {
+    use vicinity::pag::{PagIndex, PagParams};
+
+    let params = PagParams {
+        max_degree: 32,
+        ef_construction: 200,
+        ef_search: 100,
+        alpha: 1.2,
+        ..Default::default()
+    };
+
+    if !cfg.json {
+        println!("--- PAG (max_degree=32) ---");
+    }
+
+    let build_start = Instant::now();
+    let mut index = PagIndex::new(dim, params).unwrap();
+    for (i, vec) in train.iter().enumerate() {
+        index.add_slice(i as u32, vec).unwrap();
+    }
+    index.build().unwrap();
+    let build_time_s = build_start.elapsed().as_secs_f64();
+    let rss = current_rss_kb();
+
+    if !cfg.json {
+        println!(
+            "Build: {:.2}s ({:.0} vectors/sec)\n",
+            build_time_s,
+            train.len() as f64 / build_time_s
+        );
+        print_header();
+    }
+
+    let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
+    if cfg.json {
+        let params_json = "{\"max_degree\":32}";
+        println!(
+            "{}",
+            json_line("pag", params_json, build_time_s, rss, &result)
+        );
+    } else {
+        print_row("--", &result);
+        println!();
+    }
+}
+
+#[cfg(feature = "cleann")]
+fn run_cleann(
+    cfg: &Config,
+    train: &[Vec<f32>],
+    test: &[Vec<f32>],
+    neighbors: &[Vec<i32>],
+    dim: usize,
+) {
+    use vicinity::cleann::{CleannIndex, CleannParams};
+
+    let params = CleannParams {
+        max_degree: 32,
+        ef_construction: 200,
+        ef_search: 100,
+        alpha: 1.2,
+        ..Default::default()
+    };
+
+    if !cfg.json {
+        println!("--- CleANN (max_degree=32) ---");
+    }
+
+    let build_start = Instant::now();
+    let mut index = CleannIndex::new(dim, params).unwrap();
+    for (i, vec) in train.iter().enumerate() {
+        index.add_slice(i as u32, vec).unwrap();
+    }
+    index.build().unwrap();
+    let build_time_s = build_start.elapsed().as_secs_f64();
+    let rss = current_rss_kb();
+
+    if !cfg.json {
+        println!(
+            "Build: {:.2}s ({:.0} vectors/sec)\n",
+            build_time_s,
+            train.len() as f64 / build_time_s
+        );
+        print_header();
+    }
+
+    let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
+    if cfg.json {
+        let params_json = "{\"max_degree\":32}";
+        println!(
+            "{}",
+            json_line("cleann", params_json, build_time_s, rss, &result)
+        );
+    } else {
+        print_row("--", &result);
+        println!();
+    }
+}
+
+#[cfg(feature = "pathfinder")]
+fn run_pathfinder(
+    cfg: &Config,
+    train: &[Vec<f32>],
+    test: &[Vec<f32>],
+    neighbors: &[Vec<i32>],
+    dim: usize,
+) {
+    use std::collections::HashMap;
+    use vicinity::pathfinder::{PathfinderIndex, PathfinderParams};
+
+    let params = PathfinderParams {
+        max_degree: 32,
+        ef_construction: 200,
+        ef_search: 100,
+        alpha: 1.2,
+        ..Default::default()
+    };
+
+    if !cfg.json {
+        println!("--- PathFinder (max_degree=32, unfiltered) ---");
+    }
+
+    let build_start = Instant::now();
+    let mut index = PathfinderIndex::new(dim, params).unwrap();
+    for (i, vec) in train.iter().enumerate() {
+        index.add_slice(i as u32, vec, HashMap::new()).unwrap();
+    }
+    index.build().unwrap();
+    let build_time_s = build_start.elapsed().as_secs_f64();
+    let rss = current_rss_kb();
+
+    if !cfg.json {
+        println!(
+            "Build: {:.2}s ({:.0} vectors/sec)\n",
+            build_time_s,
+            train.len() as f64 / build_time_s
+        );
+        print_header();
+    }
+
+    let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
+    if cfg.json {
+        let params_json = "{\"max_degree\":32}";
+        println!(
+            "{}",
+            json_line("pathfinder", params_json, build_time_s, rss, &result)
+        );
+    } else {
+        print_row("--", &result);
+        println!();
+    }
+}
+
 fn run_brute(cfg: &Config, train: &[Vec<f32>], test: &[Vec<f32>], neighbors: &[Vec<i32>]) {
     if !cfg.json {
         println!("--- Brute Force (linear scan) ---");
@@ -900,11 +1060,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 eprintln!("IVF-RaBitQ not available (compile with --features ivf_rabitq)");
             }
 
+            #[cfg(feature = "pag")]
+            "pag" => run_pag(&cfg, &train, &test, &neighbors, dim),
+
+            #[cfg(not(feature = "pag"))]
+            "pag" => {
+                eprintln!("PAG not available (compile with --features pag)");
+            }
+
+            #[cfg(feature = "cleann")]
+            "cleann" => run_cleann(&cfg, &train, &test, &neighbors, dim),
+
+            #[cfg(not(feature = "cleann"))]
+            "cleann" => {
+                eprintln!("CleANN not available (compile with --features cleann)");
+            }
+
+            #[cfg(feature = "pathfinder")]
+            "pathfinder" => run_pathfinder(&cfg, &train, &test, &neighbors, dim),
+
+            #[cfg(not(feature = "pathfinder"))]
+            "pathfinder" => {
+                eprintln!("PathFinder not available (compile with --features pathfinder)");
+            }
+
             "brute" => run_brute(&cfg, &train, &test, &neighbors),
 
             other => {
                 eprintln!(
-                    "Unknown algorithm: {}. Options: hnsw, nsw, ivfpq, emg, nsg, pipnn, sng, vamana, ivf_rabitq, brute",
+                    "Unknown algorithm: {}. Options: hnsw, nsw, ivfpq, emg, nsg, pipnn, sng, vamana, ivf_rabitq, pag, cleann, pathfinder, brute",
                     other
                 );
             }
