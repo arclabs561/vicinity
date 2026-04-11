@@ -44,8 +44,7 @@ use vicinity::nsw::NSWIndex;
 #[cfg(feature = "vamana")]
 use vicinity::vamana::{VamanaIndex, VamanaParams};
 
-const DATA_DIR: &str = "data/ann-benchmarks/glove-25-angular";
-const JSONL_OUT: &str = "docs/glove-25-angular.jsonl";
+const DEFAULT_DATA_DIR: &str = "data/ann-benchmarks/glove-25-angular";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
@@ -55,10 +54,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|w| w[1].as_str())
         .unwrap_or("all");
 
-    println!("Loading GloVe-25 data...");
-    let (train, dim) = load_vectors(&format!("{DATA_DIR}/train.bin"))?;
-    let (test, _) = load_vectors(&format!("{DATA_DIR}/test.bin"))?;
-    let (gt, k_gt) = load_neighbors(&format!("{DATA_DIR}/neighbors.bin"))?;
+    let data_dir = args
+        .windows(2)
+        .find(|w| w[0] == "--data")
+        .map(|w| w[1].as_str())
+        .unwrap_or(DEFAULT_DATA_DIR);
+
+    // Derive dataset name from data dir (e.g. "sift-128-euclidean" from path)
+    let dataset_name = std::path::Path::new(data_dir)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("unknown");
+    let jsonl_out = format!("docs/{dataset_name}.jsonl");
+
+    println!("Loading {dataset_name} data...");
+    let (train, dim) = load_vectors(&format!("{data_dir}/train.bin"))?;
+    let (test, _) = load_vectors(&format!("{data_dir}/test.bin"))?;
+    let (gt, k_gt) = load_neighbors(&format!("{data_dir}/neighbors.bin"))?;
     let k = 10;
 
     println!(
@@ -66,7 +78,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         train.len(),
         test.len()
     );
-    println!("  output → {JSONL_OUT}\n");
+    println!("  output → {jsonl_out}\n");
+
+    // Set output path for append_jsonl (used by all runners)
+    std::env::set_var("VICINITY_JSONL_OUT", &jsonl_out);
 
     match algo {
         "hnsw" => run_hnsw(&train, &test, &gt, k, dim)?,
@@ -608,10 +623,12 @@ fn append_jsonl(algorithm: &str, recall: f64, qps: f64) -> Result<(), Box<dyn st
     let line = format!(
         "{{\"algorithm\":\"{algorithm}\",\"recall_at_10\":{recall:.4},\"qps\":{qps:.1}}}\n"
     );
+    let out_path =
+        std::env::var("VICINITY_JSONL_OUT").unwrap_or_else(|_| "docs/results.jsonl".into());
     let file = OpenOptions::new()
         .create(true)
         .append(true)
-        .open(JSONL_OUT)?;
+        .open(out_path)?;
     let mut w = BufWriter::new(file);
     w.write_all(line.as_bytes())?;
     Ok(())
