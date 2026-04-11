@@ -347,6 +347,188 @@ where
     Ok(result_vec)
 }
 
+/// Selectivity regime for filtered search.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SelectivityRegime {
+    /// >10% of vectors match: standard ACORN 2-hop is sufficient.
+    High,
+    /// 1-10% match: aggressive over-retrieval + 2-hop.
+    Medium,
+    /// <1% match: pre-filtered brute-force over matching IDs.
+    Low,
+}
+
+/// Configuration for selectivity-aware filtered search.
+#[derive(Clone, Debug)]
+pub struct SelectivityConfig {
+    /// Threshold between high and medium selectivity (default: 0.10).
+    pub high_threshold: f32,
+    /// Threshold between medium and low selectivity (default: 0.01).
+    pub low_threshold: f32,
+    /// Number of probe nodes to estimate selectivity (default: 50).
+    pub probe_size: usize,
+    /// ef_search multiplier for medium selectivity (default: 4).
+    pub medium_ef_multiplier: usize,
+    /// Override the automatic regime detection.
+    pub force_regime: Option<SelectivityRegime>,
+}
+
+impl Default for SelectivityConfig {
+    fn default() -> Self {
+        Self {
+            high_threshold: 0.10,
+            low_threshold: 0.01,
+            probe_size: 50,
+            medium_ef_multiplier: 4,
+            force_regime: None,
+        }
+    }
+}
+
+/// Estimate selectivity by probing random neighbors from the entry point.
+fn estimate_selectivity<F, N>(
+    filter: &F,
+    get_neighbors: &N,
+    entry_point: u32,
+    probe_size: usize,
+) -> f32
+where
+    F: FilterPredicate,
+    N: Fn(u32) -> Vec<u32>,
+{
+    let mut visited = HashSet::new();
+    let mut queue = vec![entry_point];
+    let mut matches = 0u32;
+    let mut total = 0u32;
+
+    while total < probe_size as u32 && !queue.is_empty() {
+        let node = queue.remove(0);
+        if !visited.insert(node) {
+            continue;
+        }
+        total += 1;
+        if filter.matches(node) {
+            matches += 1;
+        }
+        for &neighbor in &get_neighbors(node) {
+            if !visited.contains(&neighbor) {
+                queue.push(neighbor);
+            }
+        }
+    }
+
+    if total == 0 {
+        0.0
+    } else {
+        matches as f32 / total as f32
+    }
+}
+
+/// Selectivity-aware filtered search.
+///
+/// Automatically detects the selectivity regime and adapts the search strategy:
+///
+/// - **High selectivity** (>10% match): standard ACORN 2-hop
+/// - **Medium selectivity** (1-10%): ACORN with aggressive over-retrieval
+/// - **Low selectivity** (<1%): brute-force scan over pre-filtered candidates
+///
+/// For low selectivity, `matching_ids` must be provided -- the caller pre-computes
+/// which IDs match the filter (e.g., from an inverted index on metadata).
+///
+/// # Arguments
+/// * `k` - Number of results
+/// * `config` - Selectivity configuration
+/// * `filter` - Filter predicate
+/// * `get_neighbors` - Graph neighbor function
+/// * `compute_distance` - Distance function
+/// * `entry_point` - HNSW entry point
+/// * `matching_ids` - Pre-computed matching IDs for low-selectivity fallback.
+///   If `None` and regime is Low, falls back to aggressive ACORN.
+pub fn selectivity_search<F, N, D>(
+    k: usize,
+    config: &SelectivityConfig,
+    filter: &F,
+    get_neighbors: N,
+    compute_distance: D,
+    entry_point: u32,
+    matching_ids: Option<&[u32]>,
+) -> Result<Vec<(u32, f32)>, RetrieveError>
+where
+    F: FilterPredicate,
+    N: Fn(u32) -> Vec<u32>,
+    D: Fn(u32) -> f32,
+{
+    // Determine regime
+    let regime = config.force_regime.unwrap_or_else(|| {
+        let selectivity =
+            estimate_selectivity(filter, &get_neighbors, entry_point, config.probe_size);
+        if selectivity >= config.high_threshold {
+            SelectivityRegime::High
+        } else if selectivity >= config.low_threshold {
+            SelectivityRegime::Medium
+        } else {
+            SelectivityRegime::Low
+        }
+    });
+
+    match regime {
+        SelectivityRegime::High => {
+            // Standard ACORN
+            acorn_search(
+                k,
+                &AcornConfig::default(),
+                filter,
+                get_neighbors,
+                compute_distance,
+                entry_point,
+            )
+        }
+        SelectivityRegime::Medium => {
+            // ACORN with aggressive over-retrieval
+            let acorn_config = AcornConfig {
+                enable_two_hop: true,
+                two_hop_threshold: 0.5, // More aggressive two-hop trigger
+                max_two_hop_neighbors: 64,
+                ef_search: AcornConfig::default().ef_search * config.medium_ef_multiplier,
+            };
+            acorn_search(
+                k,
+                &acorn_config,
+                filter,
+                get_neighbors,
+                compute_distance,
+                entry_point,
+            )
+        }
+        SelectivityRegime::Low => {
+            // Low selectivity: brute-force scan over matching IDs
+            if let Some(ids) = matching_ids {
+                let mut candidates: Vec<(u32, f32)> =
+                    ids.iter().map(|&id| (id, compute_distance(id))).collect();
+                candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+                candidates.truncate(k);
+                Ok(candidates)
+            } else {
+                // No pre-filtered IDs available, fall back to very aggressive ACORN
+                let acorn_config = AcornConfig {
+                    enable_two_hop: true,
+                    two_hop_threshold: 0.8,
+                    max_two_hop_neighbors: 128,
+                    ef_search: AcornConfig::default().ef_search * config.medium_ef_multiplier * 2,
+                };
+                acorn_search(
+                    k,
+                    &acorn_config,
+                    filter,
+                    get_neighbors,
+                    compute_distance,
+                    entry_point,
+                )
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -423,6 +605,96 @@ mod tests {
         for (id, _) in &results {
             assert_eq!(id % 2, 0, "Node {} should be even", id);
         }
+    }
+
+    #[test]
+    fn test_selectivity_high_regime() {
+        let (neighbors, distances) = mock_graph();
+
+        // 50% pass: high selectivity
+        let filter = FnFilter(|id: u32| id % 2 == 0);
+
+        let results = selectivity_search(
+            3,
+            &SelectivityConfig::default(),
+            &filter,
+            |id| neighbors[id as usize].clone(),
+            |id| distances[id as usize],
+            0,
+            None,
+        )
+        .unwrap();
+
+        assert!(!results.is_empty());
+        for (id, _) in &results {
+            assert_eq!(id % 2, 0);
+        }
+    }
+
+    #[test]
+    fn test_selectivity_low_with_prefiltered_ids() {
+        let (_, distances) = mock_graph();
+
+        // Only node 7 matches (0.1 distance)
+        let filter = FnFilter(|id: u32| id == 7);
+        let matching = vec![7u32];
+
+        let results = selectivity_search(
+            1,
+            &SelectivityConfig {
+                force_regime: Some(SelectivityRegime::Low),
+                ..Default::default()
+            },
+            &filter,
+            |_| vec![], // neighbors don't matter for brute-force
+            |id| distances[id as usize],
+            0,
+            Some(&matching),
+        )
+        .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, 7);
+    }
+
+    #[test]
+    fn test_selectivity_forced_regime() {
+        let (neighbors, distances) = mock_graph();
+        let filter = FnFilter(|id: u32| id < 5);
+
+        let results = selectivity_search(
+            2,
+            &SelectivityConfig {
+                force_regime: Some(SelectivityRegime::Medium),
+                ..Default::default()
+            },
+            &filter,
+            |id| neighbors[id as usize].clone(),
+            |id| distances[id as usize],
+            0,
+            None,
+        )
+        .unwrap();
+
+        assert!(!results.is_empty());
+        for (id, _) in &results {
+            assert!(*id < 5);
+        }
+    }
+
+    #[test]
+    fn test_estimate_selectivity() {
+        let (neighbors, _) = mock_graph();
+
+        // 50% filter
+        let filter = FnFilter(|id: u32| id % 2 == 0);
+        let sel = estimate_selectivity(&filter, &|id: u32| neighbors[id as usize].clone(), 0, 10);
+        assert!(sel > 0.3 && sel < 0.7, "expected ~0.5, got {sel}");
+
+        // 10% filter
+        let filter = FnFilter(|id: u32| id == 0);
+        let sel = estimate_selectivity(&filter, &|id: u32| neighbors[id as usize].clone(), 0, 10);
+        assert!(sel < 0.2, "expected ~0.1, got {sel}");
     }
 
     #[test]

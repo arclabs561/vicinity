@@ -130,6 +130,7 @@ evoc = ["dep:clump"]
 id-compression = ["dep:cnk", "dep:sbits", "cnk/sbits"]
 # Quantization sub-features (kept separate so callers can be explicit)
 rabitq = ["qntz", "qntz/rabitq"]
+ivf_rabitq = ["rabitq", "dep:clump", "hnsw"]
 saq = ["qntz", "qntz/ternary"]
 # Re-exported quantizers (from `qntz`)
 qntz = ["dep:qntz"]

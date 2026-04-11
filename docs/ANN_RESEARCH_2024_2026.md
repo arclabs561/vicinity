@@ -99,6 +99,78 @@ From LSM-VEC: Recent updates in memory, periodic merge to disk graph.
 [Disk Layer 1] - older data
 ```
 
+## 2025-2026 Algorithms
+
+### Implemented
+
+#### IVF-RaBitQ (`ivf_rabitq`)
+
+IVF partitioning with RaBitQ quantization instead of Product Quantization. No codebook
+training needed -- uses random orthogonal rotation + sign/extended bits + per-vector
+correction factors (f_add, f_rescale).
+
+**Key difference from IVF-PQ**: RaBitQ preserves per-dimension information while PQ
+compresses via subspace codebooks. At 4 bits/dim, RaBitQ uses more memory than PQ (M=8)
+but achieves higher recall. At 1 bit/dim, RaBitQ is competitive on memory and faster
+(popcount arithmetic).
+
+**Distance estimation**: Asymmetric (exact query, quantized database). The RaBitQ error
+bound is $O(1/\sqrt{d})$ where d is dimension -- tighter than PQ's empirical bounds.
+
+**Ref**: Gao et al. (2024), SIGMOD. Chen et al. (2026), arXiv:2602.23999.
+
+#### Selectivity-Aware Filtered Search (`hnsw::filtered::selectivity_search`)
+
+Three-regime filter strategy based on estimated selectivity (match ratio):
+
+| Regime | Selectivity | Strategy |
+|--------|-------------|----------|
+| High | >10% | Standard ACORN 2-hop |
+| Medium | 1-10% | ACORN with 4x ef_search, aggressive 2-hop |
+| Low | <1% | Brute-force scan over pre-filtered matching IDs |
+
+Selectivity is estimated by BFS-probing ~50 nodes from the entry point. The low-
+selectivity regime requires the caller to pre-compute matching IDs (e.g., from an
+inverted index on metadata). Without pre-filtered IDs, falls back to aggressive ACORN.
+
+**Ref**: Curator (SIGMOD 2026, arXiv:2601.01291) for low-selectivity analysis. ESG
+(arXiv:2504.04018) for range-filter regime analysis. FANNS survey (arXiv:2602.11443)
+for the empirical finding that selectivity regime matters more than algorithm choice.
+
+#### LSM-Tiered Streaming (`streaming::lsm::LsmIndex`)
+
+LSM-tree architecture for write-heavy vector workloads:
+
+```
+L0 (buffer, brute-force) ──compaction──► L1 (HNSW) ──cascade──► L2 (HNSW) ──► ...
+```
+
+- **Write amplification**: O(log_T(N/B)) rewrites per vector, where T is size ratio
+  (default 10), N total vectors, B buffer size. E.g., T=10, N=100M, B=10K → 4 rewrites.
+- **Search**: Query each level independently, merge results. Cost: O(L * search_per_level).
+- **Compaction trigger**: Size-tiered -- level i compacts into i+1 when
+  `size_i >= T * size_{i+1}`.
+- **Tombstones**: Global set filtered from all search results. Garbage-collected during
+  compaction (excluded from merged graph). Cleared on `force_merge_all`.
+
+**Ref**: Inspired by LSM-VEC (arXiv:2505.17152). O'Neil et al. (1996), "The Log-Structured
+Merge-Tree."
+
+### Research Only (Not Yet Implemented)
+
+| Paper | Year | Key Idea | Why It Matters |
+|-------|------|----------|----------------|
+| PiPNN | 2026 | Partition-parallel NN-descent for graph construction | 10x faster builds via Rayon-friendly partitioned NN-descent |
+| delta-EMG | 2025 | Monotonicity-Bounded graph: every greedy walk monotonically decreases distance | Eliminates "no progress" stalls in HNSW-style search |
+| LEMUR | 2026 | Maps multi-vector documents (ColBERT) into single-vector ANN index | MaxSim-compatible ANN for late-interaction retrieval |
+| CleANN | 2025 | Work-stealing concurrent insert/delete/query with consistency guarantees | Formal concurrent correctness for dynamic graphs |
+| PAG | 2026 | Random projections on graph edges for better long-range routing | Simple retrofit onto existing Vamana graphs |
+| DGAI | 2025 | Decoupled graph topology from vector storage | Right architecture for true disk-resident updates |
+| SINDI | 2025 | Graph-based index for sparse vectors (SPLADE/BM25) | Bridges dense and sparse retrieval in one structure |
+| ESG | 2025 | Elastic graphs for range-filtered ANN | Hierarchy of graphs for numeric range constraints |
+| PathFinder | 2025 | Conjunctive/disjunctive filter predicates in graph search | AND/OR trees of filter predicates |
+| QMP | 2024 | Quantization meets projection -- avoids PQ table lookup | Simpler than PQ, competitive accuracy |
+
 ## Metrics to Track
 
 | Metric | Target | Notes |
