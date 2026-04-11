@@ -1069,6 +1069,15 @@ fn run_filtered_graph(
     }
 }
 
+#[cfg(feature = "sparse_mips")]
+fn run_sparse_mips(_cfg: &Config, _train: &[Vec<f32>], _test: &[Vec<f32>], _neighbors: &[Vec<i32>]) {
+    eprintln!(
+        "sparse_mips: skipped -- index requires sparse vectors (SparseVector); \
+         the dense benchmark dataset (f32 slices) is incompatible. \
+         Use a sparse dataset such as SPLADE or BM25 embeddings instead."
+    );
+}
+
 #[cfg(feature = "rp_quant")]
 fn run_rp_quant(
     cfg: &Config,
@@ -1303,11 +1312,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 eprintln!("RpQuant not available (compile with --features rp_quant)");
             }
 
+            #[cfg(feature = "sparse_mips")]
+            "sparse_mips" => run_sparse_mips(&cfg, &train, &test, &neighbors),
+
+            #[cfg(not(feature = "sparse_mips"))]
+            "sparse_mips" => {
+                eprintln!("sparse_mips not available (compile with --features sparse_mips)");
+            }
+
             "brute" => run_brute(&cfg, &train, &test, &neighbors),
 
             other => {
                 eprintln!(
-                    "Unknown algorithm: {}. Options: hnsw, nsw, ivfpq, emg, nsg, pipnn, sng, vamana, ivf_rabitq, finger, fresh_graph, filtered_graph, rp_quant, brute",
+                    "Unknown algorithm: {}. Options: hnsw, nsw, ivfpq, emg, nsg, pipnn, sng, vamana, ivf_rabitq, finger, fresh_graph, filtered_graph, rp_quant, sparse_mips, brute",
                     other
                 );
             }

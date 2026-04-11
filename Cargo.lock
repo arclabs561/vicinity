@@ -493,9 +493,7 @@ dependencies = [
 
 [[package]]
 name = "innr"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d14c8bcf10ad86f7d7aadb8621a00c40ce2e85de293aaf5e2ea61ff775005bb9"
+version = "0.2.2"
 
 [[package]]
 name = "is-terminal"
@@ -907,9 +905,7 @@ dependencies = [
 
 [[package]]
 name = "qntz"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0724ba8306104b8af92c7be9c087893bd6bb9a5b379fe47972cf1f8c85bd1d99"
+version = "0.1.2"
 dependencies = [
  "thiserror",
 ]

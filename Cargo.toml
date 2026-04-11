@@ -96,7 +96,7 @@ persistence = [
   "dep:libc",
 ]
 serde = ["dep:serde", "dep:serde_json", "smallvec/serde"]
-hnsw = []
+hnsw = ["innr"]
 experimental = []
 ivf_pq = [
   "dep:clump",
@@ -325,7 +325,3 @@ type_complexity = "allow"
 multiple_crate_versions = "allow"
 wrong_self_convention = "allow"
 module_name_repetitions = "allow"
-
-# DEV-ONLY: remove before publishing. qntz binary feature not yet on crates.io.
-[patch.crates-io]
-qntz = { path = "../qntz" }
