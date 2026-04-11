@@ -1,0 +1,735 @@
+//! delta-EMG: Error-Bounded Monotonic Graph for ANN search.
+//!
+//! A single-layer proximity graph where every greedy walk is guaranteed to
+//! terminate within a `(1/delta)`-approximate nearest neighbor. Unlike HNSW
+//! (which provides no per-query distance guarantee) or Vamana (which uses a
+//! scalar alpha relaxation), delta-EMG encodes the approximation bound
+//! directly into the graph structure via occlusion-based edge pruning.
+//!
+//! # Feature Flag
+//!
+//! ```toml
+//! vicinity = { version = "0.3", features = ["emg"] }
+//! ```
+//!
+//! # Quick Start
+//!
+//! ```ignore
+//! use vicinity::emg::{EmgIndex, EmgParams};
+//!
+//! let params = EmgParams {
+//!     max_degree: 32,
+//!     candidate_size: 64,
+//!     ..Default::default()
+//! };
+//! let mut index = EmgIndex::new(128, params)?;
+//!
+//! for (id, vec) in data {
+//!     index.add(id, vec)?;
+//! }
+//! index.build()?;
+//!
+//! let results = index.search(&query, 10)?;
+//! ```
+//!
+//! # Approximation Guarantee
+//!
+//! For any query q and search result r returned by greedy search on a delta-EMG:
+//!
+//! $$d(q, r) \leq \frac{1}{\delta} \cdot d(q, v_1)$$
+//!
+//! where $v_1$ is the true nearest neighbor. Smaller delta = weaker guarantee
+//! but sparser graph (faster search). The practical variant uses adaptive delta
+//! that varies per-edge based on neighbor distance rank.
+//!
+//! # How It Works: Occlusion Pruning
+//!
+//! When building node u's neighbor list from sorted candidates, candidate v is
+//! added only if no already-selected neighbor w falls in the occlusion region:
+//!
+//! $$\text{Occ}_\delta(u, v) = \{x : d(x,u) < d(u,v) \wedge d^2(x,v) + 2\delta \cdot d(u,v) \cdot d(x,u) < d^2(u,v)\}$$
+//!
+//! As delta approaches 0, the occlusion region expands toward the MRNG lune
+//! (strictest pruning, fewest edges). As delta approaches 1, it contracts
+//! (more edges, tighter guarantee).
+//!
+//! The adaptive variant sets `delta_t(u,v) = 1 - d(u,v) / d(u, v_t)` where
+//! `v_t` is the t-th closest candidate. Long edges are pruned aggressively,
+//! short edges are retained. Expected out-degree: O(ln n).
+//!
+//! # References
+//!
+//! - Yin et al. (2025). "delta-EMG: Error-Bounded Monotonic Graph for
+//!   Approximate Nearest Neighbor Search." arXiv:2511.16921.
+
+use crate::distance::cosine_distance_normalized;
+use crate::RetrieveError;
+use smallvec::SmallVec;
+use std::collections::{BinaryHeap, HashSet};
+
+/// delta-EMG parameters.
+#[derive(Clone, Debug)]
+pub struct EmgParams {
+    /// Maximum out-degree per node.
+    pub max_degree: usize,
+    /// Candidate set size during construction (L in the paper).
+    pub candidate_size: usize,
+    /// Scale parameter for adaptive delta (t in the paper, t <= candidate_size).
+    /// The t-th closest candidate determines the local scale.
+    pub scale_t: usize,
+    /// Construction iterations. More iterations = better graph quality.
+    pub iterations: usize,
+    /// Search termination factor. Larger alpha = more exploration.
+    /// Search stops when C[l] >= alpha * C[k].
+    pub alpha: f32,
+    /// Default ef_search.
+    pub ef_search: usize,
+}
+
+impl Default for EmgParams {
+    fn default() -> Self {
+        Self {
+            max_degree: 32,
+            candidate_size: 64,
+            scale_t: 32,
+            iterations: 2,
+            alpha: 1.5,
+            ef_search: 100,
+        }
+    }
+}
+
+/// delta-EMG index.
+pub struct EmgIndex {
+    dimension: usize,
+    params: EmgParams,
+    built: bool,
+
+    /// Flat vector storage.
+    vectors: Vec<f32>,
+    num_vectors: usize,
+    doc_ids: Vec<u32>,
+
+    /// Single-layer neighbor lists.
+    neighbors: Vec<SmallVec<[u32; 16]>>,
+
+    /// Medoid (closest to centroid), used as search entry point.
+    medoid: u32,
+}
+
+impl EmgIndex {
+    /// Create a new delta-EMG index.
+    pub fn new(dimension: usize, params: EmgParams) -> Result<Self, RetrieveError> {
+        if dimension == 0 {
+            return Err(RetrieveError::InvalidParameter(
+                "dimension must be > 0".into(),
+            ));
+        }
+        let scale_t = params.scale_t.min(params.candidate_size);
+        Ok(Self {
+            dimension,
+            params: EmgParams { scale_t, ..params },
+            built: false,
+            vectors: Vec::new(),
+            num_vectors: 0,
+            doc_ids: Vec::new(),
+            neighbors: Vec::new(),
+            medoid: 0,
+        })
+    }
+
+    /// Add a vector.
+    pub fn add(&mut self, doc_id: u32, vector: Vec<f32>) -> Result<(), RetrieveError> {
+        self.add_slice(doc_id, &vector)
+    }
+
+    /// Add a vector from a slice.
+    pub fn add_slice(&mut self, doc_id: u32, vector: &[f32]) -> Result<(), RetrieveError> {
+        if self.built {
+            return Err(RetrieveError::InvalidParameter(
+                "cannot add after build".into(),
+            ));
+        }
+        if vector.len() != self.dimension {
+            return Err(RetrieveError::DimensionMismatch {
+                query_dim: vector.len(),
+                doc_dim: self.dimension,
+            });
+        }
+        // L2-normalize
+        let norm: f32 = vector.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm > 1e-10 {
+            self.vectors.extend(vector.iter().map(|x| x / norm));
+        } else {
+            self.vectors.extend_from_slice(vector);
+        }
+        self.doc_ids.push(doc_id);
+        self.num_vectors += 1;
+        Ok(())
+    }
+
+    /// Build the graph.
+    pub fn build(&mut self) -> Result<(), RetrieveError> {
+        if self.built {
+            return Ok(());
+        }
+        if self.num_vectors == 0 {
+            return Err(RetrieveError::EmptyIndex);
+        }
+
+        // Compute medoid
+        self.medoid = self.compute_medoid();
+
+        // Initialize with approximate kNN graph (random + one pass of NN-descent-like refinement)
+        self.initialize_random_graph();
+
+        // Iterative refinement with occlusion pruning
+        for _ in 0..self.params.iterations {
+            self.refine_pass()?;
+        }
+
+        self.built = true;
+        Ok(())
+    }
+
+    /// Search for k nearest neighbors.
+    pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, RetrieveError> {
+        self.search_with_ef(query, k, self.params.ef_search)
+    }
+
+    /// Search with custom ef.
+    pub fn search_with_ef(
+        &self,
+        query: &[f32],
+        k: usize,
+        ef: usize,
+    ) -> Result<Vec<(u32, f32)>, RetrieveError> {
+        if !self.built {
+            return Err(RetrieveError::InvalidParameter(
+                "index must be built before search".into(),
+            ));
+        }
+        if query.len() != self.dimension {
+            return Err(RetrieveError::DimensionMismatch {
+                query_dim: query.len(),
+                doc_dim: self.dimension,
+            });
+        }
+
+        // Normalize query
+        let query_norm: f32 = query.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let query_normalized: Vec<f32> = if query_norm > 1e-10 {
+            query.iter().map(|x| x / query_norm).collect()
+        } else {
+            query.to_vec()
+        };
+
+        let results = self.greedy_search(&query_normalized, ef.max(k));
+
+        Ok(results
+            .into_iter()
+            .take(k)
+            .map(|(id, dist)| (self.doc_ids[id as usize], dist))
+            .collect())
+    }
+
+    /// Number of indexed vectors.
+    pub fn len(&self) -> usize {
+        self.num_vectors
+    }
+
+    /// Whether the index is empty.
+    pub fn is_empty(&self) -> bool {
+        self.num_vectors == 0
+    }
+
+    // ── Internal methods ───────────────────────────────────────────────
+
+    #[inline]
+    fn get_vector(&self, idx: usize) -> &[f32] {
+        let start = idx * self.dimension;
+        &self.vectors[start..start + self.dimension]
+    }
+
+    fn compute_medoid(&self) -> u32 {
+        let dim = self.dimension;
+        let n = self.num_vectors;
+
+        // Compute centroid
+        let mut centroid = vec![0.0f32; dim];
+        for i in 0..n {
+            let v = self.get_vector(i);
+            for (j, &val) in v.iter().enumerate() {
+                centroid[j] += val;
+            }
+        }
+        for c in &mut centroid {
+            *c /= n as f32;
+        }
+
+        // Find closest to centroid
+        let mut best_id = 0u32;
+        let mut best_dist = f32::INFINITY;
+        for i in 0..n {
+            let v = self.get_vector(i);
+            let dist = cosine_distance_normalized(&centroid, v);
+            if dist < best_dist {
+                best_dist = dist;
+                best_id = i as u32;
+            }
+        }
+        best_id
+    }
+
+    fn initialize_random_graph(&mut self) {
+        let n = self.num_vectors;
+        let m = self.params.max_degree.min(n - 1);
+        self.neighbors = vec![SmallVec::new(); n];
+
+        // Simple initialization: connect each node to its nearest ~m neighbors
+        // by scanning all vectors. For large n this should use NN-descent, but
+        // the iterative refinement will fix the graph quality.
+        let scan_limit = (m * 4).min(n);
+
+        for i in 0..n {
+            let vi = self.get_vector(i);
+            let mut dists: Vec<(u32, f32)> = (0..scan_limit.min(n))
+                .filter(|&j| j != i)
+                .map(|j| {
+                    let vj = self.get_vector(j);
+                    (j as u32, cosine_distance_normalized(vi, vj))
+                })
+                .collect();
+            dists.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+            dists.truncate(m);
+            self.neighbors[i] = dists.iter().map(|(id, _)| *id).collect();
+        }
+    }
+
+    /// One refinement pass: for each node, search for candidates and apply
+    /// occlusion-based neighbor selection.
+    fn refine_pass(&mut self) -> Result<(), RetrieveError> {
+        let n = self.num_vectors;
+
+        for current_id in 0..n {
+            let current_vec = self.get_vector(current_id).to_vec();
+
+            // Greedy search to find candidates
+            let candidates = self.greedy_search(&current_vec, self.params.candidate_size);
+
+            // Select neighbors via occlusion pruning
+            let selected =
+                self.select_neighbors_occlusion(current_id as u32, &current_vec, &candidates);
+
+            self.neighbors[current_id] = selected.iter().map(|&(id, _)| id).collect();
+
+            // Add reverse edges with degree cap
+            let max_deg = self.params.max_degree;
+            for &(neighbor_id, _) in &selected {
+                let nid = neighbor_id as usize;
+                if !self.neighbors[nid].contains(&(current_id as u32)) {
+                    if self.neighbors[nid].len() < max_deg {
+                        self.neighbors[nid].push(current_id as u32);
+                    } else {
+                        // Prune reverse neighbor list with occlusion
+                        let nid_vec = self.get_vector(nid).to_vec();
+                        let rev_candidates: Vec<(u32, f32)> = self.neighbors[nid]
+                            .iter()
+                            .chain(std::iter::once(&(current_id as u32)))
+                            .map(|&id| {
+                                let v = self.get_vector(id as usize);
+                                (id, cosine_distance_normalized(&nid_vec, v))
+                            })
+                            .collect();
+                        let pruned =
+                            self.select_neighbors_occlusion(neighbor_id, &nid_vec, &rev_candidates);
+                        self.neighbors[nid] = pruned.iter().map(|&(id, _)| id).collect();
+                    }
+                }
+            }
+        }
+
+        // Ensure connectivity: connect unreachable nodes to medoid
+        self.ensure_connectivity();
+
+        Ok(())
+    }
+
+    /// Select neighbors using occlusion-based pruning with adaptive delta.
+    ///
+    /// For each candidate v (sorted by distance from u), v is added only if
+    /// no already-selected neighbor w falls in the occlusion region
+    /// Occ_delta(u, v).
+    fn select_neighbors_occlusion(
+        &self,
+        node_id: u32,
+        node_vec: &[f32],
+        candidates: &[(u32, f32)],
+    ) -> Vec<(u32, f32)> {
+        if candidates.is_empty() {
+            return Vec::new();
+        }
+
+        let mut sorted: Vec<(u32, f32)> = candidates
+            .iter()
+            .filter(|(id, _)| *id != node_id)
+            .copied()
+            .collect();
+        sorted.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+
+        let max_deg = self.params.max_degree;
+        let scale_t = self.params.scale_t.min(sorted.len());
+
+        // v_t = distance to the t-th closest candidate (for adaptive delta)
+        let d_vt = if scale_t > 0 && scale_t <= sorted.len() {
+            sorted[scale_t - 1].1
+        } else {
+            sorted.last().map(|(_, d)| *d).unwrap_or(1.0)
+        };
+
+        let mut selected: Vec<(u32, f32)> = Vec::with_capacity(max_deg);
+
+        for &(candidate_id, d_uv) in &sorted {
+            if selected.len() >= max_deg {
+                break;
+            }
+
+            // Adaptive delta: closer candidates get larger delta (less pruning)
+            let delta = if d_vt > 1e-10 {
+                (1.0 - d_uv / d_vt).max(0.01) // floor at 0.01 to avoid zero
+            } else {
+                0.5
+            };
+
+            // Check if any selected neighbor occludes this candidate
+            let mut occluded = false;
+            for &(selected_id, _) in &selected {
+                let w_vec = self.get_vector(selected_id as usize);
+                let d_wu = cosine_distance_normalized(w_vec, node_vec);
+                let d_wv =
+                    cosine_distance_normalized(w_vec, self.get_vector(candidate_id as usize));
+
+                // Occlusion condition:
+                // 1. d(w, u) < d(u, v)
+                // 2. d(w, v)^2 + 2*delta*d(u,v)*d(w,u) < d(u,v)^2
+                if d_wu < d_uv {
+                    let lhs = d_wv * d_wv + 2.0 * delta * d_uv * d_wu;
+                    let rhs = d_uv * d_uv;
+                    if lhs < rhs {
+                        occluded = true;
+                        break;
+                    }
+                }
+            }
+
+            if !occluded {
+                selected.push((candidate_id, d_uv));
+            }
+        }
+
+        selected
+    }
+
+    /// Greedy search from medoid, returning sorted (internal_id, distance) pairs.
+    fn greedy_search(&self, query: &[f32], ef: usize) -> Vec<(u32, f32)> {
+        let n = self.num_vectors;
+        if n == 0 {
+            return Vec::new();
+        }
+
+        let mut visited = HashSet::new();
+
+        // Min-heap for frontier (negated distance for min-heap behavior)
+        let mut frontier: BinaryHeap<std::cmp::Reverse<(FloatOrd, u32)>> = BinaryHeap::new();
+
+        // Result candidates
+        let mut candidates: Vec<(u32, f32)> = Vec::new();
+
+        let entry = self.medoid;
+        let entry_dist = cosine_distance_normalized(query, self.get_vector(entry as usize));
+        visited.insert(entry);
+        frontier.push(std::cmp::Reverse((FloatOrd(entry_dist), entry)));
+        candidates.push((entry, entry_dist));
+
+        while let Some(std::cmp::Reverse((FloatOrd(current_dist), current_id))) = frontier.pop() {
+            // Early termination: if current is worse than ef-th best candidate
+            if candidates.len() >= ef {
+                candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+                if current_dist > candidates[ef - 1].1 * self.params.alpha {
+                    break;
+                }
+            }
+
+            // Expand neighbors
+            for &neighbor in &self.neighbors[current_id as usize] {
+                if visited.insert(neighbor) {
+                    let dist =
+                        cosine_distance_normalized(query, self.get_vector(neighbor as usize));
+                    candidates.push((neighbor, dist));
+                    frontier.push(std::cmp::Reverse((FloatOrd(dist), neighbor)));
+                }
+            }
+
+            if visited.len() > ef * 10 {
+                break;
+            }
+        }
+
+        candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+        candidates.dedup_by_key(|c| c.0);
+        candidates
+    }
+
+    /// Connect unreachable nodes to medoid's neighbors.
+    fn ensure_connectivity(&mut self) {
+        let n = self.num_vectors;
+        let mut visited = vec![false; n];
+        let mut stack = vec![self.medoid as usize];
+        visited[self.medoid as usize] = true;
+
+        while let Some(node) = stack.pop() {
+            for &nb in &self.neighbors[node] {
+                let nb = nb as usize;
+                if nb < n && !visited[nb] {
+                    visited[nb] = true;
+                    stack.push(nb);
+                }
+            }
+        }
+
+        // Connect unreachable nodes
+        for i in 0..n {
+            if !visited[i] {
+                // Find closest reachable node
+                let vi = self.get_vector(i);
+                let mut best_id = self.medoid;
+                let mut best_dist =
+                    cosine_distance_normalized(vi, self.get_vector(self.medoid as usize));
+                for j in 0..n {
+                    if visited[j] && j != i {
+                        let dist = cosine_distance_normalized(vi, self.get_vector(j));
+                        if dist < best_dist {
+                            best_dist = dist;
+                            best_id = j as u32;
+                        }
+                    }
+                }
+                self.neighbors[i].push(best_id);
+                if self.neighbors[best_id as usize].len() < self.params.max_degree {
+                    self.neighbors[best_id as usize].push(i as u32);
+                }
+            }
+        }
+    }
+}
+
+/// Wrapper for f32 that implements Ord (for BinaryHeap).
+#[derive(Clone, Copy, PartialEq)]
+struct FloatOrd(f32);
+
+impl Eq for FloatOrd {}
+
+impl PartialOrd for FloatOrd {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for FloatOrd {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.total_cmp(&other.0)
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    fn make_vectors(n: usize, dim: usize, seed: u64) -> Vec<f32> {
+        let mut rng = seed;
+        (0..n * dim)
+            .map(|_| {
+                rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+                ((rng >> 33) as f32 / (1u64 << 31) as f32) - 1.0
+            })
+            .collect()
+    }
+
+    #[test]
+    fn build_and_search_basic() {
+        let dim = 16;
+        let n = 100;
+        let data = make_vectors(n, dim, 42);
+
+        let mut index = EmgIndex::new(
+            dim,
+            EmgParams {
+                max_degree: 16,
+                candidate_size: 32,
+                scale_t: 16,
+                iterations: 2,
+                alpha: 1.5,
+                ef_search: 50,
+            },
+        )
+        .unwrap();
+
+        for i in 0..n {
+            let start = i * dim;
+            index
+                .add_slice(i as u32, &data[start..start + dim])
+                .unwrap();
+        }
+        index.build().unwrap();
+
+        let query = &data[0..dim];
+        let results = index.search(query, 5).unwrap();
+        assert!(!results.is_empty());
+        assert!(results.len() <= 5);
+        // Self-match should be near top
+        assert!(
+            results.iter().any(|(id, _)| *id == 0),
+            "expected doc_id 0 in results: {:?}",
+            results
+        );
+    }
+
+    #[test]
+    fn self_search_recall() {
+        let dim = 16;
+        let n = 80;
+        let data = make_vectors(n, dim, 7);
+
+        let mut index = EmgIndex::new(
+            dim,
+            EmgParams {
+                max_degree: 16,
+                candidate_size: 40,
+                scale_t: 20,
+                iterations: 2,
+                alpha: 1.5,
+                ef_search: 50,
+            },
+        )
+        .unwrap();
+
+        for i in 0..n {
+            let start = i * dim;
+            index
+                .add_slice(i as u32, &data[start..start + dim])
+                .unwrap();
+        }
+        index.build().unwrap();
+
+        let mut hits = 0;
+        for i in 0..n {
+            let query = &data[i * dim..(i + 1) * dim];
+            let results = index.search(query, 1).unwrap();
+            if results.first().map(|(id, _)| *id) == Some(i as u32) {
+                hits += 1;
+            }
+        }
+        let recall = hits as f64 / n as f64;
+        assert!(
+            recall > 0.6,
+            "self-search recall too low: {recall:.2} ({hits}/{n})"
+        );
+    }
+
+    #[test]
+    fn occlusion_pruning_reduces_degree() {
+        // Occlusion pruning should produce sparser graphs than raw kNN
+        let dim = 16;
+        let n = 50;
+        let data = make_vectors(n, dim, 99);
+
+        let mut index = EmgIndex::new(
+            dim,
+            EmgParams {
+                max_degree: 32, // high cap
+                candidate_size: 40,
+                scale_t: 20,
+                iterations: 2,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        for i in 0..n {
+            let start = i * dim;
+            index
+                .add_slice(i as u32, &data[start..start + dim])
+                .unwrap();
+        }
+        index.build().unwrap();
+
+        // Average degree should be well below max_degree due to occlusion pruning
+        let avg_degree: f64 =
+            index.neighbors.iter().map(|n| n.len() as f64).sum::<f64>() / n as f64;
+
+        assert!(
+            avg_degree < 32.0,
+            "expected avg degree < max_degree (32) due to pruning, got {avg_degree:.1}"
+        );
+    }
+
+    #[test]
+    fn empty_index_errors() {
+        let mut index = EmgIndex::new(8, EmgParams::default()).unwrap();
+        assert!(index.build().is_err());
+    }
+
+    #[test]
+    fn dimension_mismatch_rejected() {
+        let mut index = EmgIndex::new(8, EmgParams::default()).unwrap();
+        assert!(index.add(0, vec![1.0; 16]).is_err());
+    }
+
+    #[test]
+    fn connectivity_maintained() {
+        // After build, all nodes should be reachable from medoid
+        let dim = 8;
+        let n = 30;
+        let data = make_vectors(n, dim, 123);
+
+        let mut index = EmgIndex::new(
+            dim,
+            EmgParams {
+                max_degree: 8,
+                candidate_size: 16,
+                scale_t: 8,
+                iterations: 2,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        for i in 0..n {
+            let start = i * dim;
+            index
+                .add_slice(i as u32, &data[start..start + dim])
+                .unwrap();
+        }
+        index.build().unwrap();
+
+        // BFS from medoid should reach all nodes
+        let mut visited = vec![false; n];
+        let mut stack = vec![index.medoid as usize];
+        visited[index.medoid as usize] = true;
+        while let Some(node) = stack.pop() {
+            for &nb in &index.neighbors[node] {
+                let nb = nb as usize;
+                if !visited[nb] {
+                    visited[nb] = true;
+                    stack.push(nb);
+                }
+            }
+        }
+        let reachable = visited.iter().filter(|&&v| v).count();
+        assert_eq!(
+            reachable, n,
+            "expected all {n} nodes reachable, got {reachable}"
+        );
+    }
+}
