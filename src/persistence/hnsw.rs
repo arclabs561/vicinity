@@ -219,6 +219,7 @@ impl HNSWSegmentReader {
             seed_selection: SeedSelectionStrategy::default(),
             neighborhood_diversification: NeighborhoodDiversification::default(),
             seed: None,
+            metric: crate::distance::DistanceMetric::Cosine,
             #[cfg(feature = "id-compression")]
             id_compression: None,
             #[cfg(feature = "id-compression")]

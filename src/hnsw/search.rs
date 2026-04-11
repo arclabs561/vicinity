@@ -29,9 +29,6 @@ fn prefetch_read_data(ptr: *const f32) {
     }
 }
 
-#[cfg(feature = "hnsw")]
-use crate::distance::cosine_distance_normalized as cosine_distance;
-
 // ─── Visited set ─────────────────────────────────────────────────────────────
 
 /// Threshold below which we use a dense generation-counter array instead of HashSet.
@@ -228,6 +225,7 @@ pub fn greedy_search_layer(
     vectors: &[f32],
     dimension: usize,
     ef: usize,
+    dist_fn: fn(&[f32], &[f32]) -> f32,
 ) -> Vec<(u32, f32)> {
     let num_vectors = vectors.len() / dimension;
 
@@ -237,7 +235,7 @@ pub fn greedy_search_layer(
 
         // Start from entry point
         let entry_vector = get_vector(vectors, dimension, entry_point as usize);
-        let entry_distance = cosine_distance(query, entry_vector);
+        let entry_distance = dist_fn(query, entry_vector);
         candidates.push(MinCandidate {
             id: entry_point,
             distance: entry_distance,
@@ -279,7 +277,7 @@ pub fn greedy_search_layer(
                 }
                 if visited.insert(neighbor_id) {
                     let neighbor_vector = get_vector(vectors, dimension, neighbor_id as usize);
-                    let neighbor_distance = cosine_distance(query, neighbor_vector);
+                    let neighbor_distance = dist_fn(query, neighbor_vector);
 
                     // Only add if potentially useful
                     let worst_dist = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
@@ -327,6 +325,7 @@ pub fn greedy_search_layer_adaptive(
     ef: usize,
     k: usize,
     config: &crate::adaptive::AdaptiveConfig,
+    dist_fn: fn(&[f32], &[f32]) -> f32,
 ) -> (Vec<(u32, f32)>, usize) {
     use crate::adaptive::EarlyTerminationOracle;
 
@@ -339,7 +338,7 @@ pub fn greedy_search_layer_adaptive(
 
         // Start from entry point
         let entry_vector = get_vector(vectors, dimension, entry_point as usize);
-        let entry_distance = cosine_distance(query, entry_vector);
+        let entry_distance = dist_fn(query, entry_vector);
         oracle.observe(entry_distance);
 
         candidates.push(MinCandidate {
@@ -379,7 +378,7 @@ pub fn greedy_search_layer_adaptive(
                 }
                 if visited.insert(neighbor_id) {
                     let neighbor_vector = get_vector(vectors, dimension, neighbor_id as usize);
-                    let neighbor_distance = cosine_distance(query, neighbor_vector);
+                    let neighbor_distance = dist_fn(query, neighbor_vector);
                     oracle.observe(neighbor_distance);
 
                     let worst_dist = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);

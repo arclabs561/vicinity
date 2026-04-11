@@ -6,6 +6,18 @@ use crate::hnsw::search::greedy_search_layer;
 use crate::RetrieveError;
 use smallvec::SmallVec;
 
+/// Return a plain function pointer for the configured distance metric.
+#[inline(always)]
+fn dist_fn_for(index: &HNSWIndex) -> fn(&[f32], &[f32]) -> f32 {
+    use crate::distance::DistanceMetric;
+    match index.params.metric {
+        DistanceMetric::L2 => distance::l2_distance,
+        DistanceMetric::Cosine => distance::cosine_distance_normalized,
+        DistanceMetric::Angular => distance::angular_distance,
+        DistanceMetric::InnerProduct => distance::inner_product_distance,
+    }
+}
+
 /// Select neighbors using RND (Relative Neighborhood Diversification).
 ///
 /// Criterion: include candidate \(X_j\) if it is closer to the query than it is to
@@ -16,6 +28,7 @@ fn select_neighbors_rnd(
     m: usize,
     vectors: &[f32],
     dimension: usize,
+    dist_fn: fn(&[f32], &[f32]) -> f32,
 ) -> Vec<u32> {
     if candidates.is_empty() {
         return Vec::new();
@@ -44,7 +57,7 @@ fn select_neighbors_rnd(
         // Check RND condition: dist(X_q, X_j) < dist(X_i, X_j) for all X_i in selected
         for &selected_id in &selected {
             let selected_vec = get_vector(vectors, dimension, selected_id as usize);
-            let inter_distance = distance::cosine_distance_normalized(selected_vec, candidate_vec);
+            let inter_distance = dist_fn(selected_vec, candidate_vec);
 
             // RND formula: query_to_candidate_dist must be < inter_distance
             if *query_to_candidate_dist >= inter_distance {
@@ -174,6 +187,7 @@ fn select_neighbors_rrnd(
     vectors: &[f32],
     dimension: usize,
     alpha: f32,
+    dist_fn: fn(&[f32], &[f32]) -> f32,
 ) -> Vec<u32> {
     if candidates.is_empty() {
         return Vec::new();
@@ -201,7 +215,7 @@ fn select_neighbors_rrnd(
 
         for &selected_id in &selected {
             let selected_vec = get_vector(vectors, dimension, selected_id as usize);
-            let inter_distance = distance::cosine_distance_normalized(selected_vec, candidate_vec);
+            let inter_distance = dist_fn(selected_vec, candidate_vec);
 
             // RRND formula: query_to_candidate_dist < alpha * inter_distance
             if *query_to_candidate_dist >= alpha * inter_distance {
@@ -236,10 +250,11 @@ pub fn select_neighbors(
     vectors: &[f32],
     dimension: usize,
     strategy: &crate::hnsw::graph::NeighborhoodDiversification,
+    dist_fn: fn(&[f32], &[f32]) -> f32,
 ) -> Vec<u32> {
     match strategy {
         crate::hnsw::graph::NeighborhoodDiversification::RelativeNeighborhood => {
-            select_neighbors_rnd(query_vector, candidates, m, vectors, dimension)
+            select_neighbors_rnd(query_vector, candidates, m, vectors, dimension, dist_fn)
         }
         crate::hnsw::graph::NeighborhoodDiversification::MaximumOriented { min_angle_degrees } => {
             select_neighbors_mond(
@@ -252,7 +267,15 @@ pub fn select_neighbors(
             )
         }
         crate::hnsw::graph::NeighborhoodDiversification::RelaxedRelative { alpha } => {
-            select_neighbors_rrnd(query_vector, candidates, m, vectors, dimension, *alpha)
+            select_neighbors_rrnd(
+                query_vector,
+                candidates,
+                m,
+                vectors,
+                dimension,
+                *alpha,
+                dist_fn,
+            )
         }
     }
 }
@@ -284,6 +307,9 @@ pub fn construct_graph(index: &mut HNSWIndex) -> Result<(), RetrieveError> {
     index.layers = (0..=max_layer)
         .map(|_| Layer::new_uncompressed(vec![SmallVec::new(); index.num_vectors]))
         .collect();
+
+    // Capture the distance function once so later mutable borrows of `index` don't conflict.
+    let dist_fn = dist_fn_for(index);
 
     // Global entry point for the already-inserted subgraph.
     //
@@ -323,6 +349,7 @@ pub fn construct_graph(index: &mut HNSWIndex) -> Result<(), RetrieveError> {
                     &index.vectors,
                     index.dimension,
                     1,
+                    dist_fn,
                 );
                 if let Some((best_id, _)) = results.first() {
                     layer_entry_point = *best_id;
@@ -339,6 +366,7 @@ pub fn construct_graph(index: &mut HNSWIndex) -> Result<(), RetrieveError> {
                 &index.vectors,
                 index.dimension,
                 index.params.ef_construction,
+                dist_fn,
             );
 
             // Update entry point for the next lower layer.
@@ -360,6 +388,7 @@ pub fn construct_graph(index: &mut HNSWIndex) -> Result<(), RetrieveError> {
                 &index.vectors,
                 index.dimension,
                 &index.params.neighborhood_diversification,
+                dist_fn,
             );
 
             // Enforce layer membership + insertion order invariants.
@@ -376,7 +405,7 @@ pub fn construct_graph(index: &mut HNSWIndex) -> Result<(), RetrieveError> {
                 .iter()
                 .map(|&id| {
                     let vec = get_vector(&index.vectors, index.dimension, id as usize);
-                    let dist = distance::cosine_distance_normalized(current_vector, vec);
+                    let dist = dist_fn(current_vector, vec);
                     (id, dist)
                 })
                 .collect();
@@ -402,7 +431,7 @@ pub fn construct_graph(index: &mut HNSWIndex) -> Result<(), RetrieveError> {
             // Add distances to existing neighbors
             for &id in &current_existing_neighbors {
                 let vec = get_vector(&index.vectors, index.dimension, id as usize);
-                let dist = distance::cosine_distance_normalized(current_vector, vec);
+                let dist = dist_fn(current_vector, vec);
                 all_current_distances.insert(id, dist);
             }
 
@@ -442,7 +471,7 @@ pub fn construct_graph(index: &mut HNSWIndex) -> Result<(), RetrieveError> {
                 for &existing_id in &existing_neighbor_lists[idx] {
                     let existing_vec =
                         get_vector(&index.vectors, index.dimension, existing_id as usize);
-                    let dist = distance::cosine_distance_normalized(neighbor_vec, existing_vec);
+                    let dist = dist_fn(neighbor_vec, existing_vec);
                     distances.insert(existing_id, dist);
                 }
 
@@ -478,7 +507,7 @@ pub fn construct_graph(index: &mut HNSWIndex) -> Result<(), RetrieveError> {
                                 all_current_distances.get(&id).copied().unwrap_or_else(|| {
                                     let vec =
                                         get_vector(&index.vectors, index.dimension, id as usize);
-                                    distance::cosine_distance_normalized(current_vector, vec)
+                                    dist_fn(current_vector, vec)
                                 });
                             (id, dist)
                         })
@@ -491,6 +520,7 @@ pub fn construct_graph(index: &mut HNSWIndex) -> Result<(), RetrieveError> {
                         &index.vectors,
                         index.dimension,
                         &index.params.neighborhood_diversification,
+                        dist_fn,
                     );
                     *neighbors = pruned.into_iter().collect();
                 }
@@ -509,7 +539,7 @@ pub fn construct_graph(index: &mut HNSWIndex) -> Result<(), RetrieveError> {
                         .map(|&id| {
                             let dist = distances.get(&id).copied().unwrap_or_else(|| {
                                 let vec = get_vector(&index.vectors, index.dimension, id as usize);
-                                distance::cosine_distance_normalized(neighbor_vec, vec)
+                                dist_fn(neighbor_vec, vec)
                             });
                             (id, dist)
                         })
@@ -522,6 +552,7 @@ pub fn construct_graph(index: &mut HNSWIndex) -> Result<(), RetrieveError> {
                         &index.vectors,
                         index.dimension,
                         &index.params.neighborhood_diversification,
+                        dist_fn,
                     );
                     *reverse_neighbors = pruned.into_iter().collect();
                 }

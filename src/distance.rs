@@ -17,6 +17,7 @@ use crate::simd;
 /// This is primarily used for evaluation utilities and as a common vocabulary in docs.
 /// Individual index implementations may hard-code a metric today.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum DistanceMetric {
     /// Euclidean (L2) distance.
     L2,
