@@ -79,6 +79,9 @@
 pub mod ann;
 pub mod classic;
 
+#[cfg(feature = "cleann")]
+pub mod cleann;
+
 #[cfg(feature = "curator")]
 pub mod curator;
 
@@ -111,6 +114,12 @@ pub mod ivf_pq;
 
 #[cfg(feature = "nsg")]
 pub mod nsg;
+
+#[cfg(feature = "pag")]
+pub mod pag;
+
+#[cfg(feature = "pathfinder")]
+pub mod pathfinder;
 
 #[cfg(feature = "nsw")]
 pub mod nsw;
