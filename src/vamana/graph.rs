@@ -120,8 +120,72 @@ impl VamanaIndex {
         // Two-pass construction: RRND + RND
         super::construction::construct_graph(self)?;
         self.built = true;
+        // Note: graph reordering not applied to Vamana because it lacks
+        // doc_id tracking -- reordering would break internal index invariants.
+        // HNSW has this optimization via its doc_id mapping.
 
         Ok(())
+    }
+
+    /// BFS-order graph reordering for cache-friendly traversal.
+    fn reorder_for_locality(&mut self) {
+        if self.num_vectors <= 1 {
+            return;
+        }
+        let n = self.num_vectors;
+        let dim = self.dimension;
+        let ep = self.medoid as usize;
+
+        // BFS from medoid
+        let mut new_order: Vec<u32> = Vec::with_capacity(n);
+        let mut visited = vec![false; n];
+        let mut queue = std::collections::VecDeque::with_capacity(n);
+        queue.push_back(ep);
+        visited[ep] = true;
+
+        while let Some(node) = queue.pop_front() {
+            new_order.push(node as u32);
+            for &nb in &self.neighbors[node] {
+                let nb = nb as usize;
+                if nb < n && !visited[nb] {
+                    visited[nb] = true;
+                    queue.push_back(nb);
+                }
+            }
+        }
+        for i in 0..n {
+            if !visited[i] {
+                new_order.push(i as u32);
+            }
+        }
+
+        // Build permutation
+        let mut old_to_new = vec![0u32; n];
+        for (new_idx, &old_idx) in new_order.iter().enumerate() {
+            old_to_new[old_idx as usize] = new_idx as u32;
+        }
+
+        // Permute vectors
+        let mut new_vectors = vec![0.0f32; self.vectors.len()];
+        for (new_idx, &old_idx) in new_order.iter().enumerate() {
+            let src = old_idx as usize * dim;
+            let dst = new_idx * dim;
+            new_vectors[dst..dst + dim].copy_from_slice(&self.vectors[src..src + dim]);
+        }
+        self.vectors = new_vectors;
+
+        // Permute and remap neighbor lists
+        let mut new_neighbors = vec![SmallVec::new(); n];
+        for (old_idx, nbs) in self.neighbors.iter().enumerate() {
+            if old_idx < n {
+                let new_idx = old_to_new[old_idx] as usize;
+                new_neighbors[new_idx] = nbs.iter().map(|&nb| old_to_new[nb as usize]).collect();
+            }
+        }
+        self.neighbors = new_neighbors;
+
+        // Update medoid
+        self.medoid = old_to_new[ep];
     }
 
     /// Search for k nearest neighbors.
