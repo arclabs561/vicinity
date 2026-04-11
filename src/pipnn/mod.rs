@@ -56,6 +56,9 @@ use crate::RetrieveError;
 use smallvec::SmallVec;
 use std::collections::{BinaryHeap, HashSet};
 
+#[cfg(feature = "parallel")]
+use rayon::prelude::*;
+
 /// PiPNN parameters.
 #[derive(Clone, Debug)]
 pub struct PipnnParams {
@@ -195,6 +198,19 @@ impl PipnnIndex {
         let leaves = self.partition(&all_ids, 0);
 
         // Step 3: Build kNN within each leaf + HashPrune edges
+        #[cfg(feature = "parallel")]
+        {
+            let all_edges: Vec<Vec<(u32, Vec<(u32, f32)>)>> = leaves
+                .par_iter()
+                .map(|leaf| self.compute_leaf_edges(leaf))
+                .collect();
+            for leaf_edges in all_edges {
+                for (point_id, candidates) in leaf_edges {
+                    self.hashprune_insert(point_id, &candidates);
+                }
+            }
+        }
+        #[cfg(not(feature = "parallel"))]
         for leaf in &leaves {
             self.build_leaf(leaf);
         }
@@ -371,6 +387,45 @@ impl PipnnIndex {
         }
     }
 
+    /// Compute kNN candidates for each point in a leaf without mutating `self`.
+    ///
+    /// Returns `(point_id, candidates)` pairs suitable for feeding into
+    /// `hashprune_insert`. Used by the parallel build path.
+    #[cfg(feature = "parallel")]
+    fn compute_leaf_edges(&self, leaf: &[u32]) -> Vec<(u32, Vec<(u32, f32)>)> {
+        if leaf.len() <= 1 {
+            return Vec::new();
+        }
+
+        let max_k = self.params.max_degree.min(leaf.len() - 1);
+        let n = leaf.len();
+
+        // All-pairs distance matrix within the leaf
+        let mut distances = vec![0.0f32; n * n];
+        for i in 0..n {
+            let vi = self.get_vector(leaf[i] as usize);
+            for j in (i + 1)..n {
+                let vj = self.get_vector(leaf[j] as usize);
+                let d = cosine_distance_normalized(vi, vj);
+                distances[i * n + j] = d;
+                distances[j * n + i] = d;
+            }
+        }
+
+        let mut result = Vec::with_capacity(n);
+        for i in 0..n {
+            let point_id = leaf[i];
+            let mut candidates: Vec<(u32, f32)> = (0..n)
+                .filter(|&j| j != i)
+                .map(|j| (leaf[j], distances[i * n + j]))
+                .collect();
+            candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+            candidates.truncate(max_k * 2);
+            result.push((point_id, candidates));
+        }
+        result
+    }
+
     /// HashPrune: insert candidate neighbors into the point's reservoir.
     ///
     /// The reservoir is keyed by SimHash of the residual (candidate - point).
@@ -424,7 +479,7 @@ impl PipnnIndex {
                 let d = cosine_distance_normalized(&pv, self.get_vector(id as usize));
                 (id, d)
             })
-            .chain(selected.into_iter())
+            .chain(selected)
             .collect();
         merged.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
         merged.dedup_by_key(|c| c.0);
@@ -462,10 +517,11 @@ impl PipnnIndex {
             let nbs: SmallVec<[u32; 16]> = self.neighbors[i].clone();
             for &nb in &nbs {
                 let nb = nb as usize;
-                if nb < n && !self.neighbors[nb].contains(&(i as u32)) {
-                    if self.neighbors[nb].len() < max_deg {
-                        self.neighbors[nb].push(i as u32);
-                    }
+                if nb < n
+                    && !self.neighbors[nb].contains(&(i as u32))
+                    && self.neighbors[nb].len() < max_deg
+                {
+                    self.neighbors[nb].push(i as u32);
                 }
             }
         }
@@ -543,6 +599,7 @@ impl PipnnIndex {
         best
     }
 
+    #[allow(clippy::needless_range_loop)]
     fn ensure_connectivity(&mut self) {
         let n = self.num_vectors;
         let mut visited = vec![false; n];
