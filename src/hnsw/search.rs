@@ -307,6 +307,104 @@ pub fn greedy_search_layer(
     })
 }
 
+/// Greedy search seeded from multiple entry points.
+///
+/// Same beam search as [`greedy_search_layer`], but initialises the candidate
+/// heap with all provided `entry_points`. Duplicate entry IDs are silently
+/// deduplicated via the visited set. If `entry_points` is empty this returns
+/// an empty result.
+///
+/// Used by `batch_search_mqo` to warm-start a query from the best result of a
+/// nearby query already processed in the batch.
+#[cfg(feature = "hnsw")]
+pub fn greedy_search_layer_multi_entry(
+    query: &[f32],
+    entry_points: &[u32],
+    layer: &crate::hnsw::graph::Layer,
+    vectors: &[f32],
+    dimension: usize,
+    ef: usize,
+    dist_fn: fn(&[f32], &[f32]) -> f32,
+) -> Vec<(u32, f32)> {
+    if entry_points.is_empty() {
+        return Vec::new();
+    }
+
+    let num_vectors = vectors.len() / dimension;
+
+    with_visited_set(num_vectors, ef * 2, |visited| {
+        let mut candidates: BinaryHeap<MinCandidate> = BinaryHeap::with_capacity(ef * 2);
+        let mut results: BinaryHeap<MaxResult> = BinaryHeap::with_capacity(ef + 1);
+
+        // Seed from every provided entry point.
+        for &ep in entry_points {
+            if visited.insert(ep) {
+                let ep_vec = get_vector(vectors, dimension, ep as usize);
+                let ep_dist = dist_fn(query, ep_vec);
+                candidates.push(MinCandidate {
+                    id: ep,
+                    distance: ep_dist,
+                });
+                results.push(MaxResult {
+                    id: ep,
+                    distance: ep_dist,
+                });
+                if results.len() > ef {
+                    results.pop();
+                }
+            }
+        }
+
+        while let Some(candidate) = candidates.pop() {
+            let worst_dist = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
+            if candidate.distance > worst_dist && results.len() >= ef {
+                break;
+            }
+
+            let neighbors = layer.get_neighbors(candidate.id);
+            for (i, &neighbor_id) in neighbors.iter().enumerate() {
+                if i + 1 < neighbors.len() {
+                    let next_id = neighbors[i + 1] as usize;
+                    if next_id < num_vectors {
+                        let ptr = vectors.as_ptr().wrapping_add(next_id * dimension);
+                        prefetch_read_data(ptr);
+                        prefetch_read_data(ptr.wrapping_add(16));
+                    }
+                }
+                if i + 4 < neighbors.len() {
+                    let far_id = neighbors[i + 4] as usize;
+                    if far_id < num_vectors {
+                        prefetch_read_data(vectors.as_ptr().wrapping_add(far_id * dimension));
+                    }
+                }
+                if visited.insert(neighbor_id) {
+                    let neighbor_vector = get_vector(vectors, dimension, neighbor_id as usize);
+                    let neighbor_distance = dist_fn(query, neighbor_vector);
+
+                    let worst_dist = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
+                    if results.len() < ef || neighbor_distance < worst_dist {
+                        candidates.push(MinCandidate {
+                            id: neighbor_id,
+                            distance: neighbor_distance,
+                        });
+                        results.push(MaxResult {
+                            id: neighbor_id,
+                            distance: neighbor_distance,
+                        });
+                        if results.len() > ef {
+                            results.pop();
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut output: Vec<(u32, f32)> = results.into_iter().map(|r| (r.id, r.distance)).collect();
+        output.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+        output
+    })
+}
+
 /// Greedy search with adaptive early termination.
 ///
 /// Same beam search as [`greedy_search_layer`], but uses an

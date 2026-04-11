@@ -1594,6 +1594,192 @@ impl HNSWIndex {
             .collect()
     }
 
+    /// Search a batch of queries using Multiple Query Optimization (MQO).
+    ///
+    /// Instead of routing every query independently from the global HNSW entry point,
+    /// queries are processed in a greedy-nearest-neighbour chain order: the first query
+    /// uses the normal entry point, and each subsequent query inherits the best result
+    /// node from the nearest already-processed query as an *additional* warm-start seed.
+    ///
+    /// This reuses graph locality between nearby queries, reducing the effective search
+    /// depth for similar queries and improving cache utilisation.
+    ///
+    /// Results are returned in the **same order as the input queries**.
+    ///
+    /// If the batch contains only one query, this is equivalent to calling
+    /// [`search`](Self::search) directly.
+    ///
+    /// # Arguments
+    ///
+    /// * `queries` - Slice of query vectors; each must have length `dimension`.
+    /// * `k` - Number of nearest neighbours to return per query.
+    /// * `ef_search` - Beam width during base-layer search (higher = better recall).
+    ///
+    /// # Errors
+    ///
+    /// Returns `RetrieveError` if the index has not been built, any query has the
+    /// wrong dimension, or the index is empty.
+    pub fn batch_search_mqo(
+        &self,
+        queries: &[&[f32]],
+        k: usize,
+        ef_search: usize,
+    ) -> Result<Vec<Vec<(u32, f32)>>, RetrieveError> {
+        if !self.built {
+            return Err(RetrieveError::InvalidParameter(
+                "index must be built before search".into(),
+            ));
+        }
+        if self.num_vectors == 0 {
+            return Err(RetrieveError::EmptyIndex);
+        }
+        for q in queries.iter() {
+            if q.len() != self.dimension {
+                return Err(RetrieveError::DimensionMismatch {
+                    query_dim: q.len(),
+                    doc_dim: self.dimension,
+                });
+            }
+        }
+
+        let n = queries.len();
+        if n == 0 {
+            return Ok(Vec::new());
+        }
+        if n == 1 {
+            return Ok(vec![self.search(queries[0], k, ef_search)?]);
+        }
+
+        // ── Step 1: build a greedy nearest-neighbour chain over query vectors ──
+        //
+        // Start from query 0. At each step pick the not-yet-visited query closest
+        // to the last chosen query. O(n²) in queries -- fine for n << 1000.
+        let mut chain: Vec<usize> = Vec::with_capacity(n); // visit order (query indices)
+        let mut visited_queries = vec![false; n];
+        chain.push(0);
+        visited_queries[0] = true;
+
+        for _ in 1..n {
+            // SAFETY: chain is non-empty; we push 0 before the loop.
+            let last = chain[chain.len() - 1];
+            let last_vec = queries[last];
+            let mut best_idx = usize::MAX;
+            let mut best_dist = f32::INFINITY;
+            for j in 0..n {
+                if visited_queries[j] {
+                    continue;
+                }
+                let d = self.dist(last_vec, queries[j]);
+                if d < best_dist {
+                    best_dist = d;
+                    best_idx = j;
+                }
+            }
+            chain.push(best_idx);
+            visited_queries[best_idx] = true;
+        }
+
+        // ── Step 2: process queries in chain order, reusing entry points ──
+
+        let ep = self.get_entry_point().ok_or(RetrieveError::EmptyIndex)?;
+        let dist_fn = self.dist_fn();
+
+        // results_by_query[i] = (doc_id, dist) results for query i
+        let mut results_by_query: Vec<Vec<(u32, f32)>> = vec![Vec::new(); n];
+
+        // best_internal[i] = internal node id of best result for chain position i
+        let mut best_internal_for_chain: Vec<u32> = Vec::with_capacity(n);
+
+        for (chain_pos, &query_idx) in chain.iter().enumerate() {
+            let query = queries[query_idx];
+
+            // Upper-layer greedy descent to find base-layer entry for this query.
+            let entry_layer = self.layer_assignments[ep as usize] as usize;
+            let mut current_closest = ep;
+            let mut current_dist = self.dist(query, self.get_vector(ep as usize));
+
+            for layer_idx in (1..=entry_layer).rev() {
+                if layer_idx >= self.layers.len() {
+                    continue;
+                }
+                let layer = &self.layers[layer_idx];
+                let mut changed = true;
+                let mut upper_visited =
+                    std::collections::HashSet::with_capacity(ef_search.min(100));
+                while changed {
+                    changed = false;
+                    upper_visited.insert(current_closest);
+                    let neighbors = layer.get_neighbors(current_closest);
+                    for &nb in neighbors.iter() {
+                        if upper_visited.contains(&nb) {
+                            continue;
+                        }
+                        let d = self.dist(query, self.get_vector(nb as usize));
+                        if d < current_dist {
+                            current_dist = d;
+                            current_closest = nb;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+
+            // Build entry-point set: always include the HNSW-descended entry point.
+            // For chain_pos > 0, also include the best node from the nearest
+            // already-processed query (the parent in the chain).
+            let base_results = if self.layers.is_empty() {
+                Vec::new()
+            } else if chain_pos == 0 {
+                crate::hnsw::search::greedy_search_layer(
+                    query,
+                    current_closest,
+                    &self.layers[0],
+                    &self.vectors,
+                    self.dimension,
+                    ef_search.max(k),
+                    dist_fn,
+                )
+            } else {
+                let parent_best = best_internal_for_chain[chain_pos - 1];
+                // Use multi-entry search seeded from both the HNSW entry point
+                // and the best result of the chain parent.
+                let entry_points: &[u32] = if parent_best == current_closest {
+                    &[current_closest]
+                } else {
+                    &[current_closest, parent_best]
+                };
+                crate::hnsw::search::greedy_search_layer_multi_entry(
+                    query,
+                    entry_points,
+                    &self.layers[0],
+                    &self.vectors,
+                    self.dimension,
+                    ef_search.max(k),
+                    dist_fn,
+                )
+            };
+
+            // Record the best internal node (first element, sorted by distance).
+            let best_internal = base_results.first().map(|r| r.0).unwrap_or(current_closest);
+            best_internal_for_chain.push(best_internal);
+
+            // Translate internal IDs -> external doc_ids, filter tombstones, take k.
+            let translated: Vec<(u32, f32)> = base_results
+                .into_iter()
+                .filter(|(internal_id, _)| !self.tombstones.is_deleted(*internal_id as usize))
+                .take(k)
+                .filter_map(|(internal_id, dist)| {
+                    let doc_id = self.doc_ids.get(internal_id as usize).copied()?;
+                    Some((doc_id, dist))
+                })
+                .collect();
+
+            results_by_query[query_idx] = translated;
+        }
+
+        Ok(results_by_query)
+    }
+
     /// Search with filter using filterable graph (integrated filtering).
     ///
     /// Uses intra-category edges to maintain graph connectivity during filtered search.
@@ -2416,6 +2602,87 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// `batch_search_mqo` must return results in input-query order and find at
+    /// least as good a nearest neighbour as individual `search` calls.
+    #[test]
+    fn test_batch_search_mqo_order_and_recall() {
+        let (index, _) = build_test_index();
+        let k = 5;
+        let ef = 64;
+
+        // Build a small set of varied queries using the same deterministic LCG as
+        // `build_test_index` but with a different seed so queries differ from the
+        // indexed vectors.
+        let dim = index.dimension;
+        let mut seed: u64 = 99;
+        let mut next = || -> f32 {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((seed >> 33) as f32) / (u32::MAX as f32) - 0.5
+        };
+
+        let num_queries = 10;
+        let queries_owned: Vec<Vec<f32>> = (0..num_queries)
+            .map(|_| {
+                let mut v: Vec<f32> = (0..dim).map(|_| next()).collect();
+                let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+                if norm > 0.0 {
+                    v.iter_mut().for_each(|x| *x /= norm);
+                }
+                v
+            })
+            .collect();
+        let queries: Vec<&[f32]> = queries_owned.iter().map(|v| v.as_slice()).collect();
+
+        // Individual searches (baseline).
+        let individual: Vec<Vec<(u32, f32)>> = queries
+            .iter()
+            .map(|q| index.search(q, k, ef).unwrap())
+            .collect();
+
+        // Batch MQO search.
+        let batch = index.batch_search_mqo(&queries, k, ef).unwrap();
+
+        // Results must be in input order and have the right length.
+        assert_eq!(batch.len(), num_queries);
+
+        for (i, (ind, mqo)) in individual.iter().zip(batch.iter()).enumerate() {
+            // MQO must return a result for every query.
+            assert!(
+                !mqo.is_empty(),
+                "query {}: batch_search_mqo returned no results",
+                i
+            );
+            // The nearest neighbour found by MQO must be at least as close as the
+            // one from individual search (same ef, so recall can only stay equal or
+            // improve with an additional warm-start entry point).
+            let ind_best_dist = ind.first().map(|(_, d)| *d).unwrap_or(f32::INFINITY);
+            let mqo_best_dist = mqo.first().map(|(_, d)| *d).unwrap_or(f32::INFINITY);
+            assert!(
+                mqo_best_dist <= ind_best_dist + 1e-5,
+                "query {}: MQO nearest dist {} > individual nearest dist {} (regression)",
+                i,
+                mqo_best_dist,
+                ind_best_dist,
+            );
+        }
+    }
+
+    /// Single-query batch_search_mqo must return the same result as search.
+    #[test]
+    fn test_batch_search_mqo_single_query() {
+        let (index, q) = build_test_index();
+        let k = 5;
+        let ef = 64;
+
+        let single = index.search(&q, k, ef).unwrap();
+        let batch = index.batch_search_mqo(&[q.as_slice()], k, ef).unwrap();
+
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch[0], single, "single-query MQO should match search");
     }
 }
 
