@@ -122,6 +122,7 @@ python = ["dep:pyo3", "dep:numpy", "hnsw"]
 
 # Feature names referenced by cfgs in the extracted code.
 # These are currently mostly organizational toggles.
+nsg = []
 nsw = []
 nightly = []
 kdtree = []

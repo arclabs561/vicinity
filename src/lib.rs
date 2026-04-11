@@ -109,6 +109,9 @@ pub mod hnsw;
 #[cfg(feature = "ivf_pq")]
 pub mod ivf_pq;
 
+#[cfg(feature = "nsg")]
+pub mod nsg;
+
 #[cfg(feature = "nsw")]
 pub mod nsw;
 
