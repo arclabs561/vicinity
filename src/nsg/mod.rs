@@ -1,0 +1,603 @@
+//! NSG: Navigating Spreading-out Graph.
+//!
+//! A single-layer proximity graph that combines MRNG (Monotone Relative
+//! Neighborhood Graph) pruning with a navigating node (medoid) entry point.
+//! NSG fills the gap between HNSW (hierarchical, higher memory) and
+//! brute-force kNN graphs (dense, slower search) on the Pareto curve.
+//!
+//! # Feature Flag
+//!
+//! ```toml
+//! vicinity = { version = "0.3", features = ["nsg"] }
+//! ```
+//!
+//! # Quick Start
+//!
+//! ```ignore
+//! use vicinity::nsg::{NsgIndex, NsgParams};
+//!
+//! let params = NsgParams::default();
+//! let mut index = NsgIndex::new(128, params)?;
+//!
+//! for (id, vec) in data {
+//!     index.add(id, vec)?;
+//! }
+//! index.build()?;
+//!
+//! let results = index.search(&query, 10)?;
+//! ```
+//!
+//! # Construction
+//!
+//! 1. Build initial kNN graph (brute-force for small n, NN-descent-like for large)
+//! 2. Compute navigating node (medoid = closest to centroid)
+//! 3. MRNG pruning: for each node, beam-search for candidates, then occlusion
+//!    prune (same as HNSW's RND diversification with alpha=1.0)
+//! 4. Bidirectional edge insertion with capacity-aware pruning
+//! 5. Connectivity enforcement: DFS from navigating node, connect unreachable
+//!
+//! # References
+//!
+//! - Fu, Xiang, Wang, Huang (2019). "Fast Approximate Nearest Neighbor Search
+//!   With The Navigating Spreading-out Graph." PVLDB 12(5).
+
+use crate::distance::cosine_distance_normalized;
+use crate::RetrieveError;
+use smallvec::SmallVec;
+use std::collections::{BinaryHeap, HashSet};
+
+/// NSG parameters.
+#[derive(Clone, Debug)]
+pub struct NsgParams {
+    /// Maximum out-degree (R in the paper). Default: 32.
+    pub max_degree: usize,
+    /// Construction pool size (L in the paper). Default: 64.
+    pub pool_size: usize,
+    /// Initial kNN graph degree (K in the paper). Default: 32.
+    pub knn_degree: usize,
+    /// Search ef parameter. Default: 100.
+    pub ef_search: usize,
+}
+
+impl Default for NsgParams {
+    fn default() -> Self {
+        Self {
+            max_degree: 32,
+            pool_size: 64,
+            knn_degree: 32,
+            ef_search: 100,
+        }
+    }
+}
+
+/// NSG index.
+pub struct NsgIndex {
+    dimension: usize,
+    params: NsgParams,
+    built: bool,
+
+    vectors: Vec<f32>,
+    num_vectors: usize,
+    doc_ids: Vec<u32>,
+
+    neighbors: Vec<SmallVec<[u32; 16]>>,
+    medoid: u32,
+}
+
+impl NsgIndex {
+    /// Create a new NSG index.
+    pub fn new(dimension: usize, params: NsgParams) -> Result<Self, RetrieveError> {
+        if dimension == 0 {
+            return Err(RetrieveError::InvalidParameter(
+                "dimension must be > 0".into(),
+            ));
+        }
+        Ok(Self {
+            dimension,
+            params,
+            built: false,
+            vectors: Vec::new(),
+            num_vectors: 0,
+            doc_ids: Vec::new(),
+            neighbors: Vec::new(),
+            medoid: 0,
+        })
+    }
+
+    /// Add a vector.
+    pub fn add(&mut self, doc_id: u32, vector: Vec<f32>) -> Result<(), RetrieveError> {
+        self.add_slice(doc_id, &vector)
+    }
+
+    /// Add a vector from a slice.
+    pub fn add_slice(&mut self, doc_id: u32, vector: &[f32]) -> Result<(), RetrieveError> {
+        if self.built {
+            return Err(RetrieveError::InvalidParameter(
+                "cannot add after build".into(),
+            ));
+        }
+        if vector.len() != self.dimension {
+            return Err(RetrieveError::DimensionMismatch {
+                query_dim: vector.len(),
+                doc_dim: self.dimension,
+            });
+        }
+        let norm: f32 = vector.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm > 1e-10 {
+            self.vectors.extend(vector.iter().map(|x| x / norm));
+        } else {
+            self.vectors.extend_from_slice(vector);
+        }
+        self.doc_ids.push(doc_id);
+        self.num_vectors += 1;
+        Ok(())
+    }
+
+    /// Build the NSG index.
+    pub fn build(&mut self) -> Result<(), RetrieveError> {
+        if self.built {
+            return Ok(());
+        }
+        if self.num_vectors == 0 {
+            return Err(RetrieveError::EmptyIndex);
+        }
+
+        let n = self.num_vectors;
+
+        // Step 1: Compute navigating node (medoid)
+        self.medoid = self.compute_medoid();
+
+        // Step 2: Build initial kNN graph
+        self.build_knn_graph();
+
+        // Step 3: MRNG refinement -- for each node, beam search for candidates,
+        // then occlusion prune (RND with alpha=1.0)
+        for i in 0..n {
+            let vi = self.get_vector(i).to_vec();
+
+            // Beam search from medoid to find candidate neighbors
+            let candidates = self.beam_search(&vi, self.params.pool_size);
+
+            // MRNG pruning (same as RND: keep candidate if no existing neighbor
+            // is closer to it than the candidate is to the query node)
+            let selected = self.mrng_prune(&vi, &candidates);
+
+            // Inter-insert: add bidirectional edges
+            let old_neighbors = std::mem::replace(
+                &mut self.neighbors[i],
+                selected.iter().map(|&(id, _)| id).collect(),
+            );
+
+            // Add reverse edges
+            let max_deg = self.params.max_degree;
+            for &(neighbor_id, _) in &selected {
+                let nid = neighbor_id as usize;
+                if !self.neighbors[nid].contains(&(i as u32)) {
+                    if self.neighbors[nid].len() < max_deg {
+                        self.neighbors[nid].push(i as u32);
+                    } else {
+                        // Re-prune reverse neighbor list
+                        let nv = self.get_vector(nid).to_vec();
+                        let mut rev_cands: Vec<(u32, f32)> = self.neighbors[nid]
+                            .iter()
+                            .chain(std::iter::once(&(i as u32)))
+                            .map(|&id| {
+                                let d =
+                                    cosine_distance_normalized(&nv, self.get_vector(id as usize));
+                                (id, d)
+                            })
+                            .collect();
+                        let pruned = self.mrng_prune(&nv, &rev_cands);
+                        self.neighbors[nid] = pruned.iter().map(|&(id, _)| id).collect();
+                    }
+                }
+            }
+
+            // Drop old_neighbors (was only needed to avoid borrow conflict)
+            drop(old_neighbors);
+        }
+
+        // Step 4: Connectivity enforcement
+        self.ensure_connectivity();
+
+        self.built = true;
+        Ok(())
+    }
+
+    /// Search for k nearest neighbors.
+    pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, RetrieveError> {
+        if !self.built {
+            return Err(RetrieveError::InvalidParameter(
+                "index must be built before search".into(),
+            ));
+        }
+        if query.len() != self.dimension {
+            return Err(RetrieveError::DimensionMismatch {
+                query_dim: query.len(),
+                doc_dim: self.dimension,
+            });
+        }
+
+        let query_norm: f32 = query.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let query_normalized: Vec<f32> = if query_norm > 1e-10 {
+            query.iter().map(|x| x / query_norm).collect()
+        } else {
+            query.to_vec()
+        };
+
+        let results = self.beam_search(&query_normalized, self.params.ef_search.max(k));
+
+        Ok(results
+            .into_iter()
+            .take(k)
+            .map(|(id, dist)| (self.doc_ids[id as usize], dist))
+            .collect())
+    }
+
+    /// Number of indexed vectors.
+    pub fn len(&self) -> usize {
+        self.num_vectors
+    }
+
+    /// Whether the index is empty.
+    pub fn is_empty(&self) -> bool {
+        self.num_vectors == 0
+    }
+
+    // ── Internal ───────────────────────────────────────────────────────
+
+    #[inline]
+    fn get_vector(&self, idx: usize) -> &[f32] {
+        let start = idx * self.dimension;
+        &self.vectors[start..start + self.dimension]
+    }
+
+    fn compute_medoid(&self) -> u32 {
+        let dim = self.dimension;
+        let n = self.num_vectors;
+        let mut centroid = vec![0.0f32; dim];
+        for i in 0..n {
+            let v = self.get_vector(i);
+            for (j, &val) in v.iter().enumerate() {
+                centroid[j] += val;
+            }
+        }
+        for c in &mut centroid {
+            *c /= n as f32;
+        }
+        let mut best = 0u32;
+        let mut best_d = f32::INFINITY;
+        for i in 0..n {
+            let d = cosine_distance_normalized(&centroid, self.get_vector(i));
+            if d < best_d {
+                best_d = d;
+                best = i as u32;
+            }
+        }
+        best
+    }
+
+    /// Build initial kNN graph (brute-force for now).
+    fn build_knn_graph(&mut self) {
+        let n = self.num_vectors;
+        let k = self.params.knn_degree.min(n - 1);
+        self.neighbors = vec![SmallVec::new(); n];
+
+        for i in 0..n {
+            let vi = self.get_vector(i);
+            let mut dists: Vec<(u32, f32)> = (0..n)
+                .filter(|&j| j != i)
+                .map(|j| (j as u32, cosine_distance_normalized(vi, self.get_vector(j))))
+                .collect();
+            dists.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+            dists.truncate(k);
+            self.neighbors[i] = dists.iter().map(|(id, _)| *id).collect();
+        }
+    }
+
+    /// MRNG pruning (identical to RND with alpha=1.0).
+    /// Keep candidate c if no already-selected neighbor s is closer to c than c is to query.
+    fn mrng_prune(&self, query_vec: &[f32], candidates: &[(u32, f32)]) -> Vec<(u32, f32)> {
+        let mut sorted: Vec<(u32, f32)> = candidates.to_vec();
+        sorted.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+        sorted.dedup_by_key(|c| c.0);
+
+        let max_deg = self.params.max_degree;
+        let mut selected: Vec<(u32, f32)> = Vec::with_capacity(max_deg);
+
+        for &(cand_id, cand_dist) in &sorted {
+            if selected.len() >= max_deg {
+                break;
+            }
+
+            let cand_vec = self.get_vector(cand_id as usize);
+            let mut keep = true;
+
+            for &(sel_id, _) in &selected {
+                let sel_vec = self.get_vector(sel_id as usize);
+                let inter_dist = cosine_distance_normalized(sel_vec, cand_vec);
+                // RND condition (alpha=1.0): candidate must be closer to query
+                // than to any already-selected neighbor
+                if cand_dist >= inter_dist {
+                    keep = false;
+                    break;
+                }
+            }
+
+            if keep {
+                selected.push((cand_id, cand_dist));
+            }
+        }
+
+        selected
+    }
+
+    /// Beam search from medoid.
+    fn beam_search(&self, query: &[f32], ef: usize) -> Vec<(u32, f32)> {
+        let n = self.num_vectors;
+        if n == 0 {
+            return Vec::new();
+        }
+
+        let mut visited = HashSet::new();
+        let mut frontier: BinaryHeap<std::cmp::Reverse<(FloatOrd, u32)>> = BinaryHeap::new();
+        let mut candidates: Vec<(u32, f32)> = Vec::new();
+
+        let entry = self.medoid;
+        let entry_dist = cosine_distance_normalized(query, self.get_vector(entry as usize));
+        visited.insert(entry);
+        frontier.push(std::cmp::Reverse((FloatOrd(entry_dist), entry)));
+        candidates.push((entry, entry_dist));
+
+        while let Some(std::cmp::Reverse((FloatOrd(current_dist), current_id))) = frontier.pop() {
+            if candidates.len() >= ef {
+                candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+                if current_dist > candidates[ef - 1].1 * 1.5 {
+                    break;
+                }
+            }
+
+            for &neighbor in &self.neighbors[current_id as usize] {
+                if visited.insert(neighbor) {
+                    let dist =
+                        cosine_distance_normalized(query, self.get_vector(neighbor as usize));
+                    candidates.push((neighbor, dist));
+                    frontier.push(std::cmp::Reverse((FloatOrd(dist), neighbor)));
+                }
+            }
+
+            if visited.len() > ef * 10 {
+                break;
+            }
+        }
+
+        candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+        candidates.dedup_by_key(|c| c.0);
+        candidates
+    }
+
+    fn ensure_connectivity(&mut self) {
+        let n = self.num_vectors;
+
+        // Iterate until fully connected (adding edges may open new paths)
+        loop {
+            let mut visited = vec![false; n];
+            let mut stack = vec![self.medoid as usize];
+            visited[self.medoid as usize] = true;
+
+            while let Some(node) = stack.pop() {
+                for &nb in &self.neighbors[node] {
+                    let nb = nb as usize;
+                    if nb < n && !visited[nb] {
+                        visited[nb] = true;
+                        stack.push(nb);
+                    }
+                }
+            }
+
+            let unreachable: Vec<usize> = (0..n).filter(|&i| !visited[i]).collect();
+            if unreachable.is_empty() {
+                break;
+            }
+
+            for i in unreachable {
+                let vi = self.get_vector(i);
+                let mut best_id = self.medoid;
+                let mut best_dist =
+                    cosine_distance_normalized(vi, self.get_vector(self.medoid as usize));
+                for j in 0..n {
+                    if visited[j] && j != i {
+                        let d = cosine_distance_normalized(vi, self.get_vector(j));
+                        if d < best_dist {
+                            best_dist = d;
+                            best_id = j as u32;
+                        }
+                    }
+                }
+                // Add both directions. The reverse edge (reachable→unreachable)
+                // is critical -- it's what makes node i reachable from medoid.
+                // Allow temporary over-degree to guarantee convergence.
+                self.neighbors[i].push(best_id);
+                self.neighbors[best_id as usize].push(i as u32);
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct FloatOrd(f32);
+impl Eq for FloatOrd {}
+impl PartialOrd for FloatOrd {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for FloatOrd {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.total_cmp(&other.0)
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    fn make_vectors(n: usize, dim: usize, seed: u64) -> Vec<f32> {
+        let mut rng = seed;
+        (0..n * dim)
+            .map(|_| {
+                rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+                ((rng >> 33) as f32 / (1u64 << 31) as f32) - 1.0
+            })
+            .collect()
+    }
+
+    #[test]
+    fn build_and_search() {
+        let dim = 16;
+        let n = 40;
+        let data = make_vectors(n, dim, 42);
+
+        let mut index = NsgIndex::new(
+            dim,
+            NsgParams {
+                max_degree: 16,
+                pool_size: 32,
+                knn_degree: 16,
+                ef_search: 50,
+            },
+        )
+        .unwrap();
+
+        for i in 0..n {
+            let start = i * dim;
+            index
+                .add_slice(i as u32, &data[start..start + dim])
+                .unwrap();
+        }
+        index.build().unwrap();
+
+        let query = &data[0..dim];
+        let results = index.search(query, 5).unwrap();
+        assert!(!results.is_empty());
+        assert!(results.iter().any(|(id, _)| *id == 0));
+    }
+
+    #[test]
+    fn self_search_recall() {
+        let dim = 16;
+        let n = 30;
+        let data = make_vectors(n, dim, 7);
+
+        let mut index = NsgIndex::new(
+            dim,
+            NsgParams {
+                max_degree: 16,
+                pool_size: 32,
+                knn_degree: 16,
+                ef_search: 50,
+            },
+        )
+        .unwrap();
+
+        for i in 0..n {
+            let start = i * dim;
+            index
+                .add_slice(i as u32, &data[start..start + dim])
+                .unwrap();
+        }
+        index.build().unwrap();
+
+        let mut hits = 0;
+        for i in 0..n {
+            let query = &data[i * dim..(i + 1) * dim];
+            let results = index.search(query, 1).unwrap();
+            if results.first().map(|(id, _)| *id) == Some(i as u32) {
+                hits += 1;
+            }
+        }
+        let recall = hits as f64 / n as f64;
+        assert!(
+            recall > 0.6,
+            "self-search recall too low: {recall:.2} ({hits}/{n})"
+        );
+    }
+
+    #[test]
+    fn connectivity() {
+        let dim = 8;
+        let n = 20;
+        let data = make_vectors(n, dim, 123);
+
+        let mut index = NsgIndex::new(
+            dim,
+            NsgParams {
+                max_degree: 8,
+                pool_size: 16,
+                knn_degree: 8,
+                ef_search: 30,
+            },
+        )
+        .unwrap();
+
+        for i in 0..n {
+            let start = i * dim;
+            index
+                .add_slice(i as u32, &data[start..start + dim])
+                .unwrap();
+        }
+        index.build().unwrap();
+
+        let mut visited = vec![false; n];
+        let mut stack = vec![index.medoid as usize];
+        visited[index.medoid as usize] = true;
+        while let Some(node) = stack.pop() {
+            for &nb in &index.neighbors[node] {
+                let nb = nb as usize;
+                if !visited[nb] {
+                    visited[nb] = true;
+                    stack.push(nb);
+                }
+            }
+        }
+        let reachable = visited.iter().filter(|&&v| v).count();
+        assert_eq!(reachable, n);
+    }
+
+    #[test]
+    fn mrng_prunes_degree() {
+        let dim = 16;
+        let n = 50;
+        let data = make_vectors(n, dim, 99);
+
+        let mut index = NsgIndex::new(
+            dim,
+            NsgParams {
+                max_degree: 32,
+                pool_size: 40,
+                knn_degree: 32,
+                ef_search: 50,
+            },
+        )
+        .unwrap();
+
+        for i in 0..n {
+            let start = i * dim;
+            index
+                .add_slice(i as u32, &data[start..start + dim])
+                .unwrap();
+        }
+        index.build().unwrap();
+
+        // MRNG pruning should produce avg degree < max_degree
+        let avg_deg: f64 = index.neighbors.iter().map(|n| n.len() as f64).sum::<f64>() / n as f64;
+        assert!(avg_deg < 32.0, "avg degree {avg_deg:.1} should be < 32");
+    }
+
+    #[test]
+    fn empty_index_errors() {
+        let mut index = NsgIndex::new(8, NsgParams::default()).unwrap();
+        assert!(index.build().is_err());
+    }
+}
