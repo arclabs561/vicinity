@@ -48,8 +48,8 @@ where
     }
 
     // Append unreachable nodes
-    for i in 0..n {
-        if !visited[i] {
+    for (i, &v) in visited.iter().enumerate().take(n) {
+        if !v {
             new_order.push(i as u32);
         }
     }
