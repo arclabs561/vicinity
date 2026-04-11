@@ -79,6 +79,9 @@
 pub mod ann;
 pub mod classic;
 
+#[cfg(feature = "curator")]
+pub mod curator;
+
 #[cfg(feature = "diskann")]
 pub mod diskann;
 
