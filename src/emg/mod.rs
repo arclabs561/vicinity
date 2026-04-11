@@ -80,7 +80,7 @@ pub struct EmgParams {
     /// Construction iterations. More iterations = better graph quality.
     pub iterations: usize,
     /// Search termination factor. Larger alpha = more exploration.
-    /// Search stops when C[l] >= alpha * C[k].
+    /// Search stops when `C[l] >= alpha * C[k]`.
     pub alpha: f32,
     /// Default ef_search.
     pub ef_search: usize,
