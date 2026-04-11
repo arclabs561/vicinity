@@ -83,7 +83,12 @@ pub mod classic;
 pub mod diskann;
 
 // Shared helpers for clump-backed modules (evoc, kmeans partitioning).
-#[cfg(any(feature = "evoc", feature = "ivf_pq", feature = "ivf_avq"))]
+#[cfg(any(
+    feature = "evoc",
+    feature = "ivf_pq",
+    feature = "ivf_avq",
+    feature = "ivf_rabitq"
+))]
 pub(crate) mod clump_compat;
 
 #[cfg(feature = "evoc")]
@@ -103,6 +108,9 @@ pub mod quantization;
 
 #[cfg(feature = "ivf_avq")]
 pub mod ivf_avq;
+
+#[cfg(feature = "ivf_rabitq")]
+pub mod ivf_rabitq;
 
 #[cfg(feature = "sng")]
 pub mod sng;

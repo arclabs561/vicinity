@@ -80,10 +80,12 @@
 
 mod buffer;
 mod coordinator;
+pub mod lsm;
 mod ops;
 
 pub use buffer::{StreamBuffer, StreamBufferConfig};
 pub use coordinator::{IndexOps, StreamingConfig, StreamingCoordinator};
+pub use lsm::{LsmConfig, LsmIndex, LsmStats};
 pub use ops::UpdateStats;
 
 /// Statistics about streaming index state.
