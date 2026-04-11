@@ -519,4 +519,59 @@ mod tests {
             n
         );
     }
+
+    /// Search must return caller-provided doc_ids, not internal indices.
+    /// Regression test: BFS graph reorder permuted internal IDs without
+    /// mapping back to doc_ids, causing 0% recall on all benchmarks.
+    #[test]
+    fn test_search_returns_doc_ids_not_internal_indices() {
+        let dim = 16;
+        let n = 200;
+        let vectors = generate_normalized_vectors(n, dim, 12345);
+        let params = VamanaParams::default();
+        let mut index = VamanaIndex::new(dim, params).unwrap();
+
+        // Use non-trivial doc_ids (offset by 1000) so internal != external
+        for (i, v) in vectors.iter().enumerate() {
+            index.add((i + 1000) as u32, v.clone()).unwrap();
+        }
+        index.build().unwrap();
+
+        let results = index.search(&vectors[0], 10, 50).unwrap();
+        for (doc_id, _dist) in &results {
+            assert!(
+                *doc_id >= 1000 && *doc_id < (1000 + n as u32),
+                "search returned id {} which is outside the doc_id range [1000, {})",
+                doc_id,
+                1000 + n as u32
+            );
+        }
+    }
+
+    /// Self-query must find itself (doc_id match, not just distance ~0).
+    #[test]
+    fn test_self_query_returns_correct_doc_id() {
+        let dim = 16;
+        let n = 100;
+        let vectors = generate_normalized_vectors(n, dim, 54321);
+        let params = VamanaParams::default();
+        let mut index = VamanaIndex::new(dim, params).unwrap();
+
+        for (i, v) in vectors.iter().enumerate() {
+            index.add(i as u32, v.clone()).unwrap();
+        }
+        index.build().unwrap();
+
+        // Query with each vector -- it should appear in its own results
+        for i in 0..n.min(20) {
+            let results = index.search(&vectors[i], 10, 50).unwrap();
+            let ids: Vec<u32> = results.iter().map(|r| r.0).collect();
+            assert!(
+                ids.contains(&(i as u32)),
+                "vector {} not found in its own search results: {:?}",
+                i,
+                ids
+            );
+        }
+    }
 }
