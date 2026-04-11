@@ -8,13 +8,19 @@ Practical insights from recent approximate nearest neighbor research.
 |-------|------|----------|---------------|
 | FreshDiskANN | 2021 | Tombstones + streaming merge for live updates | `hnsw::tombstones` |
 | IP-DiskANN | 2025 | In-place updates without rebuild (see paper for reported trade-offs) | `hnsw::inplace` |
-| RaBitQ | 2024 | 1-bit/dim quantization with O(1/sqrt(d)) error bound | Planned |
+| RaBitQ | 2024 | 1-bit/dim quantization with O(1/sqrt(d)) error bound | `ivf_rabitq` |
 | HENN | 2025 | Epsilon-net navigation with theoretical guarantees | Research only |
 | PEOs | 2024 | Probabilistic routing for graph-based ANNS | `hnsw::probabilistic_routing` |
-| CleANN | 2025 | Real-time insertions via workload adaptation | Research only |
+| CleANN | 2025 | Real-time insertions via workload adaptation | `cleann` |
 | DGAI | 2025 | Decoupled on-disk graph index for updates | Research only |
 | Dual-Branch HNSW | 2025 | LID-based insertion with skip bridges | `hnsw::dual_branch` |
 | DEG | 2025 | Dynamic edge navigation for bimodal data | `hnsw::deg` |
+| delta-EMG | 2025 | Error-bounded monotonic graph with occlusion pruning | `emg` |
+| ESG | 2025 | Elastic subgraphs for range-filtered ANN | `esg` |
+| PiPNN | 2026 | Partition + GEMM + HashPrune parallel construction | `pipnn` |
+| Curator | 2026 | K-means tree for low-selectivity filtered search | `curator` |
+| NSG | 2019 | Navigating Spreading-out Graph with MRNG pruning | `nsg` |
+| LSM-VEC | 2025 | LSM-tree tiered streaming vector index | `streaming::lsm` |
 
 ## Practical Ideas Implemented
 

@@ -181,6 +181,11 @@ It is intended to backstop claims in module docs and to give you a starting poin
 - Baranchuk, Babenko, Malkov (2018). *Revisiting the Inverted Indices for Billion-Scale Approximate Nearest Neighbors.* (improved IVF coarse quantization)
   `https://arxiv.org/abs/1802.02422`
 
+## Projection-based ANN
+
+- Dong, Moses, Li (2019). *Efficient k-nearest neighbor graph construction for generic similarity measures.* (NN-descent)
+  `https://doi.org/10.1145/1963405.1963487`
+
 ## Practical benchmarking references
 
 - Aumueller, Bernhardsson, Faithfull (2020). *ANN-Benchmarks: A Benchmarking Tool for Approximate Nearest Neighbor Algorithms.* (Information Systems, 87)
