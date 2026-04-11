@@ -11,13 +11,21 @@
 //! # Run benchmark (HNSW default)
 //! cargo run --example ann_benchmark --release --features hnsw -- data/ann-benchmarks/glove-25-angular
 //!
-//! # Multiple algorithms
+//! # Multiple algorithms (results auto-saved to data/ann-benchmarks/results/<dataset>-all-algos.jsonl)
 //! cargo run --example ann_benchmark --release --features hnsw,nsw,ivf_pq -- \
 //!   data/ann-benchmarks/glove-25-angular --algo hnsw --algo nsw --algo ivfpq --algo brute
 //!
-//! # JSON output for downstream analysis
+//! # Resume after interruption (completed algorithms are skipped automatically)
+//! cargo run --example ann_benchmark --release --all-features -- \
+//!   data/ann-benchmarks/glove-25-angular --algo hnsw --algo nsw --json
+//!
+//! # Force re-run (delete existing results)
+//! cargo run --example ann_benchmark --release --all-features -- \
+//!   data/ann-benchmarks/glove-25-angular --fresh --json
+//!
+//! # Custom results file
 //! cargo run --example ann_benchmark --release --features hnsw -- \
-//!   data/ann-benchmarks/glove-25-angular --json
+//!   data/ann-benchmarks/glove-25-angular --results /tmp/my-results.jsonl --json
 //!
 //! # Custom parameters
 //! cargo run --example ann_benchmark --release --features hnsw -- \
@@ -25,9 +33,9 @@
 //! ```
 
 use std::collections::HashSet;
-use std::fs::File;
-use std::io::{BufReader, Read};
-use std::path::Path;
+use std::fs::{File, OpenOptions};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 // ─── CLI config ──────────────────────────────────────────────────────────────
@@ -39,6 +47,7 @@ struct Config {
     ef_construction: usize,
     ef_search_values: Vec<usize>,
     json: bool,
+    results_path: PathBuf,
 }
 
 impl Default for Config {
@@ -50,7 +59,54 @@ impl Default for Config {
             ef_construction: 200,
             ef_search_values: vec![10, 20, 50, 100, 200, 400],
             json: false,
+            results_path: PathBuf::new(), // derived from data_dir after parsing
         }
+    }
+}
+
+/// Derive results file path from dataset directory name.
+fn default_results_path(data_dir: &str) -> PathBuf {
+    let dataset = Path::new(data_dir)
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    let results_dir = Path::new(data_dir)
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join("results");
+    std::fs::create_dir_all(&results_dir).ok();
+    results_dir.join(format!("{}-all-algos.jsonl", dataset))
+}
+
+/// Load set of algorithm names that already have results.
+fn load_completed_algos(path: &Path) -> HashSet<String> {
+    let mut completed = HashSet::new();
+    let Ok(file) = File::open(path) else {
+        return completed;
+    };
+    for line in BufReader::new(file).lines() {
+        let Ok(line) = line else { continue };
+        // Extract "algorithm":"<name>" from JSON without pulling in serde
+        if let Some(start) = line.find("\"algorithm\":\"") {
+            let rest = &line[start + 13..];
+            if let Some(end) = rest.find('"') {
+                completed.insert(rest[..end].to_string());
+            }
+        }
+    }
+    completed
+}
+
+/// Append a JSON result line to the results file (and print to stdout).
+fn emit_result(results_path: &Path, line: &str) {
+    println!("{}", line);
+    if let Ok(mut f) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(results_path)
+    {
+        let _ = writeln!(f, "{}", line);
     }
 }
 
@@ -58,6 +114,7 @@ fn parse_args() -> Config {
     let args: Vec<String> = std::env::args().collect();
     let mut cfg = Config::default();
     let mut algos_set = false;
+    let mut results_override = false;
     let mut i = 1;
 
     while i < args.len() {
@@ -96,6 +153,18 @@ fn parse_args() -> Config {
             "--json" => {
                 cfg.json = true;
             }
+            "--results" => {
+                i += 1;
+                if i < args.len() {
+                    cfg.results_path = PathBuf::from(&args[i]);
+                    results_override = true;
+                }
+            }
+            "--fresh" => {
+                // Delete existing results to force full re-run
+                // (handled after results_path is finalized)
+                cfg.results_path = PathBuf::from("__fresh__");
+            }
             arg if !arg.starts_with("--") => {
                 cfg.data_dir = arg.to_string();
             }
@@ -104,6 +173,15 @@ fn parse_args() -> Config {
             }
         }
         i += 1;
+    }
+
+    let fresh_sentinel: PathBuf = PathBuf::from("__fresh__");
+    let is_fresh = cfg.results_path == fresh_sentinel;
+    if !results_override && !is_fresh {
+        cfg.results_path = default_results_path(&cfg.data_dir);
+    } else if is_fresh {
+        cfg.results_path = default_results_path(&cfg.data_dir);
+        std::fs::remove_file(&cfg.results_path).ok();
     }
 
     cfg
@@ -286,9 +364,9 @@ fn run_hnsw(
                 "{{\"m\":{},\"ef_construction\":{},\"ef_search\":{}}}",
                 cfg.m, cfg.ef_construction, ef
             );
-            println!(
-                "{}",
-                json_line("hnsw", &params_json, build_time_s, rss, &result)
+            emit_result(
+                &cfg.results_path,
+                &json_line("hnsw", &params_json, build_time_s, rss, &result),
             );
         } else {
             print_row(&format!("ef={}", ef), &result);
@@ -336,9 +414,9 @@ fn run_nsw(
         let result = evaluate(&|q, k| index.search(q, k, ef).unwrap(), test, neighbors, 10);
         if cfg.json {
             let params_json = format!("{{\"m\":{},\"ef_search\":{}}}", cfg.m, ef);
-            println!(
-                "{}",
-                json_line("nsw", &params_json, build_time_s, rss, &result)
+            emit_result(
+                &cfg.results_path,
+                &json_line("nsw", &params_json, build_time_s, rss, &result),
             );
         } else {
             print_row(&format!("ef={}", ef), &result);
@@ -410,9 +488,9 @@ fn run_ivfpq(
                 "{{\"num_clusters\":{},\"num_codebooks\":{},\"nprobe\":{}}}",
                 num_clusters, num_codebooks, nprobe
             );
-            println!(
-                "{}",
-                json_line("ivfpq", &params_json, build_time_s, rss, &result)
+            emit_result(
+                &cfg.results_path,
+                &json_line("ivfpq", &params_json, build_time_s, rss, &result),
             );
         } else {
             print_row(&format!("np={}", nprobe), &result);
@@ -475,9 +553,9 @@ fn run_emg(
         );
         if cfg.json {
             let params_json = format!("{{\"max_degree\":32,\"ef_search\":{}}}", ef);
-            println!(
-                "{}",
-                json_line("emg", &params_json, build_time_s, rss, &result)
+            emit_result(
+                &cfg.results_path,
+                &json_line("emg", &params_json, build_time_s, rss, &result),
             );
         } else {
             print_row(&format!("ef={}", ef), &result);
@@ -535,9 +613,9 @@ fn run_nsg(
     let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
     if cfg.json {
         let params_json = "{\"max_degree\":32}";
-        println!(
-            "{}",
-            json_line("nsg", params_json, build_time_s, rss, &result)
+        emit_result(
+            &cfg.results_path,
+            &json_line("nsg", params_json, build_time_s, rss, &result),
         );
     } else {
         print_row("--", &result);
@@ -590,9 +668,9 @@ fn run_pipnn(
     let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
     if cfg.json {
         let params_json = "{\"max_degree\":32,\"max_leaf_size\":2048}";
-        println!(
-            "{}",
-            json_line("pipnn", params_json, build_time_s, rss, &result)
+        emit_result(
+            &cfg.results_path,
+            &json_line("pipnn", params_json, build_time_s, rss, &result),
         );
     } else {
         print_row("--", &result);
@@ -638,9 +716,9 @@ fn run_sng(
     let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
     if cfg.json {
         let params_json = "{}";
-        println!(
-            "{}",
-            json_line("sng", params_json, build_time_s, rss, &result)
+        emit_result(
+            &cfg.results_path,
+            &json_line("sng", params_json, build_time_s, rss, &result),
         );
     } else {
         print_row("--", &result);
@@ -687,9 +765,9 @@ fn run_vamana(
         let result = evaluate(&|q, k| index.search(q, k, ef).unwrap(), test, neighbors, 10);
         if cfg.json {
             let params_json = format!("{{\"ef_search\":{}}}", ef);
-            println!(
-                "{}",
-                json_line("vamana", &params_json, build_time_s, rss, &result)
+            emit_result(
+                &cfg.results_path,
+                &json_line("vamana", &params_json, build_time_s, rss, &result),
             );
         } else {
             print_row(&format!("ef={}", ef), &result);
@@ -758,9 +836,9 @@ fn run_ivf_rabitq(
                 "{{\"num_clusters\":{},\"total_bits\":4,\"nprobe\":{}}}",
                 num_clusters, nprobe
             );
-            println!(
-                "{}",
-                json_line("ivf_rabitq", &params_json, build_time_s, rss, &result)
+            emit_result(
+                &cfg.results_path,
+                &json_line("ivf_rabitq", &params_json, build_time_s, rss, &result),
             );
         } else {
             print_row(&format!("np={}", nprobe), &result);
@@ -815,9 +893,9 @@ fn run_finger(
     let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
     if cfg.json {
         let params_json = "{\"max_degree\":32}";
-        println!(
-            "{}",
-            json_line("finger", params_json, build_time_s, rss, &result)
+        emit_result(
+            &cfg.results_path,
+            &json_line("finger", params_json, build_time_s, rss, &result),
         );
     } else {
         print_row("--", &result);
@@ -868,9 +946,9 @@ fn run_fresh_graph(
     let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
     if cfg.json {
         let params_json = "{\"max_degree\":32}";
-        println!(
-            "{}",
-            json_line("fresh_graph", params_json, build_time_s, rss, &result)
+        emit_result(
+            &cfg.results_path,
+            &json_line("fresh_graph", params_json, build_time_s, rss, &result),
         );
     } else {
         print_row("--", &result);
@@ -922,9 +1000,9 @@ fn run_filtered_graph(
     let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
     if cfg.json {
         let params_json = "{\"max_degree\":32}";
-        println!(
-            "{}",
-            json_line("filtered_graph", params_json, build_time_s, rss, &result)
+        emit_result(
+            &cfg.results_path,
+            &json_line("filtered_graph", params_json, build_time_s, rss, &result),
         );
     } else {
         print_row("--", &result);
@@ -981,9 +1059,9 @@ fn run_rp_quant(
             "{{\"projected_dim\":{},\"rerank_factor\":10}}",
             projected_dim
         );
-        println!(
-            "{}",
-            json_line("rp_quant", &params_json, build_time_s, rss, &result)
+        emit_result(
+            &cfg.results_path,
+            &json_line("rp_quant", &params_json, build_time_s, rss, &result),
         );
     } else {
         print_row("--", &result);
@@ -1008,9 +1086,9 @@ fn run_brute(cfg: &Config, train: &[Vec<f32>], test: &[Vec<f32>], neighbors: &[V
 
     if cfg.json {
         let params_json = "{}";
-        println!(
-            "{}",
-            json_line("brute", params_json, build_time_s, rss, &result)
+        emit_result(
+            &cfg.results_path,
+            &json_line("brute", params_json, build_time_s, rss, &result),
         );
     } else {
         print_row("--", &result);
@@ -1045,7 +1123,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Ground truth: {} neighbors per query\n", k_gt);
     }
 
+    let completed = load_completed_algos(&cfg.results_path);
+    if !completed.is_empty() {
+        eprintln!(
+            "Resuming: skipping {} completed algorithm(s): {}",
+            completed.len(),
+            completed.iter().cloned().collect::<Vec<_>>().join(", ")
+        );
+        eprintln!("Results file: {}\n", cfg.results_path.display());
+    } else {
+        eprintln!("Results file: {}\n", cfg.results_path.display());
+    }
+
     for algo in &cfg.algos {
+        if completed.contains(algo.as_str()) {
+            continue;
+        }
         match algo.as_str() {
             #[cfg(feature = "hnsw")]
             "hnsw" => run_hnsw(&cfg, &train, &test, &neighbors, dim),
