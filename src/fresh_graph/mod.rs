@@ -348,6 +348,40 @@ impl FreshGraphIndex {
         Ok(results)
     }
 
+    /// Search with a custom `ef_search` beam width, overriding the params default.
+    pub fn search_with_ef(
+        &self,
+        query: &[f32],
+        k: usize,
+        ef_search: usize,
+    ) -> Result<Vec<(u32, f32)>, RetrieveError> {
+        if !self.built {
+            return Err(RetrieveError::InvalidParameter(
+                "index must be built before search".into(),
+            ));
+        }
+        if query.len() != self.dimension {
+            return Err(RetrieveError::DimensionMismatch {
+                query_dim: query.len(),
+                doc_dim: self.dimension,
+            });
+        }
+
+        let query_normalized = self.normalize(query);
+        let ef = ef_search.max(k);
+
+        let candidates = self.beam_search_internal(&query_normalized, ef, None);
+
+        let results: Vec<(u32, f32)> = candidates
+            .into_iter()
+            .filter(|&(id, _)| !self.deleted[id as usize])
+            .take(k)
+            .map(|(id, dist)| (self.doc_ids[id as usize], dist))
+            .collect();
+
+        Ok(results)
+    }
+
     /// Remove all tombstoned vectors, remap neighbor IDs, and rebuild
     /// connectivity. Does nothing if there are no deleted nodes.
     #[allow(clippy::needless_range_loop)]
