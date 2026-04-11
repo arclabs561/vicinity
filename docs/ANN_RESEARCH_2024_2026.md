@@ -55,38 +55,11 @@ From arXiv 2501.13992: LID-based insertion strategy with skip bridges.
 
 ## Ideas for Future Implementation
 
-### RaBitQ Quantization
-
-1-bit per dimension with random rotation preprocessing. This is a 32× *storage* reduction versus `f32` vectors (1 bit vs 32 bits per component); error bounds and recall behavior are paper-dependent.
-
-**Implementation sketch**:
-```rust
-// 1. Random orthogonal rotation (once per index)
-let rotation = random_orthogonal_matrix(dim, seed);
-
-// 2. Binary quantization
-fn quantize(v: &[f32], rotation: &[Vec<f32>]) -> BitVec {
-    let rotated = rotate(v, rotation);
-    rotated.iter().map(|&x| x > 0.0).collect()
-}
-
-// 3. Distance via popcount
-fn hamming_approx(a: &BitVec, b: &BitVec) -> u32 {
-    (a ^ b).count_ones()
-}
-```
-
-**Trade-off**: Need to store correction factors for accurate rescoring.
-
 ### Query-Aware Entry Points (GATE)
 
 Extract hub nodes and learn query-specific entry point selection.
 
 **When useful**: Multi-modal queries, cross-domain search.
-
-### LSM-Style Tiering
-
-From LSM-VEC: Recent updates in memory, periodic merge to disk graph.
 
 **Architecture**:
 ```
@@ -156,18 +129,46 @@ L0 (buffer, brute-force) ──compaction──► L1 (HNSW) ──cascade──
 **Ref**: Inspired by LSM-VEC (arXiv:2505.17152). O'Neil et al. (1996), "The Log-Structured
 Merge-Tree."
 
+#### delta-EMG (`emg`)
+
+Single-layer graph with per-query $(1/\delta)$-approximation guarantee via occlusion-based
+pruning. Adaptive per-edge delta for automatic degree balancing. Expected O(ln n) degree.
+
+**Ref**: Yin et al. (2025), arXiv:2511.16921.
+
+#### ESG (`esg`)
+
+Range-filtered ANN via half-bounded interval decomposition. Any range [l,r] needs at most
+2 HNSW subgraph searches (vs O(log N) in prior work). Elastic relaxation allows traversing
+out-of-range nodes for navigation while excluding them from results.
+
+**Ref**: Yang et al. (2025), arXiv:2504.04018.
+
+#### PiPNN (`pipnn`)
+
+Partition-based graph construction: Randomized Ball Carving → all-pairs distance within
+cache-friendly leaves → HashPrune (SimHash reservoir) for directionally-diverse edge pruning.
+History-independent: same result regardless of insertion order, enabling parallel construction.
+
+**Ref**: Rubel et al. (2026), arXiv:2602.21247.
+
+#### Curator (`curator`)
+
+K-means tree with per-label sorted-ID buffers and Bloom filters for low-selectivity filtered
+search (<5% match rate). Finds matching vectors by spatial containment, not graph traversal.
+No vector duplication; ~4% memory overhead. Complement to graph indexes.
+
+**Ref**: Jin et al. (2026), SIGMOD 2026. arXiv:2601.01291.
+
 ### Research Only (Not Yet Implemented)
 
 | Paper | Year | Key Idea | Why It Matters |
 |-------|------|----------|----------------|
-| PiPNN | 2026 | Partition-parallel NN-descent for graph construction | 10x faster builds via Rayon-friendly partitioned NN-descent |
-| delta-EMG | 2025 | Monotonicity-Bounded graph: every greedy walk monotonically decreases distance | Eliminates "no progress" stalls in HNSW-style search |
 | LEMUR | 2026 | Maps multi-vector documents (ColBERT) into single-vector ANN index | MaxSim-compatible ANN for late-interaction retrieval |
 | CleANN | 2025 | Work-stealing concurrent insert/delete/query with consistency guarantees | Formal concurrent correctness for dynamic graphs |
 | PAG | 2026 | Random projections on graph edges for better long-range routing | Simple retrofit onto existing Vamana graphs |
 | DGAI | 2025 | Decoupled graph topology from vector storage | Right architecture for true disk-resident updates |
 | SINDI | 2025 | Graph-based index for sparse vectors (SPLADE/BM25) | Bridges dense and sparse retrieval in one structure |
-| ESG | 2025 | Elastic graphs for range-filtered ANN | Hierarchy of graphs for numeric range constraints |
 | PathFinder | 2025 | Conjunctive/disjunctive filter predicates in graph search | AND/OR trees of filter predicates |
 | QMP | 2024 | Quantization meets projection -- avoids PQ table lookup | Simpler than PQ, competitive accuracy |
 
