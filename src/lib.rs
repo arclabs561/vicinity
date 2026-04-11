@@ -136,6 +136,12 @@ pub mod pipnn;
 #[cfg(feature = "ivf_rabitq")]
 pub mod ivf_rabitq;
 
+#[cfg(feature = "qmp")]
+pub mod qmp;
+
+#[cfg(feature = "sindi")]
+pub mod sindi;
+
 #[cfg(feature = "sng")]
 pub mod sng;
 
