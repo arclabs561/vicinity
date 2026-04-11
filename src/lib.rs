@@ -5,9 +5,12 @@
 //!
 //! Provides implementations of ANN algorithms:
 //!
-//! - **Graph-based**: [`hnsw`], `nsw`, `sng`, `vamana`
-//! - **Partition-based**: `ivf_pq`, `ivf_avq`
-//! - **Quantization**: `quantization` (RaBitQ, SAQ), `ivf_pq` (Product Quantization)
+//! - **Graph-based**: [`hnsw`], `nsw`, `sng`, `vamana`, `nsg`, `emg`, `pag`, `pipnn`, `cleann`
+//! - **Partition-based**: `ivf_pq`, `ivf_avq`, `ivf_rabitq`, `curator`
+//! - **Quantization**: `quantization` (RaBitQ, SAQ), `qmp` (projection + scalar quantization)
+//! - **Filtered**: `pathfinder` (predicate filters), `esg` (range filters), `curator` (label filters)
+//! - **Sparse vectors**: `sindi` (inner-product graph for SPLADE/BM25)
+//! - **Streaming**: `streaming::lsm` (LSM-tree tiered HNSW)
 //!
 //! # Which Index Should I Use?
 //!
@@ -15,8 +18,13 @@
 //! |-----------|----------------|---------|
 //! | **General Purpose** (Best Recall/Speed) | [`hnsw::HNSWIndex`] | `hnsw` (default) |
 //! | **Billion-Scale** (Memory Constrained) | `ivf_pq::IVFPQIndex` | `ivf_pq` |
-//! | **Flat Graph** (Simpler graph, often worth trying for modern embeddings) | `nsw::NSWIndex` | `nsw` |
-//! | **Attribute Filtering** | [`hnsw::filtered`] | `hnsw` |
+//! | **Flat Graph** (Simpler, competitive on high-d) | `nsw::NSWIndex` | `nsw` |
+//! | **Label Filtering** (Low selectivity) | `curator::CuratorIndex` | `curator` |
+//! | **Complex Predicates** (AND/OR filters) | `pathfinder::PathfinderIndex` | `pathfinder` |
+//! | **Range Filtering** (Numeric attributes) | `esg::EsgIndex` | `esg` |
+//! | **Dynamic Insert/Delete** | `cleann::CleannIndex` | `cleann` |
+//! | **Sparse Vectors** (SPLADE/BM25) | `sindi::SindiIndex` | `sindi` |
+//! | **High-d Compression** (768d+) | `qmp::QmpIndex` | `qmp` |
 //! | **Out-of-Core** (SSD-based) | `diskann` | `diskann` (experimental) |
 //!
 //! **Default features**: `hnsw`, `innr` (SIMD).
