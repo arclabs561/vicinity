@@ -108,6 +108,7 @@ ivf_pq = [
 diskann = ["dep:serde_json"]
 ivf_avq = ["dep:clump"]
 sng = []
+curator = []
 emg = []
 esg = ["hnsw"]
 pipnn = []
