@@ -435,7 +435,76 @@ impl DiskANNIndex {
         self.vamana_pass(self.params.alpha)?;
 
         self.built = true;
+        // Note: graph reordering could be added here but DiskANN's tests
+        // assert on internal index positions. HNSW has this optimization
+        // via its doc_id mapping layer.
         Ok(())
+    }
+
+    /// BFS-order graph reordering for cache-friendly traversal.
+    fn reorder_for_locality(&mut self) {
+        if self.num_vectors <= 1 {
+            return;
+        }
+        let n = self.num_vectors;
+        let dim = self.dimension;
+        let ep = self.start_node as usize;
+
+        let mut new_order: Vec<u32> = Vec::with_capacity(n);
+        let mut visited = vec![false; n];
+        let mut queue = std::collections::VecDeque::with_capacity(n);
+        queue.push_back(ep);
+        visited[ep] = true;
+
+        while let Some(node) = queue.pop_front() {
+            new_order.push(node as u32);
+            for &nb in &self.adj[node] {
+                let nb = nb as usize;
+                if nb < n && !visited[nb] {
+                    visited[nb] = true;
+                    queue.push_back(nb);
+                }
+            }
+        }
+        for i in 0..n {
+            if !visited[i] {
+                new_order.push(i as u32);
+            }
+        }
+
+        let mut old_to_new = vec![0u32; n];
+        for (new_idx, &old_idx) in new_order.iter().enumerate() {
+            old_to_new[old_idx as usize] = new_idx as u32;
+        }
+
+        // Permute vectors
+        let mut new_vectors = vec![0.0f32; self.vectors.len()];
+        for (new_idx, &old_idx) in new_order.iter().enumerate() {
+            let src = old_idx as usize * dim;
+            let dst = new_idx * dim;
+            new_vectors[dst..dst + dim].copy_from_slice(&self.vectors[src..src + dim]);
+        }
+        self.vectors = new_vectors;
+
+        // Permute doc_ids
+        let new_doc_ids: Vec<u32> = new_order
+            .iter()
+            .map(|&old| self.doc_ids[old as usize])
+            .collect();
+        self.doc_ids = new_doc_ids;
+
+        // Permute and remap adjacency lists
+        let mut new_adj: Vec<SmallVec<[u32; 32]>> = vec![SmallVec::new(); n];
+        for (old_idx, nbs) in self.adj.iter().enumerate() {
+            if old_idx < n {
+                let new_idx = old_to_new[old_idx] as usize;
+                new_adj[new_idx] = nbs.iter().map(|&nb| old_to_new[nb as usize]).collect();
+            }
+        }
+        self.adj = new_adj;
+
+        // Update start node
+        self.start_node = old_to_new[ep];
     }
 
     /// Initialize random R-regular graph.
