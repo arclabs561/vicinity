@@ -67,6 +67,12 @@ DATASETS = {
         "normalize": False,
         "size_mb": 217,
     },
+    "gist-960-euclidean": {
+        "url": "http://ann-benchmarks.com/gist-960-euclidean.hdf5",
+        "metric": "euclidean",
+        "normalize": False,
+        "size_mb": 3600,
+    },
 }
 
 
