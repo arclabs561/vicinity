@@ -1,9 +1,9 @@
-//! SINDI: Sparse Index for Nearest-neighbor search with Dense Inner products.
+//! Graph-based ANN for sparse vectors using maximum inner product search.
 //!
-//! A graph-based ANN index for sparse vectors (SPLADE embeddings, BM25 term
-//! vectors, bag-of-words representations). Standard ANN indexes work on dense
-//! vectors; SINDI stores vectors in sparse format (sorted `(index, value)` pairs)
-//! and uses inner-product-based graph search optimized for sparsity.
+//! Designed for sparse vectors such as SPLADE embeddings, BM25 term vectors,
+//! and bag-of-words representations. Vectors are stored in sparse format
+//! (sorted `(index, value)` pairs) and graph search is optimized for sparsity
+//! using inner-product-based similarity.
 //!
 //! Distance is defined as the negated inner product: lower = more similar. This
 //! lets standard min-distance graph search maximize inner product.
@@ -11,16 +11,16 @@
 //! # Feature Flag
 //!
 //! ```toml
-//! vicinity = { version = "0.3", features = ["sindi"] }
+//! vicinity = { version = "0.3", features = ["sparse_mips"] }
 //! ```
 //!
 //! # Quick Start
 //!
 //! ```ignore
-//! use vicinity::sindi::{SindiIndex, SindiParams, SparseVector};
+//! use vicinity::sparse_mips::{SparseMipsIndex, SparseMipsParams, SparseVector};
 //!
-//! let params = SindiParams::default();
-//! let mut index = SindiIndex::new(params);
+//! let params = SparseMipsParams::default();
+//! let mut index = SparseMipsIndex::new(params);
 //!
 //! for (id, vec) in data {
 //!     index.add(id, vec)?;
@@ -88,9 +88,9 @@ impl SparseVector {
     }
 }
 
-/// SINDI construction and search parameters.
+/// Construction and search parameters.
 #[derive(Clone, Debug)]
-pub struct SindiParams {
+pub struct SparseMipsParams {
     /// Maximum out-degree per node. Default: 32.
     pub max_degree: usize,
     /// Construction beam width. Default: 200.
@@ -104,7 +104,7 @@ pub struct SindiParams {
     pub alpha: f32,
 }
 
-impl Default for SindiParams {
+impl Default for SparseMipsParams {
     fn default() -> Self {
         Self {
             max_degree: 32,
@@ -115,9 +115,9 @@ impl Default for SindiParams {
     }
 }
 
-/// SINDI index.
-pub struct SindiIndex {
-    params: SindiParams,
+/// Sparse MIPS graph index.
+pub struct SparseMipsIndex {
+    params: SparseMipsParams,
     built: bool,
 
     vectors: Vec<SparseVector>,
@@ -128,10 +128,10 @@ pub struct SindiIndex {
     entry_point: u32,
 }
 
-impl SindiIndex {
-    /// Create a new SINDI index. No dimension parameter is required because
+impl SparseMipsIndex {
+    /// Create a new index. No dimension parameter is required because
     /// sparse vectors are dimension-agnostic.
-    pub fn new(params: SindiParams) -> Self {
+    pub fn new(params: SparseMipsParams) -> Self {
         Self {
             params,
             built: false,
@@ -158,7 +158,7 @@ impl SindiIndex {
         Ok(())
     }
 
-    /// Build the SINDI index.
+    /// Build the index.
     ///
     /// Must be called before `search`. After building, no more vectors can be added.
     pub fn build(&mut self) -> Result<(), RetrieveError> {
@@ -645,7 +645,7 @@ mod tests {
         let n = 50;
         let vecs = make_sparse(n, 10, 100, 42);
 
-        let mut index = SindiIndex::new(SindiParams {
+        let mut index = SparseMipsIndex::new(SparseMipsParams {
             max_degree: 16,
             ef_construction: 64,
             ef_search: 32,
@@ -671,7 +671,7 @@ mod tests {
         let n = 50;
         let vecs = make_sparse(n, 15, 200, 7);
 
-        let mut index = SindiIndex::new(SindiParams {
+        let mut index = SparseMipsIndex::new(SparseMipsParams {
             max_degree: 16,
             ef_construction: 100,
             ef_search: 50,
@@ -700,7 +700,7 @@ mod tests {
     #[test]
     fn empty_sparse_vectors() {
         // Vectors with no nonzero entries should not crash; all inner products are 0.
-        let mut index = SindiIndex::new(SindiParams::default());
+        let mut index = SparseMipsIndex::new(SparseMipsParams::default());
         for i in 0..5u32 {
             index
                 .add(
@@ -725,7 +725,7 @@ mod tests {
     #[test]
     fn disjoint_vectors() {
         // Two groups with non-overlapping dimensions: inner product between groups = 0.
-        let mut index = SindiIndex::new(SindiParams {
+        let mut index = SparseMipsIndex::new(SparseMipsParams {
             max_degree: 8,
             ef_construction: 32,
             ef_search: 16,
@@ -765,14 +765,14 @@ mod tests {
 
     #[test]
     fn empty_index_errors() {
-        let mut index = SindiIndex::new(SindiParams::default());
+        let mut index = SparseMipsIndex::new(SparseMipsParams::default());
         assert!(index.build().is_err());
         assert!(index.search(&SparseVector::default(), 1).is_err());
     }
 
     #[test]
     fn add_after_build_errors() {
-        let mut index = SindiIndex::new(SindiParams::default());
+        let mut index = SparseMipsIndex::new(SparseMipsParams::default());
         index
             .add(
                 0,

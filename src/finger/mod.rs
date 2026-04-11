@@ -1,24 +1,25 @@
-//! PAG: Projection-Augmented Graph.
+//! FINGER: Fast Inference for Graph-based Approximate Nearest Neighbor Search.
 //!
 //! A proximity graph that augments edges with projection-based distance lower
-//! bounds for faster search pruning. During search, before computing the full
-//! distance to a neighbor, a 1-D lower bound is checked: for unit vectors,
-//! `|proj_q - proj_v|^2 / 2 <= cosine_dist(q, v)`, so if `lb^2/2 > worst_dist`
-//! the neighbor is skipped without a full distance computation.
+//! bounds for faster search pruning (Chen et al., KDD 2023). During search,
+//! before computing the full distance to a neighbor, a 1-D lower bound is
+//! checked: for unit vectors, `|proj_q - proj_v|^2 / 2 <= cosine_dist(q, v)`,
+//! so if `lb^2/2 > worst_dist` the neighbor is skipped without a full distance
+//! computation. The projection direction is derived from the data centroid.
 //!
 //! # Feature Flag
 //!
 //! ```toml
-//! vicinity = { version = "0.3", features = ["pag"] }
+//! vicinity = { version = "0.3", features = ["finger"] }
 //! ```
 //!
 //! # Quick Start
 //!
 //! ```ignore
-//! use vicinity::pag::{PagIndex, PagParams};
+//! use vicinity::finger::{FingerIndex, FingerParams};
 //!
-//! let params = PagParams::default();
-//! let mut index = PagIndex::new(128, params)?;
+//! let params = FingerParams::default();
+//! let mut index = FingerIndex::new(128, params)?;
 //!
 //! for (id, vec) in data {
 //!     index.add(id, vec)?;
@@ -45,17 +46,17 @@
 //!
 //! # References
 //!
-//! - Fu, Cai, Gu (2021). "High Dimensional Approximate Nearest Neighbor Search:
-//!   with Reliable and Efficient Distance Comparison Operations." SIGMOD 2023.
+//! - Chen et al. (2023). "FINGER: Fast Inference for Graph-based Approximate
+//!   Nearest Neighbor Search." KDD 2023.
 
 use crate::distance::cosine_distance_normalized;
 use crate::RetrieveError;
 use smallvec::SmallVec;
 use std::collections::{BinaryHeap, HashSet};
 
-/// PAG construction and search parameters.
+/// FINGER construction and search parameters.
 #[derive(Clone, Debug)]
-pub struct PagParams {
+pub struct FingerParams {
     /// Maximum out-degree. Default: 32.
     pub max_degree: usize,
     /// Candidate pool size during construction (ef_construction). Default: 200.
@@ -66,7 +67,7 @@ pub struct PagParams {
     pub alpha: f32,
 }
 
-impl Default for PagParams {
+impl Default for FingerParams {
     fn default() -> Self {
         Self {
             max_degree: 32,
@@ -77,10 +78,10 @@ impl Default for PagParams {
     }
 }
 
-/// PAG index.
-pub struct PagIndex {
+/// FINGER index.
+pub struct FingerIndex {
     dimension: usize,
-    params: PagParams,
+    params: FingerParams,
     built: bool,
 
     /// Flat L2-normalized vector store: row `i` at `vectors[i*dim..(i+1)*dim]`.
@@ -91,16 +92,16 @@ pub struct PagIndex {
     neighbors: Vec<SmallVec<[u32; 16]>>,
     medoid: u32,
 
-    // --- PAG-specific projection data (populated during build) ---
+    // --- FINGER projection data (populated during build) ---
     /// Unit direction derived from the centroid of all normalized vectors.
     direction: Vec<f32>,
     /// `projections[i] = dot(vectors[i], direction)`.
     projections: Vec<f32>,
 }
 
-impl PagIndex {
-    /// Create a new PAG index for vectors of `dimension` dimensions.
-    pub fn new(dimension: usize, params: PagParams) -> Result<Self, RetrieveError> {
+impl FingerIndex {
+    /// Create a new FINGER index for vectors of `dimension` dimensions.
+    pub fn new(dimension: usize, params: FingerParams) -> Result<Self, RetrieveError> {
         if dimension == 0 {
             return Err(RetrieveError::InvalidParameter(
                 "dimension must be > 0".into(),
@@ -154,7 +155,7 @@ impl PagIndex {
         Ok(())
     }
 
-    /// Build the PAG index. Must be called before `search`.
+    /// Build the FINGER index. Must be called before `search`.
     pub fn build(&mut self) -> Result<(), RetrieveError> {
         if self.built {
             return Ok(());
@@ -590,11 +591,11 @@ mod tests {
             .collect()
     }
 
-    fn make_index(n: usize, dim: usize, seed: u64) -> PagIndex {
+    fn make_index(n: usize, dim: usize, seed: u64) -> FingerIndex {
         let data = make_vectors(n, dim, seed);
-        let mut index = PagIndex::new(
+        let mut index = FingerIndex::new(
             dim,
-            PagParams {
+            FingerParams {
                 max_degree: 16,
                 ef_construction: 64,
                 ef_search: 50,
@@ -631,9 +632,9 @@ mod tests {
         let n = 30;
         let data = make_vectors(n, dim, 7);
 
-        let mut index = PagIndex::new(
+        let mut index = FingerIndex::new(
             dim,
-            PagParams {
+            FingerParams {
                 max_degree: 16,
                 ef_construction: 64,
                 ef_search: 50,
@@ -708,13 +709,13 @@ mod tests {
 
     #[test]
     fn empty_index_errors() {
-        let mut index = PagIndex::new(8, PagParams::default()).unwrap();
+        let mut index = FingerIndex::new(8, FingerParams::default()).unwrap();
         assert!(index.build().is_err());
     }
 
     #[test]
     fn dimension_mismatch_errors() {
-        let mut index = PagIndex::new(8, PagParams::default()).unwrap();
+        let mut index = FingerIndex::new(8, FingerParams::default()).unwrap();
         let result = index.add_slice(0, &[1.0, 2.0, 3.0]);
         assert!(result.is_err());
     }
@@ -723,7 +724,7 @@ mod tests {
     fn add_after_build_errors() {
         let dim = 4;
         let data = make_vectors(5, dim, 1);
-        let mut index = PagIndex::new(dim, PagParams::default()).unwrap();
+        let mut index = FingerIndex::new(dim, FingerParams::default()).unwrap();
         for i in 0..5usize {
             index
                 .add_slice(i as u32, &data[i * dim..(i + 1) * dim])

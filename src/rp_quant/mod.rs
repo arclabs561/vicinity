@@ -1,10 +1,10 @@
-//! QMP: Quantization Meets Projection.
+//! Random projection with scalar quantization for high-dimensional ANN.
+//! Combines Johnson-Lindenstrauss dimension reduction with uniform scalar quantization.
 //!
-//! An ANN index that combines random projection for dimension reduction with
-//! scalar quantization for memory efficiency. Projects high-dimensional vectors
-//! into a lower-dimensional space, then stores them as 8-bit integers. Search
-//! uses the compressed representation for a fast approximate distance scan,
-//! followed by an optional re-ranking step against the original vectors.
+//! Projects high-dimensional vectors into a lower-dimensional space, then
+//! stores them as 8-bit integers. Search uses the compressed representation
+//! for a fast approximate distance scan, followed by an optional re-ranking
+//! step against the original vectors.
 //!
 //! Useful for high-dimensional embeddings (768-1536d) where full-precision
 //! distance computation is expensive. Projection + quantization gives 10-50x
@@ -13,16 +13,16 @@
 //! # Feature Flag
 //!
 //! ```toml
-//! vicinity = { version = "0.3", features = ["qmp"] }
+//! vicinity = { version = "0.3", features = ["rp_quant"] }
 //! ```
 //!
 //! # Quick Start
 //!
 //! ```ignore
-//! use vicinity::qmp::{QmpIndex, QmpParams};
+//! use vicinity::rp_quant::{RpQuantIndex, RpQuantParams};
 //!
-//! let params = QmpParams::default();
-//! let mut index = QmpIndex::new(768, params)?;
+//! let params = RpQuantParams::default();
+//! let mut index = RpQuantIndex::new(768, params)?;
 //!
 //! for (id, vec) in data {
 //!     index.add(id, vec)?;
@@ -52,9 +52,9 @@
 use crate::distance::cosine_distance_normalized;
 use crate::RetrieveError;
 
-/// QMP construction and search parameters.
+/// RpQuant construction and search parameters.
 #[derive(Clone, Debug)]
-pub struct QmpParams {
+pub struct RpQuantParams {
     /// Target projection dimension `d'`. Default: 64.
     pub projected_dim: usize,
     /// Candidate multiplier for re-ranking: fetch `k * rerank_factor` candidates,
@@ -64,7 +64,7 @@ pub struct QmpParams {
     pub seed: u64,
 }
 
-impl Default for QmpParams {
+impl Default for RpQuantParams {
     fn default() -> Self {
         Self {
             projected_dim: 64,
@@ -74,10 +74,10 @@ impl Default for QmpParams {
     }
 }
 
-/// QMP index.
-pub struct QmpIndex {
+/// RpQuant index.
+pub struct RpQuantIndex {
     dimension: usize,
-    params: QmpParams,
+    params: RpQuantParams,
     built: bool,
 
     /// Original (L2-normalized) vectors for re-ranking, stored flat.
@@ -99,9 +99,9 @@ pub struct QmpIndex {
     scales: Vec<f32>,
 }
 
-impl QmpIndex {
-    /// Create a new QMP index.
-    pub fn new(dimension: usize, params: QmpParams) -> Result<Self, RetrieveError> {
+impl RpQuantIndex {
+    /// Create a new RpQuant index.
+    pub fn new(dimension: usize, params: RpQuantParams) -> Result<Self, RetrieveError> {
         if dimension == 0 {
             return Err(RetrieveError::InvalidParameter(
                 "dimension must be > 0".into(),
@@ -399,9 +399,9 @@ mod tests {
         let n = 50;
         let data = make_vectors(n, dim, 42);
 
-        let mut index = QmpIndex::new(
+        let mut index = RpQuantIndex::new(
             dim,
-            QmpParams {
+            RpQuantParams {
                 projected_dim: 8,
                 rerank_factor: 5,
                 seed: 1,
@@ -429,9 +429,9 @@ mod tests {
         let n = 100;
         let data = make_vectors(n, dim, 7);
 
-        let mut index = QmpIndex::new(
+        let mut index = RpQuantIndex::new(
             dim,
-            QmpParams {
+            RpQuantParams {
                 projected_dim: 16,
                 rerank_factor: 10,
                 seed: 99,
@@ -469,9 +469,9 @@ mod tests {
         let n = 10;
         let data = make_vectors(n, dim, 55);
 
-        let mut index = QmpIndex::new(
+        let mut index = RpQuantIndex::new(
             dim,
-            QmpParams {
+            RpQuantParams {
                 projected_dim: dp,
                 rerank_factor: 3,
                 seed: 2,
@@ -493,14 +493,14 @@ mod tests {
 
     #[test]
     fn empty_index_errors() {
-        let mut index = QmpIndex::new(8, QmpParams::default()).unwrap();
+        let mut index = RpQuantIndex::new(8, RpQuantParams::default()).unwrap();
         assert!(index.build().is_err());
     }
 
     #[test]
     fn dimension_mismatch() {
         let dim = 16;
-        let mut index = QmpIndex::new(dim, QmpParams::default()).unwrap();
+        let mut index = RpQuantIndex::new(dim, RpQuantParams::default()).unwrap();
 
         // Wrong dimension on add.
         let result = index.add_slice(0, &[0.0f32; 8]);

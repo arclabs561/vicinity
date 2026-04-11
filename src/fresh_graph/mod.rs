@@ -1,6 +1,7 @@
-//! CleANN: graph-based ANN index with incremental insert and tombstone delete.
+//! Mutable proximity graph with incremental insert, delete, and compact.
+//! Inspired by FreshDiskANN (Singh et al., 2021) and IP-DiskANN (Xu et al., 2025).
 //!
-//! CleANN maintains a single-layer proximity graph that supports post-build
+//! Maintains a single-layer proximity graph that supports post-build
 //! inserts and logical deletes without full rebuilds. Deleted nodes are marked
 //! with tombstones: search traverses through them (to preserve graph
 //! connectivity) but excludes them from result sets. Compaction removes
@@ -9,16 +10,16 @@
 //! # Feature Flag
 //!
 //! ```toml
-//! vicinity = { version = "0.3", features = ["cleann"] }
+//! vicinity = { version = "0.3", features = ["fresh_graph"] }
 //! ```
 //!
 //! # Quick Start
 //!
 //! ```ignore
-//! use vicinity::cleann::{CleannIndex, CleannParams};
+//! use vicinity::fresh_graph::{FreshGraphIndex, FreshGraphParams};
 //!
-//! let params = CleannParams::default();
-//! let mut index = CleannIndex::new(128, params)?;
+//! let params = FreshGraphParams::default();
+//! let mut index = FreshGraphIndex::new(128, params)?;
 //!
 //! for (id, vec) in data {
 //!     index.add(id, vec)?;
@@ -49,6 +50,8 @@
 //!
 //! # References
 //!
+//! - Singh et al. (2021). "FreshDiskANN: A Fast and Accurate Graph-Based ANN
+//!   Index for Streaming Similarity Search."
 //! - Xu, Bernstein, Guestrin (2023). "CleANN: Efficient Concurrent Insertions
 //!   and Deletions for Graph-based ANN indexes." arXiv:2310.03264.
 
@@ -57,9 +60,9 @@ use crate::RetrieveError;
 use smallvec::SmallVec;
 use std::collections::{BinaryHeap, HashSet};
 
-/// CleANN construction and search parameters.
+/// FreshGraph construction and search parameters.
 #[derive(Clone, Debug)]
-pub struct CleannParams {
+pub struct FreshGraphParams {
     /// Maximum out-degree per node. Default: 32.
     pub max_degree: usize,
     /// Candidate pool size during construction. Default: 200.
@@ -70,7 +73,7 @@ pub struct CleannParams {
     pub alpha: f32,
 }
 
-impl Default for CleannParams {
+impl Default for FreshGraphParams {
     fn default() -> Self {
         Self {
             max_degree: 32,
@@ -81,10 +84,10 @@ impl Default for CleannParams {
     }
 }
 
-/// CleANN index.
-pub struct CleannIndex {
+/// FreshGraph index.
+pub struct FreshGraphIndex {
     dimension: usize,
-    params: CleannParams,
+    params: FreshGraphParams,
 
     /// Flat normalized vector storage (row-major, `dimension` floats per vector).
     vectors: Vec<f32>,
@@ -103,9 +106,9 @@ pub struct CleannIndex {
     built: bool,
 }
 
-impl CleannIndex {
-    /// Create a new CleANN index with the given dimension and parameters.
-    pub fn new(dimension: usize, params: CleannParams) -> Result<Self, RetrieveError> {
+impl FreshGraphIndex {
+    /// Create a new FreshGraph index with the given dimension and parameters.
+    pub fn new(dimension: usize, params: FreshGraphParams) -> Result<Self, RetrieveError> {
         if dimension == 0 {
             return Err(RetrieveError::InvalidParameter(
                 "dimension must be > 0".into(),
@@ -728,8 +731,8 @@ mod tests {
             .collect()
     }
 
-    fn default_params() -> CleannParams {
-        CleannParams {
+    fn default_params() -> FreshGraphParams {
+        FreshGraphParams {
             max_degree: 16,
             ef_construction: 50,
             ef_search: 50,
@@ -743,7 +746,7 @@ mod tests {
         let n = 40;
         let data = make_vectors(n, dim, 42);
 
-        let mut index = CleannIndex::new(dim, default_params()).unwrap();
+        let mut index = FreshGraphIndex::new(dim, default_params()).unwrap();
         for i in 0..n {
             index
                 .add_slice(i as u32, &data[i * dim..(i + 1) * dim])
@@ -766,7 +769,7 @@ mod tests {
         let n = 30;
         let data = make_vectors(n + 1, dim, 99);
 
-        let mut index = CleannIndex::new(dim, default_params()).unwrap();
+        let mut index = FreshGraphIndex::new(dim, default_params()).unwrap();
         for i in 0..n {
             index
                 .add_slice(i as u32, &data[i * dim..(i + 1) * dim])
@@ -795,7 +798,7 @@ mod tests {
         let n = 40;
         let data = make_vectors(n, dim, 7);
 
-        let mut index = CleannIndex::new(dim, default_params()).unwrap();
+        let mut index = FreshGraphIndex::new(dim, default_params()).unwrap();
         for i in 0..n {
             index
                 .add_slice(i as u32, &data[i * dim..(i + 1) * dim])
@@ -828,7 +831,7 @@ mod tests {
         let n = 10;
         let data = make_vectors(n, dim, 55);
 
-        let mut index = CleannIndex::new(dim, default_params()).unwrap();
+        let mut index = FreshGraphIndex::new(dim, default_params()).unwrap();
         for i in 0..n {
             index
                 .add_slice(i as u32, &data[i * dim..(i + 1) * dim])
@@ -846,7 +849,7 @@ mod tests {
         let n = 40;
         let data = make_vectors(n, dim, 13);
 
-        let mut index = CleannIndex::new(dim, default_params()).unwrap();
+        let mut index = FreshGraphIndex::new(dim, default_params()).unwrap();
         for i in 0..n {
             index
                 .add_slice(i as u32, &data[i * dim..(i + 1) * dim])
@@ -886,9 +889,9 @@ mod tests {
         let n = 50;
         let data = make_vectors(n, dim, 77);
 
-        let mut index = CleannIndex::new(
+        let mut index = FreshGraphIndex::new(
             dim,
-            CleannParams {
+            FreshGraphParams {
                 max_degree: 16,
                 ef_construction: 80,
                 ef_search: 80,
@@ -919,7 +922,7 @@ mod tests {
 
     #[test]
     fn empty_index_errors() {
-        let mut index = CleannIndex::new(8, CleannParams::default()).unwrap();
+        let mut index = FreshGraphIndex::new(8, FreshGraphParams::default()).unwrap();
         assert!(index.build().is_err());
     }
 
@@ -928,7 +931,7 @@ mod tests {
         let dim = 8;
         let data = make_vectors(5, dim, 1);
 
-        let mut index = CleannIndex::new(dim, CleannParams::default()).unwrap();
+        let mut index = FreshGraphIndex::new(dim, FreshGraphParams::default()).unwrap();
         for i in 0..5usize {
             index
                 .add_slice(i as u32, &data[i * dim..(i + 1) * dim])
@@ -942,7 +945,7 @@ mod tests {
 
     #[test]
     fn dimension_mismatch_rejected() {
-        let mut index = CleannIndex::new(8, CleannParams::default()).unwrap();
+        let mut index = FreshGraphIndex::new(8, FreshGraphParams::default()).unwrap();
         assert!(index.add(0, vec![1.0; 16]).is_err());
     }
 }
