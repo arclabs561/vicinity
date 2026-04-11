@@ -502,6 +502,45 @@ impl Layer {
         }
     }
 
+    /// Remap all neighbor IDs using a permutation table.
+    ///
+    /// Used by `reorder_for_locality` to update neighbor references after
+    /// reordering the vector/doc_id arrays.
+    pub(crate) fn remap_ids(&mut self, old_to_new: &[u32], new_size: usize) {
+        match &mut self.storage {
+            NeighborStorage::Uncompressed(neighbors) => {
+                // Permute the neighbor lists themselves (position i → new position)
+                let mut permuted = vec![SmallVec::<[u32; 16]>::new(); new_size];
+                for (old_idx, nbs) in neighbors.iter().enumerate() {
+                    if old_idx < old_to_new.len() {
+                        let new_idx = old_to_new[old_idx] as usize;
+                        if new_idx < new_size {
+                            // Remap each neighbor reference
+                            let remapped: SmallVec<[u32; 16]> = nbs
+                                .iter()
+                                .filter_map(|&nb| {
+                                    let nb_usize = nb as usize;
+                                    if nb_usize < old_to_new.len() {
+                                        Some(old_to_new[nb_usize])
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect();
+                            permuted[new_idx] = remapped;
+                        }
+                    }
+                }
+                *neighbors = permuted;
+            }
+            #[cfg(feature = "id-compression")]
+            NeighborStorage::Compressed { .. } => {
+                // Compressed layers: would need decompress → remap → recompress.
+                // For now, reorder_for_locality should only be called before compression.
+            }
+        }
+    }
+
     /// Get all neighbor lists (for persistence).
     /// Returns None if layer is compressed.
     #[allow(dead_code)]
@@ -1080,6 +1119,110 @@ impl HNSWIndex {
         self.cached_entry_point = self.compute_entry_point();
 
         Ok(())
+    }
+
+    /// Reorder graph nodes so BFS-adjacent nodes are contiguous in memory.
+    ///
+    /// After construction, nodes are in insertion order. Graph traversal visits
+    /// neighbors that may be scattered across memory, causing cache misses.
+    /// BFS-ordering from the entry point places frequently co-visited nodes
+    /// in adjacent memory locations, improving L2/L3 cache hit rates.
+    ///
+    /// The permutation is applied to: vectors, doc_ids, layer_assignments,
+    /// category_assignments, all neighbor lists in all layers, and the
+    /// doc_id_to_internal reverse map.
+    fn reorder_for_locality(&mut self) {
+        if self.num_vectors <= 1 {
+            return;
+        }
+        let ep = match self.cached_entry_point {
+            Some(ep) => ep as usize,
+            None => return,
+        };
+
+        let n = self.num_vectors;
+        let dim = self.dimension;
+
+        // BFS from entry point through base layer to compute visit order.
+        let mut new_order: Vec<u32> = Vec::with_capacity(n);
+        let mut visited = vec![false; n];
+        let mut queue = std::collections::VecDeque::with_capacity(n);
+
+        queue.push_back(ep);
+        visited[ep] = true;
+
+        while let Some(node) = queue.pop_front() {
+            new_order.push(node as u32);
+            if let Some(layer) = self.layers.first() {
+                let neighbors = layer.get_neighbors(node as u32);
+                for &nb in neighbors.iter() {
+                    let nb = nb as usize;
+                    if nb < n && !visited[nb] {
+                        visited[nb] = true;
+                        queue.push_back(nb);
+                    }
+                }
+            }
+        }
+        // Add any unreachable nodes (rare in a connected graph).
+        for i in 0..n {
+            if !visited[i] {
+                new_order.push(i as u32);
+            }
+        }
+
+        // Build permutation: old_to_new[old_idx] = new_idx
+        let mut old_to_new = vec![0u32; n];
+        for (new_idx, &old_idx) in new_order.iter().enumerate() {
+            old_to_new[old_idx as usize] = new_idx as u32;
+        }
+
+        // Permute vectors (flat array, stride = dim)
+        let mut new_vectors = vec![0.0f32; self.vectors.len()];
+        for (new_idx, &old_idx) in new_order.iter().enumerate() {
+            let old_start = old_idx as usize * dim;
+            let new_start = new_idx * dim;
+            new_vectors[new_start..new_start + dim]
+                .copy_from_slice(&self.vectors[old_start..old_start + dim]);
+        }
+        self.vectors = new_vectors;
+
+        // Permute doc_ids
+        let new_doc_ids: Vec<u32> = new_order
+            .iter()
+            .map(|&old| self.doc_ids[old as usize])
+            .collect();
+        self.doc_ids = new_doc_ids;
+
+        // Permute layer_assignments
+        let new_assignments: Vec<u8> = new_order
+            .iter()
+            .map(|&old| self.layer_assignments[old as usize])
+            .collect();
+        self.layer_assignments = new_assignments;
+
+        // Remap all neighbor lists in all layers
+        for layer in &mut self.layers {
+            layer.remap_ids(&old_to_new, n);
+        }
+
+        // Rebuild reverse map
+        self.doc_id_to_internal.clear();
+        for (i, &doc_id) in self.doc_ids.iter().enumerate() {
+            self.doc_id_to_internal.insert(doc_id, i as u32);
+        }
+
+        // Permute category assignments if present
+        if !self.category_assignments.is_empty() {
+            let new_cats: Vec<Option<crate::filtering::MetadataValue>> = new_order
+                .iter()
+                .map(|&old| self.category_assignments[old as usize].clone())
+                .collect();
+            self.category_assignments = new_cats;
+        }
+
+        // Recompute cached entry point (its index changed)
+        self.cached_entry_point = self.compute_entry_point();
     }
 
     /// Add extra intra-category edges to improve filterable search.
