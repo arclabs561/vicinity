@@ -124,6 +124,41 @@ It is intended to backstop claims in module docs and to give you a starting poin
 - Xu et al. (2026). *JAG: Joint Attribute Graphs for Filtered Nearest Neighbor Search.* (single graph encoding similarity + predicates)
   `https://arxiv.org/abs/2602.10258`
 
+## Error-bounded monotonic graphs
+
+- Yin et al. (2025). *delta-EMG: Error-Bounded Monotonic Graph for Approximate Nearest Neighbor Search.* (provable per-query distance bounds via occlusion pruning)
+  `https://arxiv.org/abs/2511.16921`
+
+## Range-filtered ANN
+
+- Yang, Li, Shen, Xiao, Wang (2025). *ESG: Elastic Graphs for Range-Filtering Approximate kNN Search.* (2 subgraph searches vs O(log N))
+  `https://arxiv.org/abs/2504.04018`
+
+## Low-selectivity filtered ANN
+
+- Jin, Wu, Hu, Maggs, Yang, Zhang, Zhuo (2026). *Curator: Efficient Vector Search with Low-Selectivity Filters.* (SIGMOD 2026; k-means tree + per-label buffers)
+  `https://arxiv.org/abs/2601.01291`
+
+## IVF-RaBitQ
+
+- Chen et al. (2026). *IVF-RaBitQ: GPU-native IVF with RaBitQ quantization.*
+  `https://arxiv.org/abs/2602.23999`
+
+## Multi-vector retrieval (ColBERT-style)
+
+- Kulkarni, Hrishikesh, Simhadri (2026). *LEMUR: Learned Multi-Vector Retrieval.* (MLP + OLS for MaxSim-compatible single-vector ANNS)
+  `https://arxiv.org/abs/2601.21853`
+
+## LSM-tree vector indexing
+
+- Bai et al. (2025). *LSM-VEC: Streaming Vector Search via LSM-tree.* (Poly-LSM engine, delta/pivot entries)
+  `https://arxiv.org/abs/2505.17152`
+
+## Parallel graph construction
+
+- Rubel, Wen, Dhulipala, Gottesbüren, Jayaram, Łącki (2026). *PiPNN: Ultra-Scalable Graph-Based Nearest Neighbor Indexing.* (overlapping partitions + GEMM + HashPrune; 11.6x faster than Vamana)
+  `https://arxiv.org/abs/2602.21247`
+
 ## Quantization-graph fusion
 
 - Gou, Gao, Xu, Long (2025). *SymphonyQG: Towards Symphonious Integration of Quantization and Graph for Approximate Nearest Neighbor Search.* (SIGMOD 2025; RaBitQ-style distance during graph traversal)
