@@ -424,6 +424,354 @@ fn run_ivfpq(
     }
 }
 
+#[cfg(feature = "emg")]
+fn run_emg(
+    cfg: &Config,
+    train: &[Vec<f32>],
+    test: &[Vec<f32>],
+    neighbors: &[Vec<i32>],
+    dim: usize,
+) {
+    use vicinity::emg::{EmgIndex, EmgParams};
+
+    let params = EmgParams {
+        max_degree: 32,
+        candidate_size: 64,
+        scale_t: 32,
+        iterations: 2,
+        alpha: 1.5,
+        ef_search: 100,
+        ..Default::default()
+    };
+
+    if !cfg.json {
+        println!("--- EMG (max_degree=32) ---");
+    }
+
+    let build_start = Instant::now();
+    let mut index = EmgIndex::new(dim, params).unwrap();
+    for (i, vec) in train.iter().enumerate() {
+        index.add_slice(i as u32, vec).unwrap();
+    }
+    index.build().unwrap();
+    let build_time_s = build_start.elapsed().as_secs_f64();
+    let rss = current_rss_kb();
+
+    if !cfg.json {
+        println!(
+            "Build: {:.2}s ({:.0} vectors/sec)\n",
+            build_time_s,
+            train.len() as f64 / build_time_s
+        );
+        print_header();
+    }
+
+    for &ef in &cfg.ef_search_values {
+        let result = evaluate(
+            &|q, k| index.search_with_ef(q, k, ef).unwrap(),
+            test,
+            neighbors,
+            10,
+        );
+        if cfg.json {
+            let params_json = format!("{{\"max_degree\":32,\"ef_search\":{}}}", ef);
+            println!(
+                "{}",
+                json_line("emg", &params_json, build_time_s, rss, &result)
+            );
+        } else {
+            print_row(&format!("ef={}", ef), &result);
+        }
+    }
+
+    if !cfg.json {
+        println!();
+    }
+}
+
+#[cfg(feature = "nsg")]
+fn run_nsg(
+    cfg: &Config,
+    train: &[Vec<f32>],
+    test: &[Vec<f32>],
+    neighbors: &[Vec<i32>],
+    dim: usize,
+) {
+    use vicinity::nsg::{NsgIndex, NsgParams};
+
+    let n = train.len().min(50_000);
+    if train.len() > 50_000 {
+        eprintln!(
+            "NSG: capping at 50,000 vectors (got {}); O(n^2) construction",
+            train.len()
+        );
+    }
+    let train = &train[..n];
+
+    if !cfg.json {
+        println!("--- NSG (max_degree=32, n={}) ---", n);
+    }
+
+    let params = NsgParams::default();
+
+    let build_start = Instant::now();
+    let mut index = NsgIndex::new(dim, params).unwrap();
+    for (i, vec) in train.iter().enumerate() {
+        index.add_slice(i as u32, vec).unwrap();
+    }
+    index.build().unwrap();
+    let build_time_s = build_start.elapsed().as_secs_f64();
+    let rss = current_rss_kb();
+
+    if !cfg.json {
+        println!(
+            "Build: {:.2}s ({:.0} vectors/sec)\n",
+            build_time_s,
+            train.len() as f64 / build_time_s
+        );
+        print_header();
+    }
+
+    let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
+    if cfg.json {
+        let params_json = "{\"max_degree\":32}";
+        println!(
+            "{}",
+            json_line("nsg", params_json, build_time_s, rss, &result)
+        );
+    } else {
+        print_row("--", &result);
+        println!();
+    }
+}
+
+#[cfg(feature = "pipnn")]
+fn run_pipnn(
+    cfg: &Config,
+    train: &[Vec<f32>],
+    test: &[Vec<f32>],
+    neighbors: &[Vec<i32>],
+    dim: usize,
+) {
+    use vicinity::pipnn::{PipnnIndex, PipnnParams};
+
+    let params = PipnnParams {
+        max_leaf_size: 2048,
+        max_degree: 32,
+        num_hash_bits: 12,
+        final_prune: true,
+        alpha: 1.2,
+        ef_search: 100,
+        ..Default::default()
+    };
+
+    if !cfg.json {
+        println!("--- PiPNN (max_degree=32, max_leaf_size=2048) ---");
+    }
+
+    let build_start = Instant::now();
+    let mut index = PipnnIndex::new(dim, params).unwrap();
+    for (i, vec) in train.iter().enumerate() {
+        index.add_slice(i as u32, vec).unwrap();
+    }
+    index.build().unwrap();
+    let build_time_s = build_start.elapsed().as_secs_f64();
+    let rss = current_rss_kb();
+
+    if !cfg.json {
+        println!(
+            "Build: {:.2}s ({:.0} vectors/sec)\n",
+            build_time_s,
+            train.len() as f64 / build_time_s
+        );
+        print_header();
+    }
+
+    let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
+    if cfg.json {
+        let params_json = "{\"max_degree\":32,\"max_leaf_size\":2048}";
+        println!(
+            "{}",
+            json_line("pipnn", params_json, build_time_s, rss, &result)
+        );
+    } else {
+        print_row("--", &result);
+        println!();
+    }
+}
+
+#[cfg(feature = "sng")]
+fn run_sng(
+    cfg: &Config,
+    train: &[Vec<f32>],
+    test: &[Vec<f32>],
+    neighbors: &[Vec<i32>],
+    dim: usize,
+) {
+    use vicinity::sng::SNGIndex;
+    use vicinity::sng::SNGParams;
+
+    if !cfg.json {
+        println!("--- SNG ---");
+    }
+
+    let params = SNGParams::default();
+
+    let build_start = Instant::now();
+    let mut index = SNGIndex::new(dim, params).unwrap();
+    for (i, vec) in train.iter().enumerate() {
+        index.add(i as u32, vec.clone()).unwrap();
+    }
+    index.build().unwrap();
+    let build_time_s = build_start.elapsed().as_secs_f64();
+    let rss = current_rss_kb();
+
+    if !cfg.json {
+        println!(
+            "Build: {:.2}s ({:.0} vectors/sec)\n",
+            build_time_s,
+            train.len() as f64 / build_time_s
+        );
+        print_header();
+    }
+
+    let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
+    if cfg.json {
+        let params_json = "{}";
+        println!(
+            "{}",
+            json_line("sng", params_json, build_time_s, rss, &result)
+        );
+    } else {
+        print_row("--", &result);
+        println!();
+    }
+}
+
+#[cfg(feature = "vamana")]
+fn run_vamana(
+    cfg: &Config,
+    train: &[Vec<f32>],
+    test: &[Vec<f32>],
+    neighbors: &[Vec<i32>],
+    dim: usize,
+) {
+    use vicinity::vamana::VamanaIndex;
+    use vicinity::vamana::VamanaParams;
+
+    if !cfg.json {
+        println!("--- Vamana ---");
+    }
+
+    let params = VamanaParams::default();
+
+    let build_start = Instant::now();
+    let mut index = VamanaIndex::new(dim, params).unwrap();
+    for (i, vec) in train.iter().enumerate() {
+        index.add(i as u32, vec.clone()).unwrap();
+    }
+    index.build().unwrap();
+    let build_time_s = build_start.elapsed().as_secs_f64();
+    let rss = current_rss_kb();
+
+    if !cfg.json {
+        println!(
+            "Build: {:.2}s ({:.0} vectors/sec)\n",
+            build_time_s,
+            train.len() as f64 / build_time_s
+        );
+        print_header();
+    }
+
+    for &ef in &cfg.ef_search_values {
+        let result = evaluate(&|q, k| index.search(q, k, ef).unwrap(), test, neighbors, 10);
+        if cfg.json {
+            let params_json = format!("{{\"ef_search\":{}}}", ef);
+            println!(
+                "{}",
+                json_line("vamana", &params_json, build_time_s, rss, &result)
+            );
+        } else {
+            print_row(&format!("ef={}", ef), &result);
+        }
+    }
+
+    if !cfg.json {
+        println!();
+    }
+}
+
+#[cfg(feature = "ivf_rabitq")]
+fn run_ivf_rabitq(
+    cfg: &Config,
+    train: &[Vec<f32>],
+    test: &[Vec<f32>],
+    neighbors: &[Vec<i32>],
+    dim: usize,
+) {
+    use vicinity::ivf_rabitq::{IVFRaBitQIndex, IVFRaBitQParams};
+
+    let num_clusters = 256;
+
+    if !cfg.json {
+        println!(
+            "--- IVF-RaBitQ (clusters={}, total_bits=4) ---",
+            num_clusters
+        );
+    }
+
+    let params = IVFRaBitQParams {
+        num_clusters,
+        nprobe: 10,
+        total_bits: 4,
+        seed: 42,
+        ..Default::default()
+    };
+
+    let build_start = Instant::now();
+    let mut index = IVFRaBitQIndex::new(dim, params).unwrap();
+    for (i, vec) in train.iter().enumerate() {
+        index.add_slice(i as u32, vec).unwrap();
+    }
+    index.build().unwrap();
+    let build_time_s = build_start.elapsed().as_secs_f64();
+    let rss = current_rss_kb();
+
+    if !cfg.json {
+        println!(
+            "Build: {:.2}s ({:.0} vectors/sec)\n",
+            build_time_s,
+            train.len() as f64 / build_time_s
+        );
+        print_header();
+    }
+
+    let nprobe_values = [1, 2, 5, 10, 20, 50, 100];
+    for &nprobe in &nprobe_values {
+        if nprobe > num_clusters {
+            continue;
+        }
+        index.set_nprobe(nprobe);
+        let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
+        if cfg.json {
+            let params_json = format!(
+                "{{\"num_clusters\":{},\"total_bits\":4,\"nprobe\":{}}}",
+                num_clusters, nprobe
+            );
+            println!(
+                "{}",
+                json_line("ivf_rabitq", &params_json, build_time_s, rss, &result)
+            );
+        } else {
+            print_row(&format!("np={}", nprobe), &result);
+        }
+    }
+
+    if !cfg.json {
+        println!();
+    }
+}
+
 fn run_brute(cfg: &Config, train: &[Vec<f32>], test: &[Vec<f32>], neighbors: &[Vec<i32>]) {
     if !cfg.json {
         println!("--- Brute Force (linear scan) ---");
@@ -504,11 +852,59 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 eprintln!("IVF-PQ not available (compile with --features ivf_pq)");
             }
 
+            #[cfg(feature = "emg")]
+            "emg" => run_emg(&cfg, &train, &test, &neighbors, dim),
+
+            #[cfg(not(feature = "emg"))]
+            "emg" => {
+                eprintln!("EMG not available (compile with --features emg)");
+            }
+
+            #[cfg(feature = "nsg")]
+            "nsg" => run_nsg(&cfg, &train, &test, &neighbors, dim),
+
+            #[cfg(not(feature = "nsg"))]
+            "nsg" => {
+                eprintln!("NSG not available (compile with --features nsg)");
+            }
+
+            #[cfg(feature = "pipnn")]
+            "pipnn" => run_pipnn(&cfg, &train, &test, &neighbors, dim),
+
+            #[cfg(not(feature = "pipnn"))]
+            "pipnn" => {
+                eprintln!("PiPNN not available (compile with --features pipnn)");
+            }
+
+            #[cfg(feature = "sng")]
+            "sng" => run_sng(&cfg, &train, &test, &neighbors, dim),
+
+            #[cfg(not(feature = "sng"))]
+            "sng" => {
+                eprintln!("SNG not available (compile with --features sng)");
+            }
+
+            #[cfg(feature = "vamana")]
+            "vamana" => run_vamana(&cfg, &train, &test, &neighbors, dim),
+
+            #[cfg(not(feature = "vamana"))]
+            "vamana" => {
+                eprintln!("Vamana not available (compile with --features vamana)");
+            }
+
+            #[cfg(feature = "ivf_rabitq")]
+            "ivf_rabitq" => run_ivf_rabitq(&cfg, &train, &test, &neighbors, dim),
+
+            #[cfg(not(feature = "ivf_rabitq"))]
+            "ivf_rabitq" => {
+                eprintln!("IVF-RaBitQ not available (compile with --features ivf_rabitq)");
+            }
+
             "brute" => run_brute(&cfg, &train, &test, &neighbors),
 
             other => {
                 eprintln!(
-                    "Unknown algorithm: {}. Options: hnsw, nsw, ivfpq, brute",
+                    "Unknown algorithm: {}. Options: hnsw, nsw, ivfpq, emg, nsg, pipnn, sng, vamana, ivf_rabitq, brute",
                     other
                 );
             }
