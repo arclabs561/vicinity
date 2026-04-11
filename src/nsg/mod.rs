@@ -234,6 +234,41 @@ impl NsgIndex {
             .collect())
     }
 
+    /// Search with a custom `ef_search` beam width, overriding the params default.
+    pub fn search_with_ef(
+        &self,
+        query: &[f32],
+        k: usize,
+        ef_search: usize,
+    ) -> Result<Vec<(u32, f32)>, RetrieveError> {
+        if !self.built {
+            return Err(RetrieveError::InvalidParameter(
+                "index must be built before search".into(),
+            ));
+        }
+        if query.len() != self.dimension {
+            return Err(RetrieveError::DimensionMismatch {
+                query_dim: query.len(),
+                doc_dim: self.dimension,
+            });
+        }
+
+        let query_norm: f32 = query.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let query_normalized: Vec<f32> = if query_norm > 1e-10 {
+            query.iter().map(|x| x / query_norm).collect()
+        } else {
+            query.to_vec()
+        };
+
+        let results = self.beam_search(&query_normalized, ef_search.max(k));
+
+        Ok(results
+            .into_iter()
+            .take(k)
+            .map(|(id, dist)| (self.doc_ids[id as usize], dist))
+            .collect())
+    }
+
     /// Number of indexed vectors.
     pub fn len(&self) -> usize {
         self.num_vectors

@@ -610,15 +610,25 @@ fn run_nsg(
         print_header();
     }
 
-    let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
-    if cfg.json {
-        let params_json = "{\"max_degree\":32}";
-        emit_result(
-            &cfg.results_path,
-            &json_line("nsg", params_json, build_time_s, rss, &result),
+    for &ef in &cfg.ef_search_values {
+        let result = evaluate(
+            &|q, k| index.search_with_ef(q, k, ef).unwrap(),
+            test,
+            neighbors,
+            10,
         );
-    } else {
-        print_row("--", &result);
+        if cfg.json {
+            let params_json = format!("{{\"max_degree\":32,\"ef_search\":{}}}", ef);
+            emit_result(
+                &cfg.results_path,
+                &json_line("nsg", &params_json, build_time_s, rss, &result),
+            );
+        } else {
+            print_row(&format!("ef={}", ef), &result);
+        }
+    }
+
+    if !cfg.json {
         println!();
     }
 }
