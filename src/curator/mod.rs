@@ -73,6 +73,38 @@ impl Default for CuratorParams {
     }
 }
 
+/// Compact Bloom filter backed by a fixed-size bit array.
+#[derive(Debug)]
+struct BloomFilter {
+    bits: Vec<u64>,
+    num_bits: usize,
+}
+
+impl BloomFilter {
+    fn new(num_bits: usize) -> Self {
+        let words = num_bits.div_ceil(64);
+        Self {
+            bits: vec![0u64; words],
+            num_bits,
+        }
+    }
+
+    fn insert(&mut self, hash: u64) {
+        // Use two independent hash positions (double hashing)
+        let h1 = hash as usize % self.num_bits;
+        let h2 = (hash.wrapping_shr(32) as usize).wrapping_mul(0x9e3779b9) % self.num_bits;
+        self.bits[h1 / 64] |= 1u64 << (h1 % 64);
+        self.bits[h2 / 64] |= 1u64 << (h2 % 64);
+    }
+
+    fn may_contain(&self, hash: u64) -> bool {
+        let h1 = hash as usize % self.num_bits;
+        let h2 = (hash.wrapping_shr(32) as usize).wrapping_mul(0x9e3779b9) % self.num_bits;
+        (self.bits[h1 / 64] & (1u64 << (h1 % 64))) != 0
+            && (self.bits[h2 / 64] & (1u64 << (h2 % 64))) != 0
+    }
+}
+
 /// A node in the k-means tree.
 #[derive(Debug)]
 struct TreeNode {
@@ -82,9 +114,8 @@ struct TreeNode {
     children: Vec<usize>,
     /// Vector IDs at this node (non-empty only for leaves).
     vector_ids: Vec<u32>,
-    /// Bloom filter: which labels have vectors in this subtree.
-    /// Simple hash-set-based (could optimize to bit array later).
-    label_bloom: HashSet<u64>,
+    /// Bloom filter: which labels have vectors in this subtree (256-bit).
+    label_bloom: BloomFilter,
     /// Per-label sorted buffers: label_hash -> sorted vec of vector IDs.
     /// Non-empty only at "leaf" nodes of each label's sub-index.
     label_buffers: HashMap<u64, Vec<u32>>,
@@ -281,7 +312,7 @@ impl CuratorIndex {
                 centroid,
                 children: Vec::new(),
                 vector_ids: ids.to_vec(),
-                label_bloom: HashSet::new(),
+                label_bloom: BloomFilter::new(256),
                 label_buffers: HashMap::new(),
             });
             return node_idx;
@@ -296,7 +327,7 @@ impl CuratorIndex {
             centroid,
             children: Vec::new(),
             vector_ids: Vec::new(),
-            label_bloom: HashSet::new(),
+            label_bloom: BloomFilter::new(256),
             label_buffers: HashMap::new(),
         });
 
@@ -447,7 +478,7 @@ impl CuratorIndex {
             let node = &self.nodes[node_idx];
 
             // Bloom filter check: skip if this label has no vectors here
-            if !node.label_bloom.contains(&label_hash) {
+            if !node.label_bloom.may_contain(label_hash) {
                 continue;
             }
 
