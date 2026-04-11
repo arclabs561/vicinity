@@ -435,9 +435,7 @@ impl DiskANNIndex {
         self.vamana_pass(self.params.alpha)?;
 
         self.built = true;
-        // Note: graph reordering could be added here but DiskANN's tests
-        // assert on internal index positions. HNSW has this optimization
-        // via its doc_id mapping layer.
+        self.reorder_for_locality();
         Ok(())
     }
 
@@ -959,12 +957,15 @@ mod tests {
         index.add(5, vec![1.0, -0.1]).unwrap();
         index.build().unwrap();
 
-        // The centroid is near [17.5, 16.7] / 6 ≈ [1.0, 0.0] cluster, not the outlier.
-        // start_node should be one of 1-5, not 0 (the outlier).
-        assert_ne!(
-            index.start_node, 0,
-            "medoid should not be the outlier at [100,100]; got start_node={}",
-            index.start_node
+        // The centroid is near the [0.9-1.0] cluster, not the outlier at [100,100].
+        // After graph reordering, internal IDs change, so check the medoid's
+        // actual vector is not the outlier.
+        let medoid_idx = index.start_node as usize;
+        let medoid_vec = &index.vectors[medoid_idx * 2..(medoid_idx + 1) * 2];
+        assert!(
+            medoid_vec[0] < 50.0,
+            "medoid should not be the outlier at [100,100]; got vec={:?}",
+            medoid_vec
         );
     }
 
