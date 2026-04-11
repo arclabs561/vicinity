@@ -624,14 +624,7 @@ impl IVFPQIndex {
             let adc_table = pq.compute_adc_table(&query_residual)?;
 
             if ids.len() >= SIMD_BATCH_THRESHOLD {
-                // Build PackedLUT directly from flat table (no intermediate Vec<Vec<f32>>)
-                let packed_lut = PackedLUT::from_flat(
-                    &adc_table,
-                    self.params.num_codebooks,
-                    self.params.codebook_size,
-                );
-
-                // SIMD batch path: gather codes into a reusable buffer
+                // Gather codes into a reusable buffer
                 let num_cb = self.params.num_codebooks;
                 codes_batch.clear();
                 codes_batch.reserve(ids.len() * num_cb);
@@ -640,7 +633,27 @@ impl IVFPQIndex {
                     codes_batch.extend_from_slice(&self.quantized_codes[start..start + num_cb]);
                 }
 
-                let distances = adc_batch_dispatch(&codes_batch, num_cb, &packed_lut);
+                let distances = if self.params.codebook_size <= 16 {
+                    // FastScan path: 4-bit codes, SIMD shuffle-based lookup (2x faster)
+                    let packed =
+                        crate::pq_simd::PackedCodes4bit::pack(&codes_batch, ids.len(), num_cb);
+                    let lut_2d: Vec<Vec<f32>> = (0..num_cb)
+                        .map(|m| {
+                            (0..self.params.codebook_size)
+                                .map(|c| adc_table[m * self.params.codebook_size + c])
+                                .collect()
+                        })
+                        .collect();
+                    crate::pq_simd::fastscan_batch(&packed, &lut_2d)
+                } else {
+                    // Standard ADC batch path for larger codebooks
+                    let packed_lut = PackedLUT::from_flat(
+                        &adc_table,
+                        self.params.num_codebooks,
+                        self.params.codebook_size,
+                    );
+                    adc_batch_dispatch(&codes_batch, num_cb, &packed_lut)
+                };
 
                 for (i, &vector_idx) in ids.iter().enumerate() {
                     let doc_id = self.doc_ids[vector_idx as usize];
