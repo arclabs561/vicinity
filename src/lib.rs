@@ -5,11 +5,11 @@
 //!
 //! Provides implementations of ANN algorithms:
 //!
-//! - **Graph-based**: [`hnsw`], `nsw`, `sng`, `vamana`, `nsg`, `emg`, `pag`, `pipnn`, `cleann`
+//! - **Graph-based**: [`hnsw`], `nsw`, `sng`, `vamana`, `nsg`, `emg`, `finger`, `pipnn`, `fresh_graph`
 //! - **Partition-based**: `ivf_pq`, `ivf_avq`, `ivf_rabitq`, `curator`
-//! - **Quantization**: `quantization` (RaBitQ, SAQ), `qmp` (projection + scalar quantization)
-//! - **Filtered**: `pathfinder` (predicate filters), `esg` (range filters), `curator` (label filters)
-//! - **Sparse vectors**: `sindi` (inner-product graph for SPLADE/BM25)
+//! - **Quantization**: `quantization` (RaBitQ, SAQ), `rp_quant` (projection + scalar quantization)
+//! - **Filtered**: `filtered_graph` (predicate filters), `esg` (range filters), `curator` (label filters)
+//! - **Sparse vectors**: `sparse_mips` (inner-product graph for SPLADE/BM25)
 //! - **Streaming**: `streaming::lsm` (LSM-tree tiered HNSW)
 //!
 //! # Which Index Should I Use?
@@ -20,11 +20,11 @@
 //! | **Billion-Scale** (Memory Constrained) | `ivf_pq::IVFPQIndex` | `ivf_pq` |
 //! | **Flat Graph** (Simpler, competitive on high-d) | `nsw::NSWIndex` | `nsw` |
 //! | **Label Filtering** (Low selectivity) | `curator::CuratorIndex` | `curator` |
-//! | **Complex Predicates** (AND/OR filters) | `pathfinder::PathfinderIndex` | `pathfinder` |
+//! | **Complex Predicates** (AND/OR filters) | `filtered_graph::FilteredGraphIndex` | `filtered_graph` |
 //! | **Range Filtering** (Numeric attributes) | `esg::EsgIndex` | `esg` |
-//! | **Dynamic Insert/Delete** | `cleann::CleannIndex` | `cleann` |
-//! | **Sparse Vectors** (SPLADE/BM25) | `sindi::SindiIndex` | `sindi` |
-//! | **High-d Compression** (768d+) | `qmp::QmpIndex` | `qmp` |
+//! | **Dynamic Insert/Delete** | `fresh_graph::FreshGraphIndex` | `fresh_graph` |
+//! | **Sparse Vectors** (SPLADE/BM25) | `sparse_mips::SparseMipsIndex` | `sparse_mips` |
+//! | **High-d Compression** (768d+) | `rp_quant::RpQuantIndex` | `rp_quant` |
 //! | **Out-of-Core** (SSD-based) | `diskann` | `diskann` (experimental) |
 //!
 //! **Default features**: `hnsw`, `innr` (SIMD).
@@ -87,8 +87,8 @@
 pub mod ann;
 pub mod classic;
 
-#[cfg(feature = "cleann")]
-pub mod cleann;
+#[cfg(feature = "fresh_graph")]
+pub mod fresh_graph;
 
 #[cfg(feature = "curator")]
 pub mod curator;
@@ -123,11 +123,11 @@ pub mod ivf_pq;
 #[cfg(feature = "nsg")]
 pub mod nsg;
 
-#[cfg(feature = "pag")]
-pub mod pag;
+#[cfg(feature = "finger")]
+pub mod finger;
 
-#[cfg(feature = "pathfinder")]
-pub mod pathfinder;
+#[cfg(feature = "filtered_graph")]
+pub mod filtered_graph;
 
 #[cfg(feature = "nsw")]
 pub mod nsw;
@@ -144,11 +144,11 @@ pub mod pipnn;
 #[cfg(feature = "ivf_rabitq")]
 pub mod ivf_rabitq;
 
-#[cfg(feature = "qmp")]
-pub mod qmp;
+#[cfg(feature = "rp_quant")]
+pub mod rp_quant;
 
-#[cfg(feature = "sindi")]
-pub mod sindi;
+#[cfg(feature = "sparse_mips")]
+pub mod sparse_mips;
 
 #[cfg(feature = "sng")]
 pub mod sng;

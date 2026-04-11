@@ -1,6 +1,7 @@
-//! PathFinder: proximity graph with inverted-index-backed filter predicates.
+//! Graph-based ANN with complex filter predicates (AND/OR/comparisons).
+//! Related to ACORN (Patel et al., 2024) and Filtered-DiskANN.
 //!
-//! PathFinder combines a single-layer proximity graph (similar to NSG/PAG)
+//! Combines a single-layer proximity graph (similar to NSG/PAG)
 //! with per-attribute inverted indexes. At query time, the filter predicate is
 //! resolved against the inverted indexes to obtain a matching ID set, and
 //! search strategy is chosen based on selectivity:
@@ -13,17 +14,17 @@
 //! # Feature Flag
 //!
 //! ```toml
-//! vicinity = { version = "0.3", features = ["pathfinder"] }
+//! vicinity = { version = "0.3", features = ["filtered_graph"] }
 //! ```
 //!
 //! # Quick Start
 //!
 //! ```ignore
 //! use std::collections::HashMap;
-//! use vicinity::pathfinder::{PathfinderIndex, PathfinderParams, AttrValue, Filter, Predicate};
+//! use vicinity::filtered_graph::{FilteredGraphIndex, FilteredGraphParams, AttrValue, Filter, Predicate};
 //!
-//! let params = PathfinderParams::default();
-//! let mut index = PathfinderIndex::new(4, params)?;
+//! let params = FilteredGraphParams::default();
+//! let mut index = FilteredGraphIndex::new(4, params)?;
 //!
 //! let mut attrs = HashMap::new();
 //! attrs.insert("category".to_string(), AttrValue::String("news".to_string()));
@@ -37,9 +38,10 @@
 //!
 //! # References
 //!
-//! - Gollapudi, Karia, Sivashankar, Jain, Mandal, Krishnaswamy, Berlin, Bhowmick (2023).
-//!   "Filtered-DiskANN: Graph Algorithms for Approximate Nearest Neighbor Search with
-//!   Filters." WWW 2023.
+//! - Gollapudi et al. (2023). "Filtered-DiskANN: Graph Algorithms for Approximate
+//!   Nearest Neighbor Search with Filters." WWW 2023.
+//! - Patel et al. (2024). "ACORN: Performant and Predicate-Agnostic Search Over
+//!   Vector Embeddings and Structured Data." arXiv:2403.04871.
 
 use crate::distance::cosine_distance_normalized;
 use crate::RetrieveError;
@@ -92,9 +94,9 @@ pub enum Filter {
 
 // ── Parameters ────────────────────────────────────────────────────────────────
 
-/// Construction and search parameters for [`PathfinderIndex`].
+/// Construction and search parameters for [`FilteredGraphIndex`].
 #[derive(Clone, Debug)]
-pub struct PathfinderParams {
+pub struct FilteredGraphParams {
     /// Maximum out-degree in the proximity graph. Default: 32.
     pub max_degree: usize,
     /// Candidate pool size during graph construction. Default: 200.
@@ -105,7 +107,7 @@ pub struct PathfinderParams {
     pub alpha: f32,
 }
 
-impl Default for PathfinderParams {
+impl Default for FilteredGraphParams {
     fn default() -> Self {
         Self {
             max_degree: 32,
@@ -118,10 +120,10 @@ impl Default for PathfinderParams {
 
 // ── Index ─────────────────────────────────────────────────────────────────────
 
-/// PathFinder index: proximity graph + per-attribute inverted indexes.
-pub struct PathfinderIndex {
+/// FilteredGraph index: proximity graph + per-attribute inverted indexes.
+pub struct FilteredGraphIndex {
     dimension: usize,
-    params: PathfinderParams,
+    params: FilteredGraphParams,
     built: bool,
 
     /// Flat storage: internal index i -> vectors[i*dim .. (i+1)*dim].
@@ -147,11 +149,11 @@ pub struct PathfinderIndex {
     inverted: HashMap<String, Vec<(AttrValue, Vec<u32>)>>,
 }
 
-impl PathfinderIndex {
+impl FilteredGraphIndex {
     /// Create a new (empty, unbuilt) index.
     ///
     /// Returns an error when `dimension == 0`.
-    pub fn new(dimension: usize, params: PathfinderParams) -> Result<Self, RetrieveError> {
+    pub fn new(dimension: usize, params: FilteredGraphParams) -> Result<Self, RetrieveError> {
         if dimension == 0 {
             return Err(RetrieveError::InvalidParameter(
                 "dimension must be > 0".into(),
@@ -759,15 +761,15 @@ mod tests {
         (0..n * dim).map(|_| lcg(&mut s)).collect()
     }
 
-    fn build_index(n: usize, dim: usize, seed: u64) -> PathfinderIndex {
+    fn build_index(n: usize, dim: usize, seed: u64) -> FilteredGraphIndex {
         let data = make_vectors(n, dim, seed);
-        let params = PathfinderParams {
+        let params = FilteredGraphParams {
             max_degree: 16,
             ef_construction: 40,
             ef_search: 40,
             alpha: 1.2,
         };
-        let mut idx = PathfinderIndex::new(dim, params).unwrap();
+        let mut idx = FilteredGraphIndex::new(dim, params).unwrap();
         for i in 0..n {
             let start = i * dim;
             idx.add_slice(i as u32, &data[start..start + dim], HashMap::new())
@@ -801,13 +803,13 @@ mod tests {
         let dim = 8;
         let n = 30;
         let data = make_vectors(n, dim, 7);
-        let params = PathfinderParams {
+        let params = FilteredGraphParams {
             max_degree: 12,
             ef_construction: 30,
             ef_search: 30,
             alpha: 1.2,
         };
-        let mut idx = PathfinderIndex::new(dim, params).unwrap();
+        let mut idx = FilteredGraphIndex::new(dim, params).unwrap();
 
         for i in 0..n {
             let start = i * dim;
@@ -839,13 +841,13 @@ mod tests {
         let dim = 8;
         let n = 40;
         let data = make_vectors(n, dim, 13);
-        let params = PathfinderParams {
+        let params = FilteredGraphParams {
             max_degree: 12,
             ef_construction: 30,
             ef_search: 30,
             alpha: 1.2,
         };
-        let mut idx = PathfinderIndex::new(dim, params).unwrap();
+        let mut idx = FilteredGraphIndex::new(dim, params).unwrap();
 
         for i in 0..n {
             let start = i * dim;
@@ -877,13 +879,13 @@ mod tests {
         let dim = 8;
         let n = 40;
         let data = make_vectors(n, dim, 17);
-        let params = PathfinderParams {
+        let params = FilteredGraphParams {
             max_degree: 12,
             ef_construction: 30,
             ef_search: 30,
             alpha: 1.2,
         };
-        let mut idx = PathfinderIndex::new(dim, params).unwrap();
+        let mut idx = FilteredGraphIndex::new(dim, params).unwrap();
 
         for i in 0..n {
             let start = i * dim;
@@ -923,13 +925,13 @@ mod tests {
         let dim = 8;
         let n = 30;
         let data = make_vectors(n, dim, 23);
-        let params = PathfinderParams {
+        let params = FilteredGraphParams {
             max_degree: 12,
             ef_construction: 30,
             ef_search: 30,
             alpha: 1.2,
         };
-        let mut idx = PathfinderIndex::new(dim, params).unwrap();
+        let mut idx = FilteredGraphIndex::new(dim, params).unwrap();
 
         for i in 0..n {
             let start = i * dim;
@@ -975,13 +977,13 @@ mod tests {
         let dim = 8;
         let n = 20;
         let data = make_vectors(n, dim, 99);
-        let params = PathfinderParams {
+        let params = FilteredGraphParams {
             max_degree: 8,
             ef_construction: 20,
             ef_search: 20,
             alpha: 1.2,
         };
-        let mut idx = PathfinderIndex::new(dim, params).unwrap();
+        let mut idx = FilteredGraphIndex::new(dim, params).unwrap();
         for i in 0..n {
             let start = i * dim;
             let mut attrs = HashMap::new();
@@ -1003,7 +1005,7 @@ mod tests {
 
     #[test]
     fn empty_index_errors() {
-        let mut idx = PathfinderIndex::new(8, PathfinderParams::default()).unwrap();
+        let mut idx = FilteredGraphIndex::new(8, FilteredGraphParams::default()).unwrap();
         assert!(idx.build().is_err());
     }
 }

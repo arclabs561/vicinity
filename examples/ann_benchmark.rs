@@ -772,17 +772,17 @@ fn run_ivf_rabitq(
     }
 }
 
-#[cfg(feature = "pag")]
-fn run_pag(
+#[cfg(feature = "finger")]
+fn run_finger(
     cfg: &Config,
     train: &[Vec<f32>],
     test: &[Vec<f32>],
     neighbors: &[Vec<i32>],
     dim: usize,
 ) {
-    use vicinity::pag::{PagIndex, PagParams};
+    use vicinity::finger::{FingerIndex, FingerParams};
 
-    let params = PagParams {
+    let params = FingerParams {
         max_degree: 32,
         ef_construction: 200,
         ef_search: 100,
@@ -791,11 +791,11 @@ fn run_pag(
     };
 
     if !cfg.json {
-        println!("--- PAG (max_degree=32) ---");
+        println!("--- FINGER (max_degree=32) ---");
     }
 
     let build_start = Instant::now();
-    let mut index = PagIndex::new(dim, params).unwrap();
+    let mut index = FingerIndex::new(dim, params).unwrap();
     for (i, vec) in train.iter().enumerate() {
         index.add_slice(i as u32, vec).unwrap();
     }
@@ -817,7 +817,7 @@ fn run_pag(
         let params_json = "{\"max_degree\":32}";
         println!(
             "{}",
-            json_line("pag", params_json, build_time_s, rss, &result)
+            json_line("finger", params_json, build_time_s, rss, &result)
         );
     } else {
         print_row("--", &result);
@@ -825,17 +825,17 @@ fn run_pag(
     }
 }
 
-#[cfg(feature = "cleann")]
-fn run_cleann(
+#[cfg(feature = "fresh_graph")]
+fn run_fresh_graph(
     cfg: &Config,
     train: &[Vec<f32>],
     test: &[Vec<f32>],
     neighbors: &[Vec<i32>],
     dim: usize,
 ) {
-    use vicinity::cleann::{CleannIndex, CleannParams};
+    use vicinity::fresh_graph::{FreshGraphIndex, FreshGraphParams};
 
-    let params = CleannParams {
+    let params = FreshGraphParams {
         max_degree: 32,
         ef_construction: 200,
         ef_search: 100,
@@ -844,11 +844,11 @@ fn run_cleann(
     };
 
     if !cfg.json {
-        println!("--- CleANN (max_degree=32) ---");
+        println!("--- FreshGraph (max_degree=32) ---");
     }
 
     let build_start = Instant::now();
-    let mut index = CleannIndex::new(dim, params).unwrap();
+    let mut index = FreshGraphIndex::new(dim, params).unwrap();
     for (i, vec) in train.iter().enumerate() {
         index.add_slice(i as u32, vec).unwrap();
     }
@@ -870,7 +870,7 @@ fn run_cleann(
         let params_json = "{\"max_degree\":32}";
         println!(
             "{}",
-            json_line("cleann", params_json, build_time_s, rss, &result)
+            json_line("fresh_graph", params_json, build_time_s, rss, &result)
         );
     } else {
         print_row("--", &result);
@@ -878,8 +878,8 @@ fn run_cleann(
     }
 }
 
-#[cfg(feature = "pathfinder")]
-fn run_pathfinder(
+#[cfg(feature = "filtered_graph")]
+fn run_filtered_graph(
     cfg: &Config,
     train: &[Vec<f32>],
     test: &[Vec<f32>],
@@ -887,9 +887,9 @@ fn run_pathfinder(
     dim: usize,
 ) {
     use std::collections::HashMap;
-    use vicinity::pathfinder::{PathfinderIndex, PathfinderParams};
+    use vicinity::filtered_graph::{FilteredGraphIndex, FilteredGraphParams};
 
-    let params = PathfinderParams {
+    let params = FilteredGraphParams {
         max_degree: 32,
         ef_construction: 200,
         ef_search: 100,
@@ -898,11 +898,11 @@ fn run_pathfinder(
     };
 
     if !cfg.json {
-        println!("--- PathFinder (max_degree=32, unfiltered) ---");
+        println!("--- FilteredGraph (max_degree=32, unfiltered) ---");
     }
 
     let build_start = Instant::now();
-    let mut index = PathfinderIndex::new(dim, params).unwrap();
+    let mut index = FilteredGraphIndex::new(dim, params).unwrap();
     for (i, vec) in train.iter().enumerate() {
         index.add_slice(i as u32, vec, HashMap::new()).unwrap();
     }
@@ -924,7 +924,7 @@ fn run_pathfinder(
         let params_json = "{\"max_degree\":32}";
         println!(
             "{}",
-            json_line("pathfinder", params_json, build_time_s, rss, &result)
+            json_line("filtered_graph", params_json, build_time_s, rss, &result)
         );
     } else {
         print_row("--", &result);
@@ -932,30 +932,33 @@ fn run_pathfinder(
     }
 }
 
-#[cfg(feature = "qmp")]
-fn run_qmp(
+#[cfg(feature = "rp_quant")]
+fn run_rp_quant(
     cfg: &Config,
     train: &[Vec<f32>],
     test: &[Vec<f32>],
     neighbors: &[Vec<i32>],
     dim: usize,
 ) {
-    use vicinity::qmp::{QmpIndex, QmpParams};
+    use vicinity::rp_quant::{RpQuantIndex, RpQuantParams};
 
     let projected_dim = 64.min(dim);
 
     if !cfg.json {
-        println!("--- QMP (projected_dim={}, rerank=10) ---", projected_dim);
+        println!(
+            "--- RpQuant (projected_dim={}, rerank=10) ---",
+            projected_dim
+        );
     }
 
-    let params = QmpParams {
+    let params = RpQuantParams {
         projected_dim,
         rerank_factor: 10,
         seed: 42,
     };
 
     let build_start = Instant::now();
-    let mut index = QmpIndex::new(dim, params).unwrap();
+    let mut index = RpQuantIndex::new(dim, params).unwrap();
     for (i, vec) in train.iter().enumerate() {
         index.add_slice(i as u32, vec).unwrap();
     }
@@ -980,7 +983,7 @@ fn run_qmp(
         );
         println!(
             "{}",
-            json_line("qmp", &params_json, build_time_s, rss, &result)
+            json_line("rp_quant", &params_json, build_time_s, rss, &result)
         );
     } else {
         print_row("--", &result);
@@ -1116,43 +1119,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 eprintln!("IVF-RaBitQ not available (compile with --features ivf_rabitq)");
             }
 
-            #[cfg(feature = "pag")]
-            "pag" => run_pag(&cfg, &train, &test, &neighbors, dim),
+            #[cfg(feature = "finger")]
+            "finger" => run_finger(&cfg, &train, &test, &neighbors, dim),
 
-            #[cfg(not(feature = "pag"))]
-            "pag" => {
-                eprintln!("PAG not available (compile with --features pag)");
+            #[cfg(not(feature = "finger"))]
+            "finger" => {
+                eprintln!("FINGER not available (compile with --features finger)");
             }
 
-            #[cfg(feature = "cleann")]
-            "cleann" => run_cleann(&cfg, &train, &test, &neighbors, dim),
+            #[cfg(feature = "fresh_graph")]
+            "fresh_graph" => run_fresh_graph(&cfg, &train, &test, &neighbors, dim),
 
-            #[cfg(not(feature = "cleann"))]
-            "cleann" => {
-                eprintln!("CleANN not available (compile with --features cleann)");
+            #[cfg(not(feature = "fresh_graph"))]
+            "fresh_graph" => {
+                eprintln!("FreshGraph not available (compile with --features fresh_graph)");
             }
 
-            #[cfg(feature = "pathfinder")]
-            "pathfinder" => run_pathfinder(&cfg, &train, &test, &neighbors, dim),
+            #[cfg(feature = "filtered_graph")]
+            "filtered_graph" => run_filtered_graph(&cfg, &train, &test, &neighbors, dim),
 
-            #[cfg(not(feature = "pathfinder"))]
-            "pathfinder" => {
-                eprintln!("PathFinder not available (compile with --features pathfinder)");
+            #[cfg(not(feature = "filtered_graph"))]
+            "filtered_graph" => {
+                eprintln!("FilteredGraph not available (compile with --features filtered_graph)");
             }
 
-            #[cfg(feature = "qmp")]
-            "qmp" => run_qmp(&cfg, &train, &test, &neighbors, dim),
+            #[cfg(feature = "rp_quant")]
+            "rp_quant" => run_rp_quant(&cfg, &train, &test, &neighbors, dim),
 
-            #[cfg(not(feature = "qmp"))]
-            "qmp" => {
-                eprintln!("QMP not available (compile with --features qmp)");
+            #[cfg(not(feature = "rp_quant"))]
+            "rp_quant" => {
+                eprintln!("RpQuant not available (compile with --features rp_quant)");
             }
 
             "brute" => run_brute(&cfg, &train, &test, &neighbors),
 
             other => {
                 eprintln!(
-                    "Unknown algorithm: {}. Options: hnsw, nsw, ivfpq, emg, nsg, pipnn, sng, vamana, ivf_rabitq, pag, cleann, pathfinder, qmp, brute",
+                    "Unknown algorithm: {}. Options: hnsw, nsw, ivfpq, emg, nsg, pipnn, sng, vamana, ivf_rabitq, finger, fresh_graph, filtered_graph, rp_quant, brute",
                     other
                 );
             }
