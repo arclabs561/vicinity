@@ -10,3 +10,5 @@
 //!
 //! All algorithms are optimized with SIMD acceleration and minimal dependencies.
 //! Use concrete index types directly (e.g., `hnsw::HNSWIndex`, `diskann::DiskANNIndex`).
+
+pub mod reorder;
