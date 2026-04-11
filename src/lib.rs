@@ -147,6 +147,9 @@ pub mod ivf_rabitq;
 #[cfg(feature = "rp_quant")]
 pub mod rp_quant;
 
+#[cfg(feature = "binary_index")]
+pub mod binary_index;
+
 #[cfg(feature = "sparse_mips")]
 pub mod sparse_mips;
 
