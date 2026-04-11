@@ -50,3 +50,8 @@
 {"algorithm":"hnsw-m32","recall_at_10":0.9965,"qps":1246.2}
 {"algorithm":"hnsw-m32","recall_at_10":0.9995,"qps":1065.3}
 {"algorithm":"hnsw-m32","recall_at_10":1.0000,"qps":834.3}
+{"algorithm":"kdtree","recall_at_10":1.0000,"qps":21.8}
+{"algorithm":"rptree","recall_at_10":0.1169,"qps":56864.2}
+{"algorithm":"rptree","recall_at_10":0.2084,"qps":25803.4}
+{"algorithm":"rptree","recall_at_10":0.3455,"qps":11254.2}
+{"algorithm":"rptree","recall_at_10":0.5822,"qps":4474.3}
