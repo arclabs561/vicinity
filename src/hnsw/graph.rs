@@ -1664,11 +1664,11 @@ impl HNSWIndex {
         queries: &[&[f32]],
         k: usize,
         ef_search: usize,
-    ) -> Vec<Vec<(u32, f32)>> {
+    ) -> Result<Vec<Vec<(u32, f32)>>, RetrieveError> {
         use rayon::prelude::*;
         queries
             .par_iter()
-            .map(|query| self.search(query, k, ef_search).unwrap_or_default())
+            .map(|query| self.search(query, k, ef_search))
             .collect()
     }
 
@@ -1685,13 +1685,13 @@ impl HNSWIndex {
         num_queries: usize,
         k: usize,
         ef_search: usize,
-    ) -> Vec<Vec<(u32, f32)>> {
+    ) -> Result<Vec<Vec<(u32, f32)>>, RetrieveError> {
         use rayon::prelude::*;
         (0..num_queries)
             .into_par_iter()
             .map(|i| {
                 let query = &queries_flat[i * self.dimension..(i + 1) * self.dimension];
-                self.search(query, k, ef_search).unwrap_or_default()
+                self.search(query, k, ef_search)
             })
             .collect()
     }
@@ -2550,10 +2550,12 @@ mod tests {
         let query_slices: Vec<&[f32]> = (0..num_queries)
             .map(|i| &queries_flat[i * dim..(i + 1) * dim])
             .collect();
-        let batch = index.search_batch(&query_slices, k, ef);
+        let batch = index.search_batch(&query_slices, k, ef).unwrap();
 
         // Batch (parallel) results -- flat-buffer variant
-        let batch_flat = index.search_batch_flat(&queries_flat, num_queries, k, ef);
+        let batch_flat = index
+            .search_batch_flat(&queries_flat, num_queries, k, ef)
+            .unwrap();
 
         // Also include the original query to make sure it still works
         let _ = index.search(&q, k, ef).unwrap();
