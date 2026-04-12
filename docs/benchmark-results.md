@@ -18,7 +18,7 @@ QPS: sequential single-query throughput (queries / wall-clock seconds). 50-query
 | EMG | 98.8% | 184 | 508 | Full 1.18M dataset |
 | PiPNN | 90.1% | 140 | 589 | Full 1.18M dataset |
 | NSW | 88.6% | 2,073 | 174 | Full 1.18M dataset |
-| IVF-RaBitQ | 81.2% | 8 | 138 | Full 1.18M, 4-bit |
+| IVF-RaBitQ | 81.9% | 257 | 103 | Full 1.18M, 4-bit (pre-rotated) |
 | RpQuant | 62.5% | 193 | 0.3 | Full 1.18M dataset |
 | IVF-PQ | 40.9% | 187 | 491 | 5 codebooks on 25-d (known misconfiguration) |
 | NSG | 3.8% | 3,263 | 7 | Capped at 50K (4.2% of GT) |
@@ -108,17 +108,17 @@ Build: 589s.
 
 ### IVF-RaBitQ (256 clusters, 4-bit)
 
-Build: 138s. Two-phase search: RaBitQ approximate shortlisting + exact reranking.
+Build: 103s. Two-phase search: RaBitQ approximate shortlisting (pre-rotated query) + exact reranking.
 
 | nprobe | Recall@10 | QPS |
 |--------|-----------|-----|
-| 1 | 40.9% | 722 |
-| 2 | 42.1% | 360 |
-| 5 | 41.6% | 145 |
-| 10 | 41.7% | 73 |
-| 20 | 56.0% | 37 |
-| 50 | 72.1% | 15 |
-| 100 | 81.2% | 8 |
+| 1 | 40.3% | 14,430 |
+| 2 | 41.9% | 8,985 |
+| 5 | 42.0% | 4,394 |
+| 10 | 42.0% | 2,411 |
+| 20 | 56.2% | 1,236 |
+| 50 | 72.6% | 508 |
+| 100 | 81.9% | 257 |
 
 ### IVF-PQ (256 clusters, 5 codebooks)
 
