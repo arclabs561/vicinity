@@ -39,7 +39,7 @@ impl SAQQuantizer {
             ));
         }
 
-        if dimension % num_segments != 0 {
+        if !dimension.is_multiple_of(num_segments) {
             return Err(RetrieveError::InvalidParameter(
                 "Dimension must be divisible by num_segments".to_string(),
             ));

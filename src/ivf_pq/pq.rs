@@ -34,7 +34,7 @@ impl ProductQuantizer {
             ));
         }
 
-        if dimension % num_codebooks != 0 {
+        if !dimension.is_multiple_of(num_codebooks) {
             return Err(RetrieveError::InvalidParameter(
                 "dimension must be divisible by num_codebooks".into(),
             ));
