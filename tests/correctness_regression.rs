@@ -521,3 +521,77 @@ mod ivf_avq_tests {
         assert!(IVFAVQIndex::new(0, IVFAVQParams::default()).is_err());
     }
 }
+
+// =============================================================================
+// Regression tests for scrutinize findings (2026-04-12)
+// =============================================================================
+
+/// search_batch must propagate errors, not swallow them.
+#[cfg(all(feature = "hnsw", feature = "parallel"))]
+#[test]
+fn search_batch_propagates_errors() {
+    use vicinity::hnsw::{HNSWIndex, HNSWParams};
+
+    let params = HNSWParams {
+        m: 8,
+        ef_construction: 50,
+        ef_search: 20,
+        ..Default::default()
+    };
+    let index = HNSWIndex::with_params(4, params).expect("create");
+    // Empty index -- search should return an error, not silently empty results
+    let queries: Vec<&[f32]> = vec![&[1.0, 0.0, 0.0, 0.0]];
+    let result = index.search_batch(&queries, 5, 20);
+    assert!(result.is_err(), "search_batch on empty index should propagate error");
+}
+
+/// HNSW recall on clustered data should not silently regress.
+#[cfg(feature = "hnsw")]
+#[test]
+fn hnsw_recall_regression_clustered() {
+    use vicinity::hnsw::{HNSWIndex, HNSWParams};
+
+    let dim = 16;
+    let k = 5;
+    let mut rng = Lcg::new(42);
+    let n = 500;
+    let vecs: Vec<Vec<f32>> = (0..n).map(|_| rng.next_normalized(dim)).collect();
+
+    let params = HNSWParams {
+        m: 16,
+        ef_construction: 200,
+        ef_search: 50,
+        ..Default::default()
+    };
+    let mut index = HNSWIndex::with_params(dim, params).expect("create");
+    for (i, v) in vecs.iter().enumerate() {
+        index.add(i as u32, v.clone()).expect("add");
+    }
+    index.build().expect("build");
+
+    // Brute-force ground truth
+    let mut total_recall = 0.0f32;
+    let num_queries = 20;
+    for _ in 0..num_queries {
+        let query = rng.next_normalized(dim);
+        let mut bf: Vec<(u32, f32)> = vecs
+            .iter()
+            .enumerate()
+            .map(|(i, v)| {
+                let d: f32 = 1.0
+                    - query.iter().zip(v.iter()).map(|(a, b)| a * b).sum::<f32>();
+                (i as u32, d)
+            })
+            .collect();
+        bf.sort_by(|a, b| a.1.total_cmp(&b.1));
+        let gt: Vec<u32> = bf.iter().take(k).map(|(id, _)| *id).collect();
+
+        let results = index.search(&query, k, 50).expect("search");
+        total_recall += recall_at_k(&results, &gt);
+    }
+    let mean_recall = total_recall / num_queries as f32;
+    assert!(
+        mean_recall >= 0.80,
+        "HNSW recall={mean_recall:.3} below 0.80 -- regression"
+    );
+}
