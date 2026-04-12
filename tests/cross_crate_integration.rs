@@ -143,7 +143,13 @@ mod dependency_documentation {
         let cos_d = vicinity::distance::cosine_distance(&a, &b);
         let l2_d = vicinity::distance::l2_distance(&a, &b);
 
-        assert!(cos_d < 0.5, "cosine distance should be small for similar vectors");
-        assert!(l2_d > 0.0, "l2 distance should be positive for different vectors");
+        assert!(
+            cos_d < 0.5,
+            "cosine distance should be small for similar vectors"
+        );
+        assert!(
+            l2_d > 0.0,
+            "l2 distance should be positive for different vectors"
+        );
     }
 }
