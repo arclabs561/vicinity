@@ -524,97 +524,12 @@ impl FilteredGraphIndex {
     }
 
     /// NN-descent kNN graph construction.
-    #[allow(clippy::needless_range_loop)]
     fn build_knn_graph_nndescent(&mut self) {
-        let n = self.num_vectors;
-        let k = self.params.max_degree.min(n.saturating_sub(1));
-
-        let mut nn: Vec<Vec<(f32, u32)>> = vec![Vec::with_capacity(k + 1); n];
-
-        let mut rng: u64 = 0xdeadbeef_cafebabe;
-        let lcg_next = |state: &mut u64| -> usize {
-            *state = state
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
-            (*state >> 33) as usize
-        };
-
-        for i in 0..n {
-            let mut added = 0usize;
-            let mut attempts = 0usize;
-            while added < k && attempts < n * 4 {
-                attempts += 1;
-                let j = lcg_next(&mut rng) % n;
-                if j == i {
-                    continue;
-                }
-                if nn[i].iter().any(|&(_, id)| id == j as u32) {
-                    continue;
-                }
-                let d = cosine_distance_normalized(self.get_vector(i), self.get_vector(j));
-                nn[i].push((d, j as u32));
-                added += 1;
-            }
-            nn[i].sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
-        }
-
-        fn try_insert(list: &mut Vec<(f32, u32)>, k: usize, dist: f32, id: u32) -> bool {
-            if list.len() >= k {
-                if dist >= list[list.len() - 1].0 {
-                    return false;
-                }
-            }
-            if list.iter().any(|&(_, nid)| nid == id) {
-                return false;
-            }
-            let pos = list.partition_point(|&(d, _)| d <= dist);
-            list.insert(pos, (dist, id));
-            if list.len() > k {
-                list.pop();
-            }
-            true
-        }
-
-        let max_iters = 10usize;
-        let early_stop_threshold = (0.001 * (n * k) as f64) as usize;
-
-        for _iter in 0..max_iters {
-            let mut updates = 0usize;
-
-            for u in 0..n {
-                let neighbors_u: Vec<(f32, u32)> = nn[u].clone();
-                let len = neighbors_u.len();
-
-                for a in 0..len {
-                    let (_, v1) = neighbors_u[a];
-                    for b in (a + 1)..len {
-                        let (_, v2) = neighbors_u[b];
-                        if v1 == v2 {
-                            continue;
-                        }
-                        let d12 = cosine_distance_normalized(
-                            self.get_vector(v1 as usize),
-                            self.get_vector(v2 as usize),
-                        );
-                        if try_insert(&mut nn[v1 as usize], k, d12, v2) {
-                            updates += 1;
-                        }
-                        if try_insert(&mut nn[v2 as usize], k, d12, v1) {
-                            updates += 1;
-                        }
-                    }
-                }
-            }
-
-            if updates <= early_stop_threshold {
-                break;
-            }
-        }
-
-        self.neighbors = nn
-            .into_iter()
-            .map(|list| list.into_iter().map(|(_, id)| id).collect())
-            .collect();
+        let (n, k, dim) = (self.num_vectors, self.params.max_degree, self.dimension);
+        let vecs = &self.vectors;
+        self.neighbors = crate::graph_utils::build_knn_graph_nndescent(n, k, |i, j| {
+            cosine_distance_normalized(&vecs[i * dim..(i + 1) * dim], &vecs[j * dim..(j + 1) * dim])
+        });
     }
 
     /// RNG refinement pass: beam search for candidates, then alpha-pruning.
@@ -690,49 +605,11 @@ impl FilteredGraphIndex {
         selected
     }
 
-    /// Ensure every node is reachable from the medoid.
-    #[allow(clippy::needless_range_loop)]
     fn ensure_connectivity(&mut self) {
-        let n = self.num_vectors;
-
-        loop {
-            let mut visited = vec![false; n];
-            let mut stack = vec![self.medoid as usize];
-            visited[self.medoid as usize] = true;
-
-            while let Some(node) = stack.pop() {
-                for &nb in &self.neighbors[node] {
-                    let nb = nb as usize;
-                    if nb < n && !visited[nb] {
-                        visited[nb] = true;
-                        stack.push(nb);
-                    }
-                }
-            }
-
-            let unreachable: Vec<usize> = (0..n).filter(|&i| !visited[i]).collect();
-            if unreachable.is_empty() {
-                break;
-            }
-
-            for i in unreachable {
-                let vi = self.get_vector(i);
-                let mut best_id = self.medoid;
-                let mut best_dist =
-                    cosine_distance_normalized(vi, self.get_vector(self.medoid as usize));
-                for j in 0..n {
-                    if visited[j] && j != i {
-                        let d = cosine_distance_normalized(vi, self.get_vector(j));
-                        if d < best_dist {
-                            best_dist = d;
-                            best_id = j as u32;
-                        }
-                    }
-                }
-                self.neighbors[i].push(best_id);
-                self.neighbors[best_id as usize].push(i as u32);
-            }
-        }
+        let (dim, vecs) = (self.dimension, &self.vectors);
+        crate::graph_utils::ensure_connectivity(&mut self.neighbors, self.medoid, |i, j| {
+            cosine_distance_normalized(&vecs[i * dim..(i + 1) * dim], &vecs[j * dim..(j + 1) * dim])
+        });
     }
 
     // ── Inverted index construction ───────────────────────────────────────────

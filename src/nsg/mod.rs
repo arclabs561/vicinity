@@ -341,118 +341,12 @@ impl NsgIndex {
 
     /// NN-descent (Dong et al., 2011) kNN graph construction.
     ///
-    /// Each node maintains a candidate list of k neighbors sorted by distance.
-    /// Each iteration exploits the "neighbor-of-neighbor" heuristic: if v1 and v2
-    /// are both neighbors of u, they are likely close to each other. Computing
-    /// d(v1, v2) and propagating improvements converges quickly in practice.
-    #[allow(clippy::needless_range_loop)]
     fn build_knn_graph_nndescent(&mut self) {
-        let n = self.num_vectors;
-        let k = self.params.knn_degree.min(n - 1);
-
-        // Each node's neighbor list: (distance, neighbor_id), kept as a max-heap
-        // so the worst neighbor is always at the top for O(log k) insertion.
-        // We store as Vec<(f32, u32)> sorted ascending (closest first); to check
-        // the worst we read the last element.
-        // Use Vec<Vec<(f32, u32)>> -- sorted ascending, length <= k.
-        let mut nn: Vec<Vec<(f32, u32)>> = vec![Vec::with_capacity(k + 1); n];
-
-        // LCG RNG: same multiplier/addend as the test suite for determinism.
-        let mut rng: u64 = 0xdeadbeef_cafebabe;
-        let lcg_next = |state: &mut u64| -> usize {
-            *state = state
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
-            (*state >> 33) as usize
-        };
-
-        // Initialize each node with k random distinct neighbors.
-        for i in 0..n {
-            let mut added = 0usize;
-            let mut attempts = 0usize;
-            while added < k && attempts < n * 4 {
-                attempts += 1;
-                let j = lcg_next(&mut rng) % n;
-                if j == i {
-                    continue;
-                }
-                // Check for duplicate in already-added neighbors.
-                if nn[i].iter().any(|&(_, id)| id == j as u32) {
-                    continue;
-                }
-                let d = cosine_distance_normalized(self.get_vector(i), self.get_vector(j));
-                nn[i].push((d, j as u32));
-                added += 1;
-            }
-            nn[i].sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
-        }
-
-        // Helper: try inserting (dist, id) into a sorted ascending list of length <= k.
-        // Returns true if the list changed.
-        fn try_insert(list: &mut Vec<(f32, u32)>, k: usize, dist: f32, id: u32) -> bool {
-            // Reject if already full and this candidate is no better than the worst.
-            if list.len() >= k {
-                let worst = list[list.len() - 1].0;
-                if dist >= worst {
-                    return false;
-                }
-            }
-            // Reject duplicates.
-            if list.iter().any(|&(_, nid)| nid == id) {
-                return false;
-            }
-            // Insert in sorted position.
-            let pos = list.partition_point(|&(d, _)| d <= dist);
-            list.insert(pos, (dist, id));
-            if list.len() > k {
-                list.pop();
-            }
-            true
-        }
-
-        let max_iters = 10usize;
-        let early_stop_threshold = (0.001 * (n * k) as f64) as usize;
-
-        for _iter in 0..max_iters {
-            let mut updates = 0usize;
-
-            // For each node u, examine all pairs of its neighbors (v1, v2) and
-            // try to improve v1's and v2's neighbor lists with each other.
-            for u in 0..n {
-                let neighbors_u: Vec<(f32, u32)> = nn[u].clone();
-                let len = neighbors_u.len();
-
-                for a in 0..len {
-                    let (_, v1) = neighbors_u[a];
-                    for b in (a + 1)..len {
-                        let (_, v2) = neighbors_u[b];
-                        if v1 == v2 {
-                            continue;
-                        }
-                        let d12 = cosine_distance_normalized(
-                            self.get_vector(v1 as usize),
-                            self.get_vector(v2 as usize),
-                        );
-                        if try_insert(&mut nn[v1 as usize], k, d12, v2) {
-                            updates += 1;
-                        }
-                        if try_insert(&mut nn[v2 as usize], k, d12, v1) {
-                            updates += 1;
-                        }
-                    }
-                }
-            }
-
-            if updates <= early_stop_threshold {
-                break;
-            }
-        }
-
-        // Convert to SmallVec neighbor lists.
-        self.neighbors = nn
-            .into_iter()
-            .map(|list| list.into_iter().map(|(_, id)| id).collect())
-            .collect();
+        let (n, k, dim) = (self.num_vectors, self.params.knn_degree, self.dimension);
+        let vecs = &self.vectors;
+        self.neighbors = crate::graph_utils::build_knn_graph_nndescent(n, k, |i, j| {
+            cosine_distance_normalized(&vecs[i * dim..(i + 1) * dim], &vecs[j * dim..(j + 1) * dim])
+        });
     }
 
     /// MRNG pruning (identical to RND with alpha=1.0).
@@ -548,52 +442,11 @@ impl NsgIndex {
         out
     }
 
-    #[allow(clippy::needless_range_loop)]
     fn ensure_connectivity(&mut self) {
-        let n = self.num_vectors;
-
-        // Iterate until fully connected (adding edges may open new paths)
-        loop {
-            let mut visited = vec![false; n];
-            let mut stack = vec![self.medoid as usize];
-            visited[self.medoid as usize] = true;
-
-            while let Some(node) = stack.pop() {
-                for &nb in &self.neighbors[node] {
-                    let nb = nb as usize;
-                    if nb < n && !visited[nb] {
-                        visited[nb] = true;
-                        stack.push(nb);
-                    }
-                }
-            }
-
-            let unreachable: Vec<usize> = (0..n).filter(|&i| !visited[i]).collect();
-            if unreachable.is_empty() {
-                break;
-            }
-
-            for i in unreachable {
-                let vi = self.get_vector(i);
-                let mut best_id = self.medoid;
-                let mut best_dist =
-                    cosine_distance_normalized(vi, self.get_vector(self.medoid as usize));
-                for j in 0..n {
-                    if visited[j] && j != i {
-                        let d = cosine_distance_normalized(vi, self.get_vector(j));
-                        if d < best_dist {
-                            best_dist = d;
-                            best_id = j as u32;
-                        }
-                    }
-                }
-                // Add both directions. The reverse edge (reachable→unreachable)
-                // is critical -- it's what makes node i reachable from medoid.
-                // Allow temporary over-degree to guarantee convergence.
-                self.neighbors[i].push(best_id);
-                self.neighbors[best_id as usize].push(i as u32);
-            }
-        }
+        let (dim, vecs) = (self.dimension, &self.vectors);
+        crate::graph_utils::ensure_connectivity(&mut self.neighbors, self.medoid, |i, j| {
+            cosine_distance_normalized(&vecs[i * dim..(i + 1) * dim], &vecs[j * dim..(j + 1) * dim])
+        });
     }
 }
 

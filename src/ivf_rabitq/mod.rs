@@ -316,14 +316,15 @@ impl IVFRaBitQIndex {
         // Find nearest centroids
         let cluster_distances = self.find_nearest_centroids(query, nprobe);
 
-        // Shortlist size: scale with nprobe so more probed clusters means more
-        // candidates survive to exact reranking. At low nprobe the shortlist is
-        // small anyway; at high nprobe we need a larger rerank pool to avoid
-        // discarding true neighbors due to noisy RaBitQ approximations.
-        let rerank_size = (k * 10).max(k * nprobe);
+        // Bounded rerank pool: enough to surface true neighbors from noisy
+        // RaBitQ approximations, but capped to avoid O(nprobe * cluster_size)
+        // reranking cost. k*10 covers typical RaBitQ error rates.
+        let rerank_size = (k * 10).max(64);
 
-        // Phase 1: approximate distances via RaBitQ for shortlisting
-        let mut shortlist: Vec<(u32, f32)> = Vec::new();
+        // Phase 1: approximate distances via RaBitQ with bounded shortlist.
+        // Use a max-heap so we can evict the worst candidate in O(log n).
+        let mut heap: std::collections::BinaryHeap<(FloatOrd, u32)> =
+            std::collections::BinaryHeap::with_capacity(rerank_size + 1);
 
         for (cluster_idx, _centroid_dist) in &cluster_distances {
             let cluster = &self.clusters[*cluster_idx];
@@ -339,17 +340,22 @@ impl IVFRaBitQIndex {
                         RetrieveError::InvalidParameter(format!("RaBitQ distance: {e}"))
                     })?;
                 let vec_idx = cluster.vector_indices[i];
-                shortlist.push((vec_idx, dist));
+
+                if heap.len() < rerank_size {
+                    heap.push((FloatOrd(dist), vec_idx));
+                } else if let Some(&(FloatOrd(worst), _)) = heap.peek() {
+                    if dist < worst {
+                        heap.pop();
+                        heap.push((FloatOrd(dist), vec_idx));
+                    }
+                }
             }
         }
 
-        shortlist.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
-        shortlist.truncate(rerank_size);
-
         // Phase 2: exact reranking with original vectors
-        let mut results: Vec<(u32, f32)> = shortlist
-            .iter()
-            .map(|&(vec_idx, _)| {
+        let mut results: Vec<(u32, f32)> = heap
+            .into_iter()
+            .map(|(_, vec_idx)| {
                 let vec = self.get_vector(vec_idx as usize);
                 let dist = crate::distance::cosine_distance_normalized(query, vec);
                 (self.doc_ids[vec_idx as usize], dist)
@@ -527,5 +533,20 @@ mod tests {
             recall > 0.7,
             "self-search recall too low: {recall:.2} ({hits}/{n})"
         );
+    }
+}
+
+/// `f32` wrapper implementing `Ord` for use in `BinaryHeap`.
+#[derive(Clone, Copy, PartialEq)]
+struct FloatOrd(f32);
+impl Eq for FloatOrd {}
+impl PartialOrd for FloatOrd {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for FloatOrd {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.total_cmp(&other.0)
     }
 }

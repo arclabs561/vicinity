@@ -169,6 +169,7 @@ pub(crate) mod pq_simd;
 
 pub mod distance;
 pub mod filtering;
+pub(crate) mod graph_utils;
 #[cfg(feature = "hnsw")]
 pub mod lid;
 pub mod simd;

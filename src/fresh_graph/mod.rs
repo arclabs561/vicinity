@@ -684,51 +684,11 @@ impl FreshGraphIndex {
         candidates
     }
 
-    /// DFS from entry_point; connect unreachable nodes with a direct edge to
-    /// the closest reachable node in both directions.
-    #[allow(clippy::needless_range_loop)]
     fn ensure_connectivity(&mut self) {
-        let n = self.num_vectors;
-
-        loop {
-            let mut visited = vec![false; n];
-            let mut stack = vec![self.entry_point as usize];
-            visited[self.entry_point as usize] = true;
-
-            while let Some(node) = stack.pop() {
-                for &nb in &self.neighbors[node] {
-                    let nb = nb as usize;
-                    if nb < n && !visited[nb] {
-                        visited[nb] = true;
-                        stack.push(nb);
-                    }
-                }
-            }
-
-            let unreachable: Vec<usize> = (0..n).filter(|&i| !visited[i]).collect();
-            if unreachable.is_empty() {
-                break;
-            }
-
-            for i in unreachable {
-                let vi = self.get_vector(i);
-                let mut best_id = self.entry_point;
-                let mut best_dist =
-                    cosine_distance_normalized(vi, self.get_vector(self.entry_point as usize));
-                for j in 0..n {
-                    if visited[j] && j != i {
-                        let d = cosine_distance_normalized(vi, self.get_vector(j));
-                        if d < best_dist {
-                            best_dist = d;
-                            best_id = j as u32;
-                        }
-                    }
-                }
-                // Bidirectional edges; allow temporary over-degree
-                self.neighbors[i].push(best_id);
-                self.neighbors[best_id as usize].push(i as u32);
-            }
-        }
+        let (dim, vecs) = (self.dimension, &self.vectors);
+        crate::graph_utils::ensure_connectivity(&mut self.neighbors, self.entry_point, |i, j| {
+            cosine_distance_normalized(&vecs[i * dim..(i + 1) * dim], &vecs[j * dim..(j + 1) * dim])
+        });
     }
 }
 

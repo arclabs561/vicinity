@@ -1,8 +1,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 //! SIFT-128 Benchmark
 //!
-//! Benchmarks HNSW against brute-force on synthetic 128-dimensional data.
-//! Runs automatically with no external data download.
+//! Benchmarks HNSW against brute-force on synthetic 128-dimensional data
+//! using L2 (Euclidean) distance, which is the correct metric for SIFT descriptors.
 //!
 //! ```bash
 //! cargo run --example sift_benchmark --release --features hnsw
@@ -12,8 +12,8 @@ use std::path::Path;
 use std::time::Instant;
 
 fn main() {
-    println!("SIFT-128 ANN Benchmark");
-    println!("======================\n");
+    println!("SIFT-128 ANN Benchmark (L2 distance)");
+    println!("=====================================\n");
 
     let dataset_path = "data/sift-128-euclidean.hdf5";
 
@@ -50,6 +50,7 @@ fn main() {
 }
 
 fn run_synthetic_demo() {
+    use vicinity::distance::DistanceMetric;
     use vicinity::hnsw::HNSWIndex;
 
     let n = 50_000;
@@ -57,16 +58,22 @@ fn run_synthetic_demo() {
     let n_queries = 1000;
     let k = 10;
 
-    println!("Synthetic benchmark: {} vectors, {} dims", n, dim);
+    println!(
+        "Synthetic benchmark: {} vectors, {} dims (L2 distance)",
+        n, dim
+    );
 
-    // Generate normalized vectors
-    let vectors: Vec<Vec<f32>> = (0..n)
-        .map(|i| normalize(&generate_vector(i, dim)))
-        .collect();
+    // Generate raw vectors (no normalization -- SIFT uses L2 on raw descriptors)
+    let vectors: Vec<Vec<f32>> = (0..n).map(|i| generate_vector(i, dim)).collect();
 
-    // Build index
+    // Build index with L2 metric
     let build_start = Instant::now();
-    let mut index = HNSWIndex::new(dim, 16, 200).unwrap();
+    let mut index = HNSWIndex::builder(dim)
+        .m(16)
+        .ef_construction(200)
+        .metric(DistanceMetric::L2)
+        .build()
+        .unwrap();
     for (i, vec) in vectors.iter().enumerate() {
         index.add(i as u32, vec.clone()).unwrap();
     }
@@ -78,15 +85,14 @@ fn run_synthetic_demo() {
     let queries: Vec<Vec<f32>> = (0..n_queries)
         .map(|i| {
             let base_idx = (i * 7) % n;
-            let perturbed: Vec<f32> = vectors[base_idx]
+            vectors[base_idx]
                 .iter()
                 .enumerate()
                 .map(|(j, &v)| {
                     let noise = ((i * dim + j) as f32 * 0.0001).sin() * 0.1;
                     v + noise
                 })
-                .collect();
-            normalize(&perturbed)
+                .collect()
         })
         .collect();
 
@@ -100,14 +106,14 @@ fn run_synthetic_demo() {
     }
     let hnsw_time = hnsw_start.elapsed();
 
-    // Brute force for ground truth
+    // Brute force for ground truth (L2 distance)
     let brute_start = Instant::now();
     let mut brute_results = Vec::with_capacity(n_queries);
     for query in &queries {
         let mut distances: Vec<_> = vectors
             .iter()
             .enumerate()
-            .map(|(i, v)| (i, cosine_distance(query, v)))
+            .map(|(i, v)| (i, l2_distance(query, v)))
             .collect();
         distances.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
         brute_results.push(distances.into_iter().take(k).collect::<Vec<_>>());
@@ -146,18 +152,13 @@ fn generate_vector(seed: usize, dim: usize) -> Vec<f32> {
         .collect()
 }
 
-fn normalize(v: &[f32]) -> Vec<f32> {
-    let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm > f32::EPSILON {
-        v.iter().map(|x| x / norm).collect()
-    } else {
-        v.to_vec()
-    }
-}
-
-fn cosine_distance(a: &[f32], b: &[f32]) -> f32 {
-    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-    1.0 - dot / (norm_a * norm_b + f32::EPSILON)
+fn l2_distance(a: &[f32], b: &[f32]) -> f32 {
+    a.iter()
+        .zip(b.iter())
+        .map(|(x, y)| {
+            let d = x - y;
+            d * d
+        })
+        .sum::<f32>()
+        .sqrt()
 }
