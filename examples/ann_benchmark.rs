@@ -892,6 +892,15 @@ fn run_finger(
 ) {
     use vicinity::finger::{FingerIndex, FingerParams};
 
+    let n = train.len().min(50_000);
+    if train.len() > 50_000 {
+        eprintln!(
+            "FINGER: capping at 50,000 vectors (got {}); construction is expensive",
+            train.len()
+        );
+    }
+    let train = &train[..n];
+
     let params = FingerParams {
         max_degree: 32,
         ef_construction: 200,
@@ -900,7 +909,7 @@ fn run_finger(
     };
 
     if !cfg.json {
-        println!("--- FINGER (max_degree=32) ---");
+        println!("--- FINGER (max_degree=32, n={}) ---", n);
     }
 
     let build_start = Instant::now();
@@ -954,6 +963,15 @@ fn run_fresh_graph(
 ) {
     use vicinity::fresh_graph::{FreshGraphIndex, FreshGraphParams};
 
+    let n = train.len().min(50_000);
+    if train.len() > 50_000 {
+        eprintln!(
+            "FreshGraph: capping at 50,000 vectors (got {}); construction is expensive",
+            train.len()
+        );
+    }
+    let train = &train[..n];
+
     let params = FreshGraphParams {
         max_degree: 32,
         ef_construction: 200,
@@ -962,7 +980,7 @@ fn run_fresh_graph(
     };
 
     if !cfg.json {
-        println!("--- FreshGraph (max_degree=32) ---");
+        println!("--- FreshGraph (max_degree=32, n={}) ---", n);
     }
 
     let build_start = Instant::now();
@@ -1017,6 +1035,15 @@ fn run_filtered_graph(
     use std::collections::HashMap;
     use vicinity::filtered_graph::{FilteredGraphIndex, FilteredGraphParams};
 
+    let n = train.len().min(50_000);
+    if train.len() > 50_000 {
+        eprintln!(
+            "FilteredGraph: capping at 50,000 vectors (got {}); construction is expensive",
+            train.len()
+        );
+    }
+    let train = &train[..n];
+
     let params = FilteredGraphParams {
         max_degree: 32,
         ef_construction: 200,
@@ -1025,7 +1052,7 @@ fn run_filtered_graph(
     };
 
     if !cfg.json {
-        println!("--- FilteredGraph (max_degree=32, unfiltered) ---");
+        println!("--- FilteredGraph (max_degree=32, unfiltered, n={}) ---", n);
     }
 
     let build_start = Instant::now();
