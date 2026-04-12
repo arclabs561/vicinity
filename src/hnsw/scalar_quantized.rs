@@ -648,7 +648,7 @@ mod tests {
     #[test]
     fn test_dimension_mismatch() {
         let mut sq = ScalarQuantizedHNSW::new(32, 8, 8).unwrap();
-        let v = normalize(&vec![0.1; 32]);
+        let v = normalize(&[0.1; 32]);
         sq.add_slice(0, &v).unwrap();
         sq.build().unwrap();
 
@@ -660,7 +660,7 @@ mod tests {
     #[test]
     fn test_search_before_build_fails() {
         let sq = ScalarQuantizedHNSW::new(32, 8, 8).unwrap();
-        let q = normalize(&vec![0.1; 32]);
+        let q = normalize(&[0.1; 32]);
         let err = sq.search(&q, 10, 50);
         assert!(err.is_err());
     }

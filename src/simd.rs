@@ -27,18 +27,21 @@ pub use fallback::*;
 mod fallback {
     const NORM_EPSILON: f32 = 1e-9;
 
+    /// Dot product of two f32 slices.
     #[inline]
     #[must_use]
     pub fn dot(a: &[f32], b: &[f32]) -> f32 {
         a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
     }
 
+    /// L2 norm of a f32 slice.
     #[inline]
     #[must_use]
     pub fn norm(v: &[f32]) -> f32 {
         dot(v, v).sqrt()
     }
 
+    /// Cosine similarity between two f32 slices.
     #[inline]
     #[must_use]
     pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
@@ -52,12 +55,14 @@ mod fallback {
         }
     }
 
+    /// L2 (Euclidean) distance between two f32 slices.
     #[inline]
     #[must_use]
     pub fn l2_distance(a: &[f32], b: &[f32]) -> f32 {
         l2_distance_squared(a, b).sqrt()
     }
 
+    /// Squared L2 distance between two f32 slices.
     #[inline]
     #[must_use]
     pub fn l2_distance_squared(a: &[f32], b: &[f32]) -> f32 {

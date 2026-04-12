@@ -139,7 +139,7 @@ impl DualBranchHNSW {
 
     /// Add vectors to the index.
     pub fn add_vectors(&mut self, vectors: &[f32]) -> Result<(), RetrieveError> {
-        if vectors.len() % self.dimension != 0 {
+        if !vectors.len().is_multiple_of(self.dimension) {
             return Err(RetrieveError::DimensionMismatch {
                 query_dim: vectors.len(),
                 doc_dim: self.dimension,
