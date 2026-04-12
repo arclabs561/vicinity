@@ -134,3 +134,18 @@ mod tests {
         assert!((d1 - d2).abs() < 1e-6);
     }
 }
+
+/// `f32` wrapper implementing `Ord` via [`f32::total_cmp`] for use in `BinaryHeap`.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) struct FloatOrd(pub f32);
+impl Eq for FloatOrd {}
+impl PartialOrd for FloatOrd {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for FloatOrd {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.total_cmp(&other.0)
+    }
+}

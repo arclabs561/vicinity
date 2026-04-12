@@ -199,13 +199,28 @@ where
             }
         }
 
-        // Also scan entry point's neighbors (these are guaranteed reachable).
+        // Scan entry point's neighbors (guaranteed reachable).
         let entry_neighbors: SmallVec<[u32; 16]> = neighbors[entry_point as usize].clone();
         for &nb in &entry_neighbors {
             let d = dist_fn(i, nb as usize);
             if d < best_dist {
                 best_dist = d;
                 best_id = nb;
+            }
+        }
+
+        // Two-hop: scan entry neighbors' neighbors for better bridge candidates.
+        // Costs O(k^2) per isolated node but covers a much larger neighborhood.
+        for &enb in &entry_neighbors {
+            let enb_neighbors: SmallVec<[u32; 16]> = neighbors[enb as usize].clone();
+            for &enb2 in &enb_neighbors {
+                if find(&mut parent, enb2) == entry_root {
+                    let d = dist_fn(i, enb2 as usize);
+                    if d < best_dist {
+                        best_dist = d;
+                        best_id = enb2;
+                    }
+                }
             }
         }
 

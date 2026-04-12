@@ -27,7 +27,7 @@
 //! | **Dynamic Insert/Delete** | `fresh_graph::FreshGraphIndex` | `fresh_graph` |
 //! | **Sparse Vectors** (SPLADE/BM25) | `sparse_mips::SparseMipsIndex` | `sparse_mips` |
 //! | **High-d Compression** (768d+) | `rp_quant::RpQuantIndex` | `rp_quant` |
-//! | **Quantized Graph** (HNSW + RaBitQ) | [`hnsw::SymphonyQGIndex`] | `hnsw` + `ivf_rabitq` |
+//! | **Quantized Graph** (HNSW + RaBitQ) | `hnsw::SymphonyQGIndex` | `hnsw` + `ivf_rabitq` |
 //! | **Binary Quantization** (1-bit + rerank) | `binary_index::BinaryFlatIndex` | `binary_index` |
 //! | **Out-of-Core** (SSD-based) | `diskann` | `diskann` (experimental) |
 //!

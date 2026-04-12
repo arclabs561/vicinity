@@ -46,6 +46,7 @@
 //!   Low-Selectivity Filters." SIGMOD 2026. arXiv:2601.01291.
 
 use crate::distance::cosine_distance_normalized;
+use crate::distance::FloatOrd;
 use crate::RetrieveError;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 
@@ -577,20 +578,6 @@ fn hash_label(label: &str) -> u64 {
         hash = hash.wrapping_mul(0x100000001b3);
     }
     hash
-}
-
-#[derive(Clone, Copy, PartialEq)]
-struct FloatOrd(f32);
-impl Eq for FloatOrd {}
-impl PartialOrd for FloatOrd {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-impl Ord for FloatOrd {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.0.total_cmp(&other.0)
-    }
 }
 
 #[cfg(test)]
