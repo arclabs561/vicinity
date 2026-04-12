@@ -350,32 +350,6 @@ impl SegmentFooter {
     }
 }
 
-/// Trait for types that can be persisted.
-pub trait Persistable: Sized {
-    /// Serialize to bytes.
-    fn to_bytes(&self) -> crate::Result<Vec<u8>>;
-
-    /// Deserialize from bytes.
-    fn from_bytes(bytes: &[u8]) -> crate::Result<Self>;
-
-    /// Estimated size in bytes.
-    fn size_hint(&self) -> usize;
-}
-
-/// Trait for index persistence operations.
-pub trait IndexPersistence: Sized {
-    /// Save index to a directory.
-    fn save(&self, path: &std::path::Path) -> crate::Result<()>;
-
-    /// Load index from a directory.
-    fn load(path: &std::path::Path) -> crate::Result<Self>;
-
-    /// Check if an index exists at the path.
-    fn exists(path: &std::path::Path) -> bool {
-        path.join("manifest.json").exists()
-    }
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
