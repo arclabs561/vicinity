@@ -542,7 +542,10 @@ fn search_batch_propagates_errors() {
     // Empty index -- search should return an error, not silently empty results
     let queries: Vec<&[f32]> = vec![&[1.0, 0.0, 0.0, 0.0]];
     let result = index.search_batch(&queries, 5, 20);
-    assert!(result.is_err(), "search_batch on empty index should propagate error");
+    assert!(
+        result.is_err(),
+        "search_batch on empty index should propagate error"
+    );
 }
 
 /// HNSW recall on clustered data should not silently regress.
@@ -578,8 +581,7 @@ fn hnsw_recall_regression_clustered() {
             .iter()
             .enumerate()
             .map(|(i, v)| {
-                let d: f32 = 1.0
-                    - query.iter().zip(v.iter()).map(|(a, b)| a * b).sum::<f32>();
+                let d: f32 = 1.0 - query.iter().zip(v.iter()).map(|(a, b)| a * b).sum::<f32>();
                 (i as u32, d)
             })
             .collect();
