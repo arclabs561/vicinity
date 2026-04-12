@@ -197,20 +197,33 @@ mod tests {
     // use std::path::PathBuf;
 
     #[test]
-    fn test_file_lock_exclusive() {
+    fn test_file_lock_acquire_and_release() {
         let temp_dir = std::env::temp_dir().join("vicinity_lock_test");
         fs::create_dir_all(&temp_dir).unwrap();
         let lock_file = temp_dir.join("test.lock");
 
         // Acquire exclusive lock
         let lock1 = FileLock::acquire(&lock_file, LockType::Exclusive).unwrap();
+        assert_eq!(lock1.lock_type(), LockType::Exclusive);
+        assert!(lock1.file().metadata().is_ok());
 
-        // Try to acquire another exclusive lock (should fail on some platforms)
-        // On some platforms this might block, so we skip the assertion
-        // let lock2_result = FileLock::acquire(&lock_file, LockType::Exclusive);
-        // assert!(lock2_result.is_err());
+        // Second exclusive lock on the same file should fail (non-blocking flock)
+        let lock2_result = FileLock::acquire(&lock_file, LockType::Exclusive);
+        assert!(
+            lock2_result.is_err(),
+            "second exclusive lock should fail while first is held"
+        );
 
+        // Release first lock
         drop(lock1);
+
+        // Now acquiring should succeed
+        let lock3 = FileLock::acquire(&lock_file, LockType::Exclusive);
+        assert!(
+            lock3.is_ok(),
+            "exclusive lock should succeed after prior lock released"
+        );
+        drop(lock3);
 
         // Cleanup
         fs::remove_file(&lock_file).ok();

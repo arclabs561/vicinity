@@ -178,8 +178,8 @@ fn opq_reduces_quantization_error() {
     // With a correct Procrustes solver, OPQ should improve 10-30%.
     // With the current Gram-Schmidt approximation, we allow generous slack.
     assert!(
-        opq_mae <= pq_mae * 2.0 + 0.01,
-        "OPQ MAE ({opq_mae:.6}) is more than 2x worse than PQ MAE ({pq_mae:.6})"
+        opq_mae <= pq_mae * 1.2 + 0.001,
+        "OPQ MAE ({opq_mae:.6}) should not be more than 20% worse than PQ MAE ({pq_mae:.6})"
     );
 
     if opq_mae < pq_mae {

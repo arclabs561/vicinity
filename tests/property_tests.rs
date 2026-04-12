@@ -616,10 +616,11 @@ mod twonn_props {
 
             let dim = estimate_twonn(&ratios, 0.1);
 
-            // Should not panic, should return valid result if enough non-degenerate ratios
+            // With enough non-degenerate ratios, dimension estimate should be positive and finite
             if n - n_equidistant >= 3 {
-                prop_assert!(dim.is_finite() || dim.is_nan(),
-                    "Should handle equidistant neighbors gracefully");
+                prop_assert!(dim.is_finite() && dim > 0.0,
+                    "Expected positive finite LID estimate, got {} (n={}, equidistant={})",
+                    dim, n, n_equidistant);
             }
         }
     }
