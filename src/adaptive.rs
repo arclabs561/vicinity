@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Adaptive computation patterns for approximate nearest neighbor search.
 //!
 //! # The Core Insight

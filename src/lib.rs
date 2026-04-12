@@ -167,6 +167,15 @@ pub(crate) mod pq_simd;
 
 pub mod distance;
 pub mod filtering;
+#[cfg(any(
+    feature = "finger",
+    feature = "filtered_graph",
+    feature = "nsg",
+    feature = "sparse_mips",
+    feature = "fresh_graph",
+    feature = "emg",
+    feature = "pipnn"
+))]
 pub(crate) mod graph_utils;
 #[cfg(feature = "hnsw")]
 pub mod lid;
