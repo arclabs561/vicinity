@@ -67,7 +67,14 @@ Fast, isolated tests for individual functions.
 
 - `hnsw_e2e.rs`: Full index lifecycle (build, search, persist, reload)
 - `edge_cases.rs`: Boundary conditions, empty inputs, single elements
-- `property_tests.rs`: Randomized invariant checking
+- `property_tests.rs`: Randomized invariant checking (determinism, distance monotonicity)
+- `regression_known_bugs.rs`: Regression tests for fixed bugs (Vamana doc_id, etc.)
+- `robustness.rs`: Stress tests and adversarial inputs
+- `cross_algorithm_consistency.rs`: Cross-algorithm recall agreement
+- `correctness_regression.rs`: Recall floor enforcement
+- `invariants.rs`: Structural invariants (graph connectivity, degree bounds)
+- `persistence_robustness.rs`, `chaos_persistence.rs`, `diskann_persistence_test.rs`: Persistence layer tests
+- `cross_crate_integration.rs`: Integration with `innr`, `qntz`, `clump`
 
 ### Benchmarks (`benches/`)
 
@@ -122,8 +129,11 @@ cargo llvm-cov --no-default-features --features hnsw
 
 | Job | Platform | Tests | Purpose |
 |-----|----------|-------|---------|
-| `test` | ubuntu-latest | All | Primary validation |
-| `test-arm` | macos-latest | All | ARM/NEON paths |
-| `msrv` | ubuntu-latest | Check | API stability |
-| `recall-regression` | ubuntu-latest | Example | Quality guard |
-| `docs` | ubuntu-latest | Doc build | Doc completeness |
+| `test` | ubuntu-latest | Clippy + build + test | Primary validation |
+| `test-arm` | macos-latest | Build + test | ARM/NEON code paths |
+| `msrv` | ubuntu-latest | `cargo check` | MSRV 1.89 compatibility |
+| `feature-matrix` | ubuntu-latest | `cargo-hack` each feature | Feature flag correctness |
+| `cross-compile` | ubuntu-latest | x86_64 + aarch64 | Cross-target compilation |
+| `recall-regression` | ubuntu-latest | Example | Recall floor (80% at ef=100) |
+| `regression` | ubuntu-latest | `regression_known_bugs` | Known bug non-regression |
+| `docs` | ubuntu-latest | `cargo doc` | Doc completeness |
