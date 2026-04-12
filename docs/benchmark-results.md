@@ -27,6 +27,13 @@ QPS: sequential single-query throughput (queries / wall-clock seconds). 50-query
 | FreshGraph | 4.1% | 132 | 104 | Capped at 50K |
 | FilteredGraph | 4.1% | 108 | 127 | Capped at 50K |
 
+| Curator | 52.0% | 4,302 | 1.3 | K-means tree, no ef sweep |
+| ESG | 99.8% | 531 | 409 | HNSW wrapper with range filter |
+| BinaryFlat | 24.0% | 5 | 0.6 | Flat scan, too slow at 1.18M |
+
+SymphonyQG is excluded: RaBitQ error is O(1/sqrt(d)), and at d=25 the approximation
+is too noisy (<0.3% recall). SymphonyQG is designed for d >= 128.
+
 NSG, SNG, Finger, FreshGraph, and FilteredGraph are capped at 50K vectors due to
 construction cost. Their recall reflects the 50K/1.18M ground truth mismatch (~4.2%
 expected), not algorithm quality. Within the 50K subset, these algorithms work correctly.
@@ -129,6 +136,25 @@ too coarse for 25-d data. Not a bug -- inherent quantization granularity.
 
 Build: <1s. Single recall point: 62.5% at 193 QPS.
 
+## Filtered / Tree-Based Indexes
+
+### Curator (branching=16, leaf=128)
+
+Build: 1.3s. K-means tree with Bloom filter pruning. Single recall point (no ef sweep):
+52.0% recall at 4,302 QPS.
+
+### ESG (m=16, ef_search=100)
+
+Build: 409s. Wraps HNSW internally with range-filter post-processing. Single recall
+point: 99.8% recall at 531 QPS. The high recall reflects the underlying HNSW quality;
+the lower QPS is due to post-filtering overhead.
+
+### BinaryFlat (rerank_factor=10)
+
+Build: 0.6s. Flat binary quantization scan with full-precision reranking. Single
+recall point: 24.0% recall at 4.7 QPS. Not competitive at 1.18M scale -- designed
+for smaller datasets or as a building block for hierarchical binary indexes.
+
 ## Brute Force
 
 Exact k-NN via exhaustive cosine: 100% recall at 45 QPS.
@@ -140,6 +166,8 @@ Exact k-NN via exhaustive cosine: 100% recall at 45 QPS.
 - NSG, SNG, Finger, FreshGraph, FilteredGraph are capped at 50K vectors
   during construction. Their low recall reflects the cap, not algorithm quality.
 - IVF-PQ with 5 codebooks on 25-d is a known misconfiguration.
+- SymphonyQG requires d >= 128 for useful recall; RaBitQ error O(1/sqrt(d)) is too large at d=25.
+- BinaryFlat is a flat scan; use for d >= 256 where binary quantization compresses well.
 
 ## References
 
