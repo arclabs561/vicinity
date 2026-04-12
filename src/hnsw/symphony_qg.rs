@@ -106,6 +106,10 @@ impl SymphonyQGIndex {
     /// Quantize all vectors using RaBitQ.
     fn quantize_vectors(&mut self) -> Result<(), RetrieveError> {
         let n = self.index.num_vectors;
+        if n == 0 {
+            self.quantized_built = true;
+            return Ok(());
+        }
         let dim = self.index.dimension;
 
         // Create quantizer and fit centroid from data.
