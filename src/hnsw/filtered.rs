@@ -589,7 +589,7 @@ mod tests {
         let (neighbors, distances) = mock_graph();
 
         // Filter: only even nodes (0, 2, 4, 6, 8)
-        let filter = FnFilter(|id: u32| id % 2 == 0);
+        let filter = FnFilter(|id: u32| id.is_multiple_of(2));
 
         let results = acorn_search(
             3,
@@ -612,7 +612,7 @@ mod tests {
         let (neighbors, distances) = mock_graph();
 
         // 50% pass: high selectivity
-        let filter = FnFilter(|id: u32| id % 2 == 0);
+        let filter = FnFilter(|id: u32| id.is_multiple_of(2));
 
         let results = selectivity_search(
             3,
@@ -687,7 +687,7 @@ mod tests {
         let (neighbors, _) = mock_graph();
 
         // 50% filter
-        let filter = FnFilter(|id: u32| id % 2 == 0);
+        let filter = FnFilter(|id: u32| id.is_multiple_of(2));
         let sel = estimate_selectivity(&filter, &|id: u32| neighbors[id as usize].clone(), 0, 10);
         assert!(sel > 0.3 && sel < 0.7, "expected ~0.5, got {sel}");
 

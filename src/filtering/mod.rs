@@ -153,14 +153,14 @@ impl MetadataFilter {
                 };
                 if let Some(lo) = min {
                     if v.partial_cmp(lo)
-                        .map_or(true, |o| o == std::cmp::Ordering::Less)
+                        .is_none_or(|o| o == std::cmp::Ordering::Less)
                     {
                         return false;
                     }
                 }
                 if let Some(hi) = max {
                     if v.partial_cmp(hi)
-                        .map_or(true, |o| o == std::cmp::Ordering::Greater)
+                        .is_none_or(|o| o == std::cmp::Ordering::Greater)
                     {
                         return false;
                     }
