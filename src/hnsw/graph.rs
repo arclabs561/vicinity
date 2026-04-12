@@ -711,6 +711,16 @@ impl HNSWIndex {
         self.built
     }
 
+    /// Return the cached entry point (node with highest layer assignment).
+    ///
+    /// Available after `build()`. Returns `None` if the index is empty or not built.
+    pub fn entry_point(&self) -> Option<(u32, usize)> {
+        self.cached_entry_point.map(|ep| {
+            let layer = self.layer_assignments[ep as usize] as usize;
+            (ep, layer)
+        })
+    }
+
     /// Return the maximum neighbor count across all nodes and layers.
     ///
     /// Useful for verifying the graph respects the degree bound after construction.
@@ -1932,22 +1942,7 @@ impl HNSWIndex {
         };
 
         // Perform standard search but filter neighbors during traversal
-        // Use min-heap for candidates with FloatOrd wrapper for f32 comparison
-        #[derive(PartialEq)]
-        struct FloatOrd(f32);
-        impl Eq for FloatOrd {}
-        impl PartialOrd for FloatOrd {
-            fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-                Some(self.cmp(other))
-            }
-        }
-        impl Ord for FloatOrd {
-            fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-                self.0
-                    .partial_cmp(&other.0)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            }
-        }
+        use crate::distance::FloatOrd;
 
         let mut candidates: std::collections::BinaryHeap<std::cmp::Reverse<(FloatOrd, u32)>> =
             std::collections::BinaryHeap::new();

@@ -73,7 +73,7 @@
 //! | [`inplace::InPlaceIndex`] | Streaming | Per-operation insert/delete without batch rebuild (IP-DiskANN style) |
 //! | [`dual_branch::DualBranchHNSW`] | LID-aware | Datasets with outliers or varying density; uses skip bridges for sparse regions |
 //! | [`deg::DEGIndex`] | Density-adaptive | Dense/sparse regions get different edge budgets; small datasets (n < 10K) |
-//! | [`symphony_qg::SymphonyQGIndex`] | Quantized graph | RaBitQ codes co-located with graph; cheap approximate traversal + exact rerank |
+//! | `symphony_qg::SymphonyQGIndex` | Quantized graph | RaBitQ codes co-located with graph; cheap approximate traversal + exact rerank |
 //! | [`probabilistic_routing::ProbabilisticRouter`] | Routing optimizer | Wraps any graph with probability-based edge skipping for higher QPS |
 //!
 //! **Standard** ([`HNSWIndex`]): The default. Build the full graph, then query. Best when
@@ -109,7 +109,7 @@
 //!
 //! - [`filtered`]: ACORN-style attribute filtering
 //! - [`dual_branch`]: LID-based insertion with skip bridges (arXiv:2501.13992)
-//! - [`symphony_qg`]: RaBitQ quantized graph traversal (SymphonyQG, SIGMOD 2025)
+//! - `symphony_qg`: RaBitQ quantized graph traversal (SymphonyQG, SIGMOD 2025)
 //! - [`deg`]: Density-adaptive edge budgets
 //! - [`probabilistic_routing`]: Probability-based edge skipping for higher QPS
 //! - [`scalar_quantized`]: SQ8 asymmetric distance (4x memory reduction)

@@ -61,6 +61,7 @@
 //!   Theoretical Error Bound for Approximate Nearest Neighbor Search." SIGMOD 2024.
 //! - Chen et al. (2026). "IVF-RaBitQ: GPU-native IVF with RaBitQ." arXiv:2602.23999.
 
+use crate::distance::FloatOrd;
 use crate::RetrieveError;
 use qntz::rabitq::{QuantizedVector, RaBitQConfig, RaBitQQuantizer};
 
@@ -316,10 +317,10 @@ impl IVFRaBitQIndex {
         // Find nearest centroids
         let cluster_distances = self.find_nearest_centroids(query, nprobe);
 
-        // Bounded rerank pool: enough to surface true neighbors from noisy
-        // RaBitQ approximations, but capped to avoid O(nprobe * cluster_size)
-        // reranking cost. k*10 covers typical RaBitQ error rates.
-        let rerank_size = (k * 10).max(64);
+        // Rerank pool scales with nprobe: more probed clusters means noisier
+        // RaBitQ approximations need a larger pool to avoid discarding true
+        // neighbors. A bounded max-heap avoids the O(N log N) sort cost.
+        let rerank_size = (k * 10).max(k * nprobe).max(64);
 
         // Phase 1: approximate distances via RaBitQ with bounded shortlist.
         // Use a max-heap so we can evict the worst candidate in O(log n).
@@ -533,20 +534,5 @@ mod tests {
             recall > 0.7,
             "self-search recall too low: {recall:.2} ({hits}/{n})"
         );
-    }
-}
-
-/// `f32` wrapper implementing `Ord` for use in `BinaryHeap`.
-#[derive(Clone, Copy, PartialEq)]
-struct FloatOrd(f32);
-impl Eq for FloatOrd {}
-impl PartialOrd for FloatOrd {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-impl Ord for FloatOrd {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.0.total_cmp(&other.0)
     }
 }

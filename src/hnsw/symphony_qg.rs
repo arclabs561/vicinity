@@ -38,10 +38,9 @@
 //! - Gou et al. (2025). "SymphonyQG: Towards Symphonious Integration of
 //!   Quantization and Graph for ANN Search." SIGMOD 2025.
 
-use crate::hnsw::graph::{HNSWIndex, Layer};
+use crate::hnsw::graph::HNSWIndex;
 use crate::RetrieveError;
 use qntz::rabitq::{QuantizedVector, RaBitQConfig, RaBitQQuantizer};
-use std::collections::{BinaryHeap, HashSet};
 
 /// HNSW index with RaBitQ quantized graph traversal.
 ///
@@ -234,19 +233,24 @@ impl SymphonyQGIndex {
     }
 
     /// Walk the HNSW graph using RaBitQ approximate distance.
+    ///
+    /// Upper layers: greedy single-node descent with quantized distance.
+    /// Base layer: delegates to `greedy_search_layer_custom` with a closure
+    /// that computes approximate L2 from the pre-rotated query.
     fn search_quantized_graph(
         &self,
         query: &[f32],
         ef: usize,
     ) -> Result<Vec<(u32, f32)>, RetrieveError> {
         let rotated_query = self.rotate_query(query)?;
+        let codes = &self.codes;
 
-        // Find entry point (highest-layer node).
-        let (entry_point, entry_layer) = self.find_entry_point();
+        // Use cached entry point (O(1) vs O(n) scan).
+        let (entry_point, entry_layer) = self.index.entry_point().unwrap_or((0, 0));
 
         // Navigate upper layers with greedy single-node descent.
         let mut current = entry_point;
-        let mut current_dist = approx_dist(&rotated_query, &self.codes[current as usize]);
+        let mut current_dist = approx_dist(&rotated_query, &codes[current as usize]);
 
         for layer_idx in (1..=entry_layer).rev() {
             if layer_idx >= self.index.layers.len() {
@@ -258,7 +262,7 @@ impl SymphonyQGIndex {
                 changed = false;
                 let neighbors = layer.get_neighbors(current);
                 for &neighbor_id in neighbors.iter() {
-                    let dist = approx_dist(&rotated_query, &self.codes[neighbor_id as usize]);
+                    let dist = approx_dist(&rotated_query, &codes[neighbor_id as usize]);
                     if dist < current_dist {
                         current_dist = dist;
                         current = neighbor_id;
@@ -268,88 +272,23 @@ impl SymphonyQGIndex {
             }
         }
 
-        // Beam search in base layer with quantized distance.
+        // Base layer: use the shared beam search with custom distance.
         if self.index.layers.is_empty() {
             return Ok(Vec::new());
         }
         let base_layer = &self.index.layers[0];
-        Ok(self.beam_search_quantized(&rotated_query, current, base_layer, ef))
-    }
-
-    /// Beam search in a single layer using quantized distance.
-    fn beam_search_quantized(
-        &self,
-        rotated_query: &[f32],
-        entry_point: u32,
-        layer: &Layer,
-        ef: usize,
-    ) -> Vec<(u32, f32)> {
-        let n = self.index.num_vectors;
-
-        let mut candidates: BinaryHeap<MinCandidate> = BinaryHeap::with_capacity(ef * 2);
-        let mut results: BinaryHeap<MaxResult> = BinaryHeap::with_capacity(ef + 1);
-
-        let mut visited = if n <= 100_000 {
-            Visited::Dense(vec![false; n])
-        } else {
-            Visited::Sparse(HashSet::with_capacity(ef * 2))
+        let dist_fn = |_q: &[f32], node_id: u32| -> f32 {
+            approx_dist(&rotated_query, &codes[node_id as usize])
         };
-
-        let entry_dist = approx_dist(rotated_query, &self.codes[entry_point as usize]);
-        candidates.push(MinCandidate {
-            id: entry_point,
-            distance: entry_dist,
-        });
-        results.push(MaxResult {
-            id: entry_point,
-            distance: entry_dist,
-        });
-        visited.insert(entry_point);
-
-        while let Some(candidate) = candidates.pop() {
-            let worst_dist = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
-            if candidate.distance > worst_dist && results.len() >= ef {
-                break;
-            }
-
-            let neighbors = layer.get_neighbors(candidate.id);
-            for &neighbor_id in neighbors.iter() {
-                if visited.insert(neighbor_id) {
-                    let dist = approx_dist(rotated_query, &self.codes[neighbor_id as usize]);
-
-                    let worst_dist = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
-                    if results.len() < ef || dist < worst_dist {
-                        candidates.push(MinCandidate {
-                            id: neighbor_id,
-                            distance: dist,
-                        });
-                        results.push(MaxResult {
-                            id: neighbor_id,
-                            distance: dist,
-                        });
-                        if results.len() > ef {
-                            results.pop();
-                        }
-                    }
-                }
-            }
-        }
-
-        let mut output: Vec<(u32, f32)> = results.into_iter().map(|r| (r.id, r.distance)).collect();
-        output.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
-        output
-    }
-
-    fn find_entry_point(&self) -> (u32, usize) {
-        let mut ep = 0u32;
-        let mut el = 0u8;
-        for (idx, &layer) in self.index.layer_assignments.iter().enumerate() {
-            if layer > el {
-                ep = idx as u32;
-                el = layer;
-            }
-        }
-        (ep, el as usize)
+        Ok(crate::hnsw::search::greedy_search_layer_custom(
+            query,
+            current,
+            base_layer,
+            &self.index.vectors,
+            self.index.dimension,
+            ef,
+            &dist_fn,
+        ))
     }
 }
 
@@ -358,64 +297,6 @@ impl SymphonyQGIndex {
 #[inline]
 fn approx_dist(rotated_query: &[f32], qv: &QuantizedVector) -> f32 {
     RaBitQQuantizer::approximate_l2_sqr_prerotated(rotated_query, qv).sqrt()
-}
-
-// ── Helper types ─────────────────────────────────────────────────────────────
-
-#[derive(Clone, Copy, PartialEq)]
-struct MinCandidate {
-    id: u32,
-    distance: f32,
-}
-impl Eq for MinCandidate {}
-impl PartialOrd for MinCandidate {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-impl Ord for MinCandidate {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        other.distance.total_cmp(&self.distance)
-    }
-}
-
-#[derive(Clone, Copy, PartialEq)]
-struct MaxResult {
-    id: u32,
-    distance: f32,
-}
-impl Eq for MaxResult {}
-impl PartialOrd for MaxResult {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-impl Ord for MaxResult {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.distance.total_cmp(&other.distance)
-    }
-}
-
-enum Visited {
-    Dense(Vec<bool>),
-    Sparse(HashSet<u32>),
-}
-
-impl Visited {
-    fn insert(&mut self, id: u32) -> bool {
-        match self {
-            Visited::Dense(v) => {
-                let idx = id as usize;
-                if v[idx] {
-                    false
-                } else {
-                    v[idx] = true;
-                    true
-                }
-            }
-            Visited::Sparse(s) => s.insert(id),
-        }
-    }
 }
 
 #[cfg(test)]
