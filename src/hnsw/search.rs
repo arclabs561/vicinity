@@ -231,7 +231,7 @@ pub fn greedy_search_layer(
 
     with_visited_set(num_vectors, ef * 2, |visited| {
         let mut candidates: BinaryHeap<MinCandidate> = BinaryHeap::with_capacity(ef * 2);
-        let mut results: BinaryHeap<MaxResult> = BinaryHeap::with_capacity(ef + 1);
+        let mut results = innr::TopK::new(ef);
 
         // Start from entry point
         let entry_vector = get_vector(vectors, dimension, entry_point as usize);
@@ -240,10 +240,7 @@ pub fn greedy_search_layer(
             id: entry_point,
             distance: entry_distance,
         });
-        results.push(MaxResult {
-            id: entry_point,
-            distance: entry_distance,
-        });
+        results.insert(entry_point, entry_distance);
         visited.insert(entry_point);
 
         // Standard HNSW beam search:
@@ -251,7 +248,7 @@ pub fn greedy_search_layer(
         while let Some(candidate) = candidates.pop() {
             // Stopping condition: if best candidate is worse than worst result
             // and we have enough results, we're done
-            let worst_dist = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
+            let worst_dist = results.threshold();
             if candidate.distance > worst_dist && results.len() >= ef {
                 break;
             }
@@ -279,31 +276,19 @@ pub fn greedy_search_layer(
                     let neighbor_vector = get_vector(vectors, dimension, neighbor_id as usize);
                     let neighbor_distance = dist_fn(query, neighbor_vector);
 
-                    // Only add if potentially useful
-                    let worst_dist = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
-                    if results.len() < ef || neighbor_distance < worst_dist {
+                    // Only add to candidates if potentially useful
+                    if results.len() < ef || neighbor_distance < results.threshold() {
                         candidates.push(MinCandidate {
                             id: neighbor_id,
                             distance: neighbor_distance,
                         });
-                        results.push(MaxResult {
-                            id: neighbor_id,
-                            distance: neighbor_distance,
-                        });
-
-                        // Prune results if over capacity
-                        if results.len() > ef {
-                            results.pop();
-                        }
                     }
+                    results.insert(neighbor_id, neighbor_distance);
                 }
             }
         }
 
-        // Convert to sorted output
-        let mut output: Vec<(u32, f32)> = results.into_iter().map(|r| (r.id, r.distance)).collect();
-        output.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
-        output
+        results.into_sorted()
     })
 }
 
