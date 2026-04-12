@@ -152,7 +152,7 @@ fn greedy_search_vamana(
                 let nb_dist = hnsw_distance::cosine_distance_normalized(query, get_vec(nb_id));
 
                 let should_add =
-                    results.len() < ef || results.peek().map_or(true, |w| nb_dist < w.dist);
+                    results.len() < ef || results.peek().is_none_or(|w| nb_dist < w.dist);
 
                 if should_add {
                     candidates.push(MinCand {

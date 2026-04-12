@@ -126,7 +126,7 @@ impl EvalResults {
         let mut sorted = self.recalls.clone();
         sorted.sort_unstable_by(|a, b| a.total_cmp(b));
         let mid = sorted.len() / 2;
-        if sorted.len() % 2 == 0 {
+        if sorted.len().is_multiple_of(2) {
             (sorted[mid - 1] + sorted[mid]) / 2.0
         } else {
             sorted[mid]

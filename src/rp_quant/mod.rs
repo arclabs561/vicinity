@@ -340,7 +340,7 @@ fn gaussian_matrix(rows: usize, cols: usize, seed: u64) -> Vec<f32> {
     let mut state = seed;
     let n = rows * cols;
     // Gaussian pairs require an even count; pad if needed.
-    let padded = if n % 2 == 0 { n } else { n + 1 };
+    let padded = if n.is_multiple_of(2) { n } else { n + 1 };
     let mut out = Vec::with_capacity(padded);
 
     while out.len() < padded {

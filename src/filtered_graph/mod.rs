@@ -417,7 +417,7 @@ impl FilteredGraphIndex {
         };
         // Binary search for matching value.
         let pos = entries
-            .partition_point(|(v, _)| compare_attr(v, val).map_or(true, |o| o == Ordering::Less));
+            .partition_point(|(v, _)| compare_attr(v, val).is_none_or(|o| o == Ordering::Less));
         let mut result = HashSet::new();
         for (v, ids) in &entries[pos..] {
             if compare_attr(v, val) != Some(Ordering::Equal) {
