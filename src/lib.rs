@@ -6,11 +6,13 @@
 //! Provides implementations of ANN algorithms:
 //!
 //! - **Graph-based**: [`hnsw`], `nsw`, `sng`, `vamana`, `nsg`, `emg`, `finger`, `pipnn`, `fresh_graph`
+//! - **Graph + quantization**: `hnsw::symphony_qg` (RaBitQ inside HNSW beam search)
 //! - **Partition-based**: `ivf_pq`, `ivf_avq`, `ivf_rabitq`, `curator`
-//! - **Quantization**: `quantization` (RaBitQ, SAQ), `rp_quant` (projection + scalar quantization)
+//! - **Quantization**: `quantization` (RaBitQ, SAQ), `rp_quant`, `binary_index` (1-bit + rerank)
 //! - **Filtered**: `filtered_graph` (predicate filters), `esg` (range filters), `curator` (label filters)
 //! - **Sparse vectors**: `sparse_mips` (inner-product graph for SPLADE/BM25)
 //! - **Streaming**: `streaming::lsm` (LSM-tree tiered HNSW)
+//! - **Clustering**: `evoc` (EVoC hierarchical clustering)
 //!
 //! # Which Index Should I Use?
 //!
@@ -25,6 +27,8 @@
 //! | **Dynamic Insert/Delete** | `fresh_graph::FreshGraphIndex` | `fresh_graph` |
 //! | **Sparse Vectors** (SPLADE/BM25) | `sparse_mips::SparseMipsIndex` | `sparse_mips` |
 //! | **High-d Compression** (768d+) | `rp_quant::RpQuantIndex` | `rp_quant` |
+//! | **Quantized Graph** (HNSW + RaBitQ) | [`hnsw::SymphonyQGIndex`] | `hnsw` + `ivf_rabitq` |
+//! | **Binary Quantization** (1-bit + rerank) | `binary_index::BinaryFlatIndex` | `binary_index` |
 //! | **Out-of-Core** (SSD-based) | `diskann` | `diskann` (experimental) |
 //!
 //! **Default features**: `hnsw`, `innr` (SIMD).

@@ -1169,6 +1169,65 @@ fn run_rp_quant(
     }
 }
 
+#[cfg(all(feature = "hnsw", feature = "ivf_rabitq"))]
+fn run_symphony_qg(
+    cfg: &Config,
+    train: &[Vec<f32>],
+    test: &[Vec<f32>],
+    neighbors: &[Vec<i32>],
+    dim: usize,
+) {
+    use vicinity::hnsw::SymphonyQGIndex;
+
+    if !cfg.json {
+        println!("--- SymphonyQG (m=16, 4-bit RaBitQ) ---");
+    }
+
+    let build_start = Instant::now();
+    let mut index = SymphonyQGIndex::new(dim, 16, 16).unwrap();
+    for (i, vec) in train.iter().enumerate() {
+        index.add_slice(i as u32, vec).unwrap();
+    }
+    index.build().unwrap();
+    let build_time_s = build_start.elapsed().as_secs_f64();
+    let rss = current_rss_kb();
+
+    if !cfg.json {
+        println!(
+            "Build: {:.2}s ({:.0} vectors/sec)\n",
+            build_time_s,
+            train.len() as f64 / build_time_s
+        );
+        print_header();
+    }
+
+    for &ef in &cfg.ef_search_values {
+        let rerank_pool = (ef * 2).max(100);
+        let result = evaluate(
+            &|q, k| index.search_reranked(q, k, ef, rerank_pool).unwrap(),
+            test,
+            neighbors,
+            10,
+        );
+        if cfg.json {
+            let params_json = format!(
+                "{{\"m\":16,\"ef_search\":{},\"rerank_pool\":{}}}",
+                ef, rerank_pool
+            );
+            emit_result(
+                &cfg.results_path,
+                &json_line("symphony_qg", &params_json, build_time_s, rss, &result),
+            );
+        } else {
+            print_row(&format!("ef={}", ef), &result);
+        }
+    }
+
+    if !cfg.json {
+        println!();
+    }
+}
+
 #[cfg(feature = "curator")]
 fn run_curator(
     cfg: &Config,
@@ -1507,6 +1566,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 eprintln!("sparse_mips not available (compile with --features sparse_mips)");
             }
 
+            #[cfg(all(feature = "hnsw", feature = "ivf_rabitq"))]
+            "symphony_qg" => run_symphony_qg(&cfg, &train, &test, &neighbors, dim),
+
+            #[cfg(not(all(feature = "hnsw", feature = "ivf_rabitq")))]
+            "symphony_qg" => {
+                eprintln!("SymphonyQG not available (compile with --features hnsw,ivf_rabitq)");
+            }
+
             #[cfg(feature = "curator")]
             "curator" => run_curator(&cfg, &train, &test, &neighbors, dim),
 
@@ -1535,7 +1602,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             other => {
                 eprintln!(
-                    "Unknown algorithm: {}. Options: hnsw, nsw, ivfpq, emg, nsg, pipnn, sng, vamana, ivf_rabitq, finger, fresh_graph, filtered_graph, rp_quant, sparse_mips, curator, esg, binary_index, brute",
+                    "Unknown algorithm: {}. Options: hnsw, nsw, ivfpq, emg, nsg, pipnn, sng, vamana, ivf_rabitq, symphony_qg, finger, fresh_graph, filtered_graph, rp_quant, sparse_mips, curator, esg, binary_index, brute",
                     other
                 );
             }
