@@ -635,44 +635,11 @@ impl PipnnIndex {
         best
     }
 
-    #[allow(clippy::needless_range_loop)]
     fn ensure_connectivity(&mut self) {
-        let n = self.num_vectors;
-        let mut visited = vec![false; n];
-        let mut stack = vec![self.medoid as usize];
-        visited[self.medoid as usize] = true;
-
-        while let Some(node) = stack.pop() {
-            for &nb in &self.neighbors[node] {
-                let nb = nb as usize;
-                if nb < n && !visited[nb] {
-                    visited[nb] = true;
-                    stack.push(nb);
-                }
-            }
-        }
-
-        for i in 0..n {
-            if !visited[i] {
-                let vi = self.get_vector(i);
-                let mut best_id = self.medoid;
-                let mut best_dist =
-                    cosine_distance_normalized(vi, self.get_vector(self.medoid as usize));
-                for j in 0..n {
-                    if visited[j] && j != i {
-                        let d = cosine_distance_normalized(vi, self.get_vector(j));
-                        if d < best_dist {
-                            best_dist = d;
-                            best_id = j as u32;
-                        }
-                    }
-                }
-                self.neighbors[i].push(best_id);
-                if self.neighbors[best_id as usize].len() < self.params.max_degree {
-                    self.neighbors[best_id as usize].push(i as u32);
-                }
-            }
-        }
+        let (dim, vecs) = (self.dimension, &self.vectors);
+        crate::graph_utils::ensure_connectivity(&mut self.neighbors, self.medoid, |i, j| {
+            cosine_distance_normalized(&vecs[i * dim..(i + 1) * dim], &vecs[j * dim..(j + 1) * dim])
+        });
     }
 
     fn beam_search(&self, query: &[f32], ef: usize) -> Vec<(u32, f32)> {

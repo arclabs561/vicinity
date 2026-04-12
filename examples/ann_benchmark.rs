@@ -1169,6 +1169,161 @@ fn run_rp_quant(
     }
 }
 
+#[cfg(feature = "curator")]
+fn run_curator(
+    cfg: &Config,
+    train: &[Vec<f32>],
+    test: &[Vec<f32>],
+    neighbors: &[Vec<i32>],
+    dim: usize,
+) {
+    use vicinity::curator::{CuratorIndex, CuratorParams};
+
+    let params = CuratorParams {
+        branching_factor: 16,
+        max_leaf_size: 128,
+        ef_search: 256,
+        beam_width: 4,
+    };
+
+    if !cfg.json {
+        println!("--- Curator (branching=16, leaf=128) ---");
+    }
+
+    let build_start = Instant::now();
+    let mut index = CuratorIndex::new(dim, params).unwrap();
+    for (i, vec) in train.iter().enumerate() {
+        index.add(i as u32, vec.clone(), vec![]).unwrap();
+    }
+    index.build().unwrap();
+    let build_time_s = build_start.elapsed().as_secs_f64();
+    let rss = current_rss_kb();
+
+    if !cfg.json {
+        println!(
+            "Build: {:.2}s ({:.0} vectors/sec)\n",
+            build_time_s,
+            train.len() as f64 / build_time_s
+        );
+        print_header();
+    }
+
+    let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
+    if cfg.json {
+        let params_json = r#"{"branching_factor":16,"max_leaf_size":128}"#;
+        emit_result(
+            &cfg.results_path,
+            &json_line("curator", params_json, build_time_s, rss, &result),
+        );
+    } else {
+        print_row("--", &result);
+        println!();
+    }
+}
+
+#[cfg(all(feature = "esg", feature = "hnsw"))]
+fn run_esg(
+    cfg: &Config,
+    train: &[Vec<f32>],
+    test: &[Vec<f32>],
+    neighbors: &[Vec<i32>],
+    dim: usize,
+) {
+    use vicinity::esg::{EsgIndex, EsgParams};
+
+    let params = EsgParams {
+        hnsw_m: 16,
+        hnsw_ef_construction: 200,
+        ef_search: 100,
+        ..Default::default()
+    };
+
+    if !cfg.json {
+        println!("--- ESG (m=16, ef_search=100) ---");
+    }
+
+    let build_start = Instant::now();
+    let mut index = EsgIndex::new(dim, params).unwrap();
+    for (i, vec) in train.iter().enumerate() {
+        index.add(i as u32, vec.clone(), 0.0).unwrap();
+    }
+    index.build().unwrap();
+    let build_time_s = build_start.elapsed().as_secs_f64();
+    let rss = current_rss_kb();
+
+    if !cfg.json {
+        println!(
+            "Build: {:.2}s ({:.0} vectors/sec)\n",
+            build_time_s,
+            train.len() as f64 / build_time_s
+        );
+        print_header();
+    }
+
+    let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
+    if cfg.json {
+        let params_json = r#"{"hnsw_m":16,"ef_search":100}"#;
+        emit_result(
+            &cfg.results_path,
+            &json_line("esg", params_json, build_time_s, rss, &result),
+        );
+    } else {
+        print_row("--", &result);
+        println!();
+    }
+}
+
+#[cfg(feature = "binary_index")]
+fn run_binary_index(
+    cfg: &Config,
+    train: &[Vec<f32>],
+    test: &[Vec<f32>],
+    neighbors: &[Vec<i32>],
+    dim: usize,
+) {
+    use vicinity::binary_index::{BinaryFlatIndex, BinaryFlatParams};
+
+    let params = BinaryFlatParams {
+        rerank_factor: 10,
+        seed: 42,
+        ..Default::default()
+    };
+
+    if !cfg.json {
+        println!("--- BinaryFlat (rerank=10) ---");
+    }
+
+    let build_start = Instant::now();
+    let mut index = BinaryFlatIndex::new(dim, params).unwrap();
+    for (i, vec) in train.iter().enumerate() {
+        index.add_slice(i as u32, vec).unwrap();
+    }
+    index.build().unwrap();
+    let build_time_s = build_start.elapsed().as_secs_f64();
+    let rss = current_rss_kb();
+
+    if !cfg.json {
+        println!(
+            "Build: {:.2}s ({:.0} vectors/sec)\n",
+            build_time_s,
+            train.len() as f64 / build_time_s
+        );
+        print_header();
+    }
+
+    let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
+    if cfg.json {
+        let params_json = r#"{"rerank_factor":10}"#;
+        emit_result(
+            &cfg.results_path,
+            &json_line("binary_index", params_json, build_time_s, rss, &result),
+        );
+    } else {
+        print_row("--", &result);
+        println!();
+    }
+}
+
 fn run_brute(cfg: &Config, train: &[Vec<f32>], test: &[Vec<f32>], neighbors: &[Vec<i32>]) {
     if !cfg.json {
         println!("--- Brute Force (linear scan) ---");
@@ -1352,11 +1507,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 eprintln!("sparse_mips not available (compile with --features sparse_mips)");
             }
 
+            #[cfg(feature = "curator")]
+            "curator" => run_curator(&cfg, &train, &test, &neighbors, dim),
+
+            #[cfg(not(feature = "curator"))]
+            "curator" => {
+                eprintln!("Curator not available (compile with --features curator)");
+            }
+
+            #[cfg(all(feature = "esg", feature = "hnsw"))]
+            "esg" => run_esg(&cfg, &train, &test, &neighbors, dim),
+
+            #[cfg(not(all(feature = "esg", feature = "hnsw")))]
+            "esg" => {
+                eprintln!("ESG not available (compile with --features esg,hnsw)");
+            }
+
+            #[cfg(feature = "binary_index")]
+            "binary_index" => run_binary_index(&cfg, &train, &test, &neighbors, dim),
+
+            #[cfg(not(feature = "binary_index"))]
+            "binary_index" => {
+                eprintln!("BinaryIndex not available (compile with --features binary_index)");
+            }
+
             "brute" => run_brute(&cfg, &train, &test, &neighbors),
 
             other => {
                 eprintln!(
-                    "Unknown algorithm: {}. Options: hnsw, nsw, ivfpq, emg, nsg, pipnn, sng, vamana, ivf_rabitq, finger, fresh_graph, filtered_graph, rp_quant, sparse_mips, brute",
+                    "Unknown algorithm: {}. Options: hnsw, nsw, ivfpq, emg, nsg, pipnn, sng, vamana, ivf_rabitq, finger, fresh_graph, filtered_graph, rp_quant, sparse_mips, curator, esg, binary_index, brute",
                     other
                 );
             }
