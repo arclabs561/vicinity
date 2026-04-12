@@ -254,7 +254,7 @@ impl SymphonyQGIndex {
 
         // Navigate upper layers with greedy single-node descent.
         let mut current = entry_point;
-        let mut current_dist = approx_dist(&rotated_query, &codes[current as usize]);
+        let mut current_dist = approx_dist_sqr(&rotated_query, &codes[current as usize]);
 
         for layer_idx in (1..=entry_layer).rev() {
             if layer_idx >= self.index.layers.len() {
@@ -266,7 +266,7 @@ impl SymphonyQGIndex {
                 changed = false;
                 let neighbors = layer.get_neighbors(current);
                 for &neighbor_id in neighbors.iter() {
-                    let dist = approx_dist(&rotated_query, &codes[neighbor_id as usize]);
+                    let dist = approx_dist_sqr(&rotated_query, &codes[neighbor_id as usize]);
                     if dist < current_dist {
                         current_dist = dist;
                         current = neighbor_id;
@@ -282,7 +282,7 @@ impl SymphonyQGIndex {
         }
         let base_layer = &self.index.layers[0];
         let dist_fn = |_q: &[f32], node_id: u32| -> f32 {
-            approx_dist(&rotated_query, &codes[node_id as usize])
+            approx_dist_sqr(&rotated_query, &codes[node_id as usize])
         };
         Ok(crate::hnsw::search::greedy_search_layer_custom(
             query,
@@ -296,11 +296,11 @@ impl SymphonyQGIndex {
     }
 }
 
-/// Approximate L2 distance from a pre-rotated query to a quantized vector.
-/// Uses qntz's prerotated API to avoid redundant O(d^2) rotation per candidate.
+/// Approximate L2 squared distance from a pre-rotated query to a quantized vector.
+/// Returns L2^2 (no sqrt) -- monotonic with L2, correct for ranking.
 #[inline]
-fn approx_dist(rotated_query: &[f32], qv: &QuantizedVector) -> f32 {
-    RaBitQQuantizer::approximate_l2_sqr_prerotated(rotated_query, qv).sqrt()
+fn approx_dist_sqr(rotated_query: &[f32], qv: &QuantizedVector) -> f32 {
+    RaBitQQuantizer::approximate_l2_sqr_prerotated(rotated_query, qv)
 }
 
 #[cfg(test)]

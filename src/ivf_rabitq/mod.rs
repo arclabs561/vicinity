@@ -322,6 +322,12 @@ impl IVFRaBitQIndex {
         // neighbors. A bounded max-heap avoids the O(N log N) sort cost.
         let rerank_size = (k * 10).max(k * nprobe).max(64);
 
+        // Pre-rotate query once (O(d^2)), then use O(d) prerotated distance per candidate.
+        let rotated_query = self
+            .quantizer
+            .rotate_query(query)
+            .map_err(|e| RetrieveError::InvalidParameter(format!("rotate query: {e}")))?;
+
         // Phase 1: approximate distances via RaBitQ with bounded shortlist.
         // Use a max-heap so we can evict the worst candidate in O(log n).
         let mut heap: std::collections::BinaryHeap<(FloatOrd, u32)> =
@@ -334,12 +340,8 @@ impl IVFRaBitQIndex {
             }
 
             for (i, qv) in cluster.quantized.iter().enumerate() {
-                let dist = self
-                    .quantizer
-                    .approximate_distance(query, qv)
-                    .map_err(|e| {
-                        RetrieveError::InvalidParameter(format!("RaBitQ distance: {e}"))
-                    })?;
+                let dist =
+                    RaBitQQuantizer::approximate_l2_sqr_prerotated(&rotated_query, qv).sqrt();
                 let vec_idx = cluster.vector_indices[i];
 
                 if heap.len() < rerank_size {
