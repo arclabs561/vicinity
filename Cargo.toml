@@ -255,6 +255,14 @@ name = "embedding_pipeline"
 path = "examples/embedding_pipeline.rs"
 required-features = ["hnsw"]
 
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+[profile.bench]
+lto = "thin"
+codegen-units = 1
+
 [[bench]]
 name = "hnsw"
 harness = false

@@ -421,23 +421,22 @@ pub fn construct_graph(index: &mut HNSWIndex) -> Result<(), RetrieveError> {
                 Vec::new()
             };
 
-            // Pre-compute distances from current to ALL its neighbors (existing + selected)
-            // Use HashMap for O(1) lookup during pruning
-            let mut all_current_distances: std::collections::HashMap<u32, f32> =
-                std::collections::HashMap::with_capacity(
-                    current_existing_neighbors.len() + selected.len(),
-                );
+            // Pre-compute distances from current to ALL its neighbors (existing + selected).
+            // Uses a flat Vec instead of HashMap: for m ≤ 32 entries, linear scan avoids
+            // hashing overhead and repeated allocations that dominated 7-8% of construction.
+            let mut all_current_distances: Vec<(u32, f32)> =
+                Vec::with_capacity(current_existing_neighbors.len() + selected.len());
 
             // Add distances to existing neighbors
             for &id in &current_existing_neighbors {
                 let vec = get_vector(&index.vectors, index.dimension, id as usize);
                 let dist = dist_fn(current_vector, vec);
-                all_current_distances.insert(id, dist);
+                all_current_distances.push((id, dist));
             }
 
             // Add distances to selected neighbors
             for &(nid, dist) in &neighbor_data {
-                all_current_distances.insert(nid, dist);
+                all_current_distances.push((nid, dist));
             }
 
             // Pre-compute existing neighbor data for reverse connections
@@ -456,23 +455,24 @@ pub fn construct_graph(index: &mut HNSWIndex) -> Result<(), RetrieveError> {
                 })
                 .collect();
 
-            // Pre-compute distances for each selected neighbor to ALL its potential neighbors
-            // This includes: existing neighbors of that node + current_id
-            let mut all_reverse_distances: Vec<std::collections::HashMap<u32, f32>> = Vec::new();
+            // Pre-compute distances for each selected neighbor to ALL its potential neighbors.
+            // Uses flat Vecs instead of HashMaps to avoid allocation/hashing overhead.
+            let mut all_reverse_distances: Vec<Vec<(u32, f32)>> =
+                Vec::with_capacity(neighbor_data.len());
             for (idx, &(neighbor_id, dist_to_current)) in neighbor_data.iter().enumerate() {
                 let neighbor_vec =
                     get_vector(&index.vectors, index.dimension, neighbor_id as usize);
-                let mut distances = std::collections::HashMap::new();
+                let mut distances = Vec::with_capacity(1 + existing_neighbor_lists[idx].len());
 
                 // Distance to current_id (already computed)
-                distances.insert(current_id as u32, dist_to_current);
+                distances.push((current_id as u32, dist_to_current));
 
                 // Distances to existing neighbors
                 for &existing_id in &existing_neighbor_lists[idx] {
                     let existing_vec =
                         get_vector(&index.vectors, index.dimension, existing_id as usize);
                     let dist = dist_fn(neighbor_vec, existing_vec);
-                    distances.insert(existing_id, dist);
+                    distances.push((existing_id, dist));
                 }
 
                 all_reverse_distances.push(distances);
@@ -503,8 +503,11 @@ pub fn construct_graph(index: &mut HNSWIndex) -> Result<(), RetrieveError> {
                     let neighbor_candidates: Vec<(u32, f32)> = neighbors
                         .iter()
                         .map(|&id| {
-                            let dist =
-                                all_current_distances.get(&id).copied().unwrap_or_else(|| {
+                            let dist = all_current_distances
+                                .iter()
+                                .find(|(k, _)| *k == id)
+                                .map(|(_, v)| *v)
+                                .unwrap_or_else(|| {
                                     let vec =
                                         get_vector(&index.vectors, index.dimension, id as usize);
                                     dist_fn(current_vector, vec)
@@ -537,10 +540,15 @@ pub fn construct_graph(index: &mut HNSWIndex) -> Result<(), RetrieveError> {
                     let reverse_candidates: Vec<(u32, f32)> = reverse_neighbors
                         .iter()
                         .map(|&id| {
-                            let dist = distances.get(&id).copied().unwrap_or_else(|| {
-                                let vec = get_vector(&index.vectors, index.dimension, id as usize);
-                                dist_fn(neighbor_vec, vec)
-                            });
+                            let dist = distances
+                                .iter()
+                                .find(|(k, _)| *k == id)
+                                .map(|(_, v)| *v)
+                                .unwrap_or_else(|| {
+                                    let vec =
+                                        get_vector(&index.vectors, index.dimension, id as usize);
+                                    dist_fn(neighbor_vec, vec)
+                                });
                             (id, dist)
                         })
                         .collect();
