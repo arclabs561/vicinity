@@ -2,6 +2,10 @@
 //!
 //! - [`build_knn_graph_nndescent`]: NN-descent (Dong et al., 2011) kNN graph construction.
 //! - [`ensure_connectivity`]: O(n * k) graph connectivity repair via union-find.
+//!
+//! Both functions are conditionally used depending on which algorithm features
+//! are enabled. Allow dead_code at the module level to avoid per-feature-combo lint noise.
+#![allow(dead_code)]
 
 use smallvec::SmallVec;
 
