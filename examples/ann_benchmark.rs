@@ -1070,7 +1070,12 @@ fn run_filtered_graph(
 }
 
 #[cfg(feature = "sparse_mips")]
-fn run_sparse_mips(_cfg: &Config, _train: &[Vec<f32>], _test: &[Vec<f32>], _neighbors: &[Vec<i32>]) {
+fn run_sparse_mips(
+    _cfg: &Config,
+    _train: &[Vec<f32>],
+    _test: &[Vec<f32>],
+    _neighbors: &[Vec<i32>],
+) {
     eprintln!(
         "sparse_mips: skipped -- index requires sparse vectors (SparseVector); \
          the dense benchmark dataset (f32 slices) is incompatible. \
