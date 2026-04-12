@@ -136,6 +136,7 @@ mod tests {
 }
 
 /// `f32` wrapper implementing `Ord` via [`f32::total_cmp`] for use in `BinaryHeap`.
+#[allow(dead_code)]
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) struct FloatOrd(pub f32);
 impl Eq for FloatOrd {}
