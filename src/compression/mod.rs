@@ -53,17 +53,9 @@ pub use traits::IdSetCompressor;
 #[cfg(not(feature = "id-compression"))]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum IdCompressionMethod {
-    /// No compression (uncompressed storage).
-    #[default]
-    None,
-    /// Elias-Fano encoding (baseline, sorted sequences).
-    EliasFano,
-    /// Partitioned Elias–Fano (cluster-aware monotone sequences).
-    PartitionedEliasFano,
     /// Random Order Coding (optimal for sets, uses bits-back with ANS).
+    #[default]
     Roc,
-    /// Wavelet tree (full random access, future).
-    WaveletTree,
 }
 
 #[cfg(all(test, feature = "id-compression"))]

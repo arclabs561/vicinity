@@ -135,26 +135,30 @@ impl AnisotropicQuantizer {
         codes
     }
 
-    /// Build Lookup Table (LUT) for a query.
+    /// Build flat Lookup Table (LUT) for a query.
     ///
-    /// Returns a table of size `[num_codebooks][codebook_size]` containing distances.
-    /// This allows O(M) distance computation per candidate during search.
-    pub fn build_lut(&self, query: &[f32]) -> Vec<Vec<f32>> {
-        let mut lut = Vec::with_capacity(self.num_codebooks);
+    /// Returns a contiguous table of size `num_codebooks * codebook_size`.
+    /// Access: `lut[codebook_idx * codebook_size + code]`.
+    /// Flat layout eliminates pointer chasing in the inner search loop.
+    pub fn build_lut_flat(&self, query: &[f32]) -> Vec<f32> {
+        let total = self.num_codebooks * self.codebook_size;
+        let mut lut = Vec::with_capacity(total);
 
         for m in 0..self.num_codebooks {
             let start_dim = m * self.subvector_dim;
             let query_sub = &query[start_dim..start_dim + self.subvector_dim];
 
-            let mut sub_lut = Vec::with_capacity(self.codebook_size);
             for k in 0..self.codebook_size {
                 let codeword = self.get_codeword(m, k);
-                let score = simd::dot(query_sub, codeword);
-                sub_lut.push(score);
+                lut.push(simd::dot(query_sub, codeword));
             }
-            lut.push(sub_lut);
         }
         lut
+    }
+
+    /// Codebook size (number of codewords per subquantizer).
+    pub fn codebook_size(&self) -> usize {
+        self.codebook_size
     }
 }
 

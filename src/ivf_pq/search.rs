@@ -38,6 +38,23 @@ impl Quantizer {
         }
     }
 
+    /// Compute ADC table into a caller-provided buffer (avoids allocation per cluster).
+    pub fn compute_adc_table_into(
+        &self,
+        query: &[f32],
+        table: &mut Vec<f32>,
+    ) -> Result<(), RetrieveError> {
+        match self {
+            Self::Product(pq) => pq.compute_adc_table_into(query, table),
+            Self::Optimized(opq) => {
+                let t = opq.approximate_distance_table(query)?;
+                table.clear();
+                table.extend_from_slice(&t);
+                Ok(())
+            }
+        }
+    }
+
     /// Compute approximate distance using a pre-computed ADC table and PQ codes.
     pub fn distance_with_table(&self, table: &[f32], codes: &[u8]) -> f32 {
         match self {
@@ -230,26 +247,28 @@ impl Cluster {
         }
     }
 
-    /// Get IDs (for immutable access, clones if compressed).
-    fn get_ids_immut(&self) -> Vec<u32> {
+    /// Get IDs as a borrowed slice (avoids cloning for the uncompressed case).
+    fn get_ids_ref(&self) -> std::borrow::Cow<'_, [u32]> {
         match &self.storage {
-            ClusterStorage::Uncompressed(ids) => ids.clone(),
+            ClusterStorage::Uncompressed(ids) => std::borrow::Cow::Borrowed(ids),
             #[cfg(feature = "id-compression")]
             ClusterStorage::Compressed {
                 data,
                 universe_size,
                 ..
             } => {
-                // For immutable access, we need to decompress (no caching)
-                crate::compression::decompress_set_enveloped(data)
-                    .map(|(_choice, u2, ids)| {
-                        if u2 == *universe_size {
-                            ids
-                        } else {
-                            Vec::new()
-                        }
-                    })
-                    .unwrap_or_else(|_| Vec::new())
+                // Compressed: must decompress (returns owned data)
+                std::borrow::Cow::Owned(
+                    crate::compression::decompress_set_enveloped(data)
+                        .map(|(_choice, u2, ids)| {
+                            if u2 == *universe_size {
+                                ids
+                            } else {
+                                Vec::new()
+                            }
+                        })
+                        .unwrap_or_else(|_| Vec::new()),
+                )
             }
         }
     }
@@ -609,10 +628,11 @@ impl IVFPQIndex {
         let mut candidates = Vec::new();
         let mut query_residual = vec![0.0f32; self.dimension];
         let mut codes_batch = Vec::new();
+        let mut adc_table = Vec::new(); // Reused across clusters to avoid per-cluster allocation
 
         for (cluster_idx, _) in &cluster_distances {
             let cluster = &self.clusters[*cluster_idx];
-            let ids = cluster.get_ids_immut();
+            let ids = cluster.get_ids_ref();
 
             // Compute query residual in-place (no allocation)
             let centroid = self.get_centroid(*cluster_idx);
@@ -620,15 +640,15 @@ impl IVFPQIndex {
                 query_residual[i] = q - c;
             }
 
-            // Build ADC table from query residual
-            let adc_table = pq.compute_adc_table(&query_residual)?;
+            // Build ADC table from query residual (reuses buffer)
+            pq.compute_adc_table_into(&query_residual, &mut adc_table)?;
 
             if ids.len() >= SIMD_BATCH_THRESHOLD {
                 // Gather codes into a reusable buffer
                 let num_cb = self.params.num_codebooks;
                 codes_batch.clear();
                 codes_batch.reserve(ids.len() * num_cb);
-                for &vector_idx in &ids {
+                for &vector_idx in ids.as_ref() {
                     let start = vector_idx as usize * num_cb;
                     codes_batch.extend_from_slice(&self.quantized_codes[start..start + num_cb]);
                 }
@@ -661,7 +681,7 @@ impl IVFPQIndex {
                 }
             } else {
                 // Scalar fallback for small clusters
-                for &vector_idx in &ids {
+                for &vector_idx in ids.as_ref() {
                     let start = vector_idx as usize * self.params.num_codebooks;
                     let end = start + self.params.num_codebooks;
                     let codes = &self.quantized_codes[start..end];
@@ -759,6 +779,7 @@ impl IVFPQIndex {
         // Search in top nprobe clusters, skipping those without matching vectors
         let mut candidates = Vec::new();
         let mut query_residual = vec![0.0f32; self.dimension];
+        let mut adc_table = Vec::new();
 
         let pq = self
             .pq
@@ -779,12 +800,12 @@ impl IVFPQIndex {
                 query_residual[i] = q - c;
             }
 
-            let adc_table = pq.compute_adc_table(&query_residual)?;
+            pq.compute_adc_table_into(&query_residual, &mut adc_table)?;
 
             // Search vectors in this cluster, filtering by metadata
             if let Some(ref metadata_store) = self.metadata {
-                let ids = cluster.get_ids_immut();
-                for &vector_idx in &ids {
+                let ids = cluster.get_ids_ref();
+                for &vector_idx in ids.as_ref() {
                     let actual_doc_id = self.doc_ids[vector_idx as usize];
                     if metadata_store.matches(actual_doc_id, filter) {
                         let start = vector_idx as usize * self.params.num_codebooks;

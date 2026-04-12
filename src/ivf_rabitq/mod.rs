@@ -340,8 +340,8 @@ impl IVFRaBitQIndex {
             }
 
             for (i, qv) in cluster.quantized.iter().enumerate() {
-                let dist =
-                    RaBitQQuantizer::approximate_l2_sqr_prerotated(&rotated_query, qv).sqrt();
+                // Use squared distance directly -- sqrt is monotone so ranking is preserved.
+                let dist = RaBitQQuantizer::approximate_l2_sqr_prerotated(&rotated_query, qv);
                 let vec_idx = cluster.vector_indices[i];
 
                 if heap.len() < rerank_size {
