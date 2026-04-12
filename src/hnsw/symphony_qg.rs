@@ -231,7 +231,9 @@ impl SymphonyQGIndex {
     fn rotate_query(&self, query: &[f32]) -> Result<Vec<f32>, RetrieveError> {
         self.quantizer
             .as_ref()
-            .ok_or_else(|| RetrieveError::InvalidParameter("quantizer must be set after build".into()))?
+            .ok_or_else(|| {
+                RetrieveError::InvalidParameter("quantizer must be set after build".into())
+            })?
             .rotate_query(query)
             .map_err(|e| RetrieveError::InvalidParameter(format!("rotate query: {e}")))
     }
