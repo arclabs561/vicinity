@@ -390,6 +390,87 @@ pub fn greedy_search_layer_multi_entry(
     })
 }
 
+/// Greedy search with a caller-provided distance function.
+///
+/// Unlike [`greedy_search_layer`] which computes `dist(query, stored_vector)`,
+/// this variant takes a closure `dist_fn(query, internal_node_id) -> f32`.
+/// The caller is responsible for resolving the node ID to whatever data they
+/// need (box geometry, quantized codes, etc.).
+///
+/// This enables asymmetric distance computation: the graph is built with
+/// center-to-center distance for navigability, but search uses any distance
+/// function (box-to-point, quantized-to-float, etc.).
+///
+/// Prefetching is still performed on the stored vector array to keep the
+/// center vectors warm for the common case where the custom distance function
+/// reads them.
+#[cfg(feature = "hnsw")]
+pub fn greedy_search_layer_custom(
+    query: &[f32],
+    entry_point: u32,
+    layer: &crate::hnsw::graph::Layer,
+    vectors: &[f32],
+    dimension: usize,
+    ef: usize,
+    dist_fn: &dyn Fn(&[f32], u32) -> f32,
+) -> Vec<(u32, f32)> {
+    let num_vectors = vectors.len() / dimension;
+
+    with_visited_set(num_vectors, ef * 2, |visited| {
+        let mut candidates: BinaryHeap<MinCandidate> = BinaryHeap::with_capacity(ef * 2);
+        let mut results = innr::TopK::new(ef);
+
+        // Start from entry point
+        let entry_distance = dist_fn(query, entry_point);
+        candidates.push(MinCandidate {
+            id: entry_point,
+            distance: entry_distance,
+        });
+        results.insert(entry_point, entry_distance);
+        visited.insert(entry_point);
+
+        while let Some(candidate) = candidates.pop() {
+            let worst_dist = results.threshold();
+            if candidate.distance > worst_dist && results.len() >= ef {
+                break;
+            }
+
+            let neighbors = layer.get_neighbors(candidate.id);
+            for (i, &neighbor_id) in neighbors.iter().enumerate() {
+                // Prefetch: keep vectors warm even for custom distance fns
+                // that read them (the common case).
+                if i + 1 < neighbors.len() {
+                    let next_id = neighbors[i + 1] as usize;
+                    if next_id < num_vectors {
+                        let ptr = vectors.as_ptr().wrapping_add(next_id * dimension);
+                        prefetch_read_data(ptr);
+                        prefetch_read_data(ptr.wrapping_add(16));
+                    }
+                }
+                if i + 4 < neighbors.len() {
+                    let far_id = neighbors[i + 4] as usize;
+                    if far_id < num_vectors {
+                        prefetch_read_data(vectors.as_ptr().wrapping_add(far_id * dimension));
+                    }
+                }
+                if visited.insert(neighbor_id) {
+                    let neighbor_distance = dist_fn(query, neighbor_id);
+
+                    if results.len() < ef || neighbor_distance < results.threshold() {
+                        candidates.push(MinCandidate {
+                            id: neighbor_id,
+                            distance: neighbor_distance,
+                        });
+                    }
+                    results.insert(neighbor_id, neighbor_distance);
+                }
+            }
+        }
+
+        results.into_sorted()
+    })
+}
+
 /// Greedy search with adaptive early termination.
 ///
 /// Same beam search as [`greedy_search_layer`], but uses an
