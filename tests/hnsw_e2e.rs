@@ -275,6 +275,10 @@ fn test_scaling_recall() {
         }
         let mean_recall = total_recall / queries.len() as f32;
         eprintln!("n={}: recall@{}={:.1}%", n, k, mean_recall * 100.0);
+        assert!(
+            mean_recall >= 0.5,
+            "n={n}: recall {mean_recall:.3} below 0.5 -- regression"
+        );
     }
 }
 
@@ -335,6 +339,10 @@ fn test_compare_neighbor_selection() {
         }
         let mean_recall = total_recall / queries.len() as f32;
         eprintln!("{}: recall@{}={:.1}%", name, k, mean_recall * 100.0);
+        assert!(
+            mean_recall >= 0.5,
+            "{name}: recall {mean_recall:.3} below 0.5 -- regression"
+        );
     }
 }
 
@@ -475,6 +483,10 @@ fn test_high_ef_search() {
         }
         let mean_recall = total_recall / queries.len() as f32;
         eprintln!("ef={}: recall@{}={:.1}%", ef, k, mean_recall * 100.0);
+        assert!(
+            mean_recall >= 0.5,
+            "ef={ef}: recall {mean_recall:.3} below 0.5 -- regression"
+        );
     }
 }
 

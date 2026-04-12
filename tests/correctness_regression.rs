@@ -307,17 +307,26 @@ mod nsw_tests {
         let (index, _) = build_nsw(80, 8, 99);
         let n = 80usize;
 
-        // Extract neighbor data through search (we can't directly access neighbors in tests,
-        // so verify reachability by confirming every node can be retrieved as a nearest
-        // neighbor of some query close to it).
-        // Simple proxy: every insert returns a result set.
+        // Verify reachability: search with high ef should find enough distinct nodes
+        // across multiple random queries to cover most of the graph.
+        let mut seen = std::collections::HashSet::new();
         let mut rng = Lcg::new(77);
-        for _ in 0..20 {
+        for _ in 0..40 {
             let query = rng.next_normalized(8);
-            let results = index.search(&query, 5, 30).unwrap();
+            let results = index.search(&query, 10, 50).unwrap();
             assert!(!results.is_empty(), "search returned no results");
+            for (id, _) in &results {
+                seen.insert(*id);
+            }
         }
-        let _ = n; // used implicitly
+        // With 40 random queries at k=10/ef=50 on 80 vectors, we should reach most nodes
+        let coverage = seen.len() as f32 / n as f32;
+        assert!(
+            coverage >= 0.5,
+            "only {}/{n} nodes reachable ({:.0}%) -- graph may be disconnected",
+            seen.len(),
+            coverage * 100.0
+        );
     }
 
     #[test]
