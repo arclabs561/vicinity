@@ -66,20 +66,32 @@ Each algorithm has a named feature flag:
 
 | Algorithm | Feature | Notes |
 |-----------|---------|-------|
-| HNSW | `hnsw` (default) | Best recall/QPS balance for in-memory search up to ~100M vectors |
-| NSW | `nsw` | ~10× faster search than HNSW at the same ef; 1–2 pp lower recall ceiling |
-| IVF-PQ | `ivf_pq` | ~25× less memory than HNSW; recall depends on codebooks — use num_codebooks ≥ dim/5 |
-| Vamana | `vamana` | ~8.7× faster search than HNSW at same recall; higher build time than HNSW |
-| DiskANN | `diskann` | Vamana + disk I/O layout; suited for datasets > available RAM |
-| IVF-AVQ | `ivf_avq` | Anisotropic VQ + reranking; optimized for inner product search (MIPS) |
-| SNG | `sng` | O(n²) construction; seconds at n=10K, hours at n=100K — not for large datasets |
-| DEG | `hnsw` | Density-adaptive edge count; O(n²) construction — same scale limits as SNG |
-| KD-Tree | `kdtree` | Exact; fast for d ≤ 20, recall degrades sharply above d=30 |
-| Ball Tree | `balltree` | Exact; slightly better than KD-Tree for d=20–50 |
-| RP-Forest | `rptree` | Approximate; fast build, moderate recall; good for high-d data |
-| K-Means Tree | `kmeans_tree` | Hierarchical clustering index; suited for clustered or categorical data |
+| HNSW | `hnsw` (default) | Best recall/QPS balance for in-memory search |
+| SymphonyQG | `hnsw` + `ivf_rabitq` | HNSW with RaBitQ quantized graph traversal; cheap approximate beam search + exact rerank |
+| NSW | `nsw` | Flat small-world graph; competitive with HNSW on high-d data |
+| Vamana | `vamana` | DiskANN-style robust pruning; fast search, higher build time |
+| NSG | `nsg` | Monotonic RNG pruning; 50K cap due to O(n) ensure_connectivity |
+| EMG | `emg` | Multi-scale graph with alpha-pruning |
+| FINGER | `finger` | Projection-based distance lower bounds for search pruning |
+| PiPNN | `pipnn` | Partition-then-refine with HashPrune; reduces I/O during build |
+| FreshGraph | `fresh_graph` | Streaming insert/delete with tombstones |
+| IVF-PQ | `ivf_pq` | Compressed index; 32-64x less memory, lower recall |
+| IVF-AVQ | `ivf_avq` | Anisotropic VQ + reranking; inner product search |
+| IVF-RaBitQ | `ivf_rabitq` | RaBitQ binary quantization; provable error bounds |
+| RpQuant | `rp_quant` | Random projection + scalar quantization |
+| BinaryFlat | `binary_index` | 1-bit quantization + full-precision rerank |
+| Curator | `curator` | K-means tree with per-label Bloom filters; low-selectivity filtered search |
+| FilteredGraph | `filtered_graph` | Predicate-filtered graph search (AND/OR metadata filters) |
+| ESG | `esg` | Range-filtered search over numeric attributes |
+| SparseMIPS | `sparse_mips` | Graph index for sparse vectors (SPLADE/BM25) |
+| DiskANN | `diskann` | Vamana + SSD I/O layout; experimental |
+| SNG | `sng` | Small navigable graph; O(n^2) construction |
+| DEG | `hnsw` | Density-adaptive edge budgets (submodule of hnsw); O(n^2) |
+| KD-Tree | `kdtree` | Exact NN; fast for d <= 20 |
+| Ball Tree | `balltree` | Exact NN; slightly better than KD-Tree for d=20-50 |
+| RP-Forest | `rptree` | Approximate; fast build, moderate recall |
 
-Quantization: PQ, RaBitQ, SQ8 (feature: `quantization`).
+Quantization: RaBitQ, SAQ (`quantization` feature, via `qntz` crate). PQ is part of `ivf_pq`.
 
 See [docs.rs](https://docs.rs/vicinity) for the full API.
 
