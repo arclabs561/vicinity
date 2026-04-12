@@ -386,6 +386,7 @@ impl PipnnIndex {
     // ── Internal: leaf building ────────────────────────────────────────
 
     /// Build kNN graph within a leaf and feed edges to HashPrune.
+    #[allow(dead_code)]
     fn build_leaf(&mut self, leaf: &[u32]) {
         if leaf.len() <= 1 {
             return;
