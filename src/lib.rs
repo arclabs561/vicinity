@@ -181,7 +181,7 @@ pub mod filtering;
 ))]
 pub(crate) mod graph_utils;
 #[cfg(feature = "hnsw")]
-pub(crate) mod lid;
+pub mod lid;
 pub(crate) mod simd;
 
 // Spectral sanity helpers (feature-gated).

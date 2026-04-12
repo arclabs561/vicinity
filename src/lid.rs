@@ -1,6 +1,3 @@
-// Only a subset of LID functions are currently wired into DualBranchHNSW.
-// The rest are research primitives kept for future use.
-#![allow(dead_code)]
 //! Local Intrinsic Dimensionality (LID) estimation.
 //!
 //! # Intuition
