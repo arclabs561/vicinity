@@ -1550,6 +1550,98 @@ impl HNSWIndex {
         }
     }
 
+    /// Search with a caller-provided distance function.
+    ///
+    /// The graph structure (built with center-to-center distance) is used for
+    /// navigation, but the provided `dist_fn` is called for every distance
+    /// computation during search. The closure receives `(query, internal_id)`
+    /// and must return a distance value.
+    ///
+    /// This enables asymmetric search: build the graph with point distances
+    /// for navigability, search with box-to-point, quantized, or any other
+    /// distance function.
+    ///
+    /// The `internal_id` passed to the closure is the zero-based insertion
+    /// order index (same as the index into flat vector storage). The caller
+    /// must maintain a parallel array mapping these IDs to their custom data
+    /// (box geometry, quantization codes, etc.).
+    ///
+    /// Returns `(doc_id, distance)` pairs sorted by distance ascending.
+    pub fn search_with_distance(
+        &self,
+        query: &[f32],
+        k: usize,
+        ef: usize,
+        dist_fn: &dyn Fn(&[f32], u32) -> f32,
+    ) -> Result<Vec<(u32, f32)>, RetrieveError> {
+        if !self.built {
+            return Err(RetrieveError::InvalidParameter(
+                "index must be built before search".into(),
+            ));
+        }
+        if self.num_vectors == 0 {
+            return Err(RetrieveError::EmptyIndex);
+        }
+
+        // Navigate upper layers with standard distance (center-to-center)
+        let entry_point = self.get_entry_point().ok_or(RetrieveError::EmptyIndex)?;
+        let entry_layer = self.layer_assignments[entry_point as usize] as usize;
+
+        let mut current_closest = entry_point;
+        let mut current_dist = self.dist(query, self.get_vector(entry_point as usize));
+
+        for layer_idx in (1..=entry_layer).rev() {
+            if layer_idx >= self.layers.len() {
+                continue;
+            }
+            let layer = &self.layers[layer_idx];
+            let mut changed = true;
+            let mut visited = std::collections::HashSet::with_capacity(ef.min(100));
+
+            while changed {
+                changed = false;
+                visited.insert(current_closest);
+                for &neighbor_id in layer.get_neighbors(current_closest).iter() {
+                    if visited.contains(&neighbor_id) {
+                        continue;
+                    }
+                    let dist = self.dist(query, self.get_vector(neighbor_id as usize));
+                    if dist < current_dist {
+                        current_dist = dist;
+                        current_closest = neighbor_id;
+                        changed = true;
+                    }
+                }
+            }
+        }
+
+        // Fine search in base layer with custom distance
+        if !self.layers.is_empty() {
+            let base_results = crate::hnsw::search::greedy_search_layer_custom(
+                query,
+                current_closest,
+                &self.layers[0],
+                &self.vectors,
+                self.dimension,
+                ef.max(k),
+                dist_fn,
+            );
+
+            let results = base_results
+                .into_iter()
+                .take(k)
+                .filter(|(internal_id, _)| !self.tombstones.is_deleted(*internal_id as usize))
+                .filter_map(|(internal_id, dist)| {
+                    let doc_id = self.doc_ids.get(internal_id as usize).copied()?;
+                    Some((doc_id, dist))
+                })
+                .collect();
+            Ok(results)
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
     /// Search for multiple queries in parallel.
     ///
     /// Returns one result vector per query, in the same order as the input queries.
@@ -2680,6 +2772,53 @@ mod tests {
 
         assert_eq!(batch.len(), 1);
         assert_eq!(batch[0], single, "single-query MQO should match search");
+    }
+
+    #[test]
+    fn test_search_with_distance_matches_standard() {
+        let (index, q) = build_test_index();
+        let k = 5;
+        let ef = 64;
+
+        let standard = index.search(&q, k, ef).unwrap();
+
+        // Custom distance that does the same thing as the standard path
+        let vectors = &index.vectors;
+        let dim = index.dimension;
+        let dist_fn = |query: &[f32], internal_id: u32| -> f32 {
+            let start = internal_id as usize * dim;
+            let vec = &vectors[start..start + dim];
+            crate::distance::cosine_distance_normalized(query, vec)
+        };
+        let custom = index.search_with_distance(&q, k, ef, &dist_fn).unwrap();
+
+        assert_eq!(standard.len(), custom.len());
+        for (s, c) in standard.iter().zip(custom.iter()) {
+            assert_eq!(s.0, c.0, "doc_ids should match");
+            assert!((s.1 - c.1).abs() < 1e-6, "distances should match");
+        }
+    }
+
+    #[test]
+    fn test_search_with_distance_custom_metric() {
+        // Build index with cosine, search with L2 -- should reorder results
+        let (index, q) = build_test_index();
+        let k = 5;
+        let ef = 64;
+
+        let vectors = &index.vectors;
+        let dim = index.dimension;
+        let l2_dist = |query: &[f32], internal_id: u32| -> f32 {
+            let start = internal_id as usize * dim;
+            let vec = &vectors[start..start + dim];
+            crate::distance::l2_distance(query, vec)
+        };
+        let results = index.search_with_distance(&q, k, ef, &l2_dist).unwrap();
+
+        // Results should be sorted by L2 distance
+        for w in results.windows(2) {
+            assert!(w[0].1 <= w[1].1, "results not sorted by custom distance");
+        }
     }
 }
 
