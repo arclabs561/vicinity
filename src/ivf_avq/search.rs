@@ -225,7 +225,8 @@ impl IVFAVQIndex {
 
         // Select top partitions
         let num_probe = self.params.nprobe.min(self.params.num_partitions);
-        let lut = quantizer.build_lut(query); // Precompute LUT for residuals
+        let lut = quantizer.build_lut_flat(query); // Precompute flat LUT for residuals
+        let codebook_size = quantizer.codebook_size();
 
         let mut candidates = Vec::new();
 
@@ -238,15 +239,14 @@ impl IVFAVQIndex {
             for i in 0..num_vectors {
                 // Reconstruct approximate score:
                 // <q, x> ≈ <q, c> + <q, r>
-                // We have <q, c> as center_score
-                // <q, r> is approximated by LUT
+                // <q, r> approximated by flat LUT (single array, no pointer chasing)
 
                 let mut residual_score = 0.0;
                 let code_start = i * m;
                 let codes = &partition.codes[code_start..code_start + m];
 
                 for (subspace_idx, &code) in codes.iter().enumerate() {
-                    residual_score += lut[subspace_idx][code as usize];
+                    residual_score += lut[subspace_idx * codebook_size + code as usize];
                 }
 
                 let approx_score = center_score + residual_score;
@@ -254,12 +254,16 @@ impl IVFAVQIndex {
             }
         }
 
-        // 3. Re-rank top candidates
-        candidates.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
-        let top_candidates: Vec<(u32, f32)> = candidates
-            .into_iter()
-            .take(self.params.num_reorder.max(k))
-            .collect();
+        // 3. Re-rank top candidates (partial sort: O(n) instead of O(n log n))
+        let num_reorder = self.params.num_reorder.max(k);
+        let top_candidates: Vec<(u32, f32)> = if candidates.len() > num_reorder {
+            // Partition so the top num_reorder are in candidates[..num_reorder]
+            candidates.select_nth_unstable_by(num_reorder - 1, |a, b| b.1.total_cmp(&a.1));
+            candidates.truncate(num_reorder);
+            candidates
+        } else {
+            candidates
+        };
 
         // Exact re-ranking (uses vector_idx to look up in self.vectors)
         let reranked = reranking::rerank(query, &top_candidates, &self.vectors, self.dimension, k);

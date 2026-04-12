@@ -74,7 +74,6 @@
 //! | [`dual_branch::DualBranchHNSW`] | LID-aware | Datasets with outliers or varying density; uses skip bridges for sparse regions |
 //! | [`deg::DEGIndex`] | Density-adaptive | Dense/sparse regions get different edge budgets; small datasets (n < 10K) |
 //! | `symphony_qg::SymphonyQGIndex` | Quantized graph | RaBitQ codes co-located with graph; cheap approximate traversal + exact rerank |
-//! | [`probabilistic_routing::ProbabilisticRouter`] | Routing optimizer | Wraps any graph with probability-based edge skipping for higher QPS |
 //!
 //! **Standard** ([`HNSWIndex`]): The default. Build the full graph, then query. Best when
 //! the dataset is static or changes infrequently.
@@ -111,8 +110,6 @@
 //! - [`dual_branch`]: LID-based insertion with skip bridges (arXiv:2501.13992)
 //! - `symphony_qg`: RaBitQ quantized graph traversal (SymphonyQG, SIGMOD 2025)
 //! - [`deg`]: Density-adaptive edge budgets
-//! - [`probabilistic_routing`]: Probability-based edge skipping for higher QPS
-//! - [`scalar_quantized`]: SQ8 asymmetric distance (4x memory reduction)
 //! - [`AdaptiveConfig`] / [`HNSWIndex::search_adaptive`]: DARTH-style early termination
 //!
 //! # Historical Lineage
@@ -182,10 +179,6 @@ pub mod dual_branch;
 #[cfg(feature = "hnsw")]
 pub use dual_branch::{DualBranchConfig, DualBranchHNSW, DualBranchStats, SkipBridge};
 
-// Scalar quantization (SQ8) wrapper
-#[cfg(all(feature = "hnsw", feature = "innr"))]
-pub mod scalar_quantized;
-
 // SymphonyQG: RaBitQ quantized graph traversal
 #[cfg(all(feature = "hnsw", feature = "ivf_rabitq"))]
 pub mod symphony_qg;
@@ -196,25 +189,10 @@ pub use symphony_qg::SymphonyQGIndex;
 #[cfg(feature = "hnsw")]
 pub use crate::adaptive::AdaptiveConfig;
 
-// ─── Experimental modules ────────────────────────────────────────────────────
-// These are research implementations. Public for experimentation but not part
-// of the stable API. Types are accessible via submodule paths
-// (e.g., `vicinity::hnsw::fused::FusedIndex`) but not re-exported at
-// `vicinity::hnsw::*`.
-
 /// Tombstone-based deletions for streaming updates.
 #[cfg(feature = "hnsw")]
 #[doc(hidden)]
 pub mod tombstones;
-
-// ─── Experimental modules ────────────────────────────────────────────────────
-// Research implementations gated behind `hnsw` only. Not re-exported. Access
-// via submodule paths (e.g., `vicinity::hnsw::fused::FusedIndex`).
-
-/// FusedANN: Attribute-vector fusion for filtered search.
-#[cfg(all(feature = "hnsw", feature = "experimental"))]
-#[doc(hidden)]
-pub mod fused;
 
 /// Dynamic Edge Navigation Graph (DEG) — density-adaptive edge count.
 ///
@@ -223,30 +201,3 @@ pub mod fused;
 pub mod deg;
 #[cfg(feature = "hnsw")]
 pub use deg::{DEGConfig, DEGIndex, DensityInfo};
-
-/// HNSW index merging algorithms (NGM, IGTM, CGTM).
-#[cfg(all(feature = "hnsw", feature = "experimental"))]
-#[doc(hidden)]
-pub mod merge;
-
-/// Random walk-based graph repair (alternative to MN-RU).
-#[cfg(all(feature = "hnsw", feature = "experimental"))]
-#[doc(hidden)]
-pub mod random_walk_repair;
-
-/// Incremental learning patterns (edge refinement, temporal locality).
-#[cfg(all(feature = "hnsw", feature = "experimental"))]
-#[doc(hidden)]
-pub mod incremental;
-
-/// Probabilistic edge routing (PEOs) for QPS improvement.
-///
-/// Standalone search engine that wraps any graph's neighbor lookup with
-/// probability-based edge filtering. Use [`ProbabilisticRouter`] to skip
-/// unpromising edges during beam search.
-#[cfg(feature = "hnsw")]
-pub mod probabilistic_routing;
-#[cfg(feature = "hnsw")]
-pub use probabilistic_routing::{
-    ProbabilisticRouter, ProbabilisticRoutingConfig, ProbabilisticStats,
-};

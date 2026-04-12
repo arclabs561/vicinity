@@ -153,6 +153,19 @@ impl ProductQuantizer {
     ///
     /// Table layout: `[codebook_0_codeword_0, codebook_0_codeword_1, ..., codebook_1_codeword_0, ...]`
     pub fn compute_adc_table(&self, query: &[f32]) -> Result<Vec<f32>, RetrieveError> {
+        let mut table = Vec::with_capacity(self.num_codebooks * self.codebook_size);
+        self.compute_adc_table_into(query, &mut table)?;
+        Ok(table)
+    }
+
+    /// Compute ADC table into a caller-provided buffer (avoids allocation per cluster).
+    ///
+    /// The buffer is cleared and filled with `num_codebooks * codebook_size` entries.
+    pub fn compute_adc_table_into(
+        &self,
+        query: &[f32],
+        table: &mut Vec<f32>,
+    ) -> Result<(), RetrieveError> {
         if query.len() != self.dimension {
             return Err(RetrieveError::DimensionMismatch {
                 query_dim: query.len(),
@@ -160,7 +173,8 @@ impl ProductQuantizer {
             });
         }
 
-        let mut table = Vec::with_capacity(self.num_codebooks * self.codebook_size);
+        table.clear();
+        table.reserve(self.num_codebooks * self.codebook_size);
 
         for codebook_idx in 0..self.num_codebooks {
             let start_dim = codebook_idx * self.subvector_dim;
@@ -174,7 +188,7 @@ impl ProductQuantizer {
             }
         }
 
-        Ok(table)
+        Ok(())
     }
 
     /// Compute distance using ADC table.

@@ -88,7 +88,6 @@
 //! For a curated bibliography covering HNSW/NSW/NSG/DiskANN/PQ/OPQ/ScaNN and related phenomena,
 //! see `docs/references.md` in the repo.
 
-pub mod ann;
 pub mod classic;
 
 #[cfg(feature = "fresh_graph")]
