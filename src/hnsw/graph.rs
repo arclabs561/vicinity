@@ -1962,7 +1962,6 @@ impl HNSWIndex {
     ///
     /// Returns `Ok((results, num_evaluated))` where `num_evaluated` is the
     /// number of distance computations performed on the base layer.
-    #[cfg(feature = "experimental")]
     pub fn search_adaptive(
         &self,
         query: &[f32],
@@ -2243,7 +2242,6 @@ mod tests {
         (index, q)
     }
 
-    #[cfg(feature = "experimental")]
     #[test]
     fn test_search_adaptive_conservative_matches_search() {
         let (index, q) = build_test_index();
@@ -2260,7 +2258,6 @@ mod tests {
         assert_eq!(adaptive[0].0, baseline[0].0);
     }
 
-    #[cfg(feature = "experimental")]
     #[test]
     fn test_search_adaptive_aggressive_fewer_evaluations() {
         let (index, q) = build_test_index();

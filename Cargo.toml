@@ -57,7 +57,7 @@ clump = { version = "0.5.2", optional = true }
 rmt = { version = "0.1.2", optional = true }
 
 # Vector quantization primitives (extracted from `vicinity`)
-qntz = { package = "qntz", version = "0.1.1", optional = true }
+qntz = { package = "qntz", version = "0.1.3", optional = true }
 
 # Persistence & IO (all optional, gated behind `persistence`)
 byteorder = { version = "1.5", optional = true }

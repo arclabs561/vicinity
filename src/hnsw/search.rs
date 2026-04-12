@@ -398,7 +398,7 @@ pub fn greedy_search_layer_multi_entry(
 ///
 /// Returns `(results, num_evaluated)` so callers can inspect how many
 /// distance computations were performed.
-#[cfg(all(feature = "hnsw", feature = "experimental"))]
+#[cfg(feature = "hnsw")]
 pub fn greedy_search_layer_adaptive(
     query: &[f32],
     entry_point: u32,

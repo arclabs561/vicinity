@@ -159,10 +159,8 @@ pub mod sng;
 #[cfg(feature = "vamana")]
 pub mod vamana;
 
-#[cfg(all(feature = "hnsw", feature = "experimental"))]
+#[cfg(feature = "hnsw")]
 pub(crate) mod adaptive;
-#[cfg(feature = "experimental")]
-pub(crate) mod matryoshka;
 pub mod partitioning;
 #[cfg(feature = "ivf_pq")]
 pub(crate) mod pq_simd;

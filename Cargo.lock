@@ -891,9 +891,9 @@ dependencies = [
 
 [[package]]
 name = "qntz"
-version = "0.1.2"
+version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d74addc8d7da85d893072464622cb09f5b143800a21ae708d1e817bf9c292867"
+checksum = "ae9d7575eda1e5620feccfd9c5e292de558c22aad4410800a02a072b8c3e913a"
 dependencies = [
  "thiserror",
 ]

@@ -72,6 +72,8 @@
 //! | [`HNSWIndex`] | Standard | General-purpose ANN; batch build then search |
 //! | [`inplace::InPlaceIndex`] | Streaming | Per-operation insert/delete without batch rebuild (IP-DiskANN style) |
 //! | [`dual_branch::DualBranchHNSW`] | LID-aware | Datasets with outliers or varying density; uses skip bridges for sparse regions |
+//! | [`deg::DEGIndex`] | Density-adaptive | Dense/sparse regions get different edge budgets; small datasets (n < 10K) |
+//! | [`probabilistic_routing::ProbabilisticRouter`] | Routing optimizer | Wraps any graph with probability-based edge skipping for higher QPS |
 //!
 //! **Standard** ([`HNSWIndex`]): The default. Build the full graph, then query. Best when
 //! the dataset is static or changes infrequently.
@@ -178,6 +180,16 @@ pub use dual_branch::{DualBranchConfig, DualBranchHNSW, DualBranchStats, SkipBri
 #[cfg(all(feature = "hnsw", feature = "innr"))]
 pub mod scalar_quantized;
 
+// SymphonyQG: RaBitQ quantized graph traversal
+#[cfg(all(feature = "hnsw", feature = "ivf_rabitq"))]
+pub mod symphony_qg;
+#[cfg(all(feature = "hnsw", feature = "ivf_rabitq"))]
+pub use symphony_qg::SymphonyQGIndex;
+
+// Adaptive search (DARTH-style early termination)
+#[cfg(feature = "hnsw")]
+pub use crate::adaptive::AdaptiveConfig;
+
 // ─── Experimental modules ────────────────────────────────────────────────────
 // These are research implementations. Public for experimentation but not part
 // of the stable API. Types are accessible via submodule paths
@@ -200,9 +212,11 @@ pub mod fused;
 
 /// Dynamic Edge Navigation Graph (DEG) — density-adaptive edge count.
 ///
-/// Requires the `hnsw` feature. O(n²) construction; suitable for n < ~10K.
+/// Requires the `hnsw` feature. O(n^2) construction; suitable for n < ~10K.
 #[cfg(feature = "hnsw")]
 pub mod deg;
+#[cfg(feature = "hnsw")]
+pub use deg::{DEGConfig, DEGIndex, DensityInfo};
 
 /// HNSW index merging algorithms (NGM, IGTM, CGTM).
 #[cfg(all(feature = "hnsw", feature = "experimental"))]
@@ -220,6 +234,13 @@ pub mod random_walk_repair;
 pub mod incremental;
 
 /// Probabilistic edge routing (PEOs) for QPS improvement.
-#[cfg(all(feature = "hnsw", feature = "experimental"))]
-#[doc(hidden)]
+///
+/// Standalone search engine that wraps any graph's neighbor lookup with
+/// probability-based edge filtering. Use [`ProbabilisticRouter`] to skip
+/// unpromising edges during beam search.
+#[cfg(feature = "hnsw")]
 pub mod probabilistic_routing;
+#[cfg(feature = "hnsw")]
+pub use probabilistic_routing::{
+    ProbabilisticRouter, ProbabilisticRoutingConfig, ProbabilisticStats,
+};
