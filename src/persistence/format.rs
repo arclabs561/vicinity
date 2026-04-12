@@ -113,8 +113,8 @@ pub enum IndexType {
     DiskAnn,
     /// Inverted File with Product Quantization
     IvfPq,
-    /// Anisotropic Vector Quantization with k-means (ScaNN)
-    ScaNN,
+    /// Anisotropic Vector Quantization with k-means (IVF-AVQ)
+    IvfAvq,
     /// Simple Neighborhood Graph
     Sng,
     /// Flat (brute force)

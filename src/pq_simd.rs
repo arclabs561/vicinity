@@ -235,7 +235,7 @@ pub mod x86_64 {
     /// # Safety
     ///
     /// Requires AVX-512F. Caller must verify via runtime detection.
-    #[cfg(all(target_arch = "x86_64", feature = "nightly"))]
+    #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx512f")]
     #[allow(clippy::incompatible_msrv)] // AVX-512 intrinsics: stable since 1.89, but only reachable on avx512f hardware
     pub unsafe fn adc_batch_avx512(
@@ -364,7 +364,6 @@ pub fn adc_batch_dispatch(codes_batch: &[u8], num_codebooks: usize, lut: &Packed
 
     #[cfg(target_arch = "x86_64")]
     {
-        #[cfg(feature = "nightly")]
         if n_candidates >= 16 && is_x86_feature_detected!("avx512f") {
             return unsafe { x86_64::adc_batch_avx512(codes_batch, num_codebooks, lut) };
         }
