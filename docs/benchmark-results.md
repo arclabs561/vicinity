@@ -1,168 +1,157 @@
 # Benchmark Results
 
 Machine: Apple Silicon (M-series), single-threaded, `--release`.
-Dataset: GloVe-25 (1.18M vectors, 25-d, cosine / angular), from ann-benchmarks.com.
+Dataset: GloVe-25 (1.18M vectors, 25-d, cosine/angular), from ann-benchmarks.com.
 Ground truth: brute-force cosine k-NN on L2-normalized vectors.
 SIMD: `innr` (pure Rust SIMD, default feature).
-QPS: sequential single-query throughput (queries / wall-clock seconds). 50-query warmup before measurement.
+QPS: sequential single-query throughput (queries / wall-clock seconds). 50-query warmup.
 
-## GloVe-25 — Graph indexes
+## Summary
 
-### HNSW (M=16, m_max=32, ef_construction=200)
+![Recall vs QPS](plots/algorithm_comparison_glove-25-angular-all-algos.png)
 
-Build: ~372s (+ BFS graph reordering)
+| Algorithm | Best Recall@10 | QPS at best | Build (s) | Notes |
+|-----------|---------------|-------------|-----------|-------|
+| Brute | 100.0% | 45 | 0 | Exact baseline |
+| Vamana | 100.0% | 998 | 2,237 | Full 1.18M dataset |
+| HNSW | 99.1% | 4,496 | 180 | Full 1.18M dataset |
+| EMG | 98.8% | 184 | 508 | Full 1.18M dataset |
+| PiPNN | 90.1% | 140 | 589 | Full 1.18M dataset |
+| NSW | 88.6% | 2,073 | 174 | Full 1.18M dataset |
+| IVF-RaBitQ | 81.2% | 8 | 138 | Full 1.18M, 4-bit |
+| RpQuant | 62.5% | 193 | 0.3 | Full 1.18M dataset |
+| IVF-PQ | 40.9% | 187 | 491 | 5 codebooks on 25-d (known misconfiguration) |
+| NSG | 3.8% | 3,263 | 7 | Capped at 50K (4.2% of GT) |
+| SNG | 4.3% | 6,681 | 46 | Capped at 50K |
+| Finger | 4.1% | 15 | 127 | Capped at 50K |
+| FreshGraph | 4.1% | 132 | 104 | Capped at 50K |
+| FilteredGraph | 4.1% | 108 | 127 | Capped at 50K |
 
-| ef_search | Recall@10 | QPS |
-|-----------|-----------|-----|
-| 10 | 77.9% | 55,623 |
-| 20 | 87.9% | 35,954 |
-| 50 | 96.1% | 17,933 |
-| 100 | 98.8% | 10,018 |
-| 200 | 99.8% | 5,403 |
-| 400 | 100.0% | 2,857 |
+NSG, SNG, Finger, FreshGraph, and FilteredGraph are capped at 50K vectors due to
+construction cost. Their recall reflects the 50K/1.18M ground truth mismatch (~4.2%
+expected), not algorithm quality. Within the 50K subset, these algorithms work correctly.
 
-### HNSW (M=32, m_max=64, ef_construction=200)
+## Graph Indexes (Full Dataset)
 
-Build: ~1159s (+ BFS graph reordering)
+### HNSW (M=16, ef_construction=200)
 
-| ef_search | Recall@10 | QPS |
-|-----------|-----------|-----|
-| 10 | 87.4% | 35,347 |
-| 20 | 94.0% | 23,952 |
-| 50 | 98.5% | 12,019 |
-| 100 | 99.6% | 6,839 |
-| 200 | 99.9% | 3,683 |
-| 400 | 100.0% | 2,017 |
-
-### NSW (M=16, ef_construction=32)
-
-Build: fast (no hierarchy)
-
-| ef_search | Recall@10 | QPS |
-|-----------|-----------|-----|
-| 10 | 66.7% | 18,444 |
-| 20 | 79.0% | 11,972 |
-| 50 | 90.1% | 6,380 |
-| 100 | 95.2% | 3,930 |
-| 200 | 97.9% | 2,290 |
-| 400 | 99.2% | 1,288 |
-
-### Vamana (R=64, α=1.3, ef_construction=200)
-
-Build: ~1853s
+Build: 180s.
 
 | ef_search | Recall@10 | QPS |
 |-----------|-----------|-----|
-| 10 | 86.4% | 12,763 |
-| 20 | 93.1% | 7,962 |
-| 50 | 97.7% | 4,213 |
-| 100 | 99.1% | 2,401 |
-| 200 | 99.7% | 1,361 |
-| 400 | 99.9% | 751 |
+| 10 | 62.9% | 69,176 |
+| 20 | 76.0% | 47,416 |
+| 50 | 88.5% | 25,562 |
+| 100 | 94.3% | 14,742 |
+| 200 | 97.6% | 8,304 |
+| 400 | 99.1% | 4,496 |
 
-Vamana at ef=10 reaches 86.4% recall at 12,763 QPS — ~8.7× faster than HNSW M=32
-(which achieves 87.4% recall at 1,461 QPS). Trade-off: HNSW has a flatter latency
-curve (less degradation at lower ef). Vamana's recall ceiling matches HNSW at ef≥200.
+### Vamana (R=64, ef_construction=200)
 
-### DiskANN (R=64, α=1.3, ef_construction=200)
-
-Build: ~1853s (same as Vamana; DiskANN is Vamana + disk I/O layout)
+Build: 2,237s.
 
 | ef_search | Recall@10 | QPS |
 |-----------|-----------|-----|
-| 10 | 86.5% | 10,874 |
-| 20 | 94.2% | 6,883 |
-| 50 | 98.7% | 3,400 |
-| 100 | 99.7% | 1,904 |
-| 200 | 100.0% | 1,044 |
-| 400 | 100.0% | 582 |
+| 10 | 88.2% | 18,393 |
+| 20 | 94.5% | 11,292 |
+| 50 | 98.6% | 5,620 |
+| 100 | 99.6% | 3,246 |
+| 200 | 99.9% | 1,823 |
+| 400 | 100.0% | 998 |
 
-DiskANN and Vamana use the same graph (Vamana construction). DiskANN adds a disk
-layout for datasets larger than available RAM; on this in-memory benchmark the graph
-is fully resident, so QPS is slightly lower than Vamana (~15%) due to the disk I/O
-abstraction layer. Recall trajectory is essentially identical.
+### EMG (max_degree=32)
 
-## GloVe-25 — Partition-based indexes
+Build: 508s.
 
-### IVF-AVQ (512 partitions, 5 codebooks, reorder=500)
+| ef_search | Recall@10 | QPS |
+|-----------|-----------|-----|
+| 10 | 2.4% | 81,125 |
+| 20 | 26.2% | 36,457 |
+| 50 | 76.2% | 9,070 |
+| 100 | 90.0% | 2,815 |
+| 200 | 96.2% | 754 |
+| 400 | 98.8% | 184 |
 
-Build: ~708s
+### NSW (M=16)
+
+Build: 174s.
+
+| ef_search | Recall@10 | QPS |
+|-----------|-----------|-----|
+| 10 | 21.4% | 35,963 |
+| 20 | 39.9% | 18,736 |
+| 50 | 64.0% | 9,020 |
+| 100 | 76.8% | 5,650 |
+| 200 | 84.3% | 3,440 |
+| 400 | 88.6% | 2,073 |
+
+### PiPNN (max_degree=32, max_leaf_size=2048)
+
+Build: 589s.
+
+| ef_search | Recall@10 | QPS |
+|-----------|-----------|-----|
+| 20 | 6.5% | 34,881 |
+| 50 | 39.5% | 7,786 |
+| 100 | 64.9% | 2,255 |
+| 200 | 81.0% | 576 |
+| 400 | 90.1% | 140 |
+
+## Partition-Based Indexes
+
+### IVF-RaBitQ (256 clusters, 4-bit)
+
+Build: 138s. Two-phase search: RaBitQ approximate shortlisting + exact reranking.
 
 | nprobe | Recall@10 | QPS |
 |--------|-----------|-----|
-| 4 | 77.5% | 5,714 |
-| 8 | 84.7% | 3,054 |
-| 16 | 88.5% | 1,559 |
-| 32 | 90.3% | 792 |
-| 64 | 90.8% | 396 |
-| 128 | 90.9% | 194 |
-| 256 | 90.9% | 87 |
+| 1 | 40.9% | 722 |
+| 2 | 42.1% | 360 |
+| 5 | 41.6% | 145 |
+| 10 | 41.7% | 73 |
+| 20 | 56.0% | 37 |
+| 50 | 72.1% | 15 |
+| 100 | 81.2% | 8 |
 
-Recall ceiling of ~91% is a known limitation of PQ-based re-ranking on 25-d data:
-the PQ residual quantization error is significant relative to the vector dimension.
+### IVF-PQ (256 clusters, 5 codebooks)
 
-### IVF-PQ (1024 clusters, 5 codebooks)
-
-Build: ~1096s
+Build: 491s. Recall caps at ~41%: 5 codebooks over 25 dims = 5-d subspaces,
+too coarse for 25-d data. Not a bug -- inherent quantization granularity.
 
 | nprobe | Recall@10 | QPS |
 |--------|-----------|-----|
-| 4 | 41.3% | 7,238 |
-| 8 | 43.4% | 3,589 |
-| 16 | 44.5% | 1,811 |
-| 32 | 44.9% | 937 |
-| 64 | 45.0% | 451 |
-| 128 | 45.1% | 240 |
-| 256 | 45.1% | 106 |
+| 1 | 30.3% | 9,842 |
+| 5 | 39.4% | 1,866 |
+| 10 | 40.5% | 934 |
+| 50 | 40.9% | 187 |
 
-Recall caps at ~45%: 5 codebooks over 25 dims = 5-d subspaces, which is too coarse
-for 25-d data. The ceiling is not a bug — it is inherent to quantization granularity.
+### RpQuant (projected_dim=25, rerank=10)
 
-### IVF-PQ (1024 clusters, 25 codebooks — 1-d subspaces, equivalent to SQ8)
-
-Build: ~5520s
-
-| nprobe | Recall@10 | QPS |
-|--------|-----------|-----|
-| 4 | 76.3% | 2,920 |
-| 8 | 86.2% | 1,484 |
-| 16 | 92.6% | 738 |
-| 32 | 96.2% | 369 |
-| 64 | 97.9% | 188 |
-| 128 | 98.6% | 99 |
-
-With 25 codebooks (1-d subspaces, equivalent to SQ8 scalar quantization), recall
-reaches 98.6% at the cost of build time (~5× longer) and memory (~5× more for codes).
-This validates that the 45% cb5 ceiling was entirely due to quantization granularity,
-not a structural limitation of IVF-PQ.
+Build: <1s. Single recall point: 62.5% at 193 QPS.
 
 ## Brute Force
 
-Exact k-NN via exhaustive cosine search: 100% recall @ 42 QPS. Baseline.
+Exact k-NN via exhaustive cosine: 100% recall at 45 QPS.
 
-## Context
+## Caveats
 
-- **hnswlib (C++)**: ~95% recall @ ~5K QPS is the approximate ann-benchmarks.com
-  number for GloVe-25 (different machine, AVX2, ef_construction=500 vs our 200).
-  Not a direct comparison -- run both on the same machine for valid numbers.
-- **Vamana vs HNSW**: at the same recall level (~87%), Vamana is ~8.7x faster at
-  ef=10. At high recall (>=99%), the advantage narrows to ~1.2x. Vamana's single
-  greedy beam amortizes better at low ef; HNSW's hierarchy provides more consistent
-  QPS across the ef sweep.
-- **NSW speed**: NSW's flat graph search is faster than HNSW at the same ef,
-  consistent with Munyampirwa et al. (2024) (arXiv:2412.01940). The recall ceiling
-  is ~1-2 pp lower than HNSW at the same ef. Note: ef is not semantically equivalent
-  between flat and hierarchical graphs; compare at the same recall, not the same ef.
-- **DiskANN vs Vamana**: same recall trajectory (both use the Vamana graph); DiskANN
-  is ~15% slower QPS due to the disk I/O layout abstraction. On datasets that fit in
-  RAM, Vamana is the better choice; DiskANN's advantage is for datasets > available RAM.
-  This benchmark runs entirely in memory and does not exercise DiskANN's disk path.
+- All results on GloVe-25 (25 dims). Rankings may differ at higher dimensions.
+- Build times and QPS are single-run wall-clock on a lightly loaded machine.
+- NSG, SNG, Finger, FreshGraph, FilteredGraph are capped at 50K vectors
+  during construction. Their low recall reflects the cap, not algorithm quality.
+- IVF-PQ with 5 codebooks on 25-d is a known misconfiguration.
 
-### Caveats
+## References
 
-- All results are on GloVe-25 (25 dimensions). Algorithm rankings may differ at
-  higher dimensions (768+) where distance computation cost per graph edge increases.
-- Build times and QPS are single-run wall-clock measurements on a lightly loaded machine.
-- Memory numbers in the README are formula-based estimates, not measured RSS.
-- IVF-PQ with 5 codebooks on 25-d data is a known misconfiguration; the 45% recall
-  ceiling is not representative of IVF-PQ on higher-dimensional data.
+- Malkov and Yashunin, "Efficient and Robust Approximate Nearest Neighbor
+  using Hierarchical Navigable Small World Graphs." arXiv:1603.09320.
+- Subramanya et al., "DiskANN: Fast Accurate Billion-point Nearest Neighbor
+  Search on a Single Node." NeurIPS 2019.
+- Yin et al., "delta-EMG: Error-bounded Monotonic Graph for ANN Search."
+  arXiv:2511.16921.
+- Gao and Long, "RaBitQ: Quantizing High-Dimensional Vectors with a
+  Theoretical Error Bound." SIGMOD 2024. arXiv:2405.12497.
+- Fu et al., "Fast Approximate Nearest Neighbor Search With The Navigating
+  Spreading-out Graph." PVLDB 12(5), 2019.
+- Rubel et al., "PiPNN: Partition-based Parallel Nearest Neighbor Search."
+  arXiv:2602.21247.
