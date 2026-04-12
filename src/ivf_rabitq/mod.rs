@@ -316,8 +316,11 @@ impl IVFRaBitQIndex {
         // Find nearest centroids
         let cluster_distances = self.find_nearest_centroids(query, nprobe);
 
-        // Scan each probed cluster
-        let mut candidates: Vec<(u32, f32)> = Vec::new();
+        // Shortlist size: rerank more candidates than k for better recall.
+        let rerank_size = (k * 10).max(100);
+
+        // Phase 1: approximate distances via RaBitQ for shortlisting
+        let mut shortlist: Vec<(u32, f32)> = Vec::new();
 
         for (cluster_idx, _centroid_dist) in &cluster_distances {
             let cluster = &self.clusters[*cluster_idx];
@@ -325,7 +328,6 @@ impl IVFRaBitQIndex {
                 continue;
             }
 
-            // Compute approximate distances using RaBitQ
             for (i, qv) in cluster.quantized.iter().enumerate() {
                 let dist = self
                     .quantizer
@@ -333,15 +335,27 @@ impl IVFRaBitQIndex {
                     .map_err(|e| {
                         RetrieveError::InvalidParameter(format!("RaBitQ distance: {e}"))
                     })?;
-                let doc_id = self.doc_ids[cluster.vector_indices[i] as usize];
-                candidates.push((doc_id, dist));
+                let vec_idx = cluster.vector_indices[i];
+                shortlist.push((vec_idx, dist));
             }
         }
 
-        // Sort and return top k
-        candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
-        candidates.truncate(k);
-        Ok(candidates)
+        shortlist.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+        shortlist.truncate(rerank_size);
+
+        // Phase 2: exact reranking with original vectors
+        let mut results: Vec<(u32, f32)> = shortlist
+            .iter()
+            .map(|&(vec_idx, _)| {
+                let vec = self.get_vector(vec_idx as usize);
+                let dist = crate::distance::cosine_distance_normalized(query, vec);
+                (self.doc_ids[vec_idx as usize], dist)
+            })
+            .collect();
+
+        results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+        results.truncate(k);
+        Ok(results)
     }
 
     /// Number of indexed vectors.

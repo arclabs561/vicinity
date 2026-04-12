@@ -492,48 +492,60 @@ impl NsgIndex {
         selected
     }
 
-    /// Beam search from medoid.
+    /// Beam search from medoid (standard NSG greedy search).
+    ///
+    /// Maintains a bounded result set of size `ef` (max-heap by distance) and a
+    /// candidate pool (min-heap by distance). Stops when the closest unexpanded
+    /// candidate is farther than the worst result.
     fn beam_search(&self, query: &[f32], ef: usize) -> Vec<(u32, f32)> {
         let n = self.num_vectors;
         if n == 0 {
             return Vec::new();
         }
 
-        let mut visited = HashSet::new();
-        let mut frontier: BinaryHeap<std::cmp::Reverse<(FloatOrd, u32)>> = BinaryHeap::new();
-        let mut candidates: Vec<(u32, f32)> = Vec::new();
+        let mut visited = HashSet::with_capacity(ef * 2);
+
+        // Min-heap: candidates to expand (closest first)
+        let mut candidates: BinaryHeap<std::cmp::Reverse<(FloatOrd, u32)>> = BinaryHeap::new();
+        // Max-heap: best results (farthest first, for bounded eviction)
+        let mut results: BinaryHeap<(FloatOrd, u32)> = BinaryHeap::new();
 
         let entry = self.medoid;
         let entry_dist = cosine_distance_normalized(query, self.get_vector(entry as usize));
         visited.insert(entry);
-        frontier.push(std::cmp::Reverse((FloatOrd(entry_dist), entry)));
-        candidates.push((entry, entry_dist));
+        candidates.push(std::cmp::Reverse((FloatOrd(entry_dist), entry)));
+        results.push((FloatOrd(entry_dist), entry));
 
-        while let Some(std::cmp::Reverse((FloatOrd(current_dist), current_id))) = frontier.pop() {
-            if candidates.len() >= ef {
-                candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
-                if current_dist > candidates[ef - 1].1 * 1.5 {
-                    break;
-                }
+        while let Some(std::cmp::Reverse((FloatOrd(cand_dist), cand_id))) = candidates.pop() {
+            // Stop when closest candidate is worse than worst result
+            let worst_dist = results.peek().map_or(f32::INFINITY, |&(FloatOrd(d), _)| d);
+            if results.len() >= ef && cand_dist > worst_dist {
+                break;
             }
 
-            for &neighbor in &self.neighbors[current_id as usize] {
+            for &neighbor in &self.neighbors[cand_id as usize] {
                 if visited.insert(neighbor) {
                     let dist =
                         cosine_distance_normalized(query, self.get_vector(neighbor as usize));
-                    candidates.push((neighbor, dist));
-                    frontier.push(std::cmp::Reverse((FloatOrd(dist), neighbor)));
-                }
-            }
 
-            if visited.len() > ef * 10 {
-                break;
+                    let worst_dist = results.peek().map_or(f32::INFINITY, |&(FloatOrd(d), _)| d);
+                    if results.len() < ef || dist < worst_dist {
+                        candidates.push(std::cmp::Reverse((FloatOrd(dist), neighbor)));
+                        results.push((FloatOrd(dist), neighbor));
+                        if results.len() > ef {
+                            results.pop(); // evict farthest
+                        }
+                    }
+                }
             }
         }
 
-        candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
-        candidates.dedup_by_key(|c| c.0);
-        candidates
+        let mut out: Vec<(u32, f32)> = results
+            .into_iter()
+            .map(|(FloatOrd(d), id)| (id, d))
+            .collect();
+        out.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+        out
     }
 
     #[allow(clippy::needless_range_loop)]
