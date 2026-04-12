@@ -4,10 +4,12 @@
 //! with 4-way unrolled accumulators. Fallback when `innr` feature
 //! is disabled uses portable scalar code.
 //!
-//! # Usage
+//! This module is `pub(crate)` -- use [`crate::distance`] for the public API.
 //!
-//! ```rust
-//! use vicinity::simd::{dot, cosine, norm};
+//! # Internal usage
+//!
+//! ```ignore
+//! use crate::simd::{dot, cosine, norm};
 //!
 //! let a = [1.0_f32, 0.0, 0.0];
 //! let b = [0.707, 0.707, 0.0];

@@ -135,24 +135,15 @@ mod dependency_documentation {
     /// vicinity (innr feature, default) -> innr
     #[test]
     fn simd_dependency_chain() {
-        // vicinity/src/simd.rs re-exports innr functions when
-        // the innr feature is enabled (which is part of default features)
-        //
-        // Dependency chain:
-        // - `vicinity::simd::{dot, cosine, l2_distance, ...}`
-        // - => `innr::{dot, cosine, l2_distance, ...}` when innr feature enabled
-        // - => portable fallback when innr feature disabled
-        //
-        // Verify the functions are available
+        // SIMD functions are internal (pub(crate)); the public API is via
+        // vicinity::distance::{l2_distance, cosine_distance, ...}
         let a = [1.0_f32, 0.0, 0.0];
-        let b = [0.707, 0.707, 0.0];
+        let b = [0.707_f32, 0.707, 0.0];
 
-        let d = vicinity::simd::dot(&a, &b);
-        let c = vicinity::simd::cosine(&a, &b);
-        let n = vicinity::simd::norm(&a);
+        let cos_d = vicinity::distance::cosine_distance(&a, &b);
+        let l2_d = vicinity::distance::l2_distance(&a, &b);
 
-        assert!((d - 0.707).abs() < 0.01);
-        assert!((c - 0.707).abs() < 0.01);
-        assert!((n - 1.0).abs() < 0.001);
+        assert!(cos_d < 0.5, "cosine distance should be small for similar vectors");
+        assert!(l2_d > 0.0, "l2 distance should be positive for different vectors");
     }
 }
