@@ -316,8 +316,11 @@ impl IVFRaBitQIndex {
         // Find nearest centroids
         let cluster_distances = self.find_nearest_centroids(query, nprobe);
 
-        // Shortlist size: rerank more candidates than k for better recall.
-        let rerank_size = (k * 10).max(100);
+        // Shortlist size: scale with nprobe so more probed clusters means more
+        // candidates survive to exact reranking. At low nprobe the shortlist is
+        // small anyway; at high nprobe we need a larger rerank pool to avoid
+        // discarding true neighbors due to noisy RaBitQ approximations.
+        let rerank_size = (k * 10).max(k * nprobe);
 
         // Phase 1: approximate distances via RaBitQ for shortlisting
         let mut shortlist: Vec<(u32, f32)> = Vec::new();
