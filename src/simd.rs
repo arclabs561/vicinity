@@ -20,6 +20,7 @@
 //! ```
 
 #[cfg(feature = "innr")]
+#[allow(unused_imports)] // Subsets used depending on feature combination
 pub use innr::{cosine, dot, l2_distance, l2_distance_squared, norm};
 
 #[cfg(not(feature = "innr"))]
