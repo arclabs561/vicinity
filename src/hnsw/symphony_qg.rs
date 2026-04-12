@@ -57,10 +57,8 @@ pub struct SymphonyQGIndex {
     index: HNSWIndex,
     /// Per-vector quantized codes, indexed by internal id.
     codes: Vec<QuantizedVector>,
-    /// Rotation matrix (reproduced from seed, same as quantizer's).
-    rotation: Vec<f32>,
-    /// Centroid (computed from training data).
-    centroid: Vec<f32>,
+    /// RaBitQ quantizer (owns rotation matrix and centroid for pre-rotation).
+    quantizer: Option<RaBitQQuantizer>,
     /// RaBitQ configuration.
     rabitq_config: RaBitQConfig,
     /// Random seed for rotation matrix.
@@ -87,8 +85,7 @@ impl SymphonyQGIndex {
         Ok(Self {
             index,
             codes: Vec::new(),
-            rotation: Vec::new(),
-            centroid: Vec::new(),
+            quantizer: None,
             rabitq_config,
             seed,
             quantized_built: false,
@@ -129,10 +126,7 @@ impl SymphonyQGIndex {
             codes.push(qv);
         }
 
-        // Store rotation matrix (reproduced from same seed) and centroid
-        // so we can pre-rotate queries without calling back into the quantizer.
-        self.rotation = generate_orthogonal_rotation(dim, self.seed);
-        self.centroid = compute_centroid(&self.index.vectors, n, dim);
+        self.quantizer = Some(quantizer);
         self.codes = codes;
         self.quantized_built = true;
         Ok(())
@@ -231,14 +225,12 @@ impl SymphonyQGIndex {
 
     /// Pre-rotate query: subtract centroid, apply rotation matrix.
     /// O(d^2) -- called once per query, amortized across all neighbor evaluations.
-    fn rotate_query(&self, query: &[f32]) -> Vec<f32> {
-        let dim = self.index.dimension;
-        let residual: Vec<f32> = query
-            .iter()
-            .zip(self.centroid.iter())
-            .map(|(q, c)| q - c)
-            .collect();
-        apply_rotation(&residual, &self.rotation, dim)
+    fn rotate_query(&self, query: &[f32]) -> Result<Vec<f32>, RetrieveError> {
+        self.quantizer
+            .as_ref()
+            .expect("quantizer must be set after build")
+            .rotate_query(query)
+            .map_err(|e| RetrieveError::InvalidParameter(format!("rotate query: {e}")))
     }
 
     /// Walk the HNSW graph using RaBitQ approximate distance.
@@ -247,14 +239,14 @@ impl SymphonyQGIndex {
         query: &[f32],
         ef: usize,
     ) -> Result<Vec<(u32, f32)>, RetrieveError> {
-        let rotated_query = self.rotate_query(query);
+        let rotated_query = self.rotate_query(query)?;
 
         // Find entry point (highest-layer node).
         let (entry_point, entry_layer) = self.find_entry_point();
 
         // Navigate upper layers with greedy single-node descent.
         let mut current = entry_point;
-        let mut current_dist = rabitq_distance(&rotated_query, &self.codes[current as usize]);
+        let mut current_dist = approx_dist(&rotated_query, &self.codes[current as usize]);
 
         for layer_idx in (1..=entry_layer).rev() {
             if layer_idx >= self.index.layers.len() {
@@ -266,7 +258,7 @@ impl SymphonyQGIndex {
                 changed = false;
                 let neighbors = layer.get_neighbors(current);
                 for &neighbor_id in neighbors.iter() {
-                    let dist = rabitq_distance(&rotated_query, &self.codes[neighbor_id as usize]);
+                    let dist = approx_dist(&rotated_query, &self.codes[neighbor_id as usize]);
                     if dist < current_dist {
                         current_dist = dist;
                         current = neighbor_id;
@@ -303,7 +295,7 @@ impl SymphonyQGIndex {
             Visited::Sparse(HashSet::with_capacity(ef * 2))
         };
 
-        let entry_dist = rabitq_distance(rotated_query, &self.codes[entry_point as usize]);
+        let entry_dist = approx_dist(rotated_query, &self.codes[entry_point as usize]);
         candidates.push(MinCandidate {
             id: entry_point,
             distance: entry_dist,
@@ -323,7 +315,7 @@ impl SymphonyQGIndex {
             let neighbors = layer.get_neighbors(candidate.id);
             for &neighbor_id in neighbors.iter() {
                 if visited.insert(neighbor_id) {
-                    let dist = rabitq_distance(rotated_query, &self.codes[neighbor_id as usize]);
+                    let dist = approx_dist(rotated_query, &self.codes[neighbor_id as usize]);
 
                     let worst_dist = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
                     if results.len() < ef || dist < worst_dist {
@@ -361,89 +353,11 @@ impl SymphonyQGIndex {
     }
 }
 
-// ── RaBitQ distance (inline, no quantizer reference needed) ──────────────────
-
 /// Approximate L2 distance from a pre-rotated query to a quantized vector.
+/// Uses qntz's prerotated API to avoid redundant O(d^2) rotation per candidate.
 #[inline]
-fn rabitq_distance(rotated_query: &[f32], qv: &QuantizedVector) -> f32 {
-    let cb = -((1 << qv.ex_bits) as f32 - 0.5);
-    let mut ip = 0.0f32;
-    for (&q, &c) in rotated_query.iter().zip(qv.codes.iter()) {
-        ip += q * (c as f32 + cb);
-    }
-    (qv.f_add + qv.f_rescale * ip).max(0.0).sqrt()
-}
-
-// ── Rotation matrix (deterministic from seed, matches qntz) ─────────────────
-
-fn generate_orthogonal_rotation(dimension: usize, seed: u64) -> Vec<f32> {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-
-    let mut rotation = vec![0.0f32; dimension * dimension];
-    let mut state = seed;
-    let mut next_rand = || -> f32 {
-        let mut hasher = DefaultHasher::new();
-        state.hash(&mut hasher);
-        state = hasher.finish();
-        ((state as f64) / (u64::MAX as f64) * 2.0 - 1.0) as f32
-    };
-
-    let mut basis: Vec<Vec<f32>> = Vec::new();
-    for i in 0..dimension {
-        let mut v: Vec<f32> = (0..dimension).map(|_| next_rand()).collect();
-        for b in &basis {
-            let dot: f32 = v.iter().zip(b.iter()).map(|(a, b)| a * b).sum();
-            for (vi, bi) in v.iter_mut().zip(b.iter()) {
-                *vi -= dot * bi;
-            }
-        }
-        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-        if norm > 1e-10 {
-            for vi in &mut v {
-                *vi /= norm;
-            }
-            basis.push(v);
-        } else {
-            let mut v = vec![0.0f32; dimension];
-            v[i] = 1.0;
-            basis.push(v);
-        }
-    }
-    for (i, row) in basis.iter().enumerate() {
-        for (j, &val) in row.iter().enumerate() {
-            rotation[i * dimension + j] = val;
-        }
-    }
-    rotation
-}
-
-fn apply_rotation(vector: &[f32], rotation: &[f32], dimension: usize) -> Vec<f32> {
-    let mut result = vec![0.0f32; dimension];
-    for (i, out) in result.iter_mut().enumerate() {
-        let row_start = i * dimension;
-        let mut sum = 0.0f32;
-        for j in 0..dimension {
-            sum += rotation[row_start + j] * vector[j];
-        }
-        *out = sum;
-    }
-    result
-}
-
-fn compute_centroid(vectors: &[f32], n: usize, dim: usize) -> Vec<f32> {
-    let mut centroid = vec![0.0f32; dim];
-    for i in 0..n {
-        let base = i * dim;
-        for d in 0..dim {
-            centroid[d] += vectors[base + d];
-        }
-    }
-    let inv_n = 1.0 / n as f32;
-    for c in &mut centroid {
-        *c *= inv_n;
-    }
-    centroid
+fn approx_dist(rotated_query: &[f32], qv: &QuantizedVector) -> f32 {
+    RaBitQQuantizer::approximate_l2_sqr_prerotated(rotated_query, qv).sqrt()
 }
 
 // ── Helper types ─────────────────────────────────────────────────────────────
@@ -537,7 +451,7 @@ mod tests {
 
     #[test]
     fn test_distance_matches_qntz() {
-        // Verify our inline rabitq_distance matches qntz's approximate_l2_sqr
+        // Verify prerotated distance matches qntz's approximate_l2_sqr
         let dim = 32;
         let n = 50;
         let seed = 42;
@@ -554,36 +468,19 @@ mod tests {
             .map(|v| quantizer.quantize(v).unwrap())
             .collect();
 
-        // Our rotation matrix (same seed)
-        let rotation = super::generate_orthogonal_rotation(dim, seed);
-        let centroid = super::compute_centroid(&flat, n, dim);
-
         let query = &vectors[0];
 
-        // qntz distance
+        // qntz standard distance (rotates internally each call)
         let qntz_dist = quantizer.approximate_l2_sqr(query, &codes[1]).unwrap();
 
-        // Our inline distance
-        let residual: Vec<f32> = query
-            .iter()
-            .zip(centroid.iter())
-            .map(|(q, c)| q - c)
-            .collect();
-        let rotated = super::apply_rotation(&residual, &rotation, dim);
-        let our_dist_sqr = {
-            let qv = &codes[1];
-            let cb = -((1 << qv.ex_bits) as f32 - 0.5);
-            let mut ip = 0.0f32;
-            for (&q, &c) in rotated.iter().zip(qv.codes.iter()) {
-                ip += q * (c as f32 + cb);
-            }
-            (qv.f_add + qv.f_rescale * ip).max(0.0)
-        };
+        // prerotated API distance
+        let rotated = quantizer.rotate_query(query).unwrap();
+        let prerotated_dist = RaBitQQuantizer::approximate_l2_sqr_prerotated(&rotated, &codes[1]);
 
-        let diff = (qntz_dist - our_dist_sqr).abs();
+        let diff = (qntz_dist - prerotated_dist).abs();
         assert!(
             diff < 1e-4,
-            "distance mismatch: qntz={qntz_dist}, ours={our_dist_sqr}, diff={diff}"
+            "distance mismatch: qntz={qntz_dist}, prerotated={prerotated_dist}, diff={diff}"
         );
     }
 
