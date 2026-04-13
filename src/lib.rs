@@ -50,10 +50,10 @@
 //!
 //! ```toml
 //! # Minimal (HNSW + SIMD)
-//! vicinity = "0.3"
+//! vicinity = "0.4"
 //!
 //! # With quantization support
-//! vicinity = { version = "0.3", features = ["ivf_pq"] }
+//! vicinity = { version = "0.4", features = ["ivf_pq"] }
 //! ```
 //!
 //! # Notes (evidence-backed)

@@ -279,7 +279,6 @@ fn run_vamana(
         alpha: 1.3,
         ef_construction: 200,
         ef_search: 50,
-        ..Default::default()
     };
     print!("  Building (max_degree=64, alpha=1.3, ef_construction=200)... ");
     let _ = std::io::stdout().flush();

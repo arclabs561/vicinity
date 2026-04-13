@@ -10,8 +10,8 @@ Practical insights from recent approximate nearest neighbor research.
 | IP-DiskANN | 2025 | In-place updates without rebuild (see paper for reported trade-offs) | `hnsw::inplace` |
 | RaBitQ | 2024 | 1-bit/dim quantization with O(1/sqrt(d)) error bound | `ivf_rabitq` |
 | HENN | 2025 | Epsilon-net navigation with theoretical guarantees | Research only |
-| PEOs | 2024 | Probabilistic routing for graph-based ANNS | `hnsw::probabilistic_routing` |
-| CleANN | 2025 | Real-time insertions via workload adaptation | `cleann` |
+| PEOs | 2024 | Probabilistic routing for graph-based ANNS | Removed (research prototype) |
+| CleANN | 2025 | Real-time insertions via workload adaptation | Removed (research prototype) |
 | DGAI | 2025 | Decoupled on-disk graph index for updates | Research only |
 | Dual-Branch HNSW | 2025 | LID-based insertion with skip bridges | `hnsw::dual_branch` |
 | DEG | 2025 | Dynamic edge navigation for bimodal data | `hnsw::deg` |
@@ -47,13 +47,7 @@ if tombstones.should_compact(total_nodes) {
 }
 ```
 
-### 2. Probabilistic Edge Routing (existing: `hnsw/probabilistic_routing.rs`)
-
-From Lu et al. (2024): probabilistically test edges to reduce wasted distance computations.
-
-**Reported benefit**: higher throughput with minimal recall loss (exact numbers depend on dataset/parameters; see paper).
-
-### 3. Dual-Branch with Skip Bridges (existing: `hnsw/dual_branch.rs`)
+### 2. Dual-Branch with Skip Bridges (existing: `hnsw/dual_branch.rs`)
 
 From arXiv 2501.13992: LID-based insertion strategy with skip bridges.
 

@@ -311,7 +311,7 @@ mod tests {
         for (doc_id, _) in &results {
             let attr = *doc_id as f64 * 2.0;
             assert!(
-                attr >= 20.0 && attr <= 60.0,
+                (20.0..=60.0).contains(&attr),
                 "doc_id {} has attribute {}, expected in [20, 60]",
                 doc_id,
                 attr
