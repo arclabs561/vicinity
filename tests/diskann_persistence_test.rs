@@ -94,6 +94,10 @@ fn test_diskann_save_load_roundtrip() {
         index_path.join("metadata.json").exists(),
         "metadata.json missing"
     );
+    assert!(
+        index_path.join("doc_ids.bin").exists(),
+        "doc_ids.bin missing"
+    );
 
     // Load searcher
     let mut searcher = DiskANNSearcher::load(&index_path).expect("Failed to load index");

@@ -128,7 +128,18 @@ impl DiskANNIndex {
             ))))
         })?;
 
-        // 3. Save Metadata (metadata.json)
+        // 3. Save doc_ids (doc_ids.bin)
+        let doc_ids_path = output_dir.join("doc_ids.bin");
+        let mut doc_ids_file = std::fs::File::create(&doc_ids_path)?;
+        let doc_ids_bytes = unsafe {
+            std::slice::from_raw_parts(
+                self.doc_ids.as_ptr() as *const u8,
+                self.doc_ids.len() * std::mem::size_of::<u32>(),
+            )
+        };
+        doc_ids_file.write_all(doc_ids_bytes)?;
+
+        // 4. Save Metadata (metadata.json)
         let metadata_path = output_dir.join("metadata.json");
         let metadata = serde_json::json!({
             "dimension": self.dimension,
@@ -160,6 +171,8 @@ pub struct DiskANNSearcher {
     // Components
     graph_reader: super::disk_io::DiskGraphReader,
     vectors_file: std::fs::File,
+    /// External doc_ids aligned with internal indices (loaded from doc_ids.bin).
+    doc_ids: Vec<u32>,
     /// Reusable byte buffer for vector reads (avoids per-read allocation).
     read_buf: Vec<u8>,
     /// Reusable f32 buffer for parsed vectors.
@@ -210,8 +223,25 @@ impl DiskANNSearcher {
         let vectors_path = index_dir.join("vectors.bin");
         let vectors_file = std::fs::File::open(&vectors_path)?;
 
-        // num_vectors is loaded for validation but not stored (unused at search time).
-        let _ = num_vectors;
+        // 4. Load doc_ids
+        let doc_ids_path = index_dir.join("doc_ids.bin");
+        let doc_ids = if doc_ids_path.exists() {
+            let bytes = std::fs::read(&doc_ids_path)?;
+            if bytes.len() != num_vectors * 4 {
+                return Err(RetrieveError::FormatError(format!(
+                    "doc_ids.bin size mismatch: expected {} bytes, got {}",
+                    num_vectors * 4,
+                    bytes.len()
+                )));
+            }
+            bytes
+                .chunks_exact(4)
+                .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                .collect()
+        } else {
+            // Backwards compat: if no doc_ids file, assume identity mapping
+            (0..num_vectors as u32).collect()
+        };
 
         Ok(Self {
             read_buf: vec![0u8; dimension * 4],
@@ -220,6 +250,7 @@ impl DiskANNSearcher {
             start_node,
             params,
             graph_reader,
+            doc_ids,
             vectors_file,
         })
     }
@@ -285,7 +316,14 @@ impl DiskANNSearcher {
             }
         }
 
-        Ok(retset.into_iter().take(k).map(|c| (c.id, c.dist)).collect())
+        Ok(retset
+            .into_iter()
+            .take(k)
+            .filter_map(|c| {
+                let doc_id = self.doc_ids.get(c.id as usize).copied()?;
+                Some((doc_id, c.dist))
+            })
+            .collect())
     }
 
     /// Read a vector from disk into the reusable buffer, returning a slice.
