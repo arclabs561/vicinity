@@ -1776,6 +1776,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Data: {}\n", cfg.data_dir);
     }
 
+    // Emit hardware metadata as first line of results file (for reproducibility).
+    if cfg.json && !cfg.results_path.exists() {
+        let meta = format!(
+            "{{\"_meta\":{{\"dataset\":\"{}\",\"metric\":\"{}\",\"rustc\":\"{}\",\"vicinity\":\"{}\"}}}}",
+            cfg.data_dir,
+            if cfg.is_euclidean { "l2" } else { "cosine" },
+            env!("CARGO_PKG_RUST_VERSION"),
+            env!("CARGO_PKG_VERSION"),
+        );
+        emit_result(&cfg.results_path, &meta);
+    }
+
     let (train, dim) = load_vectors(&format!("{}/train.bin", cfg.data_dir))?;
     let (test, _) = load_vectors(&format!("{}/test.bin", cfg.data_dir))?;
     let (neighbors, k_gt) = load_neighbors(&format!("{}/neighbors.bin", cfg.data_dir))?;
