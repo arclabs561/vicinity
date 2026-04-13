@@ -146,7 +146,7 @@ impl NSWIndex {
 
         {
             let norm_sq: f32 = vector.iter().map(|x| x * x).sum();
-            if (norm_sq - 1.0).abs() > 0.1 {
+            if (norm_sq - 1.0).abs() > 0.01 {
                 return Err(RetrieveError::InvalidParameter(format!(
                     "NSW cosine distance requires L2-normalized vectors \
                      (got norm^2 = {:.4}, expected ~1.0). Use `distance::normalize()`.",

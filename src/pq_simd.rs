@@ -149,8 +149,18 @@ impl PackedLUT {
     }
 
     /// Get a pointer to codebook data for SIMD operations.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `codebook_idx >= num_codebooks`.
     #[inline]
     pub fn codebook_ptr(&self, codebook_idx: usize) -> *const f32 {
+        assert!(
+            codebook_idx < self.num_codebooks,
+            "codebook_idx {} out of bounds (num_codebooks={})",
+            codebook_idx,
+            self.num_codebooks
+        );
         unsafe { self.data.as_ptr().add(codebook_idx * self.codebook_size) }
     }
 
