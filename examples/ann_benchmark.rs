@@ -1632,6 +1632,95 @@ fn run_lsh(
     }
 }
 
+#[cfg(feature = "hnsw")]
+fn run_hnsw_prt(
+    cfg: &Config,
+    train: &[Vec<f32>],
+    test: &[Vec<f32>],
+    neighbors: &[Vec<i32>],
+    dim: usize,
+) {
+    use vicinity::hnsw::{HNSWIndex, HNSWParams};
+    use vicinity::prt::ProbabilisticRoutingTest;
+    use vicinity::DistanceMetric;
+
+    let m = cfg.m;
+    let ef_construction = cfg.ef_construction;
+
+    if !cfg.json {
+        println!("--- HNSW+PRT (M={}, ef_c={}) ---", m, ef_construction);
+    }
+
+    let metric = if cfg.is_euclidean {
+        DistanceMetric::L2
+    } else {
+        DistanceMetric::Cosine
+    };
+
+    let build_start = Instant::now();
+    let params = HNSWParams {
+        m,
+        m_max: m * 2,
+        ef_construction,
+        metric,
+        auto_normalize: !cfg.is_euclidean,
+        ..Default::default()
+    };
+    let mut index = HNSWIndex::with_params(dim, params).unwrap();
+    let ids: Vec<u32> = (0..train.len() as u32).collect();
+    let flat: Vec<f32> = train.iter().flatten().copied().collect();
+    index.add_batch(&ids, &flat).unwrap();
+    index.build().unwrap();
+
+    // Build PRT state: project all database vectors.
+    let num_proj = (dim / 4).max(8).min(64); // heuristic: d/4, clamped [8, 64]
+    let mut prt = ProbabilisticRoutingTest::new(dim, num_proj, Some(42));
+    prt.project_database(index.raw_vectors());
+
+    let build_time_s = build_start.elapsed().as_secs_f64();
+    let rss = current_rss_kb();
+
+    if !cfg.json {
+        println!(
+            "Build: {:.2}s ({:.0} vectors/sec), PRT projections: {}\n",
+            build_time_s,
+            train.len() as f64 / build_time_s,
+            num_proj
+        );
+        print_header();
+    }
+
+    for &ef in &cfg.ef_search_values {
+        let result = evaluate(
+            &|q, k| {
+                index
+                    .search_prt(q, k, ef, &prt, 1.5, 0.95)
+                    .map(|(results, _)| results)
+                    .unwrap_or_default()
+            },
+            test,
+            neighbors,
+            10,
+        );
+        if cfg.json {
+            let params_json = format!(
+                "{{\"m\":{},\"ef_construction\":{},\"ef_search\":{},\"num_projections\":{}}}",
+                m, ef_construction, ef, num_proj
+            );
+            emit_result(
+                &cfg.results_path,
+                &json_line("hnsw_prt", &params_json, build_time_s, rss, &result),
+            );
+        } else {
+            print_row(&format!("ef={}", ef), &result);
+        }
+    }
+
+    if !cfg.json {
+        println!();
+    }
+}
+
 fn run_brute(cfg: &Config, train: &[Vec<f32>], test: &[Vec<f32>], neighbors: &[Vec<i32>]) {
     if !cfg.json {
         println!("--- Brute Force (linear scan) ---");
@@ -1876,11 +1965,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 eprintln!("LSH not available (compile with --features lsh)");
             }
 
+            #[cfg(feature = "hnsw")]
+            "hnsw_prt" => run_hnsw_prt(&cfg, &train, &test, &neighbors, dim),
+
             "brute" => run_brute(&cfg, &train, &test, &neighbors),
 
             other => {
                 eprintln!(
-                    "Unknown algorithm: {}. Options: hnsw, nsw, ivfpq, emg, nsg, pipnn, sng, vamana, ivf_rabitq, symphony_qg, finger, fresh_graph, filtered_graph, rp_quant, sparse_mips, curator, esg, binary_index, sq4, adsampling, lsh, brute",
+                    "Unknown algorithm: {}. Options: hnsw, nsw, ivfpq, emg, nsg, pipnn, sng, vamana, ivf_rabitq, symphony_qg, finger, fresh_graph, filtered_graph, rp_quant, sparse_mips, curator, esg, binary_index, sq4, adsampling, lsh, hnsw_prt, brute",
                     other
                 );
             }

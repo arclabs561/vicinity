@@ -607,6 +607,109 @@ fn get_vector(vectors: &[f32], dimension: usize, idx: usize) -> &[f32] {
     &vectors[start..end]
 }
 
+/// Greedy search with PRT (Probabilistic Routing Test) pre-filtering.
+///
+/// Before computing the full O(d) distance to a candidate, checks the
+/// O(k)-dimensional projected distance. Candidates whose projected distance
+/// exceeds the current worst result (scaled by the TFB ratio) are skipped
+/// entirely, saving the full distance computation.
+///
+/// Returns `(results, full_distance_count)`.
+#[cfg(feature = "hnsw")]
+pub fn greedy_search_layer_prt(
+    query: &[f32],
+    entry_point: u32,
+    layer: &crate::hnsw::graph::Layer,
+    vectors: &[f32],
+    dimension: usize,
+    ef: usize,
+    dist_fn: fn(&[f32], &[f32]) -> f32,
+    prt: &crate::prt::ProbabilisticRoutingTest,
+    query_proj: &[f32],
+    tfb: &mut crate::prt::TestFeedbackBuffer,
+) -> (Vec<(u32, f32)>, usize) {
+    let num_vectors = vectors.len() / dimension;
+    let mut full_dist_count: usize = 0;
+
+    let results = with_visited_set(num_vectors, ef * 2, |visited| {
+        let mut candidates: BinaryHeap<MinCandidate> = BinaryHeap::with_capacity(ef * 2);
+        let mut results: BinaryHeap<MaxResult> = BinaryHeap::with_capacity(ef + 1);
+
+        let entry_vector = get_vector(vectors, dimension, entry_point as usize);
+        let entry_distance = dist_fn(query, entry_vector);
+        full_dist_count += 1;
+
+        candidates.push(MinCandidate {
+            id: entry_point,
+            distance: entry_distance,
+        });
+        results.push(MaxResult {
+            id: entry_point,
+            distance: entry_distance,
+        });
+        visited.insert(entry_point);
+
+        while let Some(candidate) = candidates.pop() {
+            let worst_dist = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
+            if candidate.distance > worst_dist && results.len() >= ef {
+                break;
+            }
+
+            let neighbors = layer.get_neighbors(candidate.id);
+            for (i, &neighbor_id) in neighbors.iter().enumerate() {
+                // Prefetch.
+                if i + 1 < neighbors.len() {
+                    let next_id = neighbors[i + 1] as usize;
+                    if next_id < num_vectors {
+                        let ptr = vectors.as_ptr().wrapping_add(next_id * dimension);
+                        prefetch_read_data(ptr);
+                    }
+                }
+                if !visited.insert(neighbor_id) {
+                    continue;
+                }
+
+                // PRT pre-filter: skip candidates whose projected distance
+                // exceeds the worst result distance (scaled by TFB ratio).
+                let worst_dist = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
+                if results.len() >= ef
+                    && !prt.should_compute_full_distance(query_proj, neighbor_id, worst_dist, tfb)
+                {
+                    continue;
+                }
+
+                // Full distance computation.
+                let neighbor_vector = get_vector(vectors, dimension, neighbor_id as usize);
+                let neighbor_distance = dist_fn(query, neighbor_vector);
+                full_dist_count += 1;
+
+                if results.len() < ef || neighbor_distance < worst_dist {
+                    tfb.record_true_positive();
+                    candidates.push(MinCandidate {
+                        id: neighbor_id,
+                        distance: neighbor_distance,
+                    });
+                    results.push(MaxResult {
+                        id: neighbor_id,
+                        distance: neighbor_distance,
+                    });
+                    if results.len() > ef {
+                        results.pop();
+                    }
+                } else {
+                    tfb.record_false_positive();
+                }
+            }
+        }
+
+        let mut output: Vec<(u32, f32)> = results.into_iter().map(|r| (r.id, r.distance)).collect();
+        output.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+        output
+    });
+
+    (results, full_dist_count)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
