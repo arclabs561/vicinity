@@ -20,3 +20,6 @@ __pycache__/
 
 # QA reports (generated)
 qa/
+
+# Local archive (research notes, drafts)
+_archive/
