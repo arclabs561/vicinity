@@ -222,7 +222,6 @@ mod tests {
 
         // Test with 20 queries (not in training set)
         let test_vectors = random_vectors(20, dim, 999);
-        let mut total_hnsw_recall = 0.0;
         let mut total_ads_recall = 0.0;
 
         for qi in 0..20 {
@@ -248,7 +247,6 @@ mod tests {
 
             // Compare ADSampling against HNSW (not brute force -- both use the same graph)
             let overlap = hnsw_ids.intersection(&ads_ids).count();
-            total_hnsw_recall += 1.0; // HNSW is our reference
             total_ads_recall += overlap as f64 / k as f64;
         }
 

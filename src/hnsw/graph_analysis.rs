@@ -295,7 +295,7 @@ pub struct MspValidation {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::useless_vec, clippy::needless_range_loop)]
 mod tests {
     use super::*;
 
