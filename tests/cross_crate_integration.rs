@@ -82,74 +82,33 @@ mod idpaq_integration {
 // Feature Compilation Tests
 // =============================================================================
 
-/// These tests just verify that features compile correctly together
-mod feature_compilation {
-    #[test]
-    fn default_features_compile() {
-        // IdCompressionMethod exists in both feature configurations (stub enum
-        // without id-compression, real type with it). Asserting on the name
-        // gives the test a runtime check rather than a silent pass.
-        let name = std::any::type_name::<vicinity::compression::IdCompressionMethod>();
-        assert!(name.contains("IdCompressionMethod"));
-    }
-
-    #[cfg(feature = "hnsw")]
-    #[test]
-    fn hnsw_feature_compiles() {
-        // HNSW feature should enable the HNSW module
-        // This is a compile-time check more than runtime
-        // Compile-time check: HNSW feature enables the HNSW module
-    }
-
-    #[cfg(feature = "persistence")]
-    #[test]
-    fn persistence_feature_compiles() {
-        // Compile-time check: persistence feature enables the persistence module
-    }
-}
-
 // =============================================================================
-// Dependency Graph Verification
+// Dependency Chain Verification
 // =============================================================================
 
-/// These tests document and verify the intended dependency structure
-mod dependency_documentation {
-    /// Document the compression dependency chain
-    ///
-    /// vicinity (id-compression) -> idpaq
-    #[test]
-    fn compression_dependency_chain() {
-        // This test documents the dependency:
-        // When id-compression is enabled, vicinity delegates to idpaq
-        //
-        // The types should be:
-        // - vicinity::compression::RocCompressor = idpaq::RocCompressor
-        // - vicinity::compression::CompressionError = idpaq::CompressionError
-        //
-        // This is verified by the idpaq_integration tests above
-        // Compile-time verification only; presence of this function confirms the chain compiles.
-    }
-
-    /// Document the SIMD dependency chain
+mod dependency_verification {
+    /// Verify the SIMD dependency chain produces correct distance values.
     ///
     /// vicinity (innr feature, default) -> innr
     #[test]
-    fn simd_dependency_chain() {
-        // SIMD functions are internal (pub(crate)); the public API is via
-        // vicinity::distance::{l2_distance, cosine_distance, ...}
+    fn simd_distance_functions_produce_correct_values() {
         let a = [1.0_f32, 0.0, 0.0];
         let b = [0.707_f32, 0.707, 0.0];
 
         let cos_d = vicinity::distance::cosine_distance(&a, &b);
         let l2_d = vicinity::distance::l2_distance(&a, &b);
 
+        // Expected cosine distance: 1 - dot(a,b)/(|a|*|b|) = 1 - 0.707/1.0 ≈ 0.293
         assert!(
-            cos_d < 0.5,
-            "cosine distance should be small for similar vectors"
+            (cos_d - 0.293).abs() < 0.01,
+            "cosine distance should be ~0.293, got {}",
+            cos_d
         );
+        // Expected L2: sqrt((1-0.707)^2 + 0.707^2) ≈ 0.586 (squared: ~0.586)
         assert!(
-            l2_d > 0.0,
-            "l2 distance should be positive for different vectors"
+            l2_d > 0.1,
+            "l2 distance should be meaningfully positive, got {}",
+            l2_d
         );
     }
 }

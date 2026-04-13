@@ -57,14 +57,15 @@ proptest! {
         let query: Vec<f32> = (0..dim).map(|_| lcg()).collect();
         let query = normalize(&query);
 
-        if let Ok(results) = index.search(&query, 5) {
-            for (returned_id, _dist) in &results {
-                prop_assert!(
-                    inserted_ids.contains(returned_id),
-                    "search returned id={} which was not inserted (range {}..{})",
-                    returned_id, base_id, base_id + n as u32,
-                );
-            }
+        let results = index.search(&query, 5);
+        prop_assert!(results.is_ok(), "search failed: {:?}", results.err());
+        let results = results.unwrap();
+        for (returned_id, _dist) in &results {
+            prop_assert!(
+                inserted_ids.contains(returned_id),
+                "search returned id={} which was not inserted (range {}..{})",
+                returned_id, base_id, base_id + n as u32,
+            );
         }
     }
 
@@ -95,12 +96,13 @@ proptest! {
         let query: Vec<f32> = (0..dim).map(|_| lcg()).collect();
         let query = normalize(&query);
 
-        if let Ok(results) = index.search(&query, k) {
-            prop_assert!(
-                results.len() <= k,
-                "returned {} results but k={}",
-                results.len(), k
-            );
-        }
+        let results = index.search(&query, k);
+        prop_assert!(results.is_ok(), "search failed: {:?}", results.err());
+        let results = results.unwrap();
+        prop_assert!(
+            results.len() <= k,
+            "returned {} results but k={}",
+            results.len(), k
+        );
     }
 }

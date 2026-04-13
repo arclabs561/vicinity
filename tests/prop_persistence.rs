@@ -194,7 +194,7 @@ proptest! {
         );
     }
 
-    /// Metadata (dimension, num_vectors) survives roundtrip.
+    /// Metadata (dimension, num_vectors) and search results survive roundtrip.
     #[test]
     fn persistence_metadata_roundtrip(
         n in 10usize..40,
@@ -216,13 +216,14 @@ proptest! {
         let reader = HNSWSegmentReader::load(Box::new(mem.clone()), 1).expect("load");
         let loaded = reader.load_index().expect("load_index");
 
+        // Verify the loaded index produces the same search results as the original.
         let query = normalize(&vectors[0]);
-        let results = loaded.search(&query, 5.min(n), 50);
-        prop_assert!(results.is_ok(), "Search failed on loaded index");
-        prop_assert_eq!(
-            results.unwrap().len(),
-            5.min(n),
-            "Loaded index returns wrong number of results"
-        );
+        let k = 5.min(n);
+        let original_results = original.search(&query, k, 50).expect("original search");
+        let loaded_results = loaded.search(&query, k, 50).expect("loaded search");
+        let orig_ids: Vec<u32> = original_results.iter().map(|(id, _)| *id).collect();
+        let load_ids: Vec<u32> = loaded_results.iter().map(|(id, _)| *id).collect();
+        prop_assert_eq!(&orig_ids, &load_ids, "search results differ after roundtrip");
+        prop_assert_eq!(loaded_results.len(), k, "loaded index returns wrong result count");
     }
 }

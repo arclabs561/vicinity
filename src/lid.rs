@@ -777,15 +777,23 @@ mod tests {
 
         assert_eq!(estimates.len(), 5);
 
-        // The outlier (point 4) should have higher LID
+        // The outlier (point 4) should have higher LID than the cluster points.
         let stats = LidStats::from_estimates(&estimates);
-        println!(
-            "LID stats: mean={}, median={}, std={}",
-            stats.mean, stats.median, stats.std_dev
-        );
 
-        // Point 4's LID should be in the high category
-        // (This is a soft test - LID behavior depends on distance distribution)
+        // Point 4's LID should be finite and at least as large as the median,
+        // since it sits far from the cluster.
+        let outlier_lid = estimates[4].lid;
+        assert!(
+            outlier_lid.is_finite(),
+            "outlier LID should be finite, got {}",
+            outlier_lid
+        );
+        assert!(
+            outlier_lid >= stats.median,
+            "outlier LID ({}) should be >= median ({})",
+            outlier_lid,
+            stats.median
+        );
     }
 
     #[test]
