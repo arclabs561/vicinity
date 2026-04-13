@@ -463,9 +463,9 @@ dependencies = [
 
 [[package]]
 name = "innr"
-version = "0.2.2"
+version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "98231ce3ba89f544e772860d0d715b0eac72e2259c70236bb7fbf2996dedd75e"
+checksum = "761791b2bc31ea3295c68c48bf1378402684ebcf47202c65f3226ef7affb8bc3"
 
 [[package]]
 name = "is-terminal"

@@ -156,6 +156,9 @@ pub mod binary_index;
 #[cfg(feature = "sparse_mips")]
 pub mod sparse_mips;
 
+#[cfg(feature = "sq4")]
+pub mod sq4;
+
 #[cfg(feature = "sng")]
 pub mod sng;
 
@@ -164,6 +167,8 @@ pub mod vamana;
 
 #[cfg(feature = "hnsw")]
 pub(crate) mod adaptive;
+#[cfg(feature = "hnsw")]
+pub mod adsampling;
 pub mod partitioning;
 #[cfg(feature = "ivf_pq")]
 pub(crate) mod pq_simd;
