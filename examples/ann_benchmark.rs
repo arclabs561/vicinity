@@ -1293,10 +1293,7 @@ fn run_adsampling(
     index.build();
 
     // Build ADSampling state (rotation + rotated vectors).
-    let ads_params = ADSamplingParams {
-        epsilon0: 1000.0, // DEBUG: near-zero rejection to isolate recall issue
-        ..Default::default()
-    };
+    let ads_params = ADSamplingParams::default();
     let state = ADSamplingState::new(&flat, dim, ads_params);
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
