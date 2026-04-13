@@ -274,12 +274,21 @@ fn test_ef_search_improves_recall() {
         recalls.push(results.mean_recall());
     }
 
-    // Recall should generally increase with ef
-    let max_recall = recalls.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    // Recall should generally increase with ef (allow small per-step drops
+    // due to non-determinism, but overall trend must be upward).
+    for w in recalls.windows(2) {
+        assert!(
+            w[1] >= w[0] - 0.10,
+            "recall dropped more than 10% when increasing ef: {:.3} -> {:.3}",
+            w[0],
+            w[1]
+        );
+    }
+    // The best (highest-ef) recall should meet a minimum floor.
     assert!(
-        max_recall >= 0.70,
-        "Best recall {:.3} below threshold 0.70",
-        max_recall
+        *recalls.last().unwrap() >= 0.70,
+        "Recall at highest ef {:.3} below threshold 0.70",
+        recalls.last().unwrap()
     );
 }
 
@@ -377,80 +386,4 @@ fn test_no_recall_regression() {
         results.mean_recall(),
         baseline_min
     );
-}
-
-// ============ Debug/Diagnostic Tests ============
-
-#[test]
-fn test_print_detailed_stats() {
-    let dataset = generate_normalized_clustered_dataset("diagnostic", 500, 50, 32, 5, 0.1, 10, 42);
-
-    let params = HNSWParams {
-        m: 16,
-        m_max: 32,
-        ef_construction: 200,
-        ef_search: 100,
-        ..Default::default()
-    };
-
-    let results = evaluate_hnsw(&dataset, &params, "diagnostic");
-
-    println!("\n=== Detailed Evaluation Stats ===");
-    println!(
-        "Dataset: {} ({} base, {} queries, dim={})",
-        dataset.name,
-        dataset.n_base(),
-        dataset.n_queries(),
-        dataset.dim
-    );
-    println!("Config: {}", results.config);
-    println!("\nRecall:");
-    println!("  Mean:   {:.3}", results.mean_recall());
-    println!("  Median: {:.3}", results.median_recall());
-    println!(
-        "  Min:    {:.3}",
-        results
-            .recalls
-            .iter()
-            .cloned()
-            .fold(f32::INFINITY, f32::min)
-    );
-    println!(
-        "  Max:    {:.3}",
-        results
-            .recalls
-            .iter()
-            .cloned()
-            .fold(f32::NEG_INFINITY, f32::max)
-    );
-    println!("\nLatency:");
-    println!("  Mean:   {:.1} us", results.mean_latency_us());
-    println!("  P50:    {} us", results.p50_latency_us());
-    println!("  P99:    {} us", results.p99_latency_us());
-    println!("\nThroughput:");
-    println!("  QPS:    {:.1}", results.qps());
-    println!("\nResources:");
-    println!("  Build:  {:.2} s", results.build_time.as_secs_f64());
-    println!(
-        "  Memory: {:.2} MB",
-        results.index_memory_bytes as f64 / 1_000_000.0
-    );
-
-    // Recall distribution histogram
-    println!("\nRecall Distribution:");
-    let mut bins = [0usize; 10];
-    for r in &results.recalls {
-        let bin = ((r * 10.0) as usize).min(9);
-        bins[bin] += 1;
-    }
-    for (i, count) in bins.iter().enumerate() {
-        let bar = "*".repeat(*count);
-        println!(
-            "  [{:.1}-{:.1}): {} {}",
-            i as f32 / 10.0,
-            (i + 1) as f32 / 10.0,
-            count,
-            bar
-        );
-    }
 }

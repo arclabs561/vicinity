@@ -13,12 +13,6 @@ use vicinity::compression::{IdSetCompressor, RocCompressor};
 // =============================================================================
 
 #[test]
-fn idpaq_compressor_available() {
-    // Verify the idpaq types are properly re-exported
-    let _compressor = RocCompressor::new();
-}
-
-#[test]
 fn roundtrip_small_set() {
     let compressor = RocCompressor::new();
     let ids: Vec<u32> = vec![1, 5, 10, 20, 50];
@@ -185,11 +179,10 @@ fn consecutive_ids_compress_well() {
     let uncompressed_size = ids.len() * std::mem::size_of::<u32>();
     let ratio = uncompressed_size as f64 / compressed.len() as f64;
 
-    // Consecutive IDs should compress extremely well
-    println!(
-        "Consecutive: {} bytes -> {} bytes (ratio: {:.2}x)",
-        uncompressed_size,
-        compressed.len(),
+    // Consecutive IDs should compress extremely well (>= 3x)
+    assert!(
+        ratio >= 3.0,
+        "Consecutive IDs should compress at >= 3x, got {:.2}x",
         ratio
     );
 }

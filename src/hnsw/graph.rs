@@ -2576,7 +2576,13 @@ mod tests {
 
     /// Build a small index for structural invariant tests.
     fn build_structural_test_index(n: usize, dim: usize, m: usize) -> HNSWIndex {
-        let mut index = HNSWIndex::new(dim, m, 2 * m).unwrap();
+        let params = HNSWParams {
+            m,
+            m_max: 2 * m,
+            seed: Some(42),
+            ..Default::default()
+        };
+        let mut index = HNSWIndex::with_params(dim, params).unwrap();
         for i in 0..n {
             let v: Vec<f32> = (0..dim)
                 .map(|j| ((i * 7 + j * 3) % 100) as f32 / 100.0)

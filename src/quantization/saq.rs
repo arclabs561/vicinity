@@ -283,9 +283,10 @@ mod tests {
     }
 
     /// Build a set of L2-normalized training vectors (SoA layout).
-    fn make_training_data(num_vectors: usize, dim: usize) -> Vec<f32> {
-        use rand::Rng;
-        let mut rng = rand::rng();
+    fn make_training_data(num_vectors: usize, dim: usize, seed: u64) -> Vec<f32> {
+        use rand::rngs::StdRng;
+        use rand::{Rng, SeedableRng};
+        let mut rng = StdRng::seed_from_u64(seed);
         let mut data = Vec::with_capacity(num_vectors * dim);
         for _ in 0..num_vectors {
             let mut v: Vec<f32> = (0..dim).map(|_| rng.random::<f32>() * 2.0 - 1.0).collect();
@@ -325,7 +326,7 @@ mod tests {
         let total_bits = 16;
         let num_train = 50;
 
-        let data = make_training_data(num_train, dim);
+        let data = make_training_data(num_train, dim, 42);
         let mut quantizer = SAQQuantizer::new(dim, num_segments, total_bits).unwrap();
         quantizer.fit(&data, num_train).unwrap();
 
@@ -357,7 +358,7 @@ mod tests {
         let total_bits = 8;
         let num_train = 30;
 
-        let data = make_training_data(num_train, dim);
+        let data = make_training_data(num_train, dim, 77);
         let mut quantizer = SAQQuantizer::new(dim, num_segments, total_bits).unwrap();
         quantizer.fit(&data, num_train).unwrap();
 

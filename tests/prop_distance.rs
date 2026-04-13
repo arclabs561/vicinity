@@ -14,29 +14,7 @@ use proptest::prelude::*;
 
 mod distance_props {
     use super::*;
-    use vicinity::distance::{cosine_distance_normalized, normalize};
-
-    fn l2_distance_squared(a: &[f32], b: &[f32]) -> f32 {
-        a.iter()
-            .zip(b.iter())
-            .map(|(x, y)| {
-                let d = x - y;
-                d * d
-            })
-            .sum()
-    }
-
-    fn cosine_distance(a: &[f32], b: &[f32]) -> f32 {
-        let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-        let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-        let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-
-        if norm_a == 0.0 || norm_b == 0.0 {
-            return 1.0;
-        }
-
-        1.0 - dot / (norm_a * norm_b)
-    }
+    use vicinity::distance::{cosine_distance, cosine_distance_normalized, l2_distance, normalize};
 
     prop_compose! {
         fn arb_vector(dim: usize)(vec in prop::collection::vec(-10.0f32..10.0, dim)) -> Vec<f32> {
@@ -47,62 +25,67 @@ mod distance_props {
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(100))]
 
+        /// L2 distance (via crate's SIMD path) is non-negative.
         #[test]
         fn l2_distance_non_negative(
             a in arb_vector(64),
             b in arb_vector(64),
         ) {
-            let dist = l2_distance_squared(&a, &b);
+            let dist = l2_distance(&a, &b);
             prop_assert!(dist >= 0.0, "L2 distance must be non-negative, got {}", dist);
         }
 
+        /// L2 distance is symmetric.
         #[test]
         fn l2_distance_symmetric(
             a in arb_vector(32),
             b in arb_vector(32),
         ) {
-            let d_ab = l2_distance_squared(&a, &b);
-            let d_ba = l2_distance_squared(&b, &a);
+            let d_ab = l2_distance(&a, &b);
+            let d_ba = l2_distance(&b, &a);
             prop_assert!(
-                (d_ab - d_ba).abs() < 1e-6,
+                (d_ab - d_ba).abs() < 1e-5,
                 "L2 distance not symmetric: {} vs {}",
                 d_ab, d_ba
             );
         }
 
+        /// L2 distance to self is zero.
         #[test]
         fn l2_distance_self_is_zero(
             a in arb_vector(32),
         ) {
-            let dist = l2_distance_squared(&a, &a);
+            let dist = l2_distance(&a, &a);
             prop_assert!(
-                dist.abs() < 1e-10,
+                dist.abs() < 1e-6,
                 "Distance to self should be 0, got {}",
                 dist
             );
         }
 
+        /// L2 distance satisfies triangle inequality.
         #[test]
         fn l2_triangle_inequality(
             a in arb_vector(16),
             b in arb_vector(16),
             c in arb_vector(16),
         ) {
-            let d_ac = l2_distance_squared(&a, &c).sqrt();
-            let d_ab = l2_distance_squared(&a, &b).sqrt();
-            let d_bc = l2_distance_squared(&b, &c).sqrt();
+            let d_ac = l2_distance(&a, &c).sqrt();
+            let d_ab = l2_distance(&a, &b).sqrt();
+            let d_bc = l2_distance(&b, &c).sqrt();
 
             prop_assert!(
-                d_ac <= d_ab + d_bc + 1e-5,
+                d_ac <= d_ab + d_bc + 1e-4,
                 "Triangle inequality violated: {} > {} + {}",
                 d_ac, d_ab, d_bc
             );
         }
 
+        /// Cosine distance (general, unnormalized) is in [0, 2].
         #[test]
         fn cosine_distance_in_range(
-            a in arb_vector(32),
-            b in arb_vector(32),
+            a in arb_vector(32).prop_filter("non-zero", |v| v.iter().any(|x| x.abs() > 1e-4)),
+            b in arb_vector(32).prop_filter("non-zero", |v| v.iter().any(|x| x.abs() > 1e-4)),
         ) {
             let dist = cosine_distance(&a, &b);
             prop_assert!(
@@ -112,10 +95,11 @@ mod distance_props {
             );
         }
 
+        /// Cosine distance is symmetric.
         #[test]
         fn cosine_distance_symmetric(
-            a in arb_vector(32),
-            b in arb_vector(32),
+            a in arb_vector(32).prop_filter("non-zero", |v| v.iter().any(|x| x.abs() > 1e-4)),
+            b in arb_vector(32).prop_filter("non-zero", |v| v.iter().any(|x| x.abs() > 1e-4)),
         ) {
             let d_ab = cosine_distance(&a, &b);
             let d_ba = cosine_distance(&b, &a);
