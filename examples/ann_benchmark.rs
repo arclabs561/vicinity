@@ -440,7 +440,10 @@ fn run_ivfpq(
 
     let num_clusters = 256;
     // num_codebooks must divide dim evenly. Pick the largest divisor <= 8.
-    let num_codebooks = (1..=8.min(dim)).rev().find(|&c| dim % c == 0).unwrap_or(1);
+    let num_codebooks = (1..=8.min(dim))
+        .rev()
+        .find(|&c| dim.is_multiple_of(c))
+        .unwrap_or(1);
 
     if !cfg.json {
         println!(
@@ -519,7 +522,6 @@ fn run_emg(
         iterations: 2,
         alpha: 1.5,
         ef_search: 100,
-        ..Default::default()
     };
 
     if !cfg.json {
@@ -835,7 +837,6 @@ fn run_ivf_rabitq(
         nprobe: 10,
         total_bits: 4,
         seed: 42,
-        ..Default::default()
     };
 
     let build_start = Instant::now();

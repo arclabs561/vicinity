@@ -243,6 +243,11 @@ name = "embedding_pipeline"
 path = "examples/embedding_pipeline.rs"
 required-features = ["hnsw"]
 
+[[example]]
+name = "glove_all_algos"
+path = "examples/glove_all_algos.rs"
+required-features = ["hnsw"]
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

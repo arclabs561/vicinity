@@ -187,8 +187,7 @@ fn self_query_returns_self() {
 
     let ef = 100;
 
-    for i in 0..N {
-        let q = &vectors[i];
+    for (i, q) in vectors.iter().enumerate() {
         let doc_id = i as u32;
 
         // HNSW -- strict top-1
@@ -221,8 +220,7 @@ fn self_query_returns_self() {
 
     // SNG (experimental) -- softer: self must appear in top-10
     let mut sng_found = 0;
-    for i in 0..N {
-        let q = &vectors[i];
+    for (i, q) in vectors.iter().enumerate() {
         let doc_id = i as u32;
         let r = sng.search(q, 10).expect("sng self-query");
         if r.iter().any(|(id, _)| *id == doc_id) {
