@@ -98,6 +98,17 @@ impl SNGIndex {
             return Err(RetrieveError::EmptyIndex);
         }
 
+        // SNG construction is O(n^2) pairwise distance computation.
+        // Above ~50K vectors this takes hours with no progress feedback.
+        const SNG_SCALE_LIMIT: usize = 50_000;
+        if self.num_vectors > SNG_SCALE_LIMIT {
+            return Err(RetrieveError::InvalidParameter(format!(
+                "SNG construction is O(n^2); n={} exceeds practical limit of {}. \
+                 Use HNSW, Vamana, or NSG for larger datasets.",
+                self.num_vectors, SNG_SCALE_LIMIT
+            )));
+        }
+
         // Optimize truncation parameter R using closed-form rule
         self.truncation_r =
             crate::sng::optimization::optimize_truncation_r(self.num_vectors, self.dimension)?;
