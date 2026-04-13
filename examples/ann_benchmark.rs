@@ -361,6 +361,7 @@ fn run_hnsw(
         m_max: cfg.m,
         ef_construction: cfg.ef_construction,
         metric,
+        auto_normalize: !cfg.is_euclidean,
         ..Default::default()
     };
 
@@ -1281,6 +1282,7 @@ fn run_adsampling(
         m_max: m,
         ef_construction,
         metric,
+        auto_normalize: !cfg.is_euclidean,
         seed: Some(42),
         ..Default::default()
     };
