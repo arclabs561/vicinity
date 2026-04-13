@@ -271,3 +271,38 @@ fn symphonyqg_recall_vs_brute_force() {
          (raw quantized recall = {recall_raw:.3})"
     );
 }
+
+// Regression test: 4-bit and 8-bit RaBitQ must achieve comparable recall to
+// 1-bit.  Before the fix, correction factors were computed from binary codes
+// only, causing a ~16x/128x scale mismatch with the multi-bit inner product
+// at query time, collapsing 4-bit recall to ~6% and 8-bit to ~5%.
+#[cfg(all(feature = "hnsw", feature = "ivf_rabitq"))]
+#[test]
+fn symphonyqg_multibit_recall_regression() {
+    use qntz::rabitq::RaBitQConfig;
+    use vicinity::hnsw::symphony_qg::SymphonyQGIndex;
+
+    let vectors = dataset();
+    let qs = queries();
+
+    for (label, config) in [
+        ("4-bit", RaBitQConfig::bits4()),
+        ("8-bit", RaBitQConfig::bits8()),
+    ] {
+        let mut idx = SymphonyQGIndex::with_config(DIM, 16, 100, config, 42).unwrap();
+        for (i, v) in vectors.iter().enumerate() {
+            idx.add_slice(i as u32, v).unwrap();
+        }
+        idx.build().unwrap();
+
+        let recall = avg_recall(&vectors, &qs, |q| {
+            idx.search_reranked(q, K, 100, 50).unwrap()
+        });
+
+        assert!(
+            recall >= 0.30,
+            "SymphonyQG {label} reranked recall@{K} = {recall:.3}, expected >= 0.30 \
+             (regression: pre-fix multi-bit recall was 6-12%)"
+        );
+    }
+}
