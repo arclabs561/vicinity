@@ -56,6 +56,9 @@ clump = { version = "0.5.3", optional = true }
 # Spectral statistics (optional).
 rmt = { version = "0.1.2", optional = true }
 
+# Sketching primitives (cross-polytope LSH, hyperplane hashing)
+sketchir = { version = "0.3.0", optional = true }
+
 # Vector quantization primitives (extracted from `vicinity`)
 qntz = { package = "qntz", version = "0.1.4", optional = true }
 
@@ -107,7 +110,7 @@ finger = []
 filtered_graph = []
 rp_quant = []
 sparse_mips = []
-lsh = []
+lsh = ["dep:sketchir"]
 nsw = []
 sq4 = []
 kdtree = []

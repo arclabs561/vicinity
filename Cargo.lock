@@ -1167,6 +1167,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "sketchir"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "527f8b7b345551beb5fa8494ca493d5c86d73c8b895b602994f3a78ef68709d4"
+
+[[package]]
 name = "smallvec"
 version = "1.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1325,6 +1331,7 @@ dependencies = [
  "sbits",
  "serde",
  "serde_json",
+ "sketchir",
  "smallvec",
  "tempfile",
  "thiserror",
