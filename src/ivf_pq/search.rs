@@ -187,7 +187,7 @@ impl Cluster {
     fn new_compressed(
         ids: Vec<u32>,
         filter_bitmask: u64,
-        _compressor: &crate::compression::RocCompressor,
+        _compressor: &crate::compression::DeltaVarintCompressor,
         universe_size: u32,
     ) -> Result<Self, crate::compression::CompressionError> {
         // Sort IDs (required for compression)
@@ -199,7 +199,7 @@ impl Cluster {
         let compressed = crate::compression::compress_set_enveloped(
             &sorted_ids,
             universe_size,
-            crate::compression::AutoConfig::default(),
+            crate::compression::ChooseConfig::default(),
         )?;
 
         Ok(Self {
@@ -519,8 +519,9 @@ impl IVFPQIndex {
                     if let Some(ref method) = self.params.id_compression {
                         if ids.len() >= self.params.compression_threshold {
                             match method {
-                                crate::compression::IdCompressionMethod::Roc => {
-                                    let compressor = crate::compression::RocCompressor::new();
+                                crate::compression::IdCompressionMethod::DeltaVarint => {
+                                    let compressor =
+                                        crate::compression::DeltaVarintCompressor::new();
                                     let universe_size = self.num_vectors as u32;
                                     // Clone ids for fallback case since new_compressed takes ownership
                                     let ids_clone = ids.clone();

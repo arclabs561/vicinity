@@ -365,7 +365,7 @@ impl Layer {
     #[cfg(feature = "id-compression")]
     pub(crate) fn compress(
         &mut self,
-        compressor: &crate::compression::RocCompressor,
+        compressor: &crate::compression::DeltaVarintCompressor,
         universe_size: u32,
         threshold: usize,
     ) -> Result<(), crate::compression::CompressionError> {
@@ -390,7 +390,7 @@ impl Layer {
     #[cfg(feature = "id-compression")]
     fn new_compressed(
         neighbors: Vec<SmallVec<[u32; 16]>>,
-        _compressor: &crate::compression::RocCompressor,
+        _compressor: &crate::compression::DeltaVarintCompressor,
         universe_size: u32,
         threshold: usize,
     ) -> Result<Self, crate::compression::CompressionError> {
@@ -406,7 +406,7 @@ impl Layer {
                 let compressed = crate::compression::compress_set_enveloped(
                     &sorted,
                     universe_size,
-                    crate::compression::AutoConfig::default(),
+                    crate::compression::ChooseConfig::default(),
                 )?;
 
                 compressed_lists.push(CompressedNeighborList {
@@ -1391,8 +1391,8 @@ impl HNSWIndex {
         method: &crate::compression::IdCompressionMethod,
     ) -> Result<(), crate::compression::CompressionError> {
         match method {
-            crate::compression::IdCompressionMethod::Roc => {
-                let compressor = crate::compression::RocCompressor::new();
+            crate::compression::IdCompressionMethod::DeltaVarint => {
+                let compressor = crate::compression::DeltaVarintCompressor::new();
                 let universe_size = self.num_vectors as u32;
                 let threshold = self.params.compression_threshold;
 
