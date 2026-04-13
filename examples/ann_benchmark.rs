@@ -1293,7 +1293,10 @@ fn run_adsampling(
     index.build();
 
     // Build ADSampling state (rotation + rotated vectors).
-    let ads_params = ADSamplingParams::default();
+    let ads_params = ADSamplingParams {
+        epsilon0: 1000.0, // DEBUG: near-zero rejection to isolate recall issue
+        ..Default::default()
+    };
     let state = ADSamplingState::new(&flat, dim, ads_params);
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
@@ -1546,6 +1549,92 @@ fn run_binary_index(
     }
 }
 
+#[cfg(feature = "lsh")]
+fn run_lsh(
+    cfg: &Config,
+    train: &[Vec<f32>],
+    test: &[Vec<f32>],
+    neighbors: &[Vec<i32>],
+    dim: usize,
+) {
+    use vicinity::lsh::{CrossPolytopeLSHIndex, LSHParams};
+
+    // Sweep over (num_tables, num_probes) combinations.
+    let table_counts = [8, 16, 32];
+    let probe_counts = [2, 4, 8, 16];
+
+    for &num_tables in &table_counts {
+        let params = LSHParams {
+            num_tables,
+            num_probes: 1, // build once per table count
+            seed: Some(42),
+        };
+
+        if !cfg.json {
+            println!("--- LSH (tables={}) ---", num_tables);
+        }
+
+        let build_start = Instant::now();
+        let mut index = CrossPolytopeLSHIndex::new(dim, params).unwrap();
+
+        // Flatten train vectors for add_vectors.
+        let flat: Vec<f32> = train.iter().flat_map(|v| v.iter().copied()).collect();
+        index.add_vectors(&flat).unwrap();
+        index.build().unwrap();
+        let build_time_s = build_start.elapsed().as_secs_f64();
+        let rss = current_rss_kb();
+
+        if !cfg.json {
+            println!(
+                "Build: {:.2}s ({:.0} vectors/sec)\n",
+                build_time_s,
+                train.len() as f64 / build_time_s
+            );
+            print_header();
+        }
+
+        for &num_probes in &probe_counts {
+            if num_probes > dim {
+                continue; // probes > dimension is wasteful
+            }
+
+            // Rebuild with different probe count (same rotation matrices via same seed).
+            let search_params = LSHParams {
+                num_tables,
+                num_probes,
+                seed: Some(42),
+            };
+            let mut search_index = CrossPolytopeLSHIndex::new(dim, search_params).unwrap();
+            search_index.add_vectors(&flat).unwrap();
+            search_index.build().unwrap();
+
+            let result = evaluate(
+                &|q, k| search_index.search(q, k).unwrap_or_default(),
+                test,
+                neighbors,
+                10,
+            );
+
+            if cfg.json {
+                let params_json = format!(
+                    "{{\"num_tables\":{},\"num_probes\":{}}}",
+                    num_tables, num_probes
+                );
+                emit_result(
+                    &cfg.results_path,
+                    &json_line("lsh", &params_json, build_time_s, rss, &result),
+                );
+            } else {
+                print_row(&format!("probes={}", num_probes), &result);
+            }
+        }
+
+        if !cfg.json {
+            println!();
+        }
+    }
+}
+
 fn run_brute(cfg: &Config, train: &[Vec<f32>], test: &[Vec<f32>], neighbors: &[Vec<i32>]) {
     if !cfg.json {
         println!("--- Brute Force (linear scan) ---");
@@ -1782,11 +1871,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             #[cfg(feature = "hnsw")]
             "adsampling" => run_adsampling(&cfg, &train, &test, &neighbors, dim),
 
+            #[cfg(feature = "lsh")]
+            "lsh" => run_lsh(&cfg, &train, &test, &neighbors, dim),
+
+            #[cfg(not(feature = "lsh"))]
+            "lsh" => {
+                eprintln!("LSH not available (compile with --features lsh)");
+            }
+
             "brute" => run_brute(&cfg, &train, &test, &neighbors),
 
             other => {
                 eprintln!(
-                    "Unknown algorithm: {}. Options: hnsw, nsw, ivfpq, emg, nsg, pipnn, sng, vamana, ivf_rabitq, symphony_qg, finger, fresh_graph, filtered_graph, rp_quant, sparse_mips, curator, esg, binary_index, sq4, adsampling, brute",
+                    "Unknown algorithm: {}. Options: hnsw, nsw, ivfpq, emg, nsg, pipnn, sng, vamana, ivf_rabitq, symphony_qg, finger, fresh_graph, filtered_graph, rp_quant, sparse_mips, curator, esg, binary_index, sq4, adsampling, lsh, brute",
                     other
                 );
             }

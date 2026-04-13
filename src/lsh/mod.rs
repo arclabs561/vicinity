@@ -329,23 +329,9 @@ pub struct LSHStats {
 // Helper functions
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Apply a rotation matrix (row-major, d×d) to a vector.
-fn apply_rotation(vector: &[f32], rotation: &[f32], d: usize) -> Vec<f32> {
-    let mut result = vec![0.0f32; d];
-    for (i, out) in result.iter_mut().enumerate() {
-        let mut sum = 0.0f32;
-        let row_start = i * d;
-        for j in 0..d {
-            sum += rotation[row_start + j] * vector[j];
-        }
-        *out = sum;
-    }
-    result
-}
-
 /// Apply rotation and return the cross-polytope vertex (bucket id).
-fn hash_with_rotation(vector: &[f32], rotation: &[f32], d: usize) -> u32 {
-    let rotated = apply_rotation(vector, rotation, d);
+fn hash_with_rotation(vector: &[f32], rotation: &[f32], dim: usize) -> u32 {
+    let rotated = apply_rotation(vector, rotation, dim);
     cross_polytope_vertex(&rotated)
 }
 
@@ -369,12 +355,129 @@ fn cross_polytope_vertex(rotated: &[f32]) -> u32 {
     (max_idx as u32) * 2 + u32::from(max_neg)
 }
 
-/// Generate a random orthogonal matrix via QR decomposition (Gram-Schmidt).
+/// Generate a pseudo-random rotation as a "randomized Hadamard" transform.
 ///
-/// Draws a d x d matrix of i.i.d. Gaussian entries, then orthogonalizes.
-/// Returns a flat row-major d x d matrix.
+/// Uses the HD construction from Andoni et al. (2015): a random diagonal sign
+/// flip (D) followed by a Walsh-Hadamard transform (H), repeated a fixed number
+/// of times. This produces a distribution close to a uniformly random orthogonal
+/// matrix but in O(d log d) time instead of O(d^2).
+///
+/// The input dimension is padded to the next power of 2 internally. The returned
+/// "rotation" is stored as a sequence of sign-flip vectors (one per round), plus
+/// the padded dimension, packed into a flat Vec for compatibility with
+/// `apply_rotation` / `hash_with_rotation`.
+///
+/// For dimensions <= 64, falls back to dense Gram-Schmidt (the Hadamard overhead
+/// isn't worth it at small d).
 fn random_orthogonal_matrix(d: usize, rng: &mut dyn RngCore) -> Vec<f32> {
-    // Generate random Gaussian matrix.
+    if d <= 64 {
+        return random_orthogonal_matrix_dense(d, rng);
+    }
+
+    // Use randomized Hadamard: store as sign vectors.
+    // Format: [padded_d as f32, num_rounds as f32, signs_round_0..., signs_round_1..., ...]
+    let padded = d.next_power_of_two();
+    let num_rounds: usize = 3; // HD^3 from the paper
+
+    let mut result = Vec::with_capacity(2 + num_rounds * padded);
+    result.push(padded as f32);
+    result.push(num_rounds as f32);
+
+    for _ in 0..num_rounds {
+        for _ in 0..padded {
+            result.push(if rng.random::<bool>() { 1.0 } else { -1.0 });
+        }
+    }
+
+    result
+}
+
+/// Apply rotation: dispatches between Hadamard and dense based on rotation format.
+fn apply_rotation(vector: &[f32], rotation: &[f32], d: usize) -> Vec<f32> {
+    // Detect format: Hadamard rotations start with [padded_d, num_rounds, ...],
+    // dense rotations have length d*d.
+    if rotation.len() == d * d {
+        // Dense rotation (row-major matrix).
+        apply_rotation_dense(vector, rotation, d)
+    } else {
+        // Hadamard rotation: [padded_d, num_rounds, signs...]
+        apply_rotation_hadamard(vector, rotation, d)
+    }
+}
+
+/// Apply a dense rotation matrix (row-major, d×d) to a vector.
+fn apply_rotation_dense(vector: &[f32], rotation: &[f32], d: usize) -> Vec<f32> {
+    let mut result = vec![0.0f32; d];
+    for (i, out) in result.iter_mut().enumerate() {
+        let mut sum = 0.0f32;
+        let row_start = i * d;
+        for j in 0..d {
+            sum += rotation[row_start + j] * vector[j];
+        }
+        *out = sum;
+    }
+    result
+}
+
+/// Apply randomized Hadamard rotation: D * H repeated num_rounds times.
+fn apply_rotation_hadamard(vector: &[f32], rotation: &[f32], d: usize) -> Vec<f32> {
+    let padded = rotation[0] as usize;
+    let num_rounds = rotation[1] as usize;
+
+    // Pad input to power-of-2.
+    let mut buf = vec![0.0f32; padded];
+    buf[..d].copy_from_slice(vector);
+
+    for round in 0..num_rounds {
+        let signs_offset = 2 + round * padded;
+        let signs = &rotation[signs_offset..signs_offset + padded];
+
+        // Apply diagonal sign flip.
+        for (v, &s) in buf.iter_mut().zip(signs.iter()) {
+            *v *= s;
+        }
+
+        // In-place Walsh-Hadamard transform.
+        walsh_hadamard_transform(&mut buf);
+    }
+
+    // Return only the first d components.
+    buf.truncate(d);
+    buf
+}
+
+/// In-place Walsh-Hadamard transform (unnormalized).
+///
+/// Operates on a buffer whose length must be a power of 2.
+fn walsh_hadamard_transform(data: &mut [f32]) {
+    let n = data.len();
+    debug_assert!(n.is_power_of_two());
+
+    let mut h = 1;
+    while h < n {
+        for i in (0..n).step_by(h * 2) {
+            for j in i..i + h {
+                let x = data[j];
+                let y = data[j + h];
+                data[j] = x + y;
+                data[j + h] = x - y;
+            }
+        }
+        h *= 2;
+    }
+
+    // Normalize by 1/sqrt(n) to preserve vector norms.
+    let scale = 1.0 / (n as f32).sqrt();
+    for v in data.iter_mut() {
+        *v *= scale;
+    }
+}
+
+/// Dense random orthogonal matrix via QR decomposition (Gram-Schmidt).
+///
+/// Used for small dimensions (d <= 64) where Hadamard overhead isn't worth it.
+/// Returns a flat row-major d x d matrix.
+fn random_orthogonal_matrix_dense(d: usize, rng: &mut dyn RngCore) -> Vec<f32> {
     let mut matrix = vec![0.0f32; d * d];
     for val in &mut matrix {
         *val = standard_normal(rng);
@@ -382,7 +485,6 @@ fn random_orthogonal_matrix(d: usize, rng: &mut dyn RngCore) -> Vec<f32> {
 
     // Modified Gram-Schmidt orthogonalization.
     for i in 0..d {
-        // Normalize column i.
         let mut norm = 0.0f32;
         for row in 0..d {
             norm += matrix[row * d + i] * matrix[row * d + i];
@@ -394,7 +496,6 @@ fn random_orthogonal_matrix(d: usize, rng: &mut dyn RngCore) -> Vec<f32> {
             }
         }
 
-        // Subtract projection of column i from all subsequent columns.
         for j in (i + 1)..d {
             let mut dot = 0.0f32;
             for row in 0..d {
@@ -406,7 +507,7 @@ fn random_orthogonal_matrix(d: usize, rng: &mut dyn RngCore) -> Vec<f32> {
         }
     }
 
-    // Convert from column-major orthogonalized to row-major for fast matvec.
+    // Column-major to row-major.
     let mut row_major = vec![0.0f32; d * d];
     for i in 0..d {
         for j in 0..d {
@@ -692,10 +793,12 @@ mod tests {
     }
 
     #[test]
-    fn test_rotation_orthogonality() {
+    fn test_rotation_orthogonality_dense() {
+        // Small dim uses dense Gram-Schmidt.
         let dim = 8;
         let mut rng = StdRng::seed_from_u64(42);
         let rot = random_orthogonal_matrix(dim, &mut rng);
+        assert_eq!(rot.len(), dim * dim, "small dim should use dense rotation");
 
         // Check that R * R^T ≈ I.
         for i in 0..dim {
@@ -714,6 +817,108 @@ mod tests {
                     expected
                 );
             }
+        }
+    }
+
+    #[test]
+    fn test_hadamard_preserves_norm() {
+        // Large dim uses randomized Hadamard.
+        let dim = 128;
+        let mut rng = StdRng::seed_from_u64(42);
+        let rot = random_orthogonal_matrix(dim, &mut rng);
+        // Should NOT be d*d (Hadamard format).
+        assert_ne!(
+            rot.len(),
+            dim * dim,
+            "large dim should use Hadamard rotation"
+        );
+
+        let v: Vec<f32> = (0..dim).map(|i| (i as f32) * 0.1).collect();
+        let norm_before: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+
+        let rotated = apply_rotation(&v, &rot, dim);
+        let norm_after: f32 = rotated.iter().map(|x| x * x).sum::<f32>().sqrt();
+
+        // Randomized Hadamard approximately preserves norms.
+        let ratio = norm_after / norm_before;
+        assert!(
+            (ratio - 1.0).abs() < 0.3,
+            "Hadamard should approximately preserve norm: ratio={:.3}",
+            ratio
+        );
+    }
+
+    #[test]
+    fn test_hadamard_search_recall() {
+        // End-to-end: build with Hadamard rotation (dim=128), verify recall.
+        let dim = 128;
+        let n_clusters = 5;
+        let points_per_cluster = 60;
+
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut data = Vec::new();
+        for c in 0..n_clusters {
+            let center: Vec<f32> = (0..dim)
+                .map(|_| (c as f32) * 5.0 + rng.random::<f32>())
+                .collect();
+            for _ in 0..points_per_cluster {
+                for val in &center {
+                    data.push(val + rng.random::<f32>() * 0.3);
+                }
+            }
+        }
+        let n = data.len() / dim;
+
+        let params = LSHParams {
+            num_tables: 16,
+            num_probes: 8,
+            seed: Some(42),
+        };
+
+        let mut index = CrossPolytopeLSHIndex::new(dim, params).unwrap();
+        index.add_vectors(&data).unwrap();
+        index.build().unwrap();
+
+        let mut total_recall = 0.0;
+        let num_queries = 20;
+        let k = 10;
+
+        for qi in 0..num_queries {
+            let query = &data[qi * dim..(qi + 1) * dim];
+            let results = index.search(query, k).unwrap();
+            let gt = brute_force_knn(&data, dim, query, k);
+
+            let gt_set: std::collections::HashSet<u32> =
+                gt.iter().map(|&(id, _)| id as u32).collect();
+            let result_set: std::collections::HashSet<u32> =
+                results.iter().map(|&(id, _)| id).collect();
+            total_recall += gt_set.intersection(&result_set).count() as f32 / k as f32;
+        }
+
+        let avg_recall = total_recall / num_queries as f32;
+        assert!(
+            avg_recall > 0.3,
+            "Hadamard LSH recall too low: {:.1}% on {}d data (n={})",
+            avg_recall * 100.0,
+            dim,
+            n
+        );
+    }
+
+    #[test]
+    fn test_walsh_hadamard_transform() {
+        // WHT of [1, 0, 0, 0] should be [0.5, 0.5, 0.5, 0.5] (normalized).
+        let mut data = vec![1.0, 0.0, 0.0, 0.0];
+        walsh_hadamard_transform(&mut data);
+        let expected = 0.5f32;
+        for (i, &v) in data.iter().enumerate() {
+            assert!(
+                (v - expected).abs() < 1e-6,
+                "WHT[{}] = {} (expected {})",
+                i,
+                v,
+                expected
+            );
         }
     }
 
