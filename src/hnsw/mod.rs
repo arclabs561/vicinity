@@ -194,6 +194,12 @@ pub use crate::adaptive::AdaptiveConfig;
 #[doc(hidden)]
 pub mod tombstones;
 
+/// Graph quality analysis: occlusion statistics and MSP validation.
+#[cfg(feature = "hnsw")]
+pub mod graph_analysis;
+#[cfg(feature = "hnsw")]
+pub use graph_analysis::{analyze_graph_quality, validate_msp, GraphQuality, MspValidation};
+
 /// Dynamic Edge Navigation Graph (DEG) — density-adaptive edge count.
 ///
 /// Requires the `hnsw` feature. O(n^2) construction; suitable for n < ~10K.

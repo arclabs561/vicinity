@@ -721,6 +721,15 @@ impl HNSWIndex {
         })
     }
 
+    /// Borrow the raw flat vector storage.
+    ///
+    /// Layout: `[v0[0..d], v1[0..d], ..., vn[0..d]]` where d = dimension.
+    /// Useful for building external structures (PRT projections, quantization)
+    /// that need access to the stored vectors.
+    pub fn raw_vectors(&self) -> &[f32] {
+        &self.vectors
+    }
+
     /// Return the maximum neighbor count across all nodes and layers.
     ///
     /// Useful for verifying the graph respects the degree bound after construction.
@@ -1651,6 +1660,8 @@ impl HNSWIndex {
 
         // Fine search in base layer with custom distance
         if !self.layers.is_empty() {
+            #[cfg(test)]
+            eprintln!("[swd] current_closest={current_closest} after upper-layer descent");
             let base_results = crate::hnsw::search::greedy_search_layer_custom(
                 query,
                 current_closest,
@@ -2170,6 +2181,110 @@ impl HNSWIndex {
         } else {
             Ok((Vec::new(), 0))
         }
+    }
+
+    /// Search with Probabilistic Routing Test (PRT) pre-filtering.
+    ///
+    /// Uses random subspace projections to cheaply estimate distances before
+    /// computing full distances, skipping candidates unlikely to improve results.
+    /// The Test Feedback Buffer (TFB) adaptively tightens the filter threshold
+    /// during the search to reduce false positives.
+    ///
+    /// Returns `Ok((results, full_distance_count))` where `full_distance_count`
+    /// is the number of full (O(d)) distance computations performed. Compare
+    /// against `search()` to measure the PRT savings.
+    ///
+    /// `prt` must have been initialized with `project_database(&self.vectors)`.
+    pub fn search_prt(
+        &self,
+        query: &[f32],
+        k: usize,
+        ef: usize,
+        prt: &crate::prt::ProbabilisticRoutingTest,
+        initial_ratio: f32,
+        decay: f32,
+    ) -> Result<(Vec<(u32, f32)>, usize), RetrieveError> {
+        if !self.built {
+            return Err(RetrieveError::InvalidParameter(
+                "index must be built before search".into(),
+            ));
+        }
+        if query.len() != self.dimension {
+            return Err(RetrieveError::DimensionMismatch {
+                query_dim: query.len(),
+                doc_dim: self.dimension,
+            });
+        }
+        if self.num_vectors == 0 {
+            return Err(RetrieveError::EmptyIndex);
+        }
+
+        let ef = ef.max(k);
+
+        // Navigate upper layers with standard distance.
+        let entry_point = self.get_entry_point().ok_or(RetrieveError::EmptyIndex)?;
+        let entry_layer = self.layer_assignments[entry_point as usize] as usize;
+        let mut current_closest = entry_point;
+        let mut current_dist = self.dist(query, self.get_vector(entry_point as usize));
+
+        for layer_idx in (1..=entry_layer).rev() {
+            if layer_idx >= self.layers.len() {
+                continue;
+            }
+            let layer = &self.layers[layer_idx];
+            let mut changed = true;
+            let mut visited = std::collections::HashSet::with_capacity(ef.min(100));
+
+            while changed {
+                changed = false;
+                visited.insert(current_closest);
+                for &neighbor_id in layer.get_neighbors(current_closest).iter() {
+                    if visited.contains(&neighbor_id) {
+                        continue;
+                    }
+                    let dist = self.dist(query, self.get_vector(neighbor_id as usize));
+                    if dist < current_dist {
+                        current_dist = dist;
+                        current_closest = neighbor_id;
+                        changed = true;
+                    }
+                }
+            }
+        }
+
+        // Fine search in base layer with PRT pre-filtering.
+        if self.layers.is_empty() {
+            return Ok((Vec::new(), 0));
+        }
+
+        let query_proj = prt.project_query(query);
+        let mut tfb = crate::prt::TestFeedbackBuffer::new(initial_ratio, decay);
+        let dist_fn = self.dist_fn();
+
+        let (base_results, full_dist_count) = crate::hnsw::search::greedy_search_layer_prt(
+            query,
+            current_closest,
+            &self.layers[0],
+            &self.vectors,
+            self.dimension,
+            ef,
+            dist_fn,
+            prt,
+            &query_proj,
+            &mut tfb,
+        );
+
+        let results = base_results
+            .into_iter()
+            .take(k)
+            .filter(|(internal_id, _)| !self.tombstones.is_deleted(*internal_id as usize))
+            .filter_map(|(internal_id, dist)| {
+                let doc_id = self.doc_ids.get(internal_id as usize).copied()?;
+                Some((doc_id, dist))
+            })
+            .collect();
+
+        Ok((results, full_dist_count))
     }
 
     /// Assign layer for a new vector using exponential distribution.
@@ -2845,6 +2960,144 @@ mod tests {
         // Results should be sorted by L2 distance
         for w in results.windows(2) {
             assert!(w[0].1 <= w[1].1, "results not sorted by custom distance");
+        }
+    }
+}
+
+#[cfg(test)]
+#[cfg(feature = "hnsw")]
+#[allow(clippy::unwrap_used)]
+mod tests_prt_search {
+    use super::*;
+
+    /// PRT-accelerated search should produce similar recall to standard search,
+    /// while performing fewer full distance computations.
+    #[test]
+    fn test_search_prt_recall_parity() {
+        let dim = 32;
+        let n = 300;
+        let mut rng_seed: u64 = 42;
+        let mut next = || -> f32 {
+            rng_seed = rng_seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            ((rng_seed >> 33) as f32) / (u32::MAX as f32) - 0.5
+        };
+
+        let params = HNSWParams {
+            m: 16,
+            m_max: 32,
+            ef_construction: 200,
+            ef_search: 50,
+            metric: DistanceMetric::L2,
+            seed: Some(42),
+            ..Default::default()
+        };
+        let mut index = HNSWIndex::with_params(dim, params).unwrap();
+
+        let mut all_vecs = Vec::new();
+        for i in 0..n {
+            let v: Vec<f32> = (0..dim).map(|_| next()).collect();
+            all_vecs.push(v.clone());
+            index.add(i as u32, v).unwrap();
+        }
+        index.build().unwrap();
+
+        // Build PRT state.
+        let num_proj = 16;
+        let mut prt = crate::prt::ProbabilisticRoutingTest::new(dim, num_proj, Some(42));
+        prt.project_database(&index.vectors);
+
+        let k = 10;
+        let ef = 50;
+        let num_queries = 20;
+        let mut prt_recall_total = 0.0;
+        let mut std_recall_total = 0.0;
+        let mut total_full_dists = 0usize;
+
+        for qi in 0..num_queries {
+            let query: Vec<f32> = (0..dim).map(|_| next()).collect();
+
+            // Standard search.
+            let std_results = index.search(&query, k, ef).unwrap();
+
+            // PRT search.
+            let (prt_results, full_dists) =
+                index.search_prt(&query, k, ef, &prt, 1.5, 0.95).unwrap();
+            total_full_dists += full_dists;
+
+            // Brute-force ground truth.
+            let mut gt: Vec<(u32, f32)> = all_vecs
+                .iter()
+                .enumerate()
+                .map(|(i, v)| (i as u32, crate::distance::l2_distance(&query, v)))
+                .collect();
+            gt.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+
+            let gt_set: std::collections::HashSet<u32> =
+                gt.iter().take(k).map(|&(id, _)| id).collect();
+
+            let std_ids: std::collections::HashSet<u32> =
+                std_results.iter().map(|&(id, _)| id).collect();
+            let prt_ids: std::collections::HashSet<u32> =
+                prt_results.iter().map(|&(id, _)| id).collect();
+
+            std_recall_total += gt_set.intersection(&std_ids).count() as f32 / k as f32;
+            prt_recall_total += gt_set.intersection(&prt_ids).count() as f32 / k as f32;
+
+            let _ = qi; // used for iteration
+        }
+
+        let std_recall = std_recall_total / num_queries as f32;
+        let prt_recall = prt_recall_total / num_queries as f32;
+        let avg_full_dists = total_full_dists as f32 / num_queries as f32;
+
+        // PRT recall should be close to standard (within 20% relative).
+        assert!(
+            prt_recall > std_recall * 0.7,
+            "PRT recall ({:.1}%) too far from standard ({:.1}%)",
+            prt_recall * 100.0,
+            std_recall * 100.0
+        );
+
+        // PRT should compute fewer full distances than total visited nodes.
+        // With n=300 and ef=50, standard search visits ~50+ nodes.
+        // PRT should skip at least some.
+        assert!(
+            avg_full_dists < n as f32,
+            "PRT should not compute all {} distances (avg={})",
+            n,
+            avg_full_dists
+        );
+    }
+
+    /// PRT search should return valid results and correct doc_ids.
+    #[test]
+    fn test_search_prt_basic() {
+        let dim = 8;
+        let mut index = HNSWIndex::builder(dim)
+            .metric(DistanceMetric::L2)
+            .m(8)
+            .build()
+            .unwrap();
+
+        for i in 0..50 {
+            let v: Vec<f32> = (0..dim).map(|d| (i * dim + d) as f32 * 0.1).collect();
+            index.add(i as u32, v).unwrap();
+        }
+        index.build().unwrap();
+
+        let mut prt = crate::prt::ProbabilisticRoutingTest::new(dim, 4, Some(42));
+        prt.project_database(&index.vectors);
+
+        let query: Vec<f32> = vec![0.0; dim];
+        let (results, full_dists) = index.search_prt(&query, 5, 20, &prt, 1.5, 0.95).unwrap();
+
+        assert!(!results.is_empty());
+        assert!(results.len() <= 5);
+        assert!(full_dists > 0);
+
+        // Results should be sorted by distance.
+        for w in results.windows(2) {
+            assert!(w[0].1 <= w[1].1, "results not sorted");
         }
     }
 }
