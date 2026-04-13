@@ -139,8 +139,8 @@ fn distance_approximation_mae(
 // ---------------------------------------------------------------------------
 
 /// On correlated data, OPQ should not be significantly worse than PQ.
-/// With a full Procrustes solver, OPQ improves 10-30%; with the current
-/// Gram-Schmidt approximation, we allow up to 20% degradation.
+/// The SVD-based Procrustes solver should improve 10-30% on correlated data,
+/// but we allow up to 20% degradation as a conservative regression guard.
 #[test]
 fn opq_does_not_regress_on_correlated_data() {
     let dimension = 32;
