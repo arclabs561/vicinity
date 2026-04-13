@@ -780,6 +780,24 @@ impl HNSWIndex {
         serde_json::to_writer(writer, self).map_err(|e| RetrieveError::Serialization(e.to_string()))
     }
 
+    /// Save this index to a file path (JSON).
+    ///
+    /// Convenience wrapper over [`Self::save_to_writer`].
+    #[cfg(feature = "serde")]
+    pub fn save_to_file<P: AsRef<std::path::Path>>(&self, path: P) -> Result<(), RetrieveError> {
+        let file = std::fs::File::create(path.as_ref())?;
+        self.save_to_writer(std::io::BufWriter::new(file))
+    }
+
+    /// Load an index from a file path (JSON).
+    ///
+    /// Convenience wrapper over [`Self::load_from_reader`].
+    #[cfg(feature = "serde")]
+    pub fn load_from_file<P: AsRef<std::path::Path>>(path: P) -> Result<Self, RetrieveError> {
+        let file = std::fs::File::open(path.as_ref())?;
+        Self::load_from_reader(std::io::BufReader::new(file))
+    }
+
     /// Deserialize an index from a reader (JSON).
     ///
     /// Rebuilds the `doc_id_to_internal` reverse map from `doc_ids`.
