@@ -26,7 +26,6 @@ QPS: sequential single-query throughput (queries / wall-clock seconds). 50-query
 | Finger | 4.1% | 15 | 127 | Capped at 50K |
 | FreshGraph | 4.1% | 132 | 104 | Capped at 50K |
 | FilteredGraph | 4.1% | 108 | 127 | Capped at 50K |
-
 | Curator | 52.0% | 4,302 | 1.3 | K-means tree, no ef sweep |
 | ESG | 99.8% | 531 | 409 | HNSW wrapper with range filter |
 | BinaryFlat | 24.0% | 5 | 0.6 | Flat scan, too slow at 1.18M |
