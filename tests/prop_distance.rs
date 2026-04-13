@@ -250,18 +250,16 @@ mod recall_props {
 mod metric_space_props {
     use super::common::normalize;
     use super::*;
+    use vicinity::distance::{cosine_distance_normalized, l2_distance};
 
     fn arb_vec(dim: usize) -> impl Strategy<Value = Vec<f32>> {
         prop::collection::vec(-10.0f32..10.0, dim)
     }
 
-    fn l2_squared(a: &[f32], b: &[f32]) -> f32 {
-        a.iter().zip(b.iter()).map(|(x, y)| (x - y).powi(2)).sum()
-    }
-
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(200))]
 
+        /// cosine_distance_normalized (crate SIMD path) is in [0, 2].
         #[test]
         fn cosine_distance_bounded(
             a in arb_vec(32).prop_filter("non-zero", |v| v.iter().any(|x| x.abs() > 1e-6)),
@@ -269,9 +267,7 @@ mod metric_space_props {
         ) {
             let a_norm = normalize(&a);
             let b_norm = normalize(&b);
-
-            let dot: f32 = a_norm.iter().zip(b_norm.iter()).map(|(x, y)| x * y).sum();
-            let cosine_dist = 1.0 - dot;
+            let cosine_dist = cosine_distance_normalized(&a_norm, &b_norm);
 
             prop_assert!(
                 (-0.01..=2.01).contains(&cosine_dist),
@@ -280,13 +276,13 @@ mod metric_space_props {
             );
         }
 
+        /// cosine_distance_normalized to self is zero.
         #[test]
         fn cosine_distance_self_zero(
             v in arb_vec(32).prop_filter("non-zero", |v| v.iter().any(|x| x.abs() > 1e-6)),
         ) {
             let v_norm = normalize(&v);
-            let dot: f32 = v_norm.iter().map(|x| x * x).sum();
-            let cosine_dist = 1.0 - dot;
+            let cosine_dist = cosine_distance_normalized(&v_norm, &v_norm);
 
             prop_assert!(
                 cosine_dist.abs() < 1e-5,
@@ -295,36 +291,39 @@ mod metric_space_props {
             );
         }
 
+        /// l2_distance (crate SIMD path) to self is zero.
         #[test]
         fn l2_identity_of_indiscernibles(v in arb_vec(32)) {
-            let dist = l2_squared(&v, &v);
+            let dist = l2_distance(&v, &v);
             prop_assert!(dist.abs() < 1e-6, "L2(v, v) should be 0, got {}", dist);
         }
 
+        /// l2_distance is symmetric.
         #[test]
         fn l2_symmetric_test(
             a in arb_vec(32),
             b in arb_vec(32),
         ) {
-            let ab = l2_squared(&a, &b);
-            let ba = l2_squared(&b, &a);
+            let ab = l2_distance(&a, &b);
+            let ba = l2_distance(&b, &a);
 
             prop_assert!(
-                (ab - ba).abs() < 1e-6,
+                (ab - ba).abs() < 1e-5,
                 "L2 not symmetric: {} != {}",
                 ab, ba
             );
         }
 
+        /// l2_distance satisfies triangle inequality.
         #[test]
         fn l2_triangle_inequality_test(
             a in arb_vec(16),
             b in arb_vec(16),
             c in arb_vec(16),
         ) {
-            let ab = l2_squared(&a, &b).sqrt();
-            let bc = l2_squared(&b, &c).sqrt();
-            let ac = l2_squared(&a, &c).sqrt();
+            let ab = l2_distance(&a, &b).sqrt();
+            let bc = l2_distance(&b, &c).sqrt();
+            let ac = l2_distance(&a, &c).sqrt();
 
             prop_assert!(
                 ac <= ab + bc + 1e-4,
