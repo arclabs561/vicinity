@@ -81,7 +81,8 @@ impl ADSamplingState {
         let rotated_vectors = rotate_all(vectors, &rotation, dimension, num_vectors);
 
         // Precompute ratio table for each batch checkpoint.
-        let num_batches = dimension / params.delta_d.max(1);
+        // Use div_ceil so that dim < delta_d still gets one batch.
+        let num_batches = dimension.div_ceil(params.delta_d.max(1));
         let dim_f = dimension as f32;
         let eps = params.epsilon0;
         let mut ratio_table = Vec::with_capacity(num_batches);
