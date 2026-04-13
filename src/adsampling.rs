@@ -157,10 +157,10 @@ impl ADSamplingState {
         let delta_d = self.params.delta_d;
         let dim = self.dimension;
 
-        // Guard: when threshold is near-zero (e.g., self-match in results),
-        // threshold * ratio ≈ 0 and any non-zero partial_sum triggers rejection.
-        // Fall through to exact distance computation in this case.
-        let can_reject = threshold > 1e-10;
+        // The threshold from the caller is in L2 scale (sqrt). Convert to L2²
+        // for the partial-sum comparison, since we accumulate squared diffs.
+        let threshold_sq = threshold * threshold;
+        let can_reject = threshold_sq > 1e-10;
 
         let mut partial_sum: f32 = 0.0;
         let mut offset = 0;
@@ -174,14 +174,14 @@ impl ADSamplingState {
             }
             offset = end;
 
-            // Statistical test: if partial distance (scaled up) exceeds threshold, reject.
-            if can_reject && partial_sum >= threshold * ratio {
+            // Statistical test: if partial L2² exceeds threshold² * ratio, reject.
+            if can_reject && partial_sum >= threshold_sq * ratio {
                 return None;
             }
         }
 
-        // Computed all dimensions -- return exact distance.
-        Some(partial_sum)
+        // Return L2 distance (sqrt) to match the scale HNSW graphs are built for.
+        Some(partial_sum.sqrt())
     }
 
     /// Search an HNSW index using ADSampling for accelerated distance computation.
@@ -603,8 +603,10 @@ mod tests {
         // With infinite threshold, must return exact distance.
         let dist = state.dist_comp(&rq, 1, f32::INFINITY).unwrap();
 
-        // The exact distance in rotated space should equal the original distance.
-        let expected: f32 = a.iter().zip(&b).map(|(x, y)| (x - y) * (x - y)).sum();
+        // dist_comp returns L2 (sqrt of sum of squared diffs) in rotated space.
+        // Rotation preserves L2, so this should equal the original L2 distance.
+        let expected_sq: f32 = a.iter().zip(&b).map(|(x, y)| (x - y) * (x - y)).sum();
+        let expected = expected_sq.sqrt();
         assert!(
             (dist - expected).abs() < 1e-1,
             "dist={dist}, expected={expected}"
@@ -701,11 +703,66 @@ mod tests {
             .unwrap();
 
         assert!(!results.is_empty(), "ADSampling should return results");
-        // Known issue: ADSampling on L2 datasets returns L2² distances which have
-        // the same ordering as L2 but different scale. The beam search finds
-        // different neighbors because the graph edges (built for L2) guide the
-        // search differently at L2² scale. Works correctly on cosine (normalized).
-        // TODO: take sqrt of dist_comp to match L2 scale.
+
+        // Direct comparison: two calls to search_with_distance with the SAME L2 function.
+        // If results differ, there's non-determinism in search_with_distance itself.
+        let query = &vectors[0..dim];
+
+        let l2_fn = |q: &[f32], nid: u32| -> f32 {
+            let v = &index.vectors[nid as usize * dim..(nid as usize + 1) * dim];
+            crate::distance::l2_distance(q, v)
+        };
+
+        let run1 = index.search_with_distance(query, 10, 100, &l2_fn).unwrap();
+        let run2 = index.search_with_distance(query, 10, 100, &l2_fn).unwrap();
+
+        // Both runs should return identical results (deterministic)
+        assert_eq!(
+            run1.iter().map(|r| r.0).collect::<Vec<_>>(),
+            run2.iter().map(|r| r.0).collect::<Vec<_>>(),
+            "Two identical search_with_distance calls return different results!\n\
+             Run1: {:?}\nRun2: {:?}",
+            &run1[..5.min(run1.len())],
+            &run2[..5.min(run2.len())]
+        );
+
+        // Now compare L2 custom vs standard search
+        let hnsw_ids: std::collections::HashSet<u32> = hnsw_results.iter().map(|r| r.0).collect();
+        let custom_ids: std::collections::HashSet<u32> = run1.iter().map(|r| r.0).collect();
+        let overlap = hnsw_ids.intersection(&custom_ids).count();
+        assert!(
+            overlap >= 8,
+            "search() vs search_with_distance(L2) should agree, got {overlap}/10.\n\
+             search():     {:?}\nsearch_w_d(): {:?}",
+            &hnsw_results[..5.min(hnsw_results.len())],
+            &run1[..5.min(run1.len())]
+        );
+
+        // Test: rotated L2 WITHOUT threshold tracking (plain exact distance)
+        let rotated_query = state.rotate_query(&vectors[0..dim]);
+        let plain_rotated = index
+            .search_with_distance(query, 10, 100, &|_q: &[f32], nid: u32| {
+                state
+                    .dist_comp(&rotated_query, nid, f32::INFINITY)
+                    .unwrap_or(f32::INFINITY)
+            })
+            .unwrap();
+
+        // ADSampling returns different node IDs but equivalent distances due to
+        // tie-breaking: floating-point differences in rotated vs original distance
+        // cause beam search to explore neighbors in a different order. Verify the
+        // k-th distances match within tolerance rather than requiring identical IDs.
+        let hnsw_10th = hnsw_results.last().unwrap().1;
+        let plain_10th = plain_rotated.last().unwrap().1;
+        let ads_10th = results.last().unwrap().1;
+        assert!(
+            (hnsw_10th - plain_10th).abs() < hnsw_10th * 0.01,
+            "Rotated L2 10th-dist should match HNSW within 1%: {hnsw_10th:.2} vs {plain_10th:.2}"
+        );
+        assert!(
+            (hnsw_10th - ads_10th).abs() < hnsw_10th * 0.01,
+            "ADSampling 10th-dist should match HNSW within 1%: {hnsw_10th:.2} vs {ads_10th:.2}"
+        );
     }
 
     #[cfg(feature = "rmt-spectral")]
