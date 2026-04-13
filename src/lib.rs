@@ -121,6 +121,9 @@ pub mod evoc;
 #[cfg(feature = "hnsw")]
 pub mod hnsw;
 
+#[cfg(feature = "lsh")]
+pub mod lsh;
+
 #[cfg(feature = "ivf_pq")]
 pub mod ivf_pq;
 
