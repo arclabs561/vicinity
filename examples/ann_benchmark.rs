@@ -193,6 +193,9 @@ struct BenchResult {
     recall_at_k: f64,
     qps: f64,
     latency_us: f64,
+    p50_us: f64,
+    p95_us: f64,
+    p99_us: f64,
 }
 
 /// Format a single result as a JSON line.
@@ -204,8 +207,9 @@ fn json_line(
     result: &BenchResult,
 ) -> String {
     let mut s = format!(
-        "{{\"algorithm\":\"{}\",\"params\":{},\"recall_at_10\":{:.4},\"qps\":{:.1},\"build_time_s\":{:.2},\"latency_us\":{:.1}",
-        algorithm, params, result.recall_at_k, result.qps, build_time_s, result.latency_us
+        "{{\"algorithm\":\"{}\",\"params\":{},\"recall_at_10\":{:.4},\"qps\":{:.1},\"build_time_s\":{:.2},\"latency_us\":{:.1},\"p50_us\":{:.1},\"p95_us\":{:.1},\"p99_us\":{:.1}",
+        algorithm, params, result.recall_at_k, result.qps, build_time_s, result.latency_us,
+        result.p50_us, result.p95_us, result.p99_us
     );
     if let Some(kb) = rss_kb {
         s.push_str(&format!(",\"rss_kb\":{}", kb));
@@ -230,22 +234,32 @@ fn evaluate(
         let _ = search_fn(query, k);
     }
 
-    // Timed run
-    let start = Instant::now();
+    // Timed run -- per-query latency for percentiles
     let mut total_recall = 0.0;
+    let mut latencies_us: Vec<f64> = Vec::with_capacity(test.len());
 
     for (i, query) in test.iter().enumerate() {
+        let q_start = Instant::now();
         let results = search_fn(query, k);
+        let q_elapsed = q_start.elapsed();
+        latencies_us.push(q_elapsed.as_nanos() as f64 / 1000.0);
+
         let gt_set: HashSet<u32> = neighbors[i].iter().take(k).map(|&n| n as u32).collect();
         let found: HashSet<u32> = results.iter().map(|r| r.0).collect();
         total_recall += gt_set.intersection(&found).count() as f64 / k as f64;
     }
 
-    let elapsed = start.elapsed();
+    latencies_us.sort_unstable_by(|a, b| a.total_cmp(b));
+    let n = latencies_us.len();
+    let total_us: f64 = latencies_us.iter().sum();
+
     BenchResult {
-        recall_at_k: total_recall / test.len() as f64,
-        qps: test.len() as f64 / elapsed.as_secs_f64(),
-        latency_us: elapsed.as_micros() as f64 / test.len() as f64,
+        recall_at_k: total_recall / n as f64,
+        qps: n as f64 / (total_us / 1_000_000.0),
+        latency_us: total_us / n as f64,
+        p50_us: latencies_us[n / 2],
+        p95_us: latencies_us[(n as f64 * 0.95) as usize],
+        p99_us: latencies_us[(n as f64 * 0.99) as usize],
     }
 }
 
@@ -297,19 +311,21 @@ fn brute_force_search(train: &[Vec<f32>], query: &[f32], k: usize) -> Vec<(u32, 
 
 fn print_header() {
     println!(
-        "{:>10} {:>10} {:>12} {:>10}",
-        "param", "Recall@10", "Latency", "QPS"
+        "{:>10} {:>10} {:>10} {:>10} {:>10} {:>10}",
+        "param", "Recall@10", "QPS", "p50(us)", "p95(us)", "p99(us)"
     );
-    println!("{}", "-".repeat(47));
+    println!("{}", "-".repeat(65));
 }
 
 fn print_row(param_label: &str, result: &BenchResult) {
     println!(
-        "{:>10} {:>9.1}% {:>10.0}us {:>9.0}",
+        "{:>10} {:>9.1}% {:>9.0} {:>9.0} {:>9.0} {:>9.0}",
         param_label,
         result.recall_at_k * 100.0,
-        result.latency_us,
-        result.qps
+        result.qps,
+        result.p50_us,
+        result.p95_us,
+        result.p99_us
     );
 }
 
