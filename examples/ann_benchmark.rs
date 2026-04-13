@@ -1169,6 +1169,128 @@ fn run_rp_quant(
     }
 }
 
+#[cfg(feature = "sq4")]
+fn run_sq4(
+    cfg: &Config,
+    train: &[Vec<f32>],
+    test: &[Vec<f32>],
+    neighbors: &[Vec<i32>],
+    dim: usize,
+) {
+    use vicinity::sq4::{SQ4Index, SQ4Params};
+
+    if !cfg.json {
+        println!("--- SQ4 (4-bit scalar quantization, rerank=10) ---");
+    }
+
+    let params = SQ4Params { rerank_factor: 10 };
+
+    let build_start = Instant::now();
+    let mut index = SQ4Index::new(dim, params).unwrap();
+    for (i, vec) in train.iter().enumerate() {
+        index.add_slice(i as u32, vec).unwrap();
+    }
+    index.build().unwrap();
+    let build_time_s = build_start.elapsed().as_secs_f64();
+    let rss = current_rss_kb();
+
+    if !cfg.json {
+        println!(
+            "Build: {:.2}s ({:.0} vectors/sec)\n",
+            build_time_s,
+            train.len() as f64 / build_time_s
+        );
+        print_header();
+    }
+
+    let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
+    if cfg.json {
+        let params_json = "{\"rerank_factor\":10}";
+        emit_result(
+            &cfg.results_path,
+            &json_line("sq4", params_json, build_time_s, rss, &result),
+        );
+    } else {
+        print_row("--", &result);
+        println!();
+    }
+}
+
+#[cfg(feature = "hnsw")]
+fn run_adsampling(
+    cfg: &Config,
+    train: &[Vec<f32>],
+    test: &[Vec<f32>],
+    neighbors: &[Vec<i32>],
+    dim: usize,
+) {
+    use vicinity::adsampling::{ADSamplingParams, ADSamplingState};
+    use vicinity::hnsw::{HNSWIndex, HNSWParams};
+
+    let m = cfg.m;
+    let ef_construction = cfg.ef_construction;
+
+    if !cfg.json {
+        println!(
+            "--- ADSampling (HNSW m={}, ef_c={}, eps0=2.1) ---",
+            m, ef_construction
+        );
+    }
+
+    let build_start = Instant::now();
+    let params = HNSWParams {
+        m,
+        m_max: m,
+        ef_construction,
+        seed: Some(42),
+        ..Default::default()
+    };
+    let mut index = HNSWIndex::with_params(dim, params).unwrap();
+    let ids: Vec<u32> = (0..train.len() as u32).collect();
+    let flat: Vec<f32> = train.iter().flatten().copied().collect();
+    index.add_batch(&ids, &flat).unwrap();
+    index.build();
+
+    // Build ADSampling state (rotation + rotated vectors).
+    let ads_params = ADSamplingParams::default();
+    let state = ADSamplingState::new(&flat, dim, ads_params);
+    let build_time_s = build_start.elapsed().as_secs_f64();
+    let rss = current_rss_kb();
+
+    if !cfg.json {
+        println!(
+            "Build: {:.2}s ({:.0} vectors/sec)\n",
+            build_time_s,
+            train.len() as f64 / build_time_s
+        );
+        print_header();
+    }
+
+    for &ef in &cfg.ef_search_values {
+        let result = evaluate(
+            &|q, k| state.search_hnsw(&index, q, k, ef).unwrap(),
+            test,
+            neighbors,
+            10,
+        );
+        if cfg.json {
+            let params_json = format!(
+                "{{\"m\":{},\"ef_construction\":{},\"ef_search\":{},\"epsilon0\":2.1}}",
+                m, ef_construction, ef
+            );
+            emit_result(
+                &cfg.results_path,
+                &json_line("adsampling", &params_json, build_time_s, rss, &result),
+            );
+        } else {
+            print_row(&format!("ef={}", ef), &result);
+        }
+    }
+    if !cfg.json {
+        println!();
+    }
+}
+
 #[cfg(all(feature = "hnsw", feature = "ivf_rabitq"))]
 fn run_symphony_qg(
     cfg: &Config,
@@ -1598,11 +1720,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 eprintln!("BinaryIndex not available (compile with --features binary_index)");
             }
 
+            #[cfg(feature = "sq4")]
+            "sq4" => run_sq4(&cfg, &train, &test, &neighbors, dim),
+
+            #[cfg(not(feature = "sq4"))]
+            "sq4" => {
+                eprintln!("SQ4 not available (compile with --features sq4)");
+            }
+
+            #[cfg(feature = "hnsw")]
+            "adsampling" => run_adsampling(&cfg, &train, &test, &neighbors, dim),
+
             "brute" => run_brute(&cfg, &train, &test, &neighbors),
 
             other => {
                 eprintln!(
-                    "Unknown algorithm: {}. Options: hnsw, nsw, ivfpq, emg, nsg, pipnn, sng, vamana, ivf_rabitq, symphony_qg, finger, fresh_graph, filtered_graph, rp_quant, sparse_mips, curator, esg, binary_index, brute",
+                    "Unknown algorithm: {}. Options: hnsw, nsw, ivfpq, emg, nsg, pipnn, sng, vamana, ivf_rabitq, symphony_qg, finger, fresh_graph, filtered_graph, rp_quant, sparse_mips, curator, esg, binary_index, sq4, adsampling, brute",
                     other
                 );
             }
