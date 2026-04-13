@@ -4,20 +4,15 @@
 //! optimal sensitivity for angular distance. Combined with multiprobe, a single hash table
 //! can match the recall of multiple tables with hyperplane LSH.
 //!
+//! Hashing primitives (rotation generation, Walsh-Hadamard transform, vertex selection)
+//! are provided by the [`sketchir`] crate.
+//!
 //! # When to use
 //!
 //! - Streaming/online settings: O(1) insertion (no graph reconnection).
 //! - Provable guarantees: (1+ε)-approximation with known space/time tradeoffs.
 //! - Distributed systems: hash tables partition naturally across nodes.
 //! - Candidate generation: LSH as a first-pass filter feeding exact reranking.
-//!
-//! # How it works
-//!
-//! 1. Apply a random orthogonal rotation to the input vector.
-//! 2. Find the coordinate with maximum absolute value — this selects one of 2d
-//!    vertices of the cross-polytope (the unit ball of the L1 norm).
-//! 3. Repeat with L independent rotations (one per hash table).
-//! 4. At query time, probe the matching bucket plus nearby buckets (multiprobe).
 //!
 //! # References
 //!
@@ -26,7 +21,7 @@
 
 use crate::distance;
 use crate::RetrieveError;
-use rand::prelude::*;
+use sketchir::cross_polytope::{self, CrossPolytopeHasher};
 use std::collections::HashMap;
 
 /// Parameters for cross-polytope LSH.
@@ -65,8 +60,8 @@ pub struct CrossPolytopeLSHIndex {
     num_vectors: usize,
     /// Parameters.
     params: LSHParams,
-    /// L rotation matrices, each dimension x dimension stored row-major.
-    rotations: Vec<Vec<f32>>,
+    /// L independent hashers (one per table), from sketchir.
+    hashers: Vec<CrossPolytopeHasher>,
     /// L hash tables. Each table maps bucket_id -> list of vector indices.
     tables: Vec<HashMap<u32, Vec<u32>>>,
     /// Whether the index has been built.
@@ -97,7 +92,7 @@ impl CrossPolytopeLSHIndex {
             dimension,
             num_vectors: 0,
             params,
-            rotations: Vec::new(),
+            hashers: Vec::new(),
             tables: Vec::new(),
             built: false,
         })
@@ -136,9 +131,10 @@ impl CrossPolytopeLSHIndex {
 
         // If already built, hash into existing tables immediately.
         if self.built {
-            for table_idx in 0..self.tables.len() {
-                let bucket = hash_with_rotation(vector, &self.rotations[table_idx], self.dimension);
-                self.tables[table_idx].entry(bucket).or_default().push(id);
+            for (table_idx, hasher) in self.hashers.iter().enumerate() {
+                if let Ok(bucket) = hasher.hash(vector) {
+                    self.tables[table_idx].entry(bucket).or_default().push(id);
+                }
             }
         }
 
@@ -151,29 +147,29 @@ impl CrossPolytopeLSHIndex {
             return Err(RetrieveError::EmptyIndex);
         }
 
-        let mut rng: Box<dyn RngCore> = match self.params.seed {
-            Some(s) => Box::new(StdRng::seed_from_u64(s)),
-            None => Box::new(rand::rng()),
-        };
+        let base_seed = self.params.seed.unwrap_or_else(|| {
+            use rand::RngCore;
+            rand::rng().next_u64()
+        });
 
-        // Generate L random orthogonal rotation matrices via QR decomposition.
-        self.rotations.clear();
-        for _ in 0..self.params.num_tables {
-            self.rotations
-                .push(random_orthogonal_matrix(self.dimension, &mut *rng));
-        }
+        // Generate L independent hashers via sketchir.
+        self.hashers =
+            cross_polytope::multi_hasher(self.dimension, self.params.num_tables, base_seed)
+                .map_err(|e| RetrieveError::InvalidParameter(format!("sketchir: {e}")))?;
 
         // Hash all vectors into tables.
         self.tables = vec![HashMap::new(); self.params.num_tables];
         for vec_idx in 0..self.num_vectors {
             let start = vec_idx * self.dimension;
             let vec = &self.vectors[start..start + self.dimension];
-            for table_idx in 0..self.params.num_tables {
-                let bucket = hash_with_rotation(vec, &self.rotations[table_idx], self.dimension);
-                self.tables[table_idx]
-                    .entry(bucket)
-                    .or_default()
-                    .push(vec_idx as u32);
+            for (table_idx, hasher) in self.hashers.iter().enumerate() {
+                // Infallible: dimension was checked at add time.
+                if let Ok(bucket) = hasher.hash(vec) {
+                    self.tables[table_idx]
+                        .entry(bucket)
+                        .or_default()
+                        .push(vec_idx as u32);
+                }
             }
         }
 
@@ -199,8 +195,12 @@ impl CrossPolytopeLSHIndex {
         let mut candidates = Vec::new();
         let mut seen = vec![false; self.num_vectors];
 
-        for table_idx in 0..self.params.num_tables {
-            let probes = self.multiprobe_buckets(query, table_idx);
+        for (table_idx, hasher) in self.hashers.iter().enumerate() {
+            // hash_ranked returns the top-k vertices sorted by coordinate magnitude,
+            // which is exactly the multiprobe set.
+            let probes = hasher
+                .hash_ranked(query, self.params.num_probes)
+                .unwrap_or_default();
 
             for bucket_id in probes {
                 if let Some(ids) = self.tables[table_idx].get(&bucket_id) {
@@ -228,56 +228,10 @@ impl CrossPolytopeLSHIndex {
         Ok(results)
     }
 
-    /// Hash a vector using the rotation matrix for `table_idx`.
+    /// Hash a vector using the hasher for `table_idx`.
     #[cfg(test)]
     fn hash_vector(&self, vector: &[f32], table_idx: usize) -> u32 {
-        hash_with_rotation(vector, &self.rotations[table_idx], self.dimension)
-    }
-
-    /// Return the top `num_probes` bucket ids for multiprobe.
-    ///
-    /// Sorts the rotated coordinates by magnitude and returns the corresponding
-    /// cross-polytope vertex ids (including both sign variants for coordinates
-    /// close in magnitude to the maximum).
-    fn multiprobe_buckets(&self, query: &[f32], table_idx: usize) -> Vec<u32> {
-        let rotated = apply_rotation(query, &self.rotations[table_idx], self.dimension);
-
-        // Collect (coordinate_index, absolute_value, sign) and sort descending by |value|.
-        let mut ranked: Vec<(usize, f32, bool)> = rotated
-            .iter()
-            .enumerate()
-            .map(|(i, &v)| (i, v.abs(), v < 0.0))
-            .collect();
-        ranked.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
-
-        // Primary probe: the vertex corresponding to the max coordinate.
-        let mut buckets = Vec::with_capacity(self.params.num_probes);
-
-        for &(coord_idx, _, is_negative) in ranked.iter().take(self.params.num_probes) {
-            let bucket = if is_negative {
-                (coord_idx as u32) * 2 + 1
-            } else {
-                (coord_idx as u32) * 2
-            };
-            buckets.push(bucket);
-        }
-
-        // Also probe the opposite sign of the top coordinate(s) when budget allows.
-        let remaining = self.params.num_probes.saturating_sub(buckets.len());
-        if remaining > 0 {
-            for &(coord_idx, _, is_negative) in ranked.iter().take(remaining) {
-                let opposite = if is_negative {
-                    (coord_idx as u32) * 2
-                } else {
-                    (coord_idx as u32) * 2 + 1
-                };
-                if !buckets.contains(&opposite) {
-                    buckets.push(opposite);
-                }
-            }
-        }
-
-        buckets
+        self.hashers[table_idx].hash(vector).unwrap_or(0)
     }
 
     /// Get vector by index.
@@ -325,206 +279,6 @@ pub struct LSHStats {
     pub avg_bucket_size: f32,
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Helper functions
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Apply rotation and return the cross-polytope vertex (bucket id).
-fn hash_with_rotation(vector: &[f32], rotation: &[f32], dim: usize) -> u32 {
-    let rotated = apply_rotation(vector, rotation, dim);
-    cross_polytope_vertex(&rotated)
-}
-
-/// Map a rotated vector to a cross-polytope vertex index.
-///
-/// Returns `2 * argmax_i(|v_i|) + sign_bit` where sign_bit is 1 if v[argmax] < 0.
-fn cross_polytope_vertex(rotated: &[f32]) -> u32 {
-    let mut max_abs = 0.0f32;
-    let mut max_idx = 0usize;
-    let mut max_neg = false;
-
-    for (i, &v) in rotated.iter().enumerate() {
-        let abs_v = v.abs();
-        if abs_v > max_abs {
-            max_abs = abs_v;
-            max_idx = i;
-            max_neg = v < 0.0;
-        }
-    }
-
-    (max_idx as u32) * 2 + u32::from(max_neg)
-}
-
-/// Generate a pseudo-random rotation as a "randomized Hadamard" transform.
-///
-/// Uses the HD construction from Andoni et al. (2015): a random diagonal sign
-/// flip (D) followed by a Walsh-Hadamard transform (H), repeated a fixed number
-/// of times. This produces a distribution close to a uniformly random orthogonal
-/// matrix but in O(d log d) time instead of O(d^2).
-///
-/// The input dimension is padded to the next power of 2 internally. The returned
-/// "rotation" is stored as a sequence of sign-flip vectors (one per round), plus
-/// the padded dimension, packed into a flat Vec for compatibility with
-/// `apply_rotation` / `hash_with_rotation`.
-///
-/// For dimensions <= 64, falls back to dense Gram-Schmidt (the Hadamard overhead
-/// isn't worth it at small d).
-fn random_orthogonal_matrix(d: usize, rng: &mut dyn RngCore) -> Vec<f32> {
-    if d <= 64 {
-        return random_orthogonal_matrix_dense(d, rng);
-    }
-
-    // Use randomized Hadamard: store as sign vectors.
-    // Format: [padded_d as f32, num_rounds as f32, signs_round_0..., signs_round_1..., ...]
-    let padded = d.next_power_of_two();
-    let num_rounds: usize = 3; // HD^3 from the paper
-
-    let mut result = Vec::with_capacity(2 + num_rounds * padded);
-    result.push(padded as f32);
-    result.push(num_rounds as f32);
-
-    for _ in 0..num_rounds {
-        for _ in 0..padded {
-            result.push(if rng.random::<bool>() { 1.0 } else { -1.0 });
-        }
-    }
-
-    result
-}
-
-/// Apply rotation: dispatches between Hadamard and dense based on rotation format.
-fn apply_rotation(vector: &[f32], rotation: &[f32], d: usize) -> Vec<f32> {
-    // Detect format: Hadamard rotations start with [padded_d, num_rounds, ...],
-    // dense rotations have length d*d.
-    if rotation.len() == d * d {
-        // Dense rotation (row-major matrix).
-        apply_rotation_dense(vector, rotation, d)
-    } else {
-        // Hadamard rotation: [padded_d, num_rounds, signs...]
-        apply_rotation_hadamard(vector, rotation, d)
-    }
-}
-
-/// Apply a dense rotation matrix (row-major, d×d) to a vector.
-fn apply_rotation_dense(vector: &[f32], rotation: &[f32], d: usize) -> Vec<f32> {
-    let mut result = vec![0.0f32; d];
-    for (i, out) in result.iter_mut().enumerate() {
-        let mut sum = 0.0f32;
-        let row_start = i * d;
-        for j in 0..d {
-            sum += rotation[row_start + j] * vector[j];
-        }
-        *out = sum;
-    }
-    result
-}
-
-/// Apply randomized Hadamard rotation: D * H repeated num_rounds times.
-fn apply_rotation_hadamard(vector: &[f32], rotation: &[f32], d: usize) -> Vec<f32> {
-    let padded = rotation[0] as usize;
-    let num_rounds = rotation[1] as usize;
-
-    // Pad input to power-of-2.
-    let mut buf = vec![0.0f32; padded];
-    buf[..d].copy_from_slice(vector);
-
-    for round in 0..num_rounds {
-        let signs_offset = 2 + round * padded;
-        let signs = &rotation[signs_offset..signs_offset + padded];
-
-        // Apply diagonal sign flip.
-        for (v, &s) in buf.iter_mut().zip(signs.iter()) {
-            *v *= s;
-        }
-
-        // In-place Walsh-Hadamard transform.
-        walsh_hadamard_transform(&mut buf);
-    }
-
-    // Return only the first d components.
-    buf.truncate(d);
-    buf
-}
-
-/// In-place Walsh-Hadamard transform (unnormalized).
-///
-/// Operates on a buffer whose length must be a power of 2.
-fn walsh_hadamard_transform(data: &mut [f32]) {
-    let n = data.len();
-    debug_assert!(n.is_power_of_two());
-
-    let mut h = 1;
-    while h < n {
-        for i in (0..n).step_by(h * 2) {
-            for j in i..i + h {
-                let x = data[j];
-                let y = data[j + h];
-                data[j] = x + y;
-                data[j + h] = x - y;
-            }
-        }
-        h *= 2;
-    }
-
-    // Normalize by 1/sqrt(n) to preserve vector norms.
-    let scale = 1.0 / (n as f32).sqrt();
-    for v in data.iter_mut() {
-        *v *= scale;
-    }
-}
-
-/// Dense random orthogonal matrix via QR decomposition (Gram-Schmidt).
-///
-/// Used for small dimensions (d <= 64) where Hadamard overhead isn't worth it.
-/// Returns a flat row-major d x d matrix.
-fn random_orthogonal_matrix_dense(d: usize, rng: &mut dyn RngCore) -> Vec<f32> {
-    let mut matrix = vec![0.0f32; d * d];
-    for val in &mut matrix {
-        *val = standard_normal(rng);
-    }
-
-    // Modified Gram-Schmidt orthogonalization.
-    for i in 0..d {
-        let mut norm = 0.0f32;
-        for row in 0..d {
-            norm += matrix[row * d + i] * matrix[row * d + i];
-        }
-        let norm = norm.sqrt();
-        if norm > 1e-10 {
-            for row in 0..d {
-                matrix[row * d + i] /= norm;
-            }
-        }
-
-        for j in (i + 1)..d {
-            let mut dot = 0.0f32;
-            for row in 0..d {
-                dot += matrix[row * d + i] * matrix[row * d + j];
-            }
-            for row in 0..d {
-                matrix[row * d + j] -= dot * matrix[row * d + i];
-            }
-        }
-    }
-
-    // Column-major to row-major.
-    let mut row_major = vec![0.0f32; d * d];
-    for i in 0..d {
-        for j in 0..d {
-            row_major[i * d + j] = matrix[j * d + i];
-        }
-    }
-
-    row_major
-}
-
-/// Box-Muller transform for standard normal samples.
-fn standard_normal(rng: &mut dyn RngCore) -> f32 {
-    let u1: f32 = rng.random::<f32>().max(f32::MIN_POSITIVE);
-    let u2: f32 = rng.random::<f32>();
-    (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos()
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -532,6 +286,7 @@ mod tests {
 
     /// Helper: create clustered test data.
     fn clustered_data(n_clusters: usize, points_per_cluster: usize, dim: usize) -> Vec<f32> {
+        use rand::prelude::*;
         let mut rng = StdRng::seed_from_u64(42);
         let mut data = Vec::new();
 
@@ -592,7 +347,6 @@ mod tests {
     fn test_recall() {
         let dim = 16;
         let data = clustered_data(5, 100, dim);
-        let n = data.len() / dim;
 
         let params = LSHParams {
             num_tables: 16,
@@ -604,7 +358,9 @@ mod tests {
         index.add_vectors(&data).unwrap();
         index.build().unwrap();
 
+        use rand::prelude::*;
         let mut rng = StdRng::seed_from_u64(123);
+        let n = data.len() / dim;
         let num_queries = 30;
         let k = 10;
         let mut total_recall = 0.0;
@@ -639,10 +395,11 @@ mod tests {
     fn test_multiprobe_improves_recall() {
         let dim = 16;
         let data = clustered_data(5, 80, dim);
-        let n = data.len() / dim;
         let k = 10;
 
+        use rand::prelude::*;
         let mut rng = StdRng::seed_from_u64(123);
+        let n = data.len() / dim;
         let queries: Vec<usize> = (0..20).map(|_| rng.random_range(0..n)).collect();
 
         // Single probe.
@@ -784,68 +541,13 @@ mod tests {
 
     #[test]
     fn test_cross_polytope_vertex_basic() {
-        // [3, -1, 2] -> argmax_abs = 0 (value 3), positive -> bucket = 0
-        assert_eq!(cross_polytope_vertex(&[3.0, -1.0, 2.0]), 0);
-        // [1, -5, 2] -> argmax_abs = 1 (value -5), negative -> bucket = 3
-        assert_eq!(cross_polytope_vertex(&[1.0, -5.0, 2.0]), 3);
-        // [0, 0, 7] -> argmax_abs = 2 (value 7), positive -> bucket = 4
-        assert_eq!(cross_polytope_vertex(&[0.0, 0.0, 7.0]), 4);
-    }
-
-    #[test]
-    fn test_rotation_orthogonality_dense() {
-        // Small dim uses dense Gram-Schmidt.
-        let dim = 8;
-        let mut rng = StdRng::seed_from_u64(42);
-        let rot = random_orthogonal_matrix(dim, &mut rng);
-        assert_eq!(rot.len(), dim * dim, "small dim should use dense rotation");
-
-        // Check that R * R^T ≈ I.
-        for i in 0..dim {
-            for j in 0..dim {
-                let mut dot = 0.0f32;
-                for k in 0..dim {
-                    dot += rot[i * dim + k] * rot[j * dim + k];
-                }
-                let expected = if i == j { 1.0 } else { 0.0 };
-                assert!(
-                    (dot - expected).abs() < 1e-4,
-                    "R*R^T[{},{}] = {} (expected {})",
-                    i,
-                    j,
-                    dot,
-                    expected
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn test_hadamard_preserves_norm() {
-        // Large dim uses randomized Hadamard.
-        let dim = 128;
-        let mut rng = StdRng::seed_from_u64(42);
-        let rot = random_orthogonal_matrix(dim, &mut rng);
-        // Should NOT be d*d (Hadamard format).
-        assert_ne!(
-            rot.len(),
-            dim * dim,
-            "large dim should use Hadamard rotation"
-        );
-
-        let v: Vec<f32> = (0..dim).map(|i| (i as f32) * 0.1).collect();
-        let norm_before: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-
-        let rotated = apply_rotation(&v, &rot, dim);
-        let norm_after: f32 = rotated.iter().map(|x| x * x).sum::<f32>().sqrt();
-
-        // Randomized Hadamard approximately preserves norms.
-        let ratio = norm_after / norm_before;
-        assert!(
-            (ratio - 1.0).abs() < 0.3,
-            "Hadamard should approximately preserve norm: ratio={:.3}",
-            ratio
-        );
+        // Verify via sketchir hasher: argmax-based vertex selection.
+        let hasher = CrossPolytopeHasher::new(3, 0).unwrap();
+        // For a small dim, the dense rotation means raw vertex tests
+        // don't directly apply, but we can test through the hasher.
+        let v = vec![1.0_f32, 0.0, 0.0];
+        let bucket = hasher.hash(&v).unwrap();
+        assert!(bucket < 6, "bucket should be in 0..2*dim");
     }
 
     #[test]
@@ -855,6 +557,7 @@ mod tests {
         let n_clusters = 5;
         let points_per_cluster = 60;
 
+        use rand::prelude::*;
         let mut rng = StdRng::seed_from_u64(42);
         let mut data = Vec::new();
         for c in 0..n_clusters {
@@ -903,23 +606,6 @@ mod tests {
             dim,
             n
         );
-    }
-
-    #[test]
-    fn test_walsh_hadamard_transform() {
-        // WHT of [1, 0, 0, 0] should be [0.5, 0.5, 0.5, 0.5] (normalized).
-        let mut data = vec![1.0, 0.0, 0.0, 0.0];
-        walsh_hadamard_transform(&mut data);
-        let expected = 0.5f32;
-        for (i, &v) in data.iter().enumerate() {
-            assert!(
-                (v - expected).abs() < 1e-6,
-                "WHT[{}] = {} (expected {})",
-                i,
-                v,
-                expected
-            );
-        }
     }
 
     #[test]
