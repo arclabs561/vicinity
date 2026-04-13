@@ -1290,7 +1290,7 @@ fn run_adsampling(
     let ids: Vec<u32> = (0..train.len() as u32).collect();
     let flat: Vec<f32> = train.iter().flatten().copied().collect();
     index.add_batch(&ids, &flat).unwrap();
-    index.build();
+    let _ = index.build();
 
     // Build ADSampling state from the HNSW's reordered vectors.
     // Must use from_hnsw() because build() reorders vectors for cache locality.
