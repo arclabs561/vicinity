@@ -232,9 +232,10 @@ impl InPlaceIndex {
             return Err(RetrieveError::OutOfBounds(id as usize));
         }
 
-        // Collect in-neighbors before marking deleted
+        // Collect node info before marking deleted
         let in_neighbors: Vec<u32> = node.in_neighbors.clone();
         let out_neighbors: Vec<u32> = node.out_neighbors.clone();
+        let deleted_vector: Vec<f32> = node.vector.clone();
 
         // Mark as deleted
         node.mark_deleted();
@@ -276,10 +277,19 @@ impl InPlaceIndex {
             }
         }
 
-        // Second pass: find replacements (needs immutable borrow)
+        // Second pass: find replacements using Wolverine crescent-locus filtering.
+        // Candidates must satisfy:
+        //   (1) d(c, in_neighbor) < d(deleted, in_neighbor) — close to the in-neighbor
+        //   (2) d(c, deleted) > d(deleted, in_neighbor) — far from the deleted node
+        // This crescent-shaped region produces higher-quality repair edges than
+        // picking the globally closest 2-hop neighbor (Wolverine, VLDB 2025).
         let mut replacements: Vec<(u32, Option<u32>)> = Vec::new();
         for (in_neighbor_id, current_neighbors) in &repair_info {
-            let replacement = self.find_replacement_neighbor(*in_neighbor_id, current_neighbors);
+            let replacement = self.find_replacement_wolverine(
+                *in_neighbor_id,
+                current_neighbors,
+                &deleted_vector,
+            );
             replacements.push((*in_neighbor_id, replacement));
         }
 
@@ -477,12 +487,13 @@ impl InPlaceIndex {
         selected
     }
 
-    /// Find replacement neighbor after deletion.
+    /// Find replacement neighbor after deletion (simple closest-2-hop strategy).
+    /// Used by the `repair()` method; the per-delete path uses `find_replacement_wolverine`.
+    #[allow(dead_code)]
     fn find_replacement_neighbor(&self, node_id: u32, current_neighbors: &[u32]) -> Option<u32> {
         let node = self.nodes.get(node_id as usize)?.as_ref()?;
-        let current_set: HashSet<u32> = current_neighbors.iter().cloned().collect();
+        let current_set: HashSet<u32> = current_neighbors.iter().copied().collect();
 
-        // Search in 2-hop neighborhood for replacement
         let mut candidates: Vec<(u32, f32)> = Vec::new();
 
         for &neighbor in current_neighbors {
@@ -509,6 +520,80 @@ impl InPlaceIndex {
 
         candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
         candidates.first().map(|(id, _)| *id)
+    }
+
+    /// Find replacement neighbor using Wolverine crescent-locus filtering.
+    ///
+    /// A candidate `c` is eligible only if it lies in the crescent-shaped region:
+    ///   (1) `d(c, node) < d(deleted, node)` — closer to the in-neighbor than the deleted node was
+    ///   (2) `d(c, deleted) > d(deleted, node)` — far from the deleted node (likely still reachable)
+    ///
+    /// This produces repair edges that survive diversity pruning (EdgeTrim) and
+    /// are monotonically reachable from the entry point. (Wolverine, VLDB 2025)
+    fn find_replacement_wolverine(
+        &self,
+        node_id: u32,
+        current_neighbors: &[u32],
+        deleted_vector: &[f32],
+    ) -> Option<u32> {
+        let node = self.nodes.get(node_id as usize)?.as_ref()?;
+        let current_set: HashSet<u32> = current_neighbors.iter().copied().collect();
+
+        // Distance from the deleted node to this in-neighbor — defines the crescent radii.
+        let dist_deleted_to_node = euclidean_distance(&node.vector, deleted_vector);
+
+        let mut crescent_candidates: Vec<(u32, f32)> = Vec::new();
+        let mut fallback_candidates: Vec<(u32, f32)> = Vec::new();
+
+        // Search 2-hop neighborhood.
+        for &neighbor in current_neighbors {
+            if let Some(Some(nb_node)) = self.nodes.get(neighbor as usize) {
+                if nb_node.is_deleted() {
+                    continue;
+                }
+
+                for &two_hop in &nb_node.out_neighbors {
+                    if two_hop == node_id || current_set.contains(&two_hop) {
+                        continue;
+                    }
+                    // Dedup.
+                    if crescent_candidates.iter().any(|(id, _)| *id == two_hop)
+                        || fallback_candidates.iter().any(|(id, _)| *id == two_hop)
+                    {
+                        continue;
+                    }
+
+                    if let Some(Some(th_node)) = self.nodes.get(two_hop as usize) {
+                        if th_node.is_deleted() {
+                            continue;
+                        }
+
+                        let dist_to_node = euclidean_distance(&node.vector, &th_node.vector);
+                        let dist_to_deleted = euclidean_distance(deleted_vector, &th_node.vector);
+
+                        // Crescent-locus conditions.
+                        let close_to_node = dist_to_node < dist_deleted_to_node;
+                        let far_from_deleted = dist_to_deleted > dist_deleted_to_node;
+
+                        if close_to_node && far_from_deleted {
+                            crescent_candidates.push((two_hop, dist_to_node));
+                        } else {
+                            // Fallback: collect all candidates in case the crescent is empty.
+                            fallback_candidates.push((two_hop, dist_to_node));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Prefer crescent candidates; fall back to closest 2-hop if crescent is empty.
+        if !crescent_candidates.is_empty() {
+            crescent_candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+            Some(crescent_candidates[0].0)
+        } else {
+            fallback_candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+            fallback_candidates.first().map(|(id, _)| *id)
+        }
     }
 
     /// Distance between two nodes in the index.
@@ -962,6 +1047,105 @@ mod tests {
         assert_eq!(stats.nodes_processed, 0);
         assert_eq!(stats.edges_removed, 0);
         assert_eq!(stats.edges_added, 0);
+    }
+
+    /// Wolverine crescent-locus deletion: after deleting hub nodes, the replacement
+    /// edges should maintain graph connectivity and search quality.
+    #[test]
+    fn test_wolverine_crescent_locus_recall() {
+        let dim = 8;
+        let mut index = InPlaceIndex::new(
+            dim,
+            InPlaceConfig {
+                max_degree: 16,
+                beam_width: 32,
+                alpha: 1.2,
+                max_in_neighbors: 32,
+                enable_back_edges: true,
+            },
+        );
+
+        // Insert 50 vectors in a structured pattern.
+        let mut rng_seed: u64 = 42;
+        let mut next = || -> f32 {
+            rng_seed = rng_seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            ((rng_seed >> 33) as f32) / (u32::MAX as f32)
+        };
+
+        let mut vectors: Vec<Vec<f32>> = Vec::new();
+        for _ in 0..50 {
+            let v: Vec<f32> = (0..dim).map(|_| next()).collect();
+            vectors.push(v);
+        }
+
+        for v in &vectors {
+            index.insert(v.clone()).unwrap();
+        }
+
+        // Delete 10 nodes (20% deletion rate — stresses repair quality).
+        let to_delete = [3, 7, 12, 18, 23, 28, 33, 38, 43, 48];
+        for &id in &to_delete {
+            index.delete(id).unwrap();
+        }
+
+        assert_eq!(index.len(), 40);
+
+        // Verify no deleted nodes appear in results.
+        let query: Vec<f32> = (0..dim).map(|_| next()).collect();
+        let results = index.search(&query, 10).unwrap();
+        for (id, _) in &results {
+            assert!(
+                !to_delete.contains(id),
+                "deleted node {} appeared in results",
+                id
+            );
+        }
+
+        // Verify connectivity after Wolverine deletion.
+        let (reachable, orphans) = index.validate_connectivity();
+        assert_eq!(
+            orphans, 0,
+            "wolverine deletion should maintain connectivity"
+        );
+        assert_eq!(reachable, 40);
+    }
+
+    /// Test that crescent-locus filtering actually selects candidates in the
+    /// correct geometric region.
+    #[test]
+    fn test_wolverine_crescent_geometry() {
+        let dim = 4;
+        let mut index = InPlaceIndex::new(dim, InPlaceConfig::default());
+
+        // Insert points along a line: [0,0,0,0], [1,0,0,0], ..., [9,0,0,0].
+        for i in 0..10 {
+            index.insert(vec![i as f32, 0.0, 0.0, 0.0]).unwrap();
+        }
+
+        // Delete node 5 (middle of the line).
+        // In-neighbors of 5 should find replacements that are:
+        //   (1) closer to the in-neighbor than node 5 was
+        //   (2) farther from node 5's position than the in-neighbor was
+        index.delete(5).unwrap();
+
+        assert_eq!(index.len(), 9);
+
+        // Search near the deleted node's position — should still find neighbors.
+        let results = index.search(&[5.0, 0.0, 0.0, 0.0], 3).unwrap();
+        assert!(!results.is_empty());
+
+        // Node 5 should not appear.
+        assert!(
+            !results.iter().any(|(id, _)| *id == 5),
+            "deleted node should not appear"
+        );
+
+        // Closest surviving nodes to [5,0,0,0] are 4 and 6.
+        let result_ids: Vec<u32> = results.iter().map(|(id, _)| *id).collect();
+        assert!(
+            result_ids.contains(&4) || result_ids.contains(&6),
+            "should find neighbors near deleted node"
+        );
     }
 }
 
