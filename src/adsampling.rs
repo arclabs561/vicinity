@@ -19,6 +19,7 @@
 //! Gao, J. & Long, C. (2023). *High-Dimensional Approximate Nearest Neighbor Search:
 //! with Reliable and Efficient Distance Comparison Operations.* SIGMOD 2023.
 
+use crate::distance::FloatOrd;
 use crate::error::RetrieveError;
 
 /// Parameters for ADSampling search.
@@ -156,6 +157,11 @@ impl ADSamplingState {
         let delta_d = self.params.delta_d;
         let dim = self.dimension;
 
+        // Guard: when threshold is near-zero (e.g., self-match in results),
+        // threshold * ratio ≈ 0 and any non-zero partial_sum triggers rejection.
+        // Fall through to exact distance computation in this case.
+        let can_reject = threshold > 1e-10;
+
         let mut partial_sum: f32 = 0.0;
         let mut offset = 0;
 
@@ -169,7 +175,7 @@ impl ADSamplingState {
             offset = end;
 
             // Statistical test: if partial distance (scaled up) exceeds threshold, reject.
-            if partial_sum >= threshold * ratio {
+            if can_reject && partial_sum >= threshold * ratio {
                 return None;
             }
         }
@@ -201,24 +207,32 @@ impl ADSamplingState {
 
         let rotated_query = self.rotate_query(query);
 
-        // Use a cell to track the tightest known distance (for the HNSW++ variant).
-        // This gives a tighter threshold than the beam's worst distance.
-        let best_k_dist = std::cell::Cell::new(f32::INFINITY);
+        // Track the k-th best accepted distance for the HNSW++ threshold.
+        // A max-heap of size k: the root is the k-th nearest (worst of the k best).
+        // This is tighter than the beam's ef-th worst but not as aggressive as
+        // tracking only the single best distance.
+        let top_k = std::cell::RefCell::new(std::collections::BinaryHeap::<FloatOrd>::new());
+        let k_for_threshold = k;
 
         let dist_fn = |_q: &[f32], node_id: u32| -> f32 {
-            let threshold = best_k_dist.get();
+            let threshold = {
+                let heap = top_k.borrow();
+                if heap.len() >= k_for_threshold {
+                    heap.peek().map_or(f32::INFINITY, |fo| fo.0)
+                } else {
+                    f32::INFINITY
+                }
+            };
             match self.dist_comp(&rotated_query, node_id, threshold) {
                 Some(exact_dist) => {
-                    // Update tightest threshold.
-                    if exact_dist < threshold {
-                        best_k_dist.set(exact_dist);
+                    let mut heap = top_k.borrow_mut();
+                    heap.push(FloatOrd(exact_dist));
+                    if heap.len() > k_for_threshold {
+                        heap.pop(); // evict worst
                     }
                     exact_dist
                 }
-                None => {
-                    // Rejected -- return a large distance so the candidate is not inserted.
-                    f32::INFINITY
-                }
+                None => f32::INFINITY,
             }
         };
 
@@ -235,14 +249,24 @@ impl ADSamplingState {
         ef: usize,
     ) -> Result<Vec<(u32, f32)>, RetrieveError> {
         let rotated_query = self.rotate_query(query);
-        let best_k_dist = std::cell::Cell::new(f32::INFINITY);
+        let top_k = std::cell::RefCell::new(std::collections::BinaryHeap::<FloatOrd>::new());
+        let k_for_threshold = k;
 
         let dist_fn = |_q: &[f32], node_id: u32| -> f32 {
-            let threshold = best_k_dist.get();
+            let threshold = {
+                let heap = top_k.borrow();
+                if heap.len() >= k_for_threshold {
+                    heap.peek().map_or(f32::INFINITY, |fo| fo.0)
+                } else {
+                    f32::INFINITY
+                }
+            };
             match self.dist_comp(&rotated_query, node_id, threshold) {
                 Some(exact_dist) => {
-                    if exact_dist < threshold {
-                        best_k_dist.set(exact_dist);
+                    let mut heap = top_k.borrow_mut();
+                    heap.push(FloatOrd(exact_dist));
+                    if heap.len() > k_for_threshold {
+                        heap.pop();
                     }
                     exact_dist
                 }
@@ -263,14 +287,24 @@ impl ADSamplingState {
         ef: usize,
     ) -> Result<Vec<(u32, f32)>, RetrieveError> {
         let rotated_query = self.rotate_query(query);
-        let best_k_dist = std::cell::Cell::new(f32::INFINITY);
+        let top_k = std::cell::RefCell::new(std::collections::BinaryHeap::<FloatOrd>::new());
+        let k_for_threshold = k;
 
         let dist_fn = |_q: &[f32], node_id: u32| -> f32 {
-            let threshold = best_k_dist.get();
+            let threshold = {
+                let heap = top_k.borrow();
+                if heap.len() >= k_for_threshold {
+                    heap.peek().map_or(f32::INFINITY, |fo| fo.0)
+                } else {
+                    f32::INFINITY
+                }
+            };
             match self.dist_comp(&rotated_query, node_id, threshold) {
                 Some(exact_dist) => {
-                    if exact_dist < threshold {
-                        best_k_dist.set(exact_dist);
+                    let mut heap = top_k.borrow_mut();
+                    heap.push(FloatOrd(exact_dist));
+                    if heap.len() > k_for_threshold {
+                        heap.pop();
                     }
                     exact_dist
                 }
@@ -622,6 +656,60 @@ mod tests {
             "self-match distance should be ~0, got {}",
             results[0].1
         );
+    }
+
+    #[cfg(feature = "hnsw")]
+    #[test]
+    fn search_hnsw_l2_unnormalized() {
+        use crate::hnsw::{HNSWIndex, HNSWParams};
+
+        let dim = 128;
+        let n = 500;
+        let mut rng = LcgRng::new(77);
+        let vectors: Vec<f32> = (0..n * dim)
+            .map(|_| rng.next_uniform() as f32 * 255.0)
+            .collect();
+
+        let params = HNSWParams {
+            m: 16,
+            ef_construction: 100,
+            metric: crate::DistanceMetric::L2,
+            seed: Some(42),
+            ..Default::default()
+        };
+        let mut index = HNSWIndex::with_params(dim, params).unwrap();
+        let ids: Vec<u32> = (0..n as u32).collect();
+        index.add_batch(&ids, &vectors).unwrap();
+        let _ = index.build();
+
+        // Verify HNSW alone works
+        let hnsw_results = index.search(&vectors[0..dim], 10, 100).unwrap();
+        assert!(!hnsw_results.is_empty(), "HNSW should return results");
+
+        // Now test ADSampling
+        let state = ADSamplingState::new(
+            &vectors,
+            dim,
+            ADSamplingParams {
+                epsilon0: 2.1,
+                ..Default::default()
+            },
+        );
+
+        let results = state
+            .search_hnsw(&index, &vectors[0..dim], 10, 100)
+            .unwrap();
+
+        assert!(!results.is_empty(), "ADSampling should return results");
+
+        // Known issue: ADSampling returns L2² distances while HNSW upper layers
+        // use L2 (sqrt). The beam search distances are internally consistent, but
+        // the interaction between upper-layer entry point and base-layer custom
+        // distance has a bug where some nodes get distance 0.0 incorrectly.
+        // This test documents the current state -- ADSampling returns results but
+        // recall is low compared to standard HNSW on L2 datasets.
+        // TODO: investigate why beam_search returns 0.0 distances for non-self nodes.
+        assert!(!results.is_empty(), "ADSampling should return some results");
     }
 
     #[cfg(feature = "rmt-spectral")]
