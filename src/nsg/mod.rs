@@ -443,6 +443,75 @@ impl NsgIndex {
         out
     }
 
+    /// Beam search with a custom distance function.
+    ///
+    /// The closure receives `(query, internal_node_id)` and returns a distance.
+    /// Enables ADSampling and other asymmetric distance schemes.
+    pub fn search_with_distance(
+        &self,
+        query: &[f32],
+        k: usize,
+        ef: usize,
+        dist_fn: &dyn Fn(&[f32], u32) -> f32,
+    ) -> Result<Vec<(u32, f32)>, RetrieveError> {
+        if !self.built {
+            return Err(RetrieveError::InvalidParameter(
+                "index must be built before search".into(),
+            ));
+        }
+        if query.len() != self.dimension {
+            return Err(RetrieveError::DimensionMismatch {
+                query_dim: query.len(),
+                doc_dim: self.dimension,
+            });
+        }
+        let ef = ef.max(k);
+        let n = self.num_vectors;
+        if n == 0 {
+            return Err(RetrieveError::EmptyIndex);
+        }
+
+        let mut visited = HashSet::with_capacity(ef * 2);
+        let mut candidates: BinaryHeap<std::cmp::Reverse<(FloatOrd, u32)>> = BinaryHeap::new();
+        let mut results: BinaryHeap<(FloatOrd, u32)> = BinaryHeap::new();
+
+        let entry = self.medoid;
+        let entry_dist = dist_fn(query, entry);
+        visited.insert(entry);
+        candidates.push(std::cmp::Reverse((FloatOrd(entry_dist), entry)));
+        results.push((FloatOrd(entry_dist), entry));
+
+        while let Some(std::cmp::Reverse((FloatOrd(cand_dist), cand_id))) = candidates.pop() {
+            let worst_dist = results.peek().map_or(f32::INFINITY, |&(FloatOrd(d), _)| d);
+            if results.len() >= ef && cand_dist > worst_dist {
+                break;
+            }
+
+            for &neighbor in &self.neighbors[cand_id as usize] {
+                if visited.insert(neighbor) {
+                    let dist = dist_fn(query, neighbor);
+
+                    let worst_dist = results.peek().map_or(f32::INFINITY, |&(FloatOrd(d), _)| d);
+                    if results.len() < ef || dist < worst_dist {
+                        candidates.push(std::cmp::Reverse((FloatOrd(dist), neighbor)));
+                        results.push((FloatOrd(dist), neighbor));
+                        if results.len() > ef {
+                            results.pop();
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut out: Vec<(u32, f32)> = results
+            .into_iter()
+            .map(|(FloatOrd(d), id)| (self.doc_ids[id as usize], d))
+            .collect();
+        out.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+        out.truncate(k);
+        Ok(out)
+    }
+
     fn ensure_connectivity(&mut self) {
         let (dim, vecs) = (self.dimension, &self.vectors);
         crate::graph_utils::ensure_connectivity(&mut self.neighbors, self.medoid, |i, j| {
