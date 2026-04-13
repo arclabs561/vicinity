@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used, dead_code)]
 //! Brute-force recall tests for algorithms that previously lacked ground-truth coverage.
 //!
 //! Each test builds an index from normalized random vectors, searches with held-out

@@ -11,7 +11,7 @@
 //! Each algorithm is tested across multiple parameterizations (varying n, dim,
 //! connectivity, seeds) via proptest.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, unused_imports)]
+#![allow(clippy::unwrap_used, clippy::expect_used, unused_imports, dead_code)]
 
 #[path = "common/mod.rs"]
 mod common;
