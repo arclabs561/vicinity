@@ -176,6 +176,8 @@ pub mod adsampling;
 pub mod partitioning;
 #[cfg(feature = "ivf_pq")]
 pub(crate) mod pq_simd;
+#[cfg(feature = "hnsw")]
+pub mod prt;
 
 pub mod distance;
 pub mod filtering;
