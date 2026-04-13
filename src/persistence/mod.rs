@@ -1,16 +1,14 @@
 //! Disk persistence for `vicinity` indexes.
 //!
-//! This module provides crash-safe, concurrent persistence for dense vector indexes
-//! (HNSW, IVF-PQ, DiskANN).
+//! Two persistence paths are available:
 //!
-//! # Design Philosophy
+//! - **Simple** (`serde` feature): `save_to_writer` / `load_from_reader` on `HNSWIndex`.
+//!   JSON-based, one function call each way. Best for checkpoint/restore workflows.
 //!
-//! The persistence layer prioritizes:
-//! - **Correctness**: Crash-safe, ACID guarantees, data integrity
-//! - **Concurrency**: Multiple readers, single writer with snapshot isolation
-//! - **Performance**: Memory mapping, SIMD-accelerated compression, efficient formats
-//! - **Flexibility**: Support for all retrieval methods, configurable trade-offs
+//! - **Segment** (`persistence` feature): Binary SoA format via `HNSWSegmentWriter` /
+//!   `HNSWSegmentReader`. Smaller on disk, cache-friendly layout.
 //!
+//! The `persistence` feature also brings WAL support via `durability`.
 
 pub mod directory;
 pub mod error;
@@ -21,16 +19,7 @@ pub mod format;
 #[cfg(feature = "persistence")]
 pub mod wal;
 
-#[cfg(feature = "persistence")]
-pub mod checkpoint;
-
-#[cfg(feature = "persistence")]
-pub mod recovery;
-
 #[cfg(all(feature = "persistence", feature = "hnsw"))]
 pub mod hnsw;
-
-#[cfg(feature = "persistence")]
-pub mod locking;
 
 pub use error::PersistenceError;

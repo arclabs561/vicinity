@@ -50,6 +50,25 @@ index.build()?;
 let results = index.search(&[0.1; 128], 5)?;
 ```
 
+## Persistence
+
+Save and load indexes with the `serde` feature:
+
+```toml
+[dependencies]
+vicinity = { version = "0.3", features = ["hnsw", "serde"] }
+```
+
+```rust
+// Save
+index.save_to_file("my_index.json")?;
+
+// Load
+let index = HNSWIndex::load_from_file("my_index.json")?;
+```
+
+See [`examples/06_save_and_load.rs`](examples/06_save_and_load.rs) for a full example.
+
 ## Benchmark
 
 GloVe-25 (1.18M vectors, 25-d, cosine), Apple Silicon, single-threaded:

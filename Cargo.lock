@@ -1306,15 +1306,12 @@ name = "vicinity"
 version = "0.3.6"
 dependencies = [
  "anyhow",
- "byteorder",
  "clump",
  "cnk",
- "crc32fast",
  "criterion",
  "durability",
  "getrandom 0.3.4",
  "innr",
- "libc",
  "nalgebra",
  "numpy",
  "postcard",

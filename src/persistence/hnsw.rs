@@ -122,6 +122,15 @@ impl HNSWSegmentWriter {
         params_file.write_all(&index.params.m_l.to_le_bytes())?;
         params_file.write_all(&(index.params.ef_construction as u32).to_le_bytes())?;
         params_file.write_all(&(index.params.ef_search as u32).to_le_bytes())?;
+        // v2 fields: metric + auto_normalize (appended for backward compat)
+        let metric_byte: u8 = match index.params.metric {
+            crate::distance::DistanceMetric::L2 => 0,
+            crate::distance::DistanceMetric::Cosine => 1,
+            crate::distance::DistanceMetric::Angular => 2,
+            crate::distance::DistanceMetric::InnerProduct => 3,
+        };
+        params_file.write_all(&[metric_byte])?;
+        params_file.write_all(&[if index.params.auto_normalize { 1 } else { 0 }])?;
         params_file.flush()?;
 
         // Write metadata
@@ -209,17 +218,40 @@ impl HNSWSegmentReader {
         params_file.read_exact(&mut ef_construction_bytes)?;
         params_file.read_exact(&mut ef_search_bytes)?;
 
+        // v2 fields: metric + auto_normalize (optional, backward-compat with v1 files)
+        let mut metric_byte = [0u8; 1];
+        let metric = if params_file.read_exact(&mut metric_byte).is_ok() {
+            match metric_byte[0] {
+                0 => crate::distance::DistanceMetric::L2,
+                1 => crate::distance::DistanceMetric::Cosine,
+                2 => crate::distance::DistanceMetric::Angular,
+                3 => crate::distance::DistanceMetric::InnerProduct,
+                other => {
+                    return Err(crate::persistence::error::PersistenceError::Format(
+                        format!("unknown distance metric: {}", other),
+                    ));
+                }
+            }
+        } else {
+            // Legacy v1 file without metric byte: default to Cosine
+            crate::distance::DistanceMetric::Cosine
+        };
+
+        let mut auto_norm_byte = [0u8; 1];
+        let auto_normalize =
+            params_file.read_exact(&mut auto_norm_byte).is_ok() && auto_norm_byte[0] != 0;
+
         let params = HNSWParams {
             m: u32::from_le_bytes(m_bytes) as usize,
             m_max: u32::from_le_bytes(m_max_bytes) as usize,
             m_l: f64::from_le_bytes(m_l_bytes),
             ef_construction: u32::from_le_bytes(ef_construction_bytes) as usize,
             ef_search: u32::from_le_bytes(ef_search_bytes) as usize,
-            auto_normalize: false,
+            auto_normalize,
             seed_selection: SeedSelectionStrategy::default(),
             neighborhood_diversification: NeighborhoodDiversification::default(),
             seed: None,
-            metric: crate::distance::DistanceMetric::Cosine,
+            metric,
             #[cfg(feature = "id-compression")]
             id_compression: None,
             #[cfg(feature = "id-compression")]
@@ -239,10 +271,6 @@ impl HNSWSegmentReader {
     /// Reconstruct the HNSW index from disk.
     ///
     /// This loads all data structures into memory.
-    /// For large indexes, consider using memory mapping.
-    ///
-    /// Note: This is a placeholder implementation. Full reconstruction requires
-    /// HNSWIndex to expose a constructor or builder that accepts all fields.
     pub fn load_index(&self) -> PersistenceResult<HNSWIndex> {
         let segment_dir = format!("segments/segment_hnsw_{}", self.segment_id);
 
