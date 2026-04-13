@@ -1660,8 +1660,6 @@ impl HNSWIndex {
 
         // Fine search in base layer with custom distance
         if !self.layers.is_empty() {
-            #[cfg(test)]
-            eprintln!("[swd] current_closest={current_closest} after upper-layer descent");
             let base_results = crate::hnsw::search::greedy_search_layer_custom(
                 query,
                 current_closest,
@@ -2376,6 +2374,19 @@ impl HNSWIndex {
         let start = idx * self.dimension;
         let end = start + self.dimension;
         &self.vectors[start..end]
+    }
+
+    /// Raw vector storage in internal (reordered) layout.
+    ///
+    /// After `build()`, vectors are reordered for cache locality (BFS order).
+    /// The internal node IDs used by `search_with_distance`'s closure correspond
+    /// to positions in this array, NOT to the original insertion order.
+    ///
+    /// Use this to build auxiliary data structures (ADSampling rotation, quantization
+    /// codes) that are indexed by internal node ID.
+    #[must_use]
+    pub fn vectors_raw(&self) -> &[f32] {
+        &self.vectors
     }
 
     /// Get entry point (vector in highest layer).
