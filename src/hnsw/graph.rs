@@ -1051,7 +1051,8 @@ impl HNSWIndex {
         // Cosine distance uses 1 - dot(a,b), which only equals cosine distance when
         // vectors are L2-normalized. Reject clearly un-normalized vectors to prevent
         // silent wrong results. Skip this check for metrics that don't require it (e.g. L2).
-        if self.params.metric == DistanceMetric::Cosine {
+        // When auto_normalize is on, zero vectors normalize to zero (degenerate but valid).
+        if self.params.metric == DistanceMetric::Cosine && !self.params.auto_normalize {
             let norm_sq: f32 = vector.iter().map(|x| x * x).sum();
             if (norm_sq - 1.0).abs() > 0.01 {
                 return Err(RetrieveError::InvalidParameter(format!(
