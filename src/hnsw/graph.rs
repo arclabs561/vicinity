@@ -1026,7 +1026,7 @@ impl HNSWIndex {
         // silent wrong results. Skip this check for metrics that don't require it (e.g. L2).
         if self.params.metric == DistanceMetric::Cosine {
             let norm_sq: f32 = vector.iter().map(|x| x * x).sum();
-            if (norm_sq - 1.0).abs() > 0.1 {
+            if (norm_sq - 1.0).abs() > 0.01 {
                 return Err(RetrieveError::InvalidParameter(format!(
                     "HNSW cosine distance requires L2-normalized vectors \
                      (got norm^2 = {:.4}, expected ~1.0). \
