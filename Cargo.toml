@@ -75,9 +75,7 @@ getrandom = { version = "0.3", features = ["wasm_js"] }
 [features]
 default = ["hnsw", "innr"]
 persistence = [
-  "dep:serde",
-  "dep:serde_json",
-  "smallvec/serde",
+  "serde",
   "dep:postcard",
   "dep:durability",
 ]
