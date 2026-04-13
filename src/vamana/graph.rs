@@ -227,6 +227,25 @@ impl VamanaIndex {
         super::search::search(self, &query_normalized, k, ef)
     }
 
+    /// Search with a custom distance function.
+    ///
+    /// The closure receives `(query, internal_node_id)` and returns a distance.
+    /// Enables ADSampling and other asymmetric distance schemes.
+    pub fn search_with_distance(
+        &self,
+        query: &[f32],
+        k: usize,
+        ef: usize,
+        dist_fn: &dyn Fn(&[f32], u32) -> f32,
+    ) -> Result<Vec<(u32, f32)>, RetrieveError> {
+        if !self.built {
+            return Err(RetrieveError::InvalidParameter(
+                "index must be built before search".into(),
+            ));
+        }
+        super::search::search_with_distance(self, query, k, ef, dist_fn)
+    }
+
     /// Get vector by index.
     #[inline]
     pub(crate) fn get_vector(&self, idx: usize) -> &[f32] {

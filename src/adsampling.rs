@@ -225,6 +225,62 @@ impl ADSamplingState {
         index.search_with_distance(query, k, ef, &dist_fn)
     }
 
+    /// Search a Vamana index using ADSampling.
+    #[cfg(feature = "vamana")]
+    pub fn search_vamana(
+        &self,
+        index: &crate::vamana::VamanaIndex,
+        query: &[f32],
+        k: usize,
+        ef: usize,
+    ) -> Result<Vec<(u32, f32)>, RetrieveError> {
+        let rotated_query = self.rotate_query(query);
+        let best_k_dist = std::cell::Cell::new(f32::INFINITY);
+
+        let dist_fn = |_q: &[f32], node_id: u32| -> f32 {
+            let threshold = best_k_dist.get();
+            match self.dist_comp(&rotated_query, node_id, threshold) {
+                Some(exact_dist) => {
+                    if exact_dist < threshold {
+                        best_k_dist.set(exact_dist);
+                    }
+                    exact_dist
+                }
+                None => f32::INFINITY,
+            }
+        };
+
+        index.search_with_distance(query, k, ef, &dist_fn)
+    }
+
+    /// Search an NSG index using ADSampling.
+    #[cfg(feature = "nsg")]
+    pub fn search_nsg(
+        &self,
+        index: &crate::nsg::NsgIndex,
+        query: &[f32],
+        k: usize,
+        ef: usize,
+    ) -> Result<Vec<(u32, f32)>, RetrieveError> {
+        let rotated_query = self.rotate_query(query);
+        let best_k_dist = std::cell::Cell::new(f32::INFINITY);
+
+        let dist_fn = |_q: &[f32], node_id: u32| -> f32 {
+            let threshold = best_k_dist.get();
+            match self.dist_comp(&rotated_query, node_id, threshold) {
+                Some(exact_dist) => {
+                    if exact_dist < threshold {
+                        best_k_dist.set(exact_dist);
+                    }
+                    exact_dist
+                }
+                None => f32::INFINITY,
+            }
+        };
+
+        index.search_with_distance(query, k, ef, &dist_fn)
+    }
+
     /// Number of vectors in this ADSampling state.
     #[must_use]
     pub fn num_vectors(&self) -> usize {
