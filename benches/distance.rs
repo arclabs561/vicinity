@@ -5,31 +5,9 @@
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use rand::prelude::*;
-
-// === Distance Functions ===
-
-/// Euclidean (L2) distance squared.
-fn l2_squared(a: &[f32], b: &[f32]) -> f32 {
-    a.iter().zip(b.iter()).map(|(x, y)| (x - y) * (x - y)).sum()
-}
-
-/// Dot product.
-fn dot_product(a: &[f32], b: &[f32]) -> f32 {
-    a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
-}
-
-/// Cosine distance (1 - cosine_similarity).
-fn cosine_distance(a: &[f32], b: &[f32]) -> f32 {
-    let dot = dot_product(a, b);
-    let norm_a = dot_product(a, a).sqrt();
-    let norm_b = dot_product(b, b).sqrt();
-    1.0 - dot / (norm_a * norm_b + 1e-10)
-}
-
-/// Inner product distance (negative dot product for max similarity).
-fn _inner_product_distance(a: &[f32], b: &[f32]) -> f32 {
-    -dot_product(a, b)
-}
+use vicinity::distance::{
+    cosine_distance, cosine_distance_normalized, inner_product_distance, l2_distance,
+};
 
 // === Generators ===
 
@@ -53,7 +31,7 @@ fn normalized_vectors(n: usize, dim: usize) -> Vec<Vec<f32>> {
 // === Benchmarks ===
 
 fn bench_l2_dimensions(c: &mut Criterion) {
-    let mut group = c.benchmark_group("l2_squared");
+    let mut group = c.benchmark_group("l2_distance");
 
     for dim in [64, 128, 256, 384, 768, 1536].iter() {
         group.throughput(Throughput::Elements(*dim as u64));
@@ -63,15 +41,15 @@ fn bench_l2_dimensions(c: &mut Criterion) {
         let b = &vectors[1];
 
         group.bench_with_input(BenchmarkId::from_parameter(dim), dim, |bench, _| {
-            bench.iter(|| l2_squared(black_box(a), black_box(b)));
+            bench.iter(|| l2_distance(black_box(a), black_box(b)));
         });
     }
 
     group.finish();
 }
 
-fn bench_dot_dimensions(c: &mut Criterion) {
-    let mut group = c.benchmark_group("dot_product");
+fn bench_inner_product_dimensions(c: &mut Criterion) {
+    let mut group = c.benchmark_group("inner_product_distance");
 
     for dim in [64, 128, 256, 384, 768, 1536].iter() {
         group.throughput(Throughput::Elements(*dim as u64));
@@ -81,7 +59,7 @@ fn bench_dot_dimensions(c: &mut Criterion) {
         let b = &vectors[1];
 
         group.bench_with_input(BenchmarkId::from_parameter(dim), dim, |bench, _| {
-            bench.iter(|| dot_product(black_box(a), black_box(b)));
+            bench.iter(|| inner_product_distance(black_box(a), black_box(b)));
         });
     }
 
@@ -94,12 +72,30 @@ fn bench_cosine_dimensions(c: &mut Criterion) {
     for dim in [64, 128, 256, 384, 768, 1536].iter() {
         group.throughput(Throughput::Elements(*dim as u64));
 
-        let vectors = normalized_vectors(2, *dim);
+        let vectors = random_vectors(2, *dim);
         let a = &vectors[0];
         let b = &vectors[1];
 
         group.bench_with_input(BenchmarkId::from_parameter(dim), dim, |bench, _| {
             bench.iter(|| cosine_distance(black_box(a), black_box(b)));
+        });
+    }
+
+    group.finish();
+}
+
+fn bench_cosine_normalized_dimensions(c: &mut Criterion) {
+    let mut group = c.benchmark_group("cosine_distance_normalized");
+
+    for dim in [64, 128, 256, 384, 768, 1536].iter() {
+        group.throughput(Throughput::Elements(*dim as u64));
+
+        let vectors = normalized_vectors(2, *dim);
+        let a = &vectors[0];
+        let b = &vectors[1];
+
+        group.bench_with_input(BenchmarkId::from_parameter(dim), dim, |bench, _| {
+            bench.iter(|| cosine_distance_normalized(black_box(a), black_box(b)));
         });
     }
 
@@ -122,7 +118,7 @@ fn bench_batch_distances(c: &mut Criterion) {
             bench.iter(|| {
                 candidates
                     .iter()
-                    .map(|c| l2_squared(black_box(query), black_box(c)))
+                    .map(|c| l2_distance(black_box(query), black_box(c)))
                     .collect::<Vec<_>>()
             });
         });
@@ -134,8 +130,9 @@ fn bench_batch_distances(c: &mut Criterion) {
 criterion_group!(
     benches,
     bench_l2_dimensions,
-    bench_dot_dimensions,
+    bench_inner_product_dimensions,
     bench_cosine_dimensions,
+    bench_cosine_normalized_dimensions,
     bench_batch_distances,
 );
 criterion_main!(benches);
