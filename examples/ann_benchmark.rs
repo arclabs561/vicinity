@@ -48,6 +48,7 @@ struct Config {
     ef_search_values: Vec<usize>,
     json: bool,
     results_path: PathBuf,
+    is_euclidean: bool,
 }
 
 impl Default for Config {
@@ -60,6 +61,7 @@ impl Default for Config {
             ef_search_values: vec![10, 20, 50, 100, 200, 400],
             json: false,
             results_path: PathBuf::new(), // derived from data_dir after parsing
+            is_euclidean: false,          // derived from data_dir after parsing
         }
     }
 }
@@ -184,6 +186,9 @@ fn parse_args() -> Config {
         std::fs::remove_file(&cfg.results_path).ok();
     }
 
+    // Auto-detect metric from dataset name.
+    cfg.is_euclidean = cfg.data_dir.contains("euclidean");
+
     cfg
 }
 
@@ -296,11 +301,16 @@ fn current_rss_kb() -> Option<u64> {
 
 // ─── Brute force ─────────────────────────────────────────────────────────────
 
-fn brute_force_search(train: &[Vec<f32>], query: &[f32], k: usize) -> Vec<(u32, f32)> {
+fn brute_force_search(
+    train: &[Vec<f32>],
+    query: &[f32],
+    k: usize,
+    metric: vicinity::DistanceMetric,
+) -> Vec<(u32, f32)> {
     let mut dists: Vec<(u32, f32)> = train
         .iter()
         .enumerate()
-        .map(|(i, v)| (i as u32, vicinity::distance::cosine_distance(query, v)))
+        .map(|(i, v)| (i as u32, metric.distance(query, v)))
         .collect();
     dists.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
     dists.truncate(k);
@@ -341,17 +351,23 @@ fn run_hnsw(
 ) {
     use vicinity::hnsw::{HNSWIndex, HNSWParams};
 
+    let metric = if cfg.is_euclidean {
+        vicinity::DistanceMetric::L2
+    } else {
+        vicinity::DistanceMetric::Cosine
+    };
     let params = HNSWParams {
         m: cfg.m,
         m_max: cfg.m,
         ef_construction: cfg.ef_construction,
+        metric,
         ..Default::default()
     };
 
     if !cfg.json {
         println!(
-            "--- HNSW (M={}, ef_construction={}) ---",
-            cfg.m, cfg.ef_construction
+            "--- HNSW (M={}, ef_construction={}, metric={:?}) ---",
+            cfg.m, cfg.ef_construction, metric
         );
     }
 
@@ -1255,10 +1271,16 @@ fn run_adsampling(
     }
 
     let build_start = Instant::now();
+    let metric = if cfg.is_euclidean {
+        vicinity::DistanceMetric::L2
+    } else {
+        vicinity::DistanceMetric::Cosine
+    };
     let params = HNSWParams {
         m,
         m_max: m,
         ef_construction,
+        metric,
         seed: Some(42),
         ..Default::default()
     };
@@ -1535,7 +1557,17 @@ fn run_brute(cfg: &Config, train: &[Vec<f32>], test: &[Vec<f32>], neighbors: &[V
         print_header();
     }
 
-    let result = evaluate(&|q, k| brute_force_search(train, q, k), test, neighbors, 10);
+    let metric = if cfg.is_euclidean {
+        vicinity::DistanceMetric::L2
+    } else {
+        vicinity::DistanceMetric::Cosine
+    };
+    let result = evaluate(
+        &|q, k| brute_force_search(train, q, k, metric),
+        test,
+        neighbors,
+        10,
+    );
 
     if cfg.json {
         let params_json = "{}";
