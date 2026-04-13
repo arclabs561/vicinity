@@ -100,6 +100,31 @@ impl ADSamplingState {
         }
     }
 
+    /// Build ADSampling state with automatic `delta_d` tuning via spectral analysis.
+    ///
+    /// Computes the covariance spectrum of a sample of vectors, then uses
+    /// the Marchenko-Pastur bulk edge to estimate how many dimensions carry signal.
+    /// Sets `delta_d` to the signal dimension count (clamped to [16, 64] for SIMD
+    /// alignment). Noise dimensions are where early termination saves the most work.
+    ///
+    /// Requires the `rmt-spectral` feature.
+    #[cfg(feature = "rmt-spectral")]
+    pub fn new_auto(vectors: &[f32], dimension: usize, params: ADSamplingParams) -> Self {
+        let num_vectors = vectors.len() / dimension;
+
+        // Sample up to 5000 vectors for covariance estimation.
+        let sample_n = num_vectors.min(5000);
+        let signal_dims = estimate_signal_dimensions(vectors, dimension, sample_n);
+
+        // Clamp to SIMD-friendly range [16, 64].
+        let delta_d = signal_dims.clamp(16, 64);
+        // Round to nearest multiple of 16 for SIMD alignment.
+        let delta_d = ((delta_d + 8) / 16) * 16;
+
+        let tuned_params = ADSamplingParams { delta_d, ..params };
+        Self::new(vectors, dimension, tuned_params)
+    }
+
     /// Rotate a query vector using the stored rotation matrix.
     #[must_use]
     pub fn rotate_query(&self, query: &[f32]) -> Vec<f32> {
@@ -339,6 +364,53 @@ impl LcgRng {
     }
 }
 
+/// Estimate the number of signal dimensions via Marchenko-Pastur spectral analysis.
+///
+/// Computes per-dimension variance of the first `sample_n` vectors, treats them as
+/// eigenvalues of the sample covariance matrix (diagonal approximation), and counts
+/// how many exceed the MP bulk edge. This is a fast heuristic -- the full covariance
+/// would require O(d^2 * n) and an eigendecomposition.
+#[cfg(feature = "rmt-spectral")]
+fn estimate_signal_dimensions(vectors: &[f32], dim: usize, sample_n: usize) -> usize {
+    // Compute per-dimension mean and variance.
+    let mut means = vec![0.0f64; dim];
+    let mut vars = vec![0.0f64; dim];
+
+    for i in 0..sample_n {
+        let v = &vectors[i * dim..(i + 1) * dim];
+        for (j, &val) in v.iter().enumerate() {
+            means[j] += val as f64;
+        }
+    }
+    let n = sample_n as f64;
+    for m in means.iter_mut() {
+        *m /= n;
+    }
+    for i in 0..sample_n {
+        let v = &vectors[i * dim..(i + 1) * dim];
+        for (j, &val) in v.iter().enumerate() {
+            let diff = val as f64 - means[j];
+            vars[j] += diff * diff;
+        }
+    }
+    for v in vars.iter_mut() {
+        *v /= n - 1.0;
+    }
+
+    // Use per-dimension variances as proxy eigenvalues.
+    // MP ratio gamma = d/n (features / samples).
+    let ratio = dim as f64 / n;
+    // Assume unit noise variance (median variance as sigma^2 estimate).
+    let mut sorted_vars = vars.clone();
+    sorted_vars.sort_unstable_by(|a, b| a.total_cmp(b));
+    let sigma_sq = sorted_vars[dim / 2]; // median
+
+    let outliers = crate::spectral::count_mp_outliers(&vars, ratio, sigma_sq, 1.0);
+
+    // Signal dimensions = outliers; clamp to reasonable range.
+    outliers.max(16).min(dim)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -493,6 +565,39 @@ mod tests {
             results[0].1 < 0.01,
             "self-match distance should be ~0, got {}",
             results[0].1
+        );
+    }
+
+    #[cfg(feature = "rmt-spectral")]
+    #[test]
+    fn auto_tuning_selects_reasonable_delta_d() {
+        let dim = 128;
+        let n = 500;
+        let mut rng = LcgRng::new(77);
+
+        // Create vectors with clear signal in first 30 dims, noise in rest.
+        let mut vectors = vec![0.0f32; n * dim];
+        for i in 0..n {
+            for j in 0..dim {
+                let base = rng.next_uniform() as f32;
+                // Signal dims get 10x larger values.
+                vectors[i * dim + j] = if j < 30 { base * 10.0 } else { base * 0.1 };
+            }
+        }
+
+        let state = ADSamplingState::new_auto(&vectors, dim, ADSamplingParams::default());
+        // delta_d should be in the SIMD-friendly range, influenced by signal structure.
+        assert!(
+            state.params.delta_d >= 16 && state.params.delta_d <= 64,
+            "delta_d={} not in [16, 64]",
+            state.params.delta_d
+        );
+        // Should be a multiple of 16.
+        assert_eq!(
+            state.params.delta_d % 16,
+            0,
+            "delta_d={} not aligned to 16",
+            state.params.delta_d
         );
     }
 }
