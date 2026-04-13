@@ -131,6 +131,17 @@ impl DEGIndex {
 
         let n = self.vectors.len();
 
+        // DEG construction is O(n^2): density estimation + edge construction.
+        // Above ~10K vectors this becomes impractical.
+        const DEG_SCALE_LIMIT: usize = 10_000;
+        if n > DEG_SCALE_LIMIT {
+            return Err(RetrieveError::InvalidParameter(format!(
+                "DEG construction is O(n^2); n={} exceeds practical limit of {}. \
+                 Use HNSW for larger datasets.",
+                n, DEG_SCALE_LIMIT
+            )));
+        }
+
         // Step 1: Estimate density for each node
         self.estimate_densities()?;
 
