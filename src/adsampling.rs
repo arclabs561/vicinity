@@ -101,6 +101,18 @@ impl ADSamplingState {
         }
     }
 
+    /// Build ADSampling state from a built HNSW index.
+    ///
+    /// **Use this instead of `new()` when pairing with `search_hnsw()`.**
+    /// After `HNSWIndex::build()`, vectors are reordered for cache locality.
+    /// The internal node IDs used by `search_with_distance` correspond to
+    /// positions in the reordered array, not the original insertion order.
+    /// This constructor reads the reordered vectors directly from the index.
+    #[cfg(feature = "hnsw")]
+    pub fn from_hnsw(index: &crate::hnsw::HNSWIndex, params: ADSamplingParams) -> Self {
+        Self::new(index.vectors_raw(), index.dimension, params)
+    }
+
     /// Build ADSampling state with automatic `delta_d` tuning via spectral analysis.
     ///
     /// Computes the covariance spectrum of a sample of vectors, then uses
@@ -646,7 +658,8 @@ mod tests {
         index.add_batch(&ids, &normalized).unwrap();
         let _ = index.build();
 
-        let state = ADSamplingState::new(&normalized, dim, ADSamplingParams::default());
+        // Must use from_hnsw after build() because build reorders vectors.
+        let state = ADSamplingState::from_hnsw(&index, ADSamplingParams::default());
 
         let query = &normalized[0..dim];
         let results = state.search_hnsw(&index, query, 10, 50).unwrap();
@@ -688,10 +701,9 @@ mod tests {
         let hnsw_results = index.search(&vectors[0..dim], 10, 100).unwrap();
         assert!(!hnsw_results.is_empty(), "HNSW should return results");
 
-        // Now test ADSampling
-        let state = ADSamplingState::new(
-            &vectors,
-            dim,
+        // Build ADSampling from the HNSW's reordered vectors (critical!)
+        let state = ADSamplingState::from_hnsw(
+            &index,
             ADSamplingParams {
                 epsilon0: 2.1,
                 ..Default::default()

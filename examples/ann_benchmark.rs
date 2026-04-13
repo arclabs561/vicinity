@@ -1292,9 +1292,10 @@ fn run_adsampling(
     index.add_batch(&ids, &flat).unwrap();
     index.build();
 
-    // Build ADSampling state (rotation + rotated vectors).
+    // Build ADSampling state from the HNSW's reordered vectors.
+    // Must use from_hnsw() because build() reorders vectors for cache locality.
     let ads_params = ADSamplingParams::default();
-    let state = ADSamplingState::new(&flat, dim, ads_params);
+    let state = ADSamplingState::from_hnsw(&index, ads_params);
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
 
