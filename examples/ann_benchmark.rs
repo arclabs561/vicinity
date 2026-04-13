@@ -1674,7 +1674,7 @@ fn run_hnsw_prt(
     index.build().unwrap();
 
     // Build PRT state: project all database vectors.
-    let num_proj = (dim / 4).max(8).min(64); // heuristic: d/4, clamped [8, 64]
+    let num_proj = (dim / 4).clamp(8, 64); // heuristic: d/4, clamped [8, 64]
     let mut prt = ProbabilisticRoutingTest::new(dim, num_proj, Some(42));
     prt.project_database(index.raw_vectors());
 
