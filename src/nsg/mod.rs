@@ -45,7 +45,7 @@ use crate::distance::cosine_distance_normalized;
 use crate::distance::FloatOrd;
 use crate::RetrieveError;
 use smallvec::SmallVec;
-use std::collections::{BinaryHeap, HashSet};
+use std::collections::BinaryHeap;
 
 /// NSG parameters.
 #[derive(Clone, Debug)]
@@ -398,49 +398,93 @@ impl NsgIndex {
             return Vec::new();
         }
 
-        let mut visited = HashSet::with_capacity(ef * 2);
+        thread_local! {
+            static VISITED: std::cell::RefCell<(Vec<u8>, u8)> =
+                const { std::cell::RefCell::new((Vec::new(), 1)) };
+        }
 
-        // Min-heap: candidates to expand (closest first)
-        let mut candidates: BinaryHeap<std::cmp::Reverse<(FloatOrd, u32)>> = BinaryHeap::new();
-        // Max-heap: best results (farthest first, for bounded eviction)
-        let mut results: BinaryHeap<(FloatOrd, u32)> = BinaryHeap::new();
-
-        let entry = self.medoid;
-        let entry_dist = cosine_distance_normalized(query, self.get_vector(entry as usize));
-        visited.insert(entry);
-        candidates.push(std::cmp::Reverse((FloatOrd(entry_dist), entry)));
-        results.push((FloatOrd(entry_dist), entry));
-
-        while let Some(std::cmp::Reverse((FloatOrd(cand_dist), cand_id))) = candidates.pop() {
-            // Stop when closest candidate is worse than worst result
-            let worst_dist = results.peek().map_or(f32::INFINITY, |&(FloatOrd(d), _)| d);
-            if results.len() >= ef && cand_dist > worst_dist {
-                break;
+        VISITED.with(|cell| {
+            let (marks, gen) = &mut *cell.borrow_mut();
+            if marks.len() < n {
+                marks.resize(n, 0);
             }
+            if let Some(next) = gen.checked_add(1) {
+                *gen = next;
+            } else {
+                marks.fill(0);
+                *gen = 1;
+            }
+            let generation = *gen;
 
-            for &neighbor in &self.neighbors[cand_id as usize] {
-                if visited.insert(neighbor) {
-                    let dist =
-                        cosine_distance_normalized(query, self.get_vector(neighbor as usize));
+            let mut visited_insert = |id: u32| -> bool {
+                let idx = id as usize;
+                if idx < marks.len() && marks[idx] != generation {
+                    marks[idx] = generation;
+                    true
+                } else if idx >= marks.len() {
+                    true
+                } else {
+                    false
+                }
+            };
 
-                    let worst_dist = results.peek().map_or(f32::INFINITY, |&(FloatOrd(d), _)| d);
-                    if results.len() < ef || dist < worst_dist {
-                        candidates.push(std::cmp::Reverse((FloatOrd(dist), neighbor)));
-                        results.push((FloatOrd(dist), neighbor));
-                        if results.len() > ef {
-                            results.pop(); // evict farthest
+            // Min-heap: candidates to expand (closest first)
+            let mut candidates: BinaryHeap<std::cmp::Reverse<(FloatOrd, u32)>> = BinaryHeap::new();
+            // Max-heap: best results (farthest first, for bounded eviction)
+            let mut results: BinaryHeap<(FloatOrd, u32)> = BinaryHeap::new();
+
+            let entry = self.medoid;
+            let entry_dist = cosine_distance_normalized(query, self.get_vector(entry as usize));
+            visited_insert(entry);
+            candidates.push(std::cmp::Reverse((FloatOrd(entry_dist), entry)));
+            results.push((FloatOrd(entry_dist), entry));
+
+            while let Some(std::cmp::Reverse((FloatOrd(cand_dist), cand_id))) = candidates.pop() {
+                // Stop when closest candidate is worse than worst result
+                let worst_dist = results.peek().map_or(f32::INFINITY, |&(FloatOrd(d), _)| d);
+                if results.len() >= ef && cand_dist > worst_dist {
+                    break;
+                }
+
+                let neighbors = &self.neighbors[cand_id as usize];
+                for (i, &neighbor) in neighbors.iter().enumerate() {
+                    // Prefetch next neighbor's vector
+                    if i + 1 < neighbors.len() {
+                        let next_id = neighbors[i + 1] as usize;
+                        let ptr = self.vectors.as_ptr().wrapping_add(next_id * self.dimension);
+                        #[cfg(target_arch = "aarch64")]
+                        unsafe {
+                            std::arch::asm!("prfm pldl1keep, [{ptr}]", ptr = in(reg) ptr, options(nostack, preserves_flags));
+                        }
+                        #[cfg(target_arch = "x86_64")]
+                        unsafe {
+                            std::arch::x86_64::_mm_prefetch(ptr as *const i8, std::arch::x86_64::_MM_HINT_T0);
+                        }
+                    }
+
+                    if visited_insert(neighbor) {
+                        let dist =
+                            cosine_distance_normalized(query, self.get_vector(neighbor as usize));
+
+                        let worst_dist = results.peek().map_or(f32::INFINITY, |&(FloatOrd(d), _)| d);
+                        if results.len() < ef || dist < worst_dist {
+                            candidates.push(std::cmp::Reverse((FloatOrd(dist), neighbor)));
+                            results.push((FloatOrd(dist), neighbor));
+                            if results.len() > ef {
+                                results.pop(); // evict farthest
+                            }
                         }
                     }
                 }
             }
-        }
 
-        let mut out: Vec<(u32, f32)> = results
-            .into_iter()
-            .map(|(FloatOrd(d), id)| (id, d))
-            .collect();
-        out.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
-        out
+            let mut out: Vec<(u32, f32)> = results
+                .into_iter()
+                .map(|(FloatOrd(d), id)| (id, d))
+                .collect();
+            out.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+            out
+        })
     }
 
     /// Beam search with a custom distance function.
@@ -471,45 +515,91 @@ impl NsgIndex {
             return Err(RetrieveError::EmptyIndex);
         }
 
-        let mut visited = HashSet::with_capacity(ef * 2);
-        let mut candidates: BinaryHeap<std::cmp::Reverse<(FloatOrd, u32)>> = BinaryHeap::new();
-        let mut results: BinaryHeap<(FloatOrd, u32)> = BinaryHeap::new();
+        thread_local! {
+            static VISITED_SD: std::cell::RefCell<(Vec<u8>, u8)> =
+                const { std::cell::RefCell::new((Vec::new(), 1)) };
+        }
 
-        let entry = self.medoid;
-        let entry_dist = dist_fn(query, entry);
-        visited.insert(entry);
-        candidates.push(std::cmp::Reverse((FloatOrd(entry_dist), entry)));
-        results.push((FloatOrd(entry_dist), entry));
-
-        while let Some(std::cmp::Reverse((FloatOrd(cand_dist), cand_id))) = candidates.pop() {
-            let worst_dist = results.peek().map_or(f32::INFINITY, |&(FloatOrd(d), _)| d);
-            if results.len() >= ef && cand_dist > worst_dist {
-                break;
+        VISITED_SD.with(|cell| {
+            let (marks, gen) = &mut *cell.borrow_mut();
+            if marks.len() < n {
+                marks.resize(n, 0);
             }
+            if let Some(next) = gen.checked_add(1) {
+                *gen = next;
+            } else {
+                marks.fill(0);
+                *gen = 1;
+            }
+            let generation = *gen;
 
-            for &neighbor in &self.neighbors[cand_id as usize] {
-                if visited.insert(neighbor) {
-                    let dist = dist_fn(query, neighbor);
+            let mut visited_insert = |id: u32| -> bool {
+                let idx = id as usize;
+                if idx < marks.len() && marks[idx] != generation {
+                    marks[idx] = generation;
+                    true
+                } else if idx >= marks.len() {
+                    true
+                } else {
+                    false
+                }
+            };
 
-                    let worst_dist = results.peek().map_or(f32::INFINITY, |&(FloatOrd(d), _)| d);
-                    if results.len() < ef || dist < worst_dist {
-                        candidates.push(std::cmp::Reverse((FloatOrd(dist), neighbor)));
-                        results.push((FloatOrd(dist), neighbor));
-                        if results.len() > ef {
-                            results.pop();
+            let mut candidates: BinaryHeap<std::cmp::Reverse<(FloatOrd, u32)>> = BinaryHeap::new();
+            let mut results: BinaryHeap<(FloatOrd, u32)> = BinaryHeap::new();
+
+            let entry = self.medoid;
+            let entry_dist = dist_fn(query, entry);
+            visited_insert(entry);
+            candidates.push(std::cmp::Reverse((FloatOrd(entry_dist), entry)));
+            results.push((FloatOrd(entry_dist), entry));
+
+            while let Some(std::cmp::Reverse((FloatOrd(cand_dist), cand_id))) = candidates.pop() {
+                let worst_dist = results.peek().map_or(f32::INFINITY, |&(FloatOrd(d), _)| d);
+                if results.len() >= ef && cand_dist > worst_dist {
+                    break;
+                }
+
+                let neighbors = &self.neighbors[cand_id as usize];
+                for (i, &neighbor) in neighbors.iter().enumerate() {
+                    // Prefetch next neighbor's vector (no-op for custom dist_fn, but
+                    // the neighbor list itself benefits from prefetch)
+                    if i + 1 < neighbors.len() {
+                        let next_id = neighbors[i + 1] as usize;
+                        let ptr = self.vectors.as_ptr().wrapping_add(next_id * self.dimension);
+                        #[cfg(target_arch = "aarch64")]
+                        unsafe {
+                            std::arch::asm!("prfm pldl1keep, [{ptr}]", ptr = in(reg) ptr, options(nostack, preserves_flags));
+                        }
+                        #[cfg(target_arch = "x86_64")]
+                        unsafe {
+                            std::arch::x86_64::_mm_prefetch(ptr as *const i8, std::arch::x86_64::_MM_HINT_T0);
+                        }
+                    }
+
+                    if visited_insert(neighbor) {
+                        let dist = dist_fn(query, neighbor);
+
+                        let worst_dist = results.peek().map_or(f32::INFINITY, |&(FloatOrd(d), _)| d);
+                        if results.len() < ef || dist < worst_dist {
+                            candidates.push(std::cmp::Reverse((FloatOrd(dist), neighbor)));
+                            results.push((FloatOrd(dist), neighbor));
+                            if results.len() > ef {
+                                results.pop();
+                            }
                         }
                     }
                 }
             }
-        }
 
-        let mut out: Vec<(u32, f32)> = results
-            .into_iter()
-            .map(|(FloatOrd(d), id)| (self.doc_ids[id as usize], d))
-            .collect();
-        out.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
-        out.truncate(k);
-        Ok(out)
+            let mut out: Vec<(u32, f32)> = results
+                .into_iter()
+                .map(|(FloatOrd(d), id)| (self.doc_ids[id as usize], d))
+                .collect();
+            out.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+            out.truncate(k);
+            Ok(out)
+        })
     }
 
     fn ensure_connectivity(&mut self) {

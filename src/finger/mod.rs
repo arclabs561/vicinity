@@ -53,7 +53,7 @@ use crate::distance::cosine_distance_normalized;
 use crate::distance::FloatOrd;
 use crate::RetrieveError;
 use smallvec::SmallVec;
-use std::collections::{BinaryHeap, HashSet};
+use std::collections::BinaryHeap;
 
 /// FINGER construction and search parameters.
 #[derive(Clone, Debug)]
@@ -458,40 +458,88 @@ impl FingerIndex {
             return Vec::new();
         }
 
-        let mut visited = HashSet::new();
-        let mut frontier: BinaryHeap<std::cmp::Reverse<(FloatOrd, u32)>> = BinaryHeap::new();
-        let mut candidates: Vec<(u32, f32)> = Vec::new();
+        thread_local! {
+            static VISITED: std::cell::RefCell<(Vec<u8>, u8)> =
+                const { std::cell::RefCell::new((Vec::new(), 1)) };
+        }
 
-        let entry = self.medoid;
-        let entry_dist = cosine_distance_normalized(query, self.get_vector(entry as usize));
-        visited.insert(entry);
-        frontier.push(std::cmp::Reverse((FloatOrd(entry_dist), entry)));
-        candidates.push((entry, entry_dist));
+        VISITED.with(|cell| {
+            let (marks, gen) = &mut *cell.borrow_mut();
+            if marks.len() < n {
+                marks.resize(n, 0);
+            }
+            if let Some(next) = gen.checked_add(1) {
+                *gen = next;
+            } else {
+                marks.fill(0);
+                *gen = 1;
+            }
+            let generation = *gen;
 
-        while let Some(std::cmp::Reverse((FloatOrd(cur_dist), cur_id))) = frontier.pop() {
-            if candidates.len() >= ef {
-                candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
-                if cur_dist > candidates[ef - 1].1 * 1.5 {
+            let mut visited_insert = |id: u32| -> bool {
+                let idx = id as usize;
+                if idx < marks.len() && marks[idx] != generation {
+                    marks[idx] = generation;
+                    true
+                } else if idx >= marks.len() {
+                    true
+                } else {
+                    false
+                }
+            };
+
+            let mut frontier: BinaryHeap<std::cmp::Reverse<(FloatOrd, u32)>> = BinaryHeap::new();
+            let mut candidates: Vec<(u32, f32)> = Vec::new();
+
+            let entry = self.medoid;
+            let entry_dist = cosine_distance_normalized(query, self.get_vector(entry as usize));
+            visited_insert(entry);
+            frontier.push(std::cmp::Reverse((FloatOrd(entry_dist), entry)));
+            candidates.push((entry, entry_dist));
+
+            let mut visited_count = 1usize;
+
+            while let Some(std::cmp::Reverse((FloatOrd(cur_dist), cur_id))) = frontier.pop() {
+                if candidates.len() >= ef {
+                    candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+                    if cur_dist > candidates[ef - 1].1 * 1.5 {
+                        break;
+                    }
+                }
+
+                let neighbors = &self.neighbors[cur_id as usize];
+                for (i, &nb) in neighbors.iter().enumerate() {
+                    // Prefetch next neighbor's vector
+                    if i + 1 < neighbors.len() {
+                        let next_id = neighbors[i + 1] as usize;
+                        let ptr = self.vectors.as_ptr().wrapping_add(next_id * self.dimension);
+                        #[cfg(target_arch = "aarch64")]
+                        unsafe {
+                            std::arch::asm!("prfm pldl1keep, [{ptr}]", ptr = in(reg) ptr, options(nostack, preserves_flags));
+                        }
+                        #[cfg(target_arch = "x86_64")]
+                        unsafe {
+                            std::arch::x86_64::_mm_prefetch(ptr as *const i8, std::arch::x86_64::_MM_HINT_T0);
+                        }
+                    }
+
+                    if visited_insert(nb) {
+                        visited_count += 1;
+                        let d = cosine_distance_normalized(query, self.get_vector(nb as usize));
+                        candidates.push((nb, d));
+                        frontier.push(std::cmp::Reverse((FloatOrd(d), nb)));
+                    }
+                }
+
+                if visited_count > ef * 10 {
                     break;
                 }
             }
 
-            for &nb in &self.neighbors[cur_id as usize] {
-                if visited.insert(nb) {
-                    let d = cosine_distance_normalized(query, self.get_vector(nb as usize));
-                    candidates.push((nb, d));
-                    frontier.push(std::cmp::Reverse((FloatOrd(d), nb)));
-                }
-            }
-
-            if visited.len() > ef * 10 {
-                break;
-            }
-        }
-
-        candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
-        candidates.dedup_by_key(|c| c.0);
-        candidates
+            candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+            candidates.dedup_by_key(|c| c.0);
+            candidates
+        })
     }
 
     /// Beam search with projection-based pruning (used during search).
@@ -510,67 +558,116 @@ impl FingerIndex {
             return Vec::new();
         }
 
-        let mut visited = HashSet::new();
-        let mut frontier: BinaryHeap<std::cmp::Reverse<(FloatOrd, u32)>> = BinaryHeap::new();
-        let mut candidates: Vec<(u32, f32)> = Vec::new();
+        thread_local! {
+            static VISITED_P: std::cell::RefCell<(Vec<u8>, u8)> =
+                const { std::cell::RefCell::new((Vec::new(), 1)) };
+        }
 
-        // Current worst (k-th best) distance among candidates.
-        // Initialised to infinity so the first few neighbors are never pruned.
-        let mut worst_dist = f32::INFINITY;
+        VISITED_P.with(|cell| {
+            let (marks, gen) = &mut *cell.borrow_mut();
+            if marks.len() < n {
+                marks.resize(n, 0);
+            }
+            if let Some(next) = gen.checked_add(1) {
+                *gen = next;
+            } else {
+                marks.fill(0);
+                *gen = 1;
+            }
+            let generation = *gen;
 
-        let entry = self.medoid;
-        let entry_dist = cosine_distance_normalized(query, self.get_vector(entry as usize));
-        visited.insert(entry);
-        frontier.push(std::cmp::Reverse((FloatOrd(entry_dist), entry)));
-        candidates.push((entry, entry_dist));
+            let mut visited_insert = |id: u32| -> bool {
+                let idx = id as usize;
+                if idx < marks.len() && marks[idx] != generation {
+                    marks[idx] = generation;
+                    true
+                } else if idx >= marks.len() {
+                    true
+                } else {
+                    false
+                }
+            };
 
-        while let Some(std::cmp::Reverse((FloatOrd(cur_dist), cur_id))) = frontier.pop() {
-            // Early exit: current node is farther than all top-ef candidates.
-            if candidates.len() >= ef {
-                candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
-                let cutoff = candidates[ef - 1].1;
-                worst_dist = cutoff;
-                if cur_dist > cutoff * 1.5 {
+            let mut frontier: BinaryHeap<std::cmp::Reverse<(FloatOrd, u32)>> = BinaryHeap::new();
+            let mut candidates: Vec<(u32, f32)> = Vec::new();
+
+            // Current worst (k-th best) distance among candidates.
+            // Initialised to infinity so the first few neighbors are never pruned.
+            let mut worst_dist = f32::INFINITY;
+
+            let entry = self.medoid;
+            let entry_dist = cosine_distance_normalized(query, self.get_vector(entry as usize));
+            visited_insert(entry);
+            frontier.push(std::cmp::Reverse((FloatOrd(entry_dist), entry)));
+            candidates.push((entry, entry_dist));
+
+            let mut visited_count = 1usize;
+
+            while let Some(std::cmp::Reverse((FloatOrd(cur_dist), cur_id))) = frontier.pop() {
+                // Early exit: current node is farther than all top-ef candidates.
+                if candidates.len() >= ef {
+                    candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+                    let cutoff = candidates[ef - 1].1;
+                    worst_dist = cutoff;
+                    if cur_dist > cutoff * 1.5 {
+                        break;
+                    }
+                }
+
+                let neighbors = &self.neighbors[cur_id as usize];
+                for (i, &nb) in neighbors.iter().enumerate() {
+                    if !visited_insert(nb) {
+                        continue;
+                    }
+                    visited_count += 1;
+
+                    // --- Projection lower bound check ---
+                    // For unit vectors: cosine_dist(q,v) = 1 - dot(q,v).
+                    // The 1-D projection diff satisfies:
+                    //   |proj_q - proj_v|^2 <= ||q-v||^2 = 2 * cosine_dist(q,v)
+                    // so  cosine_dist(q,v) >= lb^2 / 2.
+                    // If this lower bound already exceeds the current worst candidate,
+                    // skip the full distance computation.
+                    let lb = (query_proj - self.projections[nb as usize]).abs();
+                    if lb * lb * 0.5 > worst_dist {
+                        continue;
+                    }
+
+                    // Prefetch next neighbor's vector (after the projection check to
+                    // avoid fetching vectors we may skip)
+                    if i + 1 < neighbors.len() {
+                        let next_id = neighbors[i + 1] as usize;
+                        let ptr = self.vectors.as_ptr().wrapping_add(next_id * self.dimension);
+                        #[cfg(target_arch = "aarch64")]
+                        unsafe {
+                            std::arch::asm!("prfm pldl1keep, [{ptr}]", ptr = in(reg) ptr, options(nostack, preserves_flags));
+                        }
+                        #[cfg(target_arch = "x86_64")]
+                        unsafe {
+                            std::arch::x86_64::_mm_prefetch(ptr as *const i8, std::arch::x86_64::_MM_HINT_T0);
+                        }
+                    }
+
+                    let d = cosine_distance_normalized(query, self.get_vector(nb as usize));
+                    candidates.push((nb, d));
+                    frontier.push(std::cmp::Reverse((FloatOrd(d), nb)));
+
+                    // Update worst_dist if the candidate pool is full.
+                    if candidates.len() >= ef {
+                        candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+                        worst_dist = candidates[ef - 1].1;
+                    }
+                }
+
+                if visited_count > ef * 10 {
                     break;
                 }
             }
 
-            for &nb in &self.neighbors[cur_id as usize] {
-                if !visited.insert(nb) {
-                    continue;
-                }
-
-                // --- Projection lower bound check ---
-                // For unit vectors: cosine_dist(q,v) = 1 - dot(q,v).
-                // The 1-D projection diff satisfies:
-                //   |proj_q - proj_v|^2 <= ||q-v||^2 = 2 * cosine_dist(q,v)
-                // so  cosine_dist(q,v) >= lb^2 / 2.
-                // If this lower bound already exceeds the current worst candidate,
-                // skip the full distance computation.
-                let lb = (query_proj - self.projections[nb as usize]).abs();
-                if lb * lb * 0.5 > worst_dist {
-                    continue;
-                }
-
-                let d = cosine_distance_normalized(query, self.get_vector(nb as usize));
-                candidates.push((nb, d));
-                frontier.push(std::cmp::Reverse((FloatOrd(d), nb)));
-
-                // Update worst_dist if the candidate pool is full.
-                if candidates.len() >= ef {
-                    candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
-                    worst_dist = candidates[ef - 1].1;
-                }
-            }
-
-            if visited.len() > ef * 10 {
-                break;
-            }
-        }
-
-        candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
-        candidates.dedup_by_key(|c| c.0);
-        candidates
+            candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+            candidates.dedup_by_key(|c| c.0);
+            candidates
+        })
     }
 
     fn ensure_connectivity(&mut self) {

@@ -3,7 +3,7 @@
 use crate::simd;
 use crate::sng::graph::SNGIndex;
 use crate::RetrieveError;
-use std::collections::{BinaryHeap, HashSet};
+use std::collections::BinaryHeap;
 
 /// Candidate during search.
 #[derive(Clone, PartialEq)]
@@ -54,55 +54,98 @@ pub fn search_sng(
         }
     }
 
-    // Greedy search with early termination
-    let mut candidates = BinaryHeap::new();
-    let mut visited = HashSet::new();
-    let mut results = Vec::new();
-
-    candidates.push(SearchCandidate {
-        id: current,
-        distance: current_dist,
-    });
-
-    // Search with O(log n) guarantee
-    let max_iterations = (index.num_vectors as f32).ln().ceil() as usize * 10;
-    let mut iterations = 0;
-
-    while let Some(candidate) = candidates.pop() {
-        if visited.contains(&candidate.id) {
-            continue;
-        }
-
-        visited.insert(candidate.id);
-        results.push((candidate.id, candidate.distance));
-
-        if results.len() >= k {
-            break;
-        }
-
-        if iterations >= max_iterations {
-            break;
-        }
-        iterations += 1;
-
-        // Explore neighbors
-        if let Some(neighbors) = index.neighbors.get(candidate.id as usize) {
-            for &neighbor_id in neighbors.iter() {
-                if visited.contains(&neighbor_id) {
-                    continue;
-                }
-
-                let neighbor_vec = index.get_vector(neighbor_id as usize);
-                let dist = 1.0 - simd::dot(query, neighbor_vec);
-                candidates.push(SearchCandidate {
-                    id: neighbor_id,
-                    distance: dist,
-                });
-            }
-        }
+    // Dense generation-counter visited set (O(1) insert/lookup, O(1) clear).
+    thread_local! {
+        static VISITED: std::cell::RefCell<(Vec<u8>, u8)> =
+            const { std::cell::RefCell::new((Vec::new(), 1)) };
     }
 
-    // Sort by distance and return top k
-    results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1)); // Unstable for better performance
-    Ok(results.into_iter().take(k).collect())
+    VISITED.with(|cell| {
+        let (marks, gen) = &mut *cell.borrow_mut();
+        let num_vectors = index.num_vectors;
+        if marks.len() < num_vectors {
+            marks.resize(num_vectors, 0);
+        }
+        if let Some(next) = gen.checked_add(1) {
+            *gen = next;
+        } else {
+            marks.fill(0);
+            *gen = 1;
+        }
+        let generation = *gen;
+
+        let mut visited_insert = |id: u32| -> bool {
+            let idx = id as usize;
+            if idx < marks.len() && marks[idx] != generation {
+                marks[idx] = generation;
+                true
+            } else if idx >= marks.len() {
+                true
+            } else {
+                false
+            }
+        };
+
+        // Greedy search with early termination
+        let mut candidates = BinaryHeap::new();
+        let mut results = Vec::new();
+
+        candidates.push(SearchCandidate {
+            id: current,
+            distance: current_dist,
+        });
+        visited_insert(current);
+
+        // Search with O(log n) guarantee
+        let max_iterations = (index.num_vectors as f32).ln().ceil() as usize * 10;
+        let mut iterations = 0;
+
+        while let Some(candidate) = candidates.pop() {
+            // All candidates in the heap were already marked visited when pushed.
+            results.push((candidate.id, candidate.distance));
+
+            if results.len() >= k {
+                break;
+            }
+
+            if iterations >= max_iterations {
+                break;
+            }
+            iterations += 1;
+
+            // Explore neighbors
+            if let Some(neighbors) = index.neighbors.get(candidate.id as usize) {
+                for (i, &neighbor_id) in neighbors.iter().enumerate() {
+                    // Prefetch next neighbor's vector
+                    if i + 1 < neighbors.len() {
+                        let next_id = neighbors[i + 1] as usize;
+                        let ptr = index.vectors.as_ptr().wrapping_add(next_id * index.dimension);
+                        #[cfg(target_arch = "aarch64")]
+                        unsafe {
+                            std::arch::asm!("prfm pldl1keep, [{ptr}]", ptr = in(reg) ptr, options(nostack, preserves_flags));
+                        }
+                        #[cfg(target_arch = "x86_64")]
+                        unsafe {
+                            std::arch::x86_64::_mm_prefetch(ptr as *const i8, std::arch::x86_64::_MM_HINT_T0);
+                        }
+                    }
+
+                    if !visited_insert(neighbor_id) {
+                        continue;
+                    }
+
+                    let neighbor_vec = index.get_vector(neighbor_id as usize);
+                    let dist = 1.0 - simd::dot(query, neighbor_vec);
+                    candidates.push(SearchCandidate {
+                        id: neighbor_id,
+                        distance: dist,
+                    });
+                }
+            }
+        }
+
+        // Sort by distance and return top k
+        results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+        Ok(results.into_iter().take(k).collect())
+    })
 }

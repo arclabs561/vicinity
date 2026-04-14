@@ -48,7 +48,7 @@
 use crate::distance::cosine_distance_normalized;
 use crate::distance::FloatOrd;
 use crate::RetrieveError;
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::collections::{BinaryHeap, HashMap};
 
 /// Curator parameters.
 #[derive(Clone, Debug)]
@@ -456,59 +456,87 @@ impl CuratorIndex {
         k: usize,
         label_hash: u64,
     ) -> Result<Vec<(u32, f32)>, RetrieveError> {
-        let mut heap: BinaryHeap<std::cmp::Reverse<(FloatOrd, usize)>> = BinaryHeap::new();
-        let mut results: Vec<(u32, f32)> = Vec::new();
-        let mut visited = HashSet::new();
-        let mut explored = 0usize;
+        let num_nodes = self.nodes.len();
 
-        // Start from root
-        let root_dist = cosine_distance_normalized(query, &self.nodes[self.root].centroid);
-        heap.push(std::cmp::Reverse((FloatOrd(root_dist), self.root)));
+        thread_local! {
+            static VISITED: std::cell::RefCell<(Vec<u8>, u8)> =
+                const { std::cell::RefCell::new((Vec::new(), 1)) };
+        }
 
-        while let Some(std::cmp::Reverse((_, node_idx))) = heap.pop() {
-            if visited.contains(&node_idx) {
-                continue;
+        VISITED.with(|cell| {
+            let (marks, gen) = &mut *cell.borrow_mut();
+            if marks.len() < num_nodes {
+                marks.resize(num_nodes, 0);
             }
-            visited.insert(node_idx);
-            explored += 1;
-
-            if explored > self.params.ef_search {
-                break;
-            }
-
-            let node = &self.nodes[node_idx];
-
-            // Bloom filter check: skip if this label has no vectors here
-            if !node.label_bloom.may_contain(label_hash) {
-                continue;
-            }
-
-            if node.children.is_empty() {
-                // Leaf node: check per-label buffer
-                if let Some(buffer) = node.label_buffers.get(&label_hash) {
-                    for &vid in buffer {
-                        let v = self.get_vector(vid as usize);
-                        let dist = cosine_distance_normalized(query, v);
-                        let doc_id = self.doc_ids[vid as usize];
-                        results.push((doc_id, dist));
-                    }
-                }
+            if let Some(next) = gen.checked_add(1) {
+                *gen = next;
             } else {
-                // Internal node: expand children
-                for &child_idx in &node.children {
-                    if !visited.contains(&child_idx) {
+                marks.fill(0);
+                *gen = 1;
+            }
+            let generation = *gen;
+
+            let mut visited_insert = |idx: usize| -> bool {
+                if idx < marks.len() && marks[idx] != generation {
+                    marks[idx] = generation;
+                    true
+                } else if idx >= marks.len() {
+                    true
+                } else {
+                    false
+                }
+            };
+
+            let mut heap: BinaryHeap<std::cmp::Reverse<(FloatOrd, usize)>> = BinaryHeap::new();
+            let mut results: Vec<(u32, f32)> = Vec::new();
+            let mut explored = 0usize;
+
+            // Start from root
+            let root_dist = cosine_distance_normalized(query, &self.nodes[self.root].centroid);
+            heap.push(std::cmp::Reverse((FloatOrd(root_dist), self.root)));
+
+            while let Some(std::cmp::Reverse((_, node_idx))) = heap.pop() {
+                if !visited_insert(node_idx) {
+                    continue;
+                }
+                explored += 1;
+
+                if explored > self.params.ef_search {
+                    break;
+                }
+
+                let node = &self.nodes[node_idx];
+
+                // Bloom filter check: skip if this label has no vectors here
+                if !node.label_bloom.may_contain(label_hash) {
+                    continue;
+                }
+
+                if node.children.is_empty() {
+                    // Leaf node: check per-label buffer
+                    if let Some(buffer) = node.label_buffers.get(&label_hash) {
+                        for &vid in buffer {
+                            let v = self.get_vector(vid as usize);
+                            let dist = cosine_distance_normalized(query, v);
+                            let doc_id = self.doc_ids[vid as usize];
+                            results.push((doc_id, dist));
+                        }
+                    }
+                } else {
+                    // Internal node: expand children
+                    for &child_idx in &node.children {
                         let child_dist =
                             cosine_distance_normalized(query, &self.nodes[child_idx].centroid);
                         heap.push(std::cmp::Reverse((FloatOrd(child_dist), child_idx)));
                     }
                 }
             }
-        }
 
-        results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
-        results.dedup_by_key(|c| c.0);
-        results.truncate(k);
-        Ok(results)
+            results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+            results.dedup_by_key(|c| c.0);
+            results.truncate(k);
+            Ok(results)
+        })
     }
 
     /// Unfiltered best-first search.
@@ -517,50 +545,78 @@ impl CuratorIndex {
         query: &[f32],
         k: usize,
     ) -> Result<Vec<(u32, f32)>, RetrieveError> {
-        let mut heap: BinaryHeap<std::cmp::Reverse<(FloatOrd, usize)>> = BinaryHeap::new();
-        let mut results: Vec<(u32, f32)> = Vec::new();
-        let mut visited = HashSet::new();
-        let mut explored = 0usize;
+        let num_nodes = self.nodes.len();
 
-        let root_dist = cosine_distance_normalized(query, &self.nodes[self.root].centroid);
-        heap.push(std::cmp::Reverse((FloatOrd(root_dist), self.root)));
+        thread_local! {
+            static VISITED_UF: std::cell::RefCell<(Vec<u8>, u8)> =
+                const { std::cell::RefCell::new((Vec::new(), 1)) };
+        }
 
-        while let Some(std::cmp::Reverse((_, node_idx))) = heap.pop() {
-            if visited.contains(&node_idx) {
-                continue;
+        VISITED_UF.with(|cell| {
+            let (marks, gen) = &mut *cell.borrow_mut();
+            if marks.len() < num_nodes {
+                marks.resize(num_nodes, 0);
             }
-            visited.insert(node_idx);
-            explored += 1;
-
-            if explored > self.params.ef_search {
-                break;
-            }
-
-            let node = &self.nodes[node_idx];
-
-            if node.children.is_empty() {
-                // Leaf: scan all vectors
-                for &vid in &node.vector_ids {
-                    let v = self.get_vector(vid as usize);
-                    let dist = cosine_distance_normalized(query, v);
-                    let doc_id = self.doc_ids[vid as usize];
-                    results.push((doc_id, dist));
-                }
+            if let Some(next) = gen.checked_add(1) {
+                *gen = next;
             } else {
-                for &child_idx in &node.children {
-                    if !visited.contains(&child_idx) {
+                marks.fill(0);
+                *gen = 1;
+            }
+            let generation = *gen;
+
+            let mut visited_insert = |idx: usize| -> bool {
+                if idx < marks.len() && marks[idx] != generation {
+                    marks[idx] = generation;
+                    true
+                } else if idx >= marks.len() {
+                    true
+                } else {
+                    false
+                }
+            };
+
+            let mut heap: BinaryHeap<std::cmp::Reverse<(FloatOrd, usize)>> = BinaryHeap::new();
+            let mut results: Vec<(u32, f32)> = Vec::new();
+            let mut explored = 0usize;
+
+            let root_dist = cosine_distance_normalized(query, &self.nodes[self.root].centroid);
+            heap.push(std::cmp::Reverse((FloatOrd(root_dist), self.root)));
+
+            while let Some(std::cmp::Reverse((_, node_idx))) = heap.pop() {
+                if !visited_insert(node_idx) {
+                    continue;
+                }
+                explored += 1;
+
+                if explored > self.params.ef_search {
+                    break;
+                }
+
+                let node = &self.nodes[node_idx];
+
+                if node.children.is_empty() {
+                    // Leaf: scan all vectors
+                    for &vid in &node.vector_ids {
+                        let v = self.get_vector(vid as usize);
+                        let dist = cosine_distance_normalized(query, v);
+                        let doc_id = self.doc_ids[vid as usize];
+                        results.push((doc_id, dist));
+                    }
+                } else {
+                    for &child_idx in &node.children {
                         let child_dist =
                             cosine_distance_normalized(query, &self.nodes[child_idx].centroid);
                         heap.push(std::cmp::Reverse((FloatOrd(child_dist), child_idx)));
                     }
                 }
             }
-        }
 
-        results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
-        results.dedup_by_key(|c| c.0);
-        results.truncate(k);
-        Ok(results)
+            results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+            results.dedup_by_key(|c| c.0);
+            results.truncate(k);
+            Ok(results)
+        })
     }
 
     #[inline]
