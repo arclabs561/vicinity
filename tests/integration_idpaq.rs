@@ -6,7 +6,7 @@
 
 #![cfg(feature = "id-compression")]
 
-use vicinity::compression::{IdSetCompressor, DeltaVarintCompressor};
+use vicinity::compression::{DeltaVarintCompressor, IdSetCompressor};
 
 // =============================================================================
 // Basic Integration Tests

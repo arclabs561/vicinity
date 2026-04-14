@@ -18,7 +18,7 @@
 
 #[cfg(feature = "id-compression")]
 mod idpaq_integration {
-    use vicinity::compression::{IdSetCompressor, DeltaVarintCompressor};
+    use vicinity::compression::{DeltaVarintCompressor, IdSetCompressor};
 
     /// Verify that vicinity correctly delegates to idpaq for compression
     #[test]
