@@ -58,7 +58,7 @@
 use crate::distance::cosine_distance_normalized;
 use crate::RetrieveError;
 use smallvec::SmallVec;
-use std::collections::{BinaryHeap, HashSet};
+use std::collections::BinaryHeap;
 
 /// FreshGraph construction and search parameters.
 #[derive(Clone, Debug)]
@@ -627,61 +627,110 @@ impl FreshGraphIndex {
             return Vec::new();
         }
 
-        let mut visited: HashSet<u32> = HashSet::new();
-        // Min-heap on distance
-        let mut frontier: BinaryHeap<std::cmp::Reverse<(FloatOrd, u32)>> = BinaryHeap::new();
-        let mut candidates: Vec<(u32, f32)> = Vec::new();
-
-        let entry = self.entry_point;
-        if exclude == Some(entry) {
-            // Entry point is the new node itself; pick its first neighbor or node 0
-            // Fallback: find a non-excluded, non-deleted entry among all nodes
-            if let Some(alt) =
-                (0..n as u32).find(|&i| Some(i) != exclude && !self.deleted[i as usize])
-            {
-                let d = cosine_distance_normalized(query, self.get_vector(alt as usize));
-                visited.insert(alt);
-                frontier.push(std::cmp::Reverse((FloatOrd(d), alt)));
-                candidates.push((alt, d));
-            } else {
-                return Vec::new();
-            }
-        } else {
-            let entry_dist = cosine_distance_normalized(query, self.get_vector(entry as usize));
-            visited.insert(entry);
-            frontier.push(std::cmp::Reverse((FloatOrd(entry_dist), entry)));
-            candidates.push((entry, entry_dist));
+        thread_local! {
+            static VISITED: std::cell::RefCell<(Vec<u8>, u8)> =
+                const { std::cell::RefCell::new((Vec::new(), 1)) };
         }
 
-        while let Some(std::cmp::Reverse((FloatOrd(current_dist), current_id))) = frontier.pop() {
-            // Early termination: current node is worse than the ef-th best candidate
-            if candidates.len() >= ef {
-                candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
-                if current_dist > candidates[ef - 1].1 * 1.5 {
+        VISITED.with(|cell| {
+            let (marks, gen) = &mut *cell.borrow_mut();
+            if marks.len() < n {
+                marks.resize(n, 0);
+            }
+            if let Some(next) = gen.checked_add(1) {
+                *gen = next;
+            } else {
+                marks.fill(0);
+                *gen = 1;
+            }
+            let generation = *gen;
+
+            let mut visited_insert = |id: u32| -> bool {
+                let idx = id as usize;
+                if idx < marks.len() && marks[idx] != generation {
+                    marks[idx] = generation;
+                    true
+                } else if idx >= marks.len() {
+                    true
+                } else {
+                    false
+                }
+            };
+
+            // Min-heap on distance
+            let mut frontier: BinaryHeap<std::cmp::Reverse<(FloatOrd, u32)>> = BinaryHeap::new();
+            let mut candidates: Vec<(u32, f32)> = Vec::new();
+
+            let entry = self.entry_point;
+            if exclude == Some(entry) {
+                // Entry point is the new node itself; pick its first neighbor or node 0
+                // Fallback: find a non-excluded, non-deleted entry among all nodes
+                if let Some(alt) =
+                    (0..n as u32).find(|&i| Some(i) != exclude && !self.deleted[i as usize])
+                {
+                    let d = cosine_distance_normalized(query, self.get_vector(alt as usize));
+                    visited_insert(alt);
+                    frontier.push(std::cmp::Reverse((FloatOrd(d), alt)));
+                    candidates.push((alt, d));
+                } else {
+                    return Vec::new();
+                }
+            } else {
+                let entry_dist = cosine_distance_normalized(query, self.get_vector(entry as usize));
+                visited_insert(entry);
+                frontier.push(std::cmp::Reverse((FloatOrd(entry_dist), entry)));
+                candidates.push((entry, entry_dist));
+            }
+
+            let mut visited_count = candidates.len();
+
+            while let Some(std::cmp::Reverse((FloatOrd(current_dist), current_id))) = frontier.pop() {
+                // Early termination: current node is worse than the ef-th best candidate
+                if candidates.len() >= ef {
+                    candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+                    if current_dist > candidates[ef - 1].1 * 1.5 {
+                        break;
+                    }
+                }
+
+                let neighbors = &self.neighbors[current_id as usize];
+                for (i, &neighbor) in neighbors.iter().enumerate() {
+                    if Some(neighbor) == exclude {
+                        continue;
+                    }
+
+                    // Prefetch next neighbor's vector
+                    if i + 1 < neighbors.len() {
+                        let next_id = neighbors[i + 1] as usize;
+                        let ptr = self.vectors.as_ptr().wrapping_add(next_id * self.dimension);
+                        #[cfg(target_arch = "aarch64")]
+                        unsafe {
+                            std::arch::asm!("prfm pldl1keep, [{ptr}]", ptr = in(reg) ptr, options(nostack, preserves_flags));
+                        }
+                        #[cfg(target_arch = "x86_64")]
+                        unsafe {
+                            std::arch::x86_64::_mm_prefetch(ptr as *const i8, std::arch::x86_64::_MM_HINT_T0);
+                        }
+                    }
+
+                    if visited_insert(neighbor) {
+                        visited_count += 1;
+                        let dist =
+                            cosine_distance_normalized(query, self.get_vector(neighbor as usize));
+                        candidates.push((neighbor, dist));
+                        frontier.push(std::cmp::Reverse((FloatOrd(dist), neighbor)));
+                    }
+                }
+
+                if visited_count > ef * 10 {
                     break;
                 }
             }
 
-            for &neighbor in &self.neighbors[current_id as usize] {
-                if Some(neighbor) == exclude {
-                    continue;
-                }
-                if visited.insert(neighbor) {
-                    let dist =
-                        cosine_distance_normalized(query, self.get_vector(neighbor as usize));
-                    candidates.push((neighbor, dist));
-                    frontier.push(std::cmp::Reverse((FloatOrd(dist), neighbor)));
-                }
-            }
-
-            if visited.len() > ef * 10 {
-                break;
-            }
-        }
-
-        candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
-        candidates.dedup_by_key(|c| c.0);
-        candidates
+            candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+            candidates.dedup_by_key(|c| c.0);
+            candidates
+        })
     }
 
     fn ensure_connectivity(&mut self) {
