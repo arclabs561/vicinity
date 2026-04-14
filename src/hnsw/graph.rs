@@ -779,6 +779,36 @@ impl HNSWIndex {
         self.num_vectors.saturating_sub(self.tombstones.len())
     }
 
+    /// Memory usage breakdown for this index.
+    pub fn memory_usage(&self) -> crate::memory::MemoryReport {
+        let vectors_bytes = self.vectors.len() * std::mem::size_of::<f32>();
+
+        let graph_bytes: usize = self
+            .layers
+            .iter()
+            .map(|layer| match &layer.storage {
+                NeighborStorage::Uncompressed(neighbors) => neighbors
+                    .iter()
+                    .map(|sv| sv.capacity() * std::mem::size_of::<u32>())
+                    .sum::<usize>(),
+                #[cfg(feature = "id-compression")]
+                NeighborStorage::Compressed { data, .. } => {
+                    data.iter().map(|cl| cl.data.len()).sum::<usize>()
+                }
+            })
+            .sum();
+
+        let metadata_bytes = self.doc_ids.len() * std::mem::size_of::<u32>()
+            + self.layer_assignments.len() * std::mem::size_of::<u8>();
+
+        crate::memory::MemoryReport {
+            vectors_bytes,
+            graph_bytes,
+            quantized_bytes: 0,
+            metadata_bytes,
+        }
+    }
+
     /// Serialize this index to a writer as JSON.
     ///
     /// The `metadata` store and `doc_id_to_internal` reverse map are not

@@ -193,6 +193,7 @@ pub mod filtering;
 pub(crate) mod graph_utils;
 #[cfg(feature = "hnsw")]
 pub mod lid;
+pub mod memory;
 pub(crate) mod simd;
 
 // Spectral sanity helpers (feature-gated).
@@ -202,6 +203,7 @@ pub mod spectral;
 // Re-exports
 pub use distance::DistanceMetric;
 pub use error::{Result, RetrieveError};
+pub use memory::MemoryReport;
 
 #[cfg(feature = "benchmark")]
 pub mod benchmark;
