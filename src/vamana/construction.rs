@@ -205,9 +205,10 @@ fn refine_with_rrnd(index: &mut VamanaIndex) -> Result<(), RetrieveError> {
         );
 
         // Select neighbors using RRND
+        let mut candidates = candidates;
         let selected = select_neighbors(
             &current_vector,
-            &candidates,
+            &mut candidates,
             index.params.max_degree,
             &index.vectors,
             index.dimension,
@@ -244,9 +245,10 @@ fn refine_with_rrnd(index: &mut VamanaIndex) -> Result<(), RetrieveError> {
                     index.neighbors[neighbor_id as usize].push(current_id as u32);
                 } else {
                     // Re-prune using the same RRND diversity criterion.
+                    let mut rev_candidates = rev_candidates;
                     let pruned = select_neighbors(
                         &node_vec,
-                        &rev_candidates,
+                        &mut rev_candidates,
                         max_deg,
                         &index.vectors,
                         dim,
@@ -290,9 +292,10 @@ fn refine_with_rnd(index: &mut VamanaIndex) -> Result<(), RetrieveError> {
         );
 
         // Select neighbors using RND
+        let mut candidates = candidates;
         let selected = select_neighbors(
             &current_vector,
-            &candidates,
+            &mut candidates,
             index.params.max_degree,
             &index.vectors,
             index.dimension,
@@ -322,9 +325,10 @@ fn refine_with_rnd(index: &mut VamanaIndex) -> Result<(), RetrieveError> {
                 if rev_candidates.len() <= max_deg {
                     index.neighbors[neighbor_id as usize].push(current_id as u32);
                 } else {
+                    let mut rev_candidates = rev_candidates;
                     let pruned = select_neighbors(
                         &node_vec,
-                        &rev_candidates,
+                        &mut rev_candidates,
                         max_deg,
                         &index.vectors,
                         dim,
