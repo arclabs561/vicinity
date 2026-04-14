@@ -103,8 +103,9 @@ pub struct IVFRaBitQIndex {
     dimension: usize,
     params: IVFRaBitQParams,
     built: bool,
+    compacted: bool,
 
-    // Raw vectors (kept for build; could be dropped post-build for memory savings)
+    // Raw vectors (kept for build and exact reranking; drop with compact() to save memory)
     vectors: Vec<f32>,
     num_vectors: usize,
     doc_ids: Vec<u32>,
@@ -142,6 +143,7 @@ impl IVFRaBitQIndex {
             dimension,
             params,
             built: false,
+            compacted: false,
             vectors: Vec::new(),
             num_vectors: 0,
             doc_ids: Vec::new(),
@@ -281,6 +283,21 @@ impl IVFRaBitQIndex {
         Ok(())
     }
 
+    /// Drop raw f32 vectors after building to reduce memory usage.
+    ///
+    /// Calling `compact()` after `build()` drops the raw f32 vectors, reducing
+    /// memory by ~4*dim bytes per vector. Search results will use approximate
+    /// distances from quantized codes instead of exact reranking.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called before `build()`.
+    pub fn compact(&mut self) {
+        assert!(self.built, "compact() called before build()");
+        self.vectors = Vec::new();
+        self.compacted = true;
+    }
+
     /// Search for the k nearest neighbors.
     pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, RetrieveError> {
         self.search_with_ef(query, k, self.params.nprobe)
@@ -355,15 +372,20 @@ impl IVFRaBitQIndex {
             }
         }
 
-        // Phase 2: exact reranking with original vectors
-        let mut results: Vec<(u32, f32)> = heap
-            .into_iter()
-            .map(|(_, vec_idx)| {
-                let vec = self.get_vector(vec_idx as usize);
-                let dist = crate::distance::cosine_distance_normalized(query, vec);
-                (self.doc_ids[vec_idx as usize], dist)
-            })
-            .collect();
+        // Phase 2: exact reranking with original vectors (skipped when compacted).
+        let mut results: Vec<(u32, f32)> = if self.compacted {
+            heap.into_iter()
+                .map(|(FloatOrd(dist), vec_idx)| (self.doc_ids[vec_idx as usize], dist))
+                .collect()
+        } else {
+            heap.into_iter()
+                .map(|(_, vec_idx)| {
+                    let vec = self.get_vector(vec_idx as usize);
+                    let dist = crate::distance::cosine_distance_normalized(query, vec);
+                    (self.doc_ids[vec_idx as usize], dist)
+                })
+                .collect()
+        };
 
         results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
         results.truncate(k);
@@ -378,6 +400,32 @@ impl IVFRaBitQIndex {
     /// Whether the index is empty.
     pub fn is_empty(&self) -> bool {
         self.num_vectors == 0
+    }
+
+    /// Memory usage breakdown for this index.
+    pub fn memory_usage(&self) -> crate::memory::MemoryReport {
+        let vectors_bytes = self.vectors.len() * std::mem::size_of::<f32>();
+
+        let quantized_bytes: usize = self
+            .clusters
+            .iter()
+            .flat_map(|c| &c.quantized)
+            .map(|qv| {
+                qv.binary_codes.len()
+                    + qv.extended_codes.len()
+                    + qv.codes.len() * std::mem::size_of::<u16>()
+            })
+            .sum();
+
+        let metadata_bytes = self.doc_ids.len() * std::mem::size_of::<u32>()
+            + self.centroids.len() * std::mem::size_of::<f32>();
+
+        crate::memory::MemoryReport {
+            vectors_bytes,
+            graph_bytes: 0,
+            quantized_bytes,
+            metadata_bytes,
+        }
     }
 
     /// Get vector from flat storage.
@@ -503,6 +551,38 @@ mod tests {
 
         let results = index.search(&data[0..dim], 3).unwrap();
         assert!(!results.is_empty());
+    }
+
+    /// compact() drops raw vectors; search still returns results using quantized distances.
+    #[test]
+    fn compact_search_works() {
+        let dim = 32;
+        let n = 200;
+        let data = make_vectors(n, dim, 42);
+        let doc_ids: Vec<u32> = (0..n as u32).collect();
+
+        let params = IVFRaBitQParams {
+            num_clusters: 8,
+            nprobe: 4,
+            total_bits: 4,
+            seed: 42,
+        };
+        let mut index = IVFRaBitQIndex::new(dim, params).unwrap();
+        index.add_batch(&doc_ids, &data).unwrap();
+        index.build().unwrap();
+        index.compact();
+
+        let query = &data[0..dim];
+        let results = index.search(query, 5).unwrap();
+
+        assert!(!results.is_empty());
+        assert!(results.len() <= 5);
+        // Compact mode uses approximate distances, so ranking may differ.
+        // Just verify we get valid doc IDs and non-negative distances.
+        for &(id, dist) in &results {
+            assert!((id as usize) < n, "doc_id {id} out of range");
+            assert!(dist >= 0.0, "negative distance {dist}");
+        }
     }
 
     /// Self-search recall: searching for each vector should return itself.
