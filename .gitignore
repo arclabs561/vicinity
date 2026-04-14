@@ -23,3 +23,10 @@ qa/
 
 # Local archive (research notes, drafts)
 _archive/
+
+# Proptest regression files (auto-generated)
+**/proptest-regressions/
+
+# Profiling artifacts
+cargo-flamegraph.trace/
+*.svg
