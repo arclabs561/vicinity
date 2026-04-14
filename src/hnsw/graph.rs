@@ -1494,7 +1494,7 @@ impl HNSWIndex {
 
         // Navigate from top layer down to base layer
         let dist_fn = self.dist_fn();
-        let mut current_closest = self.descend_upper_layers(query, entry_point, entry_layer, ef);
+        let current_closest = self.descend_upper_layers(query, entry_point, entry_layer, ef);
 
         // Fine search in base layer (layer 0)
         if !self.layers.is_empty() {
@@ -2210,12 +2210,6 @@ impl HNSWIndex {
         {
             0
         }
-    }
-
-    /// Compute distance between two vectors using the configured metric.
-    #[inline(always)]
-    pub(crate) fn dist(&self, a: &[f32], b: &[f32]) -> f32 {
-        self.params.metric.distance(a, b)
     }
 
     /// Return a plain function pointer for the configured metric.
