@@ -117,7 +117,7 @@ rptree = []
 rmt-spectral = ["dep:rmt"]
 evoc = ["dep:clump"]
 
-id-compression = ["dep:cnk", "cnk/sbits"]
+id-compression = ["dep:cnk", "cnk/sbits", "cnk/ans"]
 # Quantization sub-features (kept separate so callers can be explicit)
 rabitq = ["qntz", "qntz/rabitq"]
 ivf_rabitq = ["rabitq", "dep:clump", "hnsw"]

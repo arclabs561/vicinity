@@ -31,7 +31,7 @@
 pub use cnk::{
     choose_method, compress_set_auto, compress_set_enveloped, decompress_set_auto,
     decompress_set_enveloped, ChooseConfig, CodecChoice, CompressionError, DeltaVarintCompressor,
-    IdCompressionMethod, IdListStats, IdSetCompressor,
+    IdCompressionMethod, IdListStats, IdSetCompressor, RocCompressor,
 };
 
 // Fallback types when id-compression is not enabled
