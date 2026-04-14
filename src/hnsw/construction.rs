@@ -24,7 +24,7 @@ fn dist_fn_for(index: &HNSWIndex) -> fn(&[f32], &[f32]) -> f32 {
 /// every already-selected neighbor \(X_i\) (i.e. dist(q, j) < dist(i, j) for all selected i).
 fn select_neighbors_rnd(
     _query_vector: &[f32],
-    candidates: &[(u32, f32)],
+    candidates: &mut [(u32, f32)],
     m: usize,
     vectors: &[f32],
     dimension: usize,
@@ -34,51 +34,47 @@ fn select_neighbors_rnd(
         return Vec::new();
     }
 
-    // Sort by distance to query
-    let mut sorted: Vec<(u32, f32)> = candidates.to_vec();
-    sorted.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+    // Sort in place (caller passes owned/mutable slice)
+    candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
 
-    let mut selected = Vec::with_capacity(m.min(sorted.len()));
+    let mut selected = Vec::with_capacity(m.min(candidates.len()));
+    // Collect rejected candidates in distance order for O(1) backfill
+    let mut rejected = Vec::new();
 
     // Start with closest candidate
-    if let Some((id, _)) = sorted.first() {
-        selected.push(*id);
-    }
+    selected.push(candidates[0].0);
 
     // RND: Add candidate X_j if dist(X_q, X_j) < dist(X_i, X_j) for all selected neighbors X_i
-    for (candidate_id, query_to_candidate_dist) in sorted.iter().skip(1) {
+    for &(candidate_id, query_to_candidate_dist) in candidates.iter().skip(1) {
         if selected.len() >= m {
             break;
         }
 
-        let candidate_vec = get_vector(vectors, dimension, *candidate_id as usize);
+        let candidate_vec = get_vector(vectors, dimension, candidate_id as usize);
         let mut can_add = true;
 
-        // Check RND condition: dist(X_q, X_j) < dist(X_i, X_j) for all X_i in selected
         for &selected_id in &selected {
             let selected_vec = get_vector(vectors, dimension, selected_id as usize);
             let inter_distance = dist_fn(selected_vec, candidate_vec);
 
-            // RND formula: query_to_candidate_dist must be < inter_distance
-            if *query_to_candidate_dist >= inter_distance {
+            if query_to_candidate_dist >= inter_distance {
                 can_add = false;
                 break;
             }
         }
 
         if can_add {
-            selected.push(*candidate_id);
+            selected.push(candidate_id);
+        } else {
+            rejected.push(candidate_id);
         }
     }
 
-    // If we still need more neighbors, add closest remaining
-    while selected.len() < m && selected.len() < sorted.len() {
-        for (id, _) in &sorted {
-            if !selected.contains(id) {
-                selected.push(*id);
-                break;
-            }
-        }
+    // Backfill from rejected candidates (already in distance order)
+    let mut ri = 0;
+    while selected.len() < m && ri < rejected.len() {
+        selected.push(rejected[ri]);
+        ri += 1;
     }
 
     selected
@@ -90,7 +86,7 @@ fn select_neighbors_rnd(
 /// Second-best ND strategy with moderate pruning (2-4%).
 fn select_neighbors_mond(
     query_vector: &[f32],
-    candidates: &[(u32, f32)],
+    candidates: &mut [(u32, f32)],
     m: usize,
     vectors: &[f32],
     dimension: usize,
@@ -103,46 +99,38 @@ fn select_neighbors_mond(
     let min_angle_rad = min_angle_degrees.to_radians();
     let min_cos = min_angle_rad.cos();
 
-    // Sort by distance to query
-    let mut sorted: Vec<(u32, f32)> = candidates.to_vec();
-    sorted.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+    // Sort in place
+    candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
 
-    let mut selected = Vec::with_capacity(m.min(sorted.len()));
+    let mut selected = Vec::with_capacity(m.min(candidates.len()));
+    let mut rejected = Vec::new();
 
     // Start with closest candidate
-    if let Some((id, _)) = sorted.first() {
-        selected.push(*id);
-    }
+    selected.push(candidates[0].0);
 
-    // Precompute dot(query, query) once -- loop-invariant across all candidates and selected neighbors
+    // Precompute dot(query, query) once
     use crate::simd;
     let dot_qq = simd::dot(query_vector, query_vector);
 
     // MOND: Add candidate if angle with all selected neighbors > min_angle
-    for (candidate_id, _) in sorted.iter().skip(1) {
+    for &(candidate_id, _) in candidates.iter().skip(1) {
         if selected.len() >= m {
             break;
         }
 
-        let candidate_vec = get_vector(vectors, dimension, *candidate_id as usize);
+        let candidate_vec = get_vector(vectors, dimension, candidate_id as usize);
         let mut can_add = true;
 
-        // Compute angle between query->candidate and query->selected for each selected neighbor
-        // Precompute candidate-invariant dot products (loop-invariant hoisting)
         let dot_cq = simd::dot(candidate_vec, query_vector);
         let dot_cc_self = simd::dot(candidate_vec, candidate_vec);
 
         for &selected_id in &selected {
             let selected_vec = get_vector(vectors, dimension, selected_id as usize);
 
-            // Use identity: dot(a-b, c-b) = dot(a,c) - dot(a,b) - dot(c,b) + dot(b,b)
-            // For our case: dot(q_to_c, q_to_s) = dot(candidate_vec, selected_vec)
-            //                - dot(candidate_vec, query) - dot(selected_vec, query) + dot(query, query)
             let dot_cc = simd::dot(candidate_vec, selected_vec);
             let dot_sq = simd::dot(selected_vec, query_vector);
             let dot_qc_qs = dot_cc - dot_cq - dot_sq + dot_qq;
 
-            // Compute norms: norm(a-b)^2 = norm(a)^2 + norm(b)^2 - 2*dot(a,b)
             let norm_c_sq = dot_cc_self + dot_qq - 2.0 * dot_cq;
             let norm_s_sq = simd::dot(selected_vec, selected_vec) + dot_qq - 2.0 * dot_sq;
 
@@ -150,7 +138,6 @@ fn select_neighbors_mond(
                 let norm_c = norm_c_sq.sqrt();
                 let norm_s = norm_s_sq.sqrt();
                 let cos_angle = dot_qc_qs / (norm_c * norm_s);
-                // Angle > min_angle means cos(angle) < cos(min_angle) (since cosine is decreasing)
                 if cos_angle >= min_cos {
                     can_add = false;
                     break;
@@ -159,18 +146,17 @@ fn select_neighbors_mond(
         }
 
         if can_add {
-            selected.push(*candidate_id);
+            selected.push(candidate_id);
+        } else {
+            rejected.push(candidate_id);
         }
     }
 
-    // If we still need more neighbors, add closest remaining
-    while selected.len() < m && selected.len() < sorted.len() {
-        for (id, _) in &sorted {
-            if !selected.contains(id) {
-                selected.push(*id);
-                break;
-            }
-        }
+    // Backfill from rejected (already in distance order)
+    let mut ri = 0;
+    while selected.len() < m && ri < rejected.len() {
+        selected.push(rejected[ri]);
+        ri += 1;
     }
 
     selected
@@ -182,7 +168,7 @@ fn select_neighbors_mond(
 /// Less effective than RND, creates larger graphs.
 fn select_neighbors_rrnd(
     _query_vector: &[f32],
-    candidates: &[(u32, f32)],
+    candidates: &mut [(u32, f32)],
     m: usize,
     vectors: &[f32],
     dimension: usize,
@@ -193,59 +179,57 @@ fn select_neighbors_rrnd(
         return Vec::new();
     }
 
-    // Sort by distance to query
-    let mut sorted: Vec<(u32, f32)> = candidates.to_vec();
-    sorted.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+    // Sort in place
+    candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
 
-    let mut selected = Vec::with_capacity(m.min(sorted.len()));
+    let mut selected = Vec::with_capacity(m.min(candidates.len()));
+    let mut rejected = Vec::new();
 
     // Start with closest candidate
-    if let Some((id, _)) = sorted.first() {
-        selected.push(*id);
-    }
+    selected.push(candidates[0].0);
 
     // RRND: Add candidate X_j if dist(X_q, X_j) < α · dist(X_i, X_j) for all selected X_i
-    for (candidate_id, query_to_candidate_dist) in sorted.iter().skip(1) {
+    for &(candidate_id, query_to_candidate_dist) in candidates.iter().skip(1) {
         if selected.len() >= m {
             break;
         }
 
-        let candidate_vec = get_vector(vectors, dimension, *candidate_id as usize);
+        let candidate_vec = get_vector(vectors, dimension, candidate_id as usize);
         let mut can_add = true;
 
         for &selected_id in &selected {
             let selected_vec = get_vector(vectors, dimension, selected_id as usize);
             let inter_distance = dist_fn(selected_vec, candidate_vec);
 
-            // RRND formula: query_to_candidate_dist < alpha * inter_distance
-            if *query_to_candidate_dist >= alpha * inter_distance {
+            if query_to_candidate_dist >= alpha * inter_distance {
                 can_add = false;
                 break;
             }
         }
 
         if can_add {
-            selected.push(*candidate_id);
+            selected.push(candidate_id);
+        } else {
+            rejected.push(candidate_id);
         }
     }
 
-    // If we still need more neighbors, add closest remaining
-    while selected.len() < m && selected.len() < sorted.len() {
-        for (id, _) in &sorted {
-            if !selected.contains(id) {
-                selected.push(*id);
-                break;
-            }
-        }
+    // Backfill from rejected (already in distance order)
+    let mut ri = 0;
+    while selected.len() < m && ri < rejected.len() {
+        selected.push(rejected[ri]);
+        ri += 1;
     }
 
     selected
 }
 
 /// Select neighbors based on configured diversification strategy.
+///
+/// `candidates` is sorted in place to avoid allocation.
 pub fn select_neighbors(
     query_vector: &[f32],
-    candidates: &[(u32, f32)],
+    candidates: &mut [(u32, f32)],
     m: usize,
     vectors: &[f32],
     dimension: usize,
@@ -381,9 +365,10 @@ pub fn construct_graph(index: &mut HNSWIndex) -> Result<(), RetrieveError> {
                 index.params.m
             };
 
+            let mut candidates = candidates;
             let mut selected = select_neighbors(
                 current_vector,
-                &candidates,
+                &mut candidates,
                 m_actual,
                 &index.vectors,
                 index.dimension,
@@ -439,36 +424,29 @@ pub fn construct_graph(index: &mut HNSWIndex) -> Result<(), RetrieveError> {
                 all_current_distances.push((nid, dist));
             }
 
-            // Pre-compute existing neighbor data for reverse connections
-            let existing_neighbor_lists: Vec<Vec<u32>> = selected
-                .iter()
-                .map(|&neighbor_id| {
-                    if layer_idx < index.layers.len() {
-                        index.layers[layer_idx]
-                            .get_neighbors(neighbor_id)
-                            .iter()
-                            .copied()
-                            .collect()
-                    } else {
-                        Vec::new()
-                    }
-                })
-                .collect();
-
             // Pre-compute distances for each selected neighbor to ALL its potential neighbors.
-            // Uses flat Vecs instead of HashMaps to avoid allocation/hashing overhead.
+            // Inlines neighbor list iteration to avoid intermediate Vec<Vec<u32>> allocation.
             let mut all_reverse_distances: Vec<Vec<(u32, f32)>> =
                 Vec::with_capacity(neighbor_data.len());
-            for (idx, &(neighbor_id, dist_to_current)) in neighbor_data.iter().enumerate() {
+            for &(neighbor_id, dist_to_current) in &neighbor_data {
                 let neighbor_vec =
                     get_vector(&index.vectors, index.dimension, neighbor_id as usize);
-                let mut distances = Vec::with_capacity(1 + existing_neighbor_lists[idx].len());
+                let existing: Vec<u32> = if layer_idx < index.layers.len() {
+                    index.layers[layer_idx]
+                        .get_neighbors(neighbor_id)
+                        .iter()
+                        .copied()
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                let mut distances = Vec::with_capacity(1 + existing.len());
 
                 // Distance to current_id (already computed)
                 distances.push((current_id as u32, dist_to_current));
 
                 // Distances to existing neighbors
-                for &existing_id in &existing_neighbor_lists[idx] {
+                for &existing_id in &existing {
                     let existing_vec =
                         get_vector(&index.vectors, index.dimension, existing_id as usize);
                     let dist = dist_fn(neighbor_vec, existing_vec);
@@ -500,7 +478,7 @@ pub fn construct_graph(index: &mut HNSWIndex) -> Result<(), RetrieveError> {
             {
                 let neighbors = &mut neighbors_vec[current_id];
                 if neighbors.len() > m_actual {
-                    let neighbor_candidates: Vec<(u32, f32)> = neighbors
+                    let mut neighbor_candidates: Vec<(u32, f32)> = neighbors
                         .iter()
                         .map(|&id| {
                             let dist = all_current_distances
@@ -518,7 +496,7 @@ pub fn construct_graph(index: &mut HNSWIndex) -> Result<(), RetrieveError> {
 
                     let pruned = select_neighbors(
                         current_vector,
-                        &neighbor_candidates,
+                        &mut neighbor_candidates,
                         m_actual,
                         &index.vectors,
                         index.dimension,
@@ -537,7 +515,7 @@ pub fn construct_graph(index: &mut HNSWIndex) -> Result<(), RetrieveError> {
                     let neighbor_vec =
                         get_vector(&index.vectors, index.dimension, neighbor_id as usize);
 
-                    let reverse_candidates: Vec<(u32, f32)> = reverse_neighbors
+                    let mut reverse_candidates: Vec<(u32, f32)> = reverse_neighbors
                         .iter()
                         .map(|&id| {
                             let dist = distances
@@ -555,7 +533,7 @@ pub fn construct_graph(index: &mut HNSWIndex) -> Result<(), RetrieveError> {
 
                     let pruned = select_neighbors(
                         neighbor_vec,
-                        &reverse_candidates,
+                        &mut reverse_candidates,
                         m_actual,
                         &index.vectors,
                         index.dimension,
