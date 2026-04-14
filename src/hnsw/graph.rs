@@ -1474,11 +1474,12 @@ impl HNSWIndex {
                 }
 
                 // Find closest seed to query as entry point
+                let dist_fn_ks = self.dist_fn();
                 let mut best_seed = seeds[0];
                 let mut best_dist = f32::INFINITY;
                 for &seed_id in &seeds {
                     let seed_vec = self.get_vector(seed_id as usize);
-                    let dist = self.dist(query, seed_vec);
+                    let dist = dist_fn_ks(query, seed_vec);
                     if dist < best_dist {
                         best_dist = dist;
                         best_seed = seed_id;
@@ -1490,9 +1491,12 @@ impl HNSWIndex {
             }
         };
 
+        // Resolve distance function pointer once to avoid per-call enum dispatch.
+        let dist_fn = self.dist_fn();
+
         // Navigate from top layer down to base layer
         let mut current_closest = entry_point;
-        let mut current_dist = self.dist(query, self.get_vector(entry_point as usize));
+        let mut current_dist = dist_fn(query, self.get_vector(entry_point as usize));
 
         // Search in upper layers (coarse search)
         for layer_idx in (1..=entry_layer).rev() {
@@ -1516,7 +1520,7 @@ impl HNSWIndex {
                     }
 
                     let neighbor_vec = self.get_vector(neighbor_id as usize);
-                    let dist = self.dist(query, neighbor_vec);
+                    let dist = dist_fn(query, neighbor_vec);
 
                     if dist < current_dist {
                         current_dist = dist;
@@ -1536,9 +1540,9 @@ impl HNSWIndex {
                     // Find the best seed (closest to query) among KSampled seeds
                     // and the greedy-descended entry point, then run standard beam search.
                     let mut best_entry = current_closest;
-                    let mut best_dist = self.dist(query, self.get_vector(current_closest as usize));
+                    let mut best_dist = dist_fn(query, self.get_vector(current_closest as usize));
                     for &seed_id in &initial_seeds {
-                        let dist = self.dist(query, self.get_vector(seed_id as usize));
+                        let dist = dist_fn(query, self.get_vector(seed_id as usize));
                         if dist < best_dist {
                             best_dist = dist;
                             best_entry = seed_id;
