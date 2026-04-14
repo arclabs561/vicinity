@@ -102,53 +102,110 @@ fn greedy_search_vamana(
         &vectors[s..s + dimension]
     };
 
-    let mut visited = std::collections::HashSet::<u32>::with_capacity(ef * 4);
-    let mut candidates: BinaryHeap<MinCand> = BinaryHeap::with_capacity(ef * 2);
-    let mut results: BinaryHeap<MaxRes> = BinaryHeap::with_capacity(ef + 1);
+    let num_vectors = vectors.len() / dimension;
 
-    // Mark self as visited so it is never returned as a candidate.
-    visited.insert(query_id);
-
-    // Seed the search from the entry point.
-    if entry_point != query_id {
-        let d = hnsw_distance::cosine_distance_normalized(query, get_vec(entry_point));
-        visited.insert(entry_point);
-        candidates.push(MinCand {
-            id: entry_point,
-            dist: d,
-        });
-        results.push(MaxRes {
-            id: entry_point,
-            dist: d,
-        });
-    } else {
-        // Entry point is the query node itself; seed with its current neighbors.
-        visited.insert(entry_point);
-        for &nb in &neighbors[entry_point as usize] {
-            if visited.insert(nb) {
-                let d = hnsw_distance::cosine_distance_normalized(query, get_vec(nb));
-                candidates.push(MinCand { id: nb, dist: d });
-                results.push(MaxRes { id: nb, dist: d });
-            }
-        }
+    // Dense generation-counter visited set (thread-local, O(1) ops, O(1) clear).
+    thread_local! {
+        static VISITED: std::cell::RefCell<(Vec<u8>, u8)> =
+            const { std::cell::RefCell::new((Vec::new(), 1)) };
     }
 
-    while let Some(MinCand {
-        id: curr_id,
-        dist: curr_dist,
-    }) = candidates.pop()
-    {
-        // Early termination: best unexplored candidate is worse than worst result.
-        if results.len() >= ef {
-            if let Some(worst) = results.peek() {
-                if curr_dist >= worst.dist {
-                    break;
+    VISITED.with(|cell| {
+        let (marks, gen) = &mut *cell.borrow_mut();
+        if marks.len() < num_vectors {
+            marks.resize(num_vectors, 0);
+        }
+        if let Some(next) = gen.checked_add(1) {
+            *gen = next;
+        } else {
+            marks.fill(0);
+            *gen = 1;
+        }
+        let generation = *gen;
+
+        let mut visited_insert = |id: u32| -> bool {
+            let idx = id as usize;
+            if idx < marks.len() && marks[idx] != generation {
+                marks[idx] = generation;
+                true
+            } else if idx >= marks.len() {
+                true
+            } else {
+                false
+            }
+        };
+
+        let mut candidates: BinaryHeap<MinCand> = BinaryHeap::with_capacity(ef * 2);
+        let mut results: BinaryHeap<MaxRes> = BinaryHeap::with_capacity(ef + 1);
+
+        // Mark self as visited so it is never returned as a candidate.
+        visited_insert(query_id);
+
+        // Seed the search from the entry point.
+        if entry_point != query_id {
+            let d = hnsw_distance::cosine_distance_normalized(query, get_vec(entry_point));
+            visited_insert(entry_point);
+            candidates.push(MinCand {
+                id: entry_point,
+                dist: d,
+            });
+            results.push(MaxRes {
+                id: entry_point,
+                dist: d,
+            });
+        } else {
+            visited_insert(entry_point);
+            for &nb in &neighbors[entry_point as usize] {
+                if visited_insert(nb) {
+                    let d = hnsw_distance::cosine_distance_normalized(query, get_vec(nb));
+                    candidates.push(MinCand { id: nb, dist: d });
+                    results.push(MaxRes { id: nb, dist: d });
                 }
             }
         }
 
-        for &nb_id in &neighbors[curr_id as usize] {
-            if visited.insert(nb_id) {
+        while let Some(MinCand {
+            id: curr_id,
+            dist: curr_dist,
+        }) = candidates.pop()
+        {
+            if results.len() >= ef {
+                if let Some(worst) = results.peek() {
+                    if curr_dist >= worst.dist {
+                        break;
+                    }
+                }
+            }
+
+            let nb_list = &neighbors[curr_id as usize];
+            for (i, &nb_id) in nb_list.iter().enumerate() {
+                // Prefetch next neighbor's vector
+                if i + 1 < nb_list.len() {
+                    let next_id = nb_list[i + 1] as usize;
+                    if next_id < num_vectors {
+                        let ptr = vectors.as_ptr().wrapping_add(next_id * dimension);
+                        #[cfg(target_arch = "aarch64")]
+                        unsafe {
+                            std::arch::asm!(
+                                "prfm pldl1keep, [{ptr}]",
+                                ptr = in(reg) ptr,
+                                options(nostack, preserves_flags)
+                            );
+                        }
+                        #[cfg(target_arch = "x86_64")]
+                        unsafe {
+                            std::arch::x86_64::_mm_prefetch(
+                                ptr as *const i8,
+                                std::arch::x86_64::_MM_HINT_T0,
+                            );
+                        }
+                    }
+                }
+
+                if !visited_insert(nb_id) {
+                    continue;
+                }
+
                 let nb_dist = hnsw_distance::cosine_distance_normalized(query, get_vec(nb_id));
 
                 let should_add =
@@ -169,11 +226,11 @@ fn greedy_search_vamana(
                 }
             }
         }
-    }
 
-    let mut result_vec: Vec<(u32, f32)> = results.into_iter().map(|r| (r.id, r.dist)).collect();
-    result_vec.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
-    result_vec
+        let mut result_vec: Vec<(u32, f32)> = results.into_iter().map(|r| (r.id, r.dist)).collect();
+        result_vec.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+        result_vec
+    })
 }
 
 /// Second pass: Refine graph using RRND (Relaxed Relative Neighborhood Diversification).
