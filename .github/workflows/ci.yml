@@ -43,6 +43,11 @@ jobs:
         run: cargo test --doc --no-default-features --features hnsw
       - name: Property tests
         run: cargo test --no-default-features --features hnsw property_
+      - name: Semver check
+        if: github.event_name == 'pull_request'
+        run: |
+          cargo install cargo-semver-checks --locked || true
+          cargo semver-checks --default-features
   # ARM native testing (M1/M2 - tests NEON code paths)
   test-arm:
     runs-on: macos-latest
