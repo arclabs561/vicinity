@@ -18,6 +18,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4b46cbb362ab8752921c97e041f5e366ee6297bd428a31275b9fcf1e380f7299"
 
 [[package]]
+name = "ans"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3226bf6808f7bd33e5fed66e1d5e31dd25db885b05ae588339fdbe8f0595956d"
+
+[[package]]
 name = "anstyle"
 version = "1.0.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -168,10 +174,11 @@ dependencies = [
 
 [[package]]
 name = "cnk"
-version = "0.1.3"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "86754a27c1b5a2b026c93063c2ab250e0fd6130ec4a8baab6cf23b6cf5b5071b"
+checksum = "bfc8e78b7c0061ae8478a6060c610335795753da6b3ee08a6e65e0ffcfc93193"
 dependencies = [
+ "ans",
  "crc32fast",
  "sbits",
 ]
@@ -868,10 +875,11 @@ dependencies = [
 
 [[package]]
 name = "qntz"
-version = "0.1.4"
+version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "66d380c658a1f08d643e275f407c432706f8c332bfcf0d6033b62f8948a45788"
+checksum = "484a9e4b24da37fe00835cb4a827f1f6d5944931c9e372dabe8af19096dc4bc4"
 dependencies = [
+ "innr",
  "thiserror",
 ]
 
@@ -1328,7 +1336,6 @@ dependencies = [
  "rankops",
  "rayon",
  "rmt",
- "sbits",
  "serde",
  "serde_json",
  "sketchir",
