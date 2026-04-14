@@ -212,19 +212,13 @@ impl KDTreeIndex {
             .as_ref()
             .ok_or_else(|| RetrieveError::InvalidParameter("Tree not built".to_string()))?;
 
-        // Collect candidates from tree traversal
-        let mut candidates = Vec::new();
-        self.search_recursive(root, query, 0, &mut candidates)?;
+        let dist_fn = crate::distance::cosine_distance_normalized;
 
-        // Compute distances and sort
-        let mut results: Vec<(u32, f32)> = candidates
-            .iter()
-            .map(|&idx| {
-                let vec = self.get_vector(idx as usize);
-                let dist = crate::distance::cosine_distance_normalized(query, vec);
-                (idx, dist)
-            })
-            .collect();
+        // Use a max-heap of size k to track the k best results.
+        // worst_dist starts at infinity so the first k points are always accepted.
+        let mut results: Vec<(u32, f32)> = Vec::with_capacity(k);
+        let mut worst_dist = f32::INFINITY;
+        self.search_recursive(root, query, k, &mut results, &mut worst_dist, dist_fn);
 
         results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
         results.truncate(k);
@@ -232,17 +226,49 @@ impl KDTreeIndex {
         Ok(results)
     }
 
-    /// Search recursively.
+    /// Search recursively with pruning.
+    ///
+    /// Prune the far subtree when the squared coordinate difference along the
+    /// split dimension exceeds `worst_dist`. This is exact for L2; for cosine
+    /// on normalized vectors it is a valid lower bound (coordinate difference
+    /// <= L2 distance <= cosine distance for unit vectors).
     fn search_recursive(
         &self,
         node: &KDNode,
         query: &[f32],
-        _depth: usize,
-        candidates: &mut Vec<u32>,
-    ) -> Result<(), RetrieveError> {
+        k: usize,
+        results: &mut Vec<(u32, f32)>,
+        worst_dist: &mut f32,
+        dist_fn: fn(&[f32], &[f32]) -> f32,
+    ) {
         match node {
             KDNode::Leaf { indices } => {
-                candidates.extend_from_slice(indices);
+                for &idx in indices {
+                    let vec = self.get_vector(idx as usize);
+                    let dist = dist_fn(query, vec);
+                    if results.len() < k {
+                        results.push((idx, dist));
+                        if results.len() == k {
+                            // Find worst distance among the k results
+                            *worst_dist = results
+                                .iter()
+                                .map(|(_, d)| *d)
+                                .fold(f32::NEG_INFINITY, f32::max);
+                        }
+                    } else if dist < *worst_dist {
+                        // Replace the worst element
+                        if let Some(pos) = results
+                            .iter()
+                            .position(|(_, d)| (*d - *worst_dist).abs() < f32::EPSILON)
+                        {
+                            results[pos] = (idx, dist);
+                            *worst_dist = results
+                                .iter()
+                                .map(|(_, d)| *d)
+                                .fold(f32::NEG_INFINITY, f32::max);
+                        }
+                    }
+                }
             }
             KDNode::Internal {
                 dimension,
@@ -251,19 +277,25 @@ impl KDTreeIndex {
                 right,
             } => {
                 let query_val = query[*dimension];
+                let diff = query_val - split_value;
 
-                // Traverse both subtrees (pruning could be added for optimization)
-                if query_val < *split_value {
-                    self.search_recursive(left, query, _depth + 1, candidates)?;
-                    self.search_recursive(right, query, _depth + 1, candidates)?;
+                // Traverse near subtree first
+                let (near, far) = if diff < 0.0 {
+                    (left.as_ref(), right.as_ref())
                 } else {
-                    self.search_recursive(right, query, _depth + 1, candidates)?;
-                    self.search_recursive(left, query, _depth + 1, candidates)?;
+                    (right.as_ref(), left.as_ref())
+                };
+
+                self.search_recursive(near, query, k, results, worst_dist, dist_fn);
+
+                // Prune: skip far subtree if the split-plane distance exceeds worst_dist.
+                // diff^2 is a lower bound on the L2 distance to any point in the far subtree.
+                let split_dist = diff * diff;
+                if split_dist < *worst_dist || results.len() < k {
+                    self.search_recursive(far, query, k, results, worst_dist, dist_fn);
                 }
             }
         }
-
-        Ok(())
     }
 
     /// Get vector from SoA storage.
