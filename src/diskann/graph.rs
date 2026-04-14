@@ -718,57 +718,109 @@ impl DiskANNIndex {
         use std::cmp::Reverse;
         use std::collections::BinaryHeap;
 
-        let mut visited = HashSet::new();
-        // Min-heap (via Reverse): always expand the globally closest unexplored node.
-        // Candidate's Ord is max-heap, so Reverse<Candidate> gives min-heap.
-        let mut frontier: BinaryHeap<Reverse<Candidate>> = BinaryHeap::with_capacity(l_size * 2);
-        // Max-heap: tracks the `l_size` best results; peek() gives the worst (farthest).
-        let mut results: BinaryHeap<Candidate> = BinaryHeap::with_capacity(l_size + 1);
+        let dist_fn = self.dist_fn();
+        let num_vectors = self.num_vectors;
 
-        let start_dist = self.dist(query, self.get_vector(start_node));
-        visited.insert(start_node);
-        frontier.push(Reverse(Candidate {
-            id: start_node,
-            dist: start_dist,
-        }));
-        results.push(Candidate {
-            id: start_node,
-            dist: start_dist,
-        });
+        // Dense generation-counter visited set (thread-local, O(1) ops, O(1) clear).
+        thread_local! {
+            static VISITED: std::cell::RefCell<(Vec<u8>, u8)> =
+                const { std::cell::RefCell::new((Vec::new(), 1)) };
+        }
 
-        while let Some(Reverse(current)) = frontier.pop() {
-            // Early termination: if the closest unexplored node is farther than the worst
-            // result and we already have l_size results, no improvement is possible.
-            if results.len() >= l_size {
-                if let Some(worst) = results.peek() {
-                    if current.dist >= worst.dist {
-                        break;
+        VISITED.with(|cell| {
+            let (marks, gen) = &mut *cell.borrow_mut();
+            if marks.len() < num_vectors {
+                marks.resize(num_vectors, 0);
+            }
+            if let Some(next) = gen.checked_add(1) {
+                *gen = next;
+            } else {
+                marks.fill(0);
+                *gen = 1;
+            }
+            let generation = *gen;
+
+            let mut visited_insert = |id: u32| -> bool {
+                let idx = id as usize;
+                if idx < marks.len() && marks[idx] != generation {
+                    marks[idx] = generation;
+                    true
+                } else if idx >= marks.len() {
+                    true
+                } else {
+                    false
+                }
+            };
+
+            let mut frontier: BinaryHeap<Reverse<Candidate>> =
+                BinaryHeap::with_capacity(l_size * 2);
+            let mut results: BinaryHeap<Candidate> = BinaryHeap::with_capacity(l_size + 1);
+
+            let start_dist = dist_fn(query, self.get_vector(start_node));
+            visited_insert(start_node);
+            frontier.push(Reverse(Candidate {
+                id: start_node,
+                dist: start_dist,
+            }));
+            results.push(Candidate {
+                id: start_node,
+                dist: start_dist,
+            });
+
+            while let Some(Reverse(current)) = frontier.pop() {
+                if results.len() >= l_size {
+                    if let Some(worst) = results.peek() {
+                        if current.dist >= worst.dist {
+                            break;
+                        }
+                    }
+                }
+
+                let neighbors = &self.adj[current.id as usize];
+                for (i, &neighbor) in neighbors.iter().enumerate() {
+                    // Prefetch next neighbor's vector
+                    if i + 1 < neighbors.len() {
+                        let next_id = neighbors[i + 1] as usize;
+                        if next_id < num_vectors {
+                            let ptr = self.vectors.as_ptr().wrapping_add(next_id * self.dimension);
+                            #[cfg(target_arch = "aarch64")]
+                            unsafe {
+                                std::arch::asm!(
+                                    "prfm pldl1keep, [{ptr}]",
+                                    ptr = in(reg) ptr,
+                                    options(nostack, preserves_flags)
+                                );
+                            }
+                            #[cfg(target_arch = "x86_64")]
+                            unsafe {
+                                std::arch::x86_64::_mm_prefetch(
+                                    ptr as *const i8,
+                                    std::arch::x86_64::_MM_HINT_T0,
+                                );
+                            }
+                        }
+                    }
+
+                    if !visited_insert(neighbor) {
+                        continue;
+                    }
+
+                    let dist = dist_fn(query, self.get_vector(neighbor));
+                    frontier.push(Reverse(Candidate { id: neighbor, dist }));
+                    results.push(Candidate { id: neighbor, dist });
+
+                    if results.len() > l_size {
+                        results.pop();
                     }
                 }
             }
 
-            for &neighbor in &self.adj[current.id as usize] {
-                if !visited.insert(neighbor) {
-                    continue;
-                }
+            let mut result_vec: Vec<Candidate> = results.into_vec();
+            result_vec.sort_unstable_by(|a, b| a.dist.total_cmp(&b.dist));
 
-                let dist = self.dist(query, self.get_vector(neighbor));
-                frontier.push(Reverse(Candidate { id: neighbor, dist }));
-                results.push(Candidate { id: neighbor, dist });
-
-                // Keep only top l_size in results
-                if results.len() > l_size {
-                    results.pop();
-                }
-            }
-        }
-
-        // Collect results sorted ascending by distance
-        let mut result_vec: Vec<Candidate> = results.into_vec();
-        result_vec.sort_unstable_by(|a, b| a.dist.total_cmp(&b.dist));
-
-        let ids: Vec<u32> = result_vec.iter().map(|c| c.id).collect();
-        (ids, result_vec)
+            let ids: Vec<u32> = result_vec.iter().map(|c| c.id).collect();
+            (ids, result_vec)
+        })
     }
 
     /// Search for k nearest neighbors.
@@ -817,6 +869,12 @@ impl DiskANNIndex {
     #[inline]
     fn dist(&self, a: &[f32], b: &[f32]) -> f32 {
         crate::simd::l2_distance_squared(a, b)
+    }
+
+    /// Return a plain function pointer for distance computation.
+    #[inline(always)]
+    fn dist_fn(&self) -> fn(&[f32], &[f32]) -> f32 {
+        crate::simd::l2_distance_squared
     }
 }
 
