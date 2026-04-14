@@ -1308,6 +1308,7 @@ impl HNSWIndex {
         }
 
         let max_intra_edges = self.params.m / 4; // Add up to m/4 intra-category edges
+        let dist_fn = self.dist_fn();
 
         // Collect all candidate edges first (immutable borrows)
         let mut edges_to_add: Vec<(u32, Vec<u32>)> = Vec::new();
@@ -1342,7 +1343,7 @@ impl HNSWIndex {
                             continue;
                         }
                         let other_vector = self.get_vector(other_id as usize);
-                        let dist = self.dist(vector, other_vector);
+                        let dist = dist_fn(vector, other_vector);
                         candidates.push((other_id, dist));
                         sampled += 1;
                     }
@@ -1353,7 +1354,7 @@ impl HNSWIndex {
                             continue;
                         }
                         let other_vector = self.get_vector(other_id as usize);
-                        let dist = self.dist(vector, other_vector);
+                        let dist = dist_fn(vector, other_vector);
                         candidates.push((other_id, dist));
                     }
                 }
@@ -1474,12 +1475,12 @@ impl HNSWIndex {
                 }
 
                 // Find closest seed to query as entry point
-                let dist_fn_ks = self.dist_fn();
+                let ks_dist_fn = self.dist_fn();
                 let mut best_seed = seeds[0];
                 let mut best_dist = f32::INFINITY;
                 for &seed_id in &seeds {
                     let seed_vec = self.get_vector(seed_id as usize);
-                    let dist = dist_fn_ks(query, seed_vec);
+                    let dist = ks_dist_fn(query, seed_vec);
                     if dist < best_dist {
                         best_dist = dist;
                         best_seed = seed_id;
@@ -1491,45 +1492,9 @@ impl HNSWIndex {
             }
         };
 
-        // Resolve distance function pointer once to avoid per-call enum dispatch.
-        let dist_fn = self.dist_fn();
-
         // Navigate from top layer down to base layer
-        let mut current_closest = entry_point;
-        let mut current_dist = dist_fn(query, self.get_vector(entry_point as usize));
-
-        // Search in upper layers (coarse search)
-        for layer_idx in (1..=entry_layer).rev() {
-            if layer_idx >= self.layers.len() {
-                continue;
-            }
-
-            let layer = &self.layers[layer_idx];
-            let mut changed = true;
-            // Pre-allocate visited set with capacity for typical layer traversal
-            let mut visited = std::collections::HashSet::with_capacity(ef.min(100));
-
-            while changed {
-                changed = false;
-                visited.insert(current_closest);
-
-                let neighbors = layer.get_neighbors(current_closest);
-                for &neighbor_id in neighbors.iter() {
-                    if visited.contains(&neighbor_id) {
-                        continue;
-                    }
-
-                    let neighbor_vec = self.get_vector(neighbor_id as usize);
-                    let dist = dist_fn(query, neighbor_vec);
-
-                    if dist < current_dist {
-                        current_dist = dist;
-                        current_closest = neighbor_id;
-                        changed = true;
-                    }
-                }
-            }
-        }
+        let dist_fn = self.dist_fn();
+        let mut current_closest = self.descend_upper_layers(query, entry_point, entry_layer, ef);
 
         // Fine search in base layer (layer 0)
         if !self.layers.is_empty() {
@@ -1635,33 +1600,7 @@ impl HNSWIndex {
         let entry_point = self.get_entry_point().ok_or(RetrieveError::EmptyIndex)?;
         let entry_layer = self.layer_assignments[entry_point as usize] as usize;
 
-        let mut current_closest = entry_point;
-        let mut current_dist = self.dist(query, self.get_vector(entry_point as usize));
-
-        for layer_idx in (1..=entry_layer).rev() {
-            if layer_idx >= self.layers.len() {
-                continue;
-            }
-            let layer = &self.layers[layer_idx];
-            let mut changed = true;
-            let mut visited = std::collections::HashSet::with_capacity(ef.min(100));
-
-            while changed {
-                changed = false;
-                visited.insert(current_closest);
-                for &neighbor_id in layer.get_neighbors(current_closest).iter() {
-                    if visited.contains(&neighbor_id) {
-                        continue;
-                    }
-                    let dist = self.dist(query, self.get_vector(neighbor_id as usize));
-                    if dist < current_dist {
-                        current_dist = dist;
-                        current_closest = neighbor_id;
-                        changed = true;
-                    }
-                }
-            }
-        }
+        let current_closest = self.descend_upper_layers(query, entry_point, entry_layer, ef);
 
         // Fine search in base layer with custom distance
         if !self.layers.is_empty() {
@@ -1790,6 +1729,8 @@ impl HNSWIndex {
             return Ok(vec![self.search(queries[0], k, ef_search)?]);
         }
 
+        let dist_fn = self.dist_fn();
+
         // ── Step 1: build a greedy nearest-neighbour chain over query vectors ──
         //
         // Start from query 0. At each step pick the not-yet-visited query closest
@@ -1809,7 +1750,7 @@ impl HNSWIndex {
                 if visited_queries[j] {
                     continue;
                 }
-                let d = self.dist(last_vec, queries[j]);
+                let d = dist_fn(last_vec, queries[j]);
                 if d < best_dist {
                     best_dist = d;
                     best_idx = j;
@@ -1822,7 +1763,6 @@ impl HNSWIndex {
         // ── Step 2: process queries in chain order, reusing entry points ──
 
         let ep = self.get_entry_point().ok_or(RetrieveError::EmptyIndex)?;
-        let dist_fn = self.dist_fn();
 
         // results_by_query[i] = (doc_id, dist) results for query i
         let mut results_by_query: Vec<Vec<(u32, f32)>> = vec![Vec::new(); n];
@@ -1835,34 +1775,7 @@ impl HNSWIndex {
 
             // Upper-layer greedy descent to find base-layer entry for this query.
             let entry_layer = self.layer_assignments[ep as usize] as usize;
-            let mut current_closest = ep;
-            let mut current_dist = self.dist(query, self.get_vector(ep as usize));
-
-            for layer_idx in (1..=entry_layer).rev() {
-                if layer_idx >= self.layers.len() {
-                    continue;
-                }
-                let layer = &self.layers[layer_idx];
-                let mut changed = true;
-                let mut upper_visited =
-                    std::collections::HashSet::with_capacity(ef_search.min(100));
-                while changed {
-                    changed = false;
-                    upper_visited.insert(current_closest);
-                    let neighbors = layer.get_neighbors(current_closest);
-                    for &nb in neighbors.iter() {
-                        if upper_visited.contains(&nb) {
-                            continue;
-                        }
-                        let d = self.dist(query, self.get_vector(nb as usize));
-                        if d < current_dist {
-                            current_dist = d;
-                            current_closest = nb;
-                            changed = true;
-                        }
-                    }
-                }
-            }
+            let current_closest = self.descend_upper_layers(query, ep, entry_layer, ef_search);
 
             // Build entry-point set: always include the HNSW-descended entry point.
             // For chain_pos > 0, also include the best node from the nearest
@@ -1981,6 +1894,7 @@ impl HNSWIndex {
 
         // Perform standard search but filter neighbors during traversal
         use crate::distance::FloatOrd;
+        let dist_fn = self.dist_fn();
 
         let mut candidates: std::collections::BinaryHeap<std::cmp::Reverse<(FloatOrd, u32)>> =
             std::collections::BinaryHeap::new();
@@ -2006,7 +1920,7 @@ impl HNSWIndex {
         };
 
         let start_vec = self.get_vector(start_point as usize);
-        let start_dist = self.dist(query, start_vec);
+        let start_dist = dist_fn(query, start_vec);
         candidates.push(std::cmp::Reverse((FloatOrd(start_dist), start_point)));
 
         // Greedy search in base layer, only exploring filtered neighbors
@@ -2044,7 +1958,7 @@ impl HNSWIndex {
                 }
 
                 let neighbor_vec = self.get_vector(neighbor_id as usize);
-                let neighbor_dist = self.dist(query, neighbor_vec);
+                let neighbor_dist = dist_fn(query, neighbor_vec);
                 candidates.push(std::cmp::Reverse((FloatOrd(neighbor_dist), neighbor_id)));
             }
 
@@ -2065,7 +1979,7 @@ impl HNSWIndex {
                     == desired_category.as_ref()
                 {
                     let vec = self.get_vector(id as usize);
-                    let dist = self.dist(query, vec);
+                    let dist = dist_fn(query, vec);
                     let doc_id = self.doc_ids.get(id as usize).copied()?;
                     Some((doc_id, dist))
                 } else {
@@ -2111,40 +2025,10 @@ impl HNSWIndex {
             return Err(RetrieveError::EmptyIndex);
         }
 
-        // Upper-layer navigation (identical to `search`)
+        // Upper-layer navigation
         let ep = self.get_entry_point().ok_or(RetrieveError::EmptyIndex)?;
         let entry_layer = self.layer_assignments[ep as usize] as usize;
-
-        let mut current_closest = ep;
-        let mut current_dist = self.dist(query, self.get_vector(ep as usize));
-
-        for layer_idx in (1..=entry_layer).rev() {
-            if layer_idx >= self.layers.len() {
-                continue;
-            }
-            let layer = &self.layers[layer_idx];
-            let mut changed = true;
-            let mut visited = std::collections::HashSet::with_capacity(ef.min(100));
-
-            while changed {
-                changed = false;
-                visited.insert(current_closest);
-
-                let neighbors = layer.get_neighbors(current_closest);
-                for &neighbor_id in neighbors.iter() {
-                    if visited.contains(&neighbor_id) {
-                        continue;
-                    }
-                    let neighbor_vec = self.get_vector(neighbor_id as usize);
-                    let dist = self.dist(query, neighbor_vec);
-                    if dist < current_dist {
-                        current_dist = dist;
-                        current_closest = neighbor_id;
-                        changed = true;
-                    }
-                }
-            }
-        }
+        let current_closest = self.descend_upper_layers(query, ep, entry_layer, ef);
 
         // Base layer: adaptive search
         let num_evaluated;
@@ -2227,33 +2111,7 @@ impl HNSWIndex {
         // Navigate upper layers with standard distance.
         let entry_point = self.get_entry_point().ok_or(RetrieveError::EmptyIndex)?;
         let entry_layer = self.layer_assignments[entry_point as usize] as usize;
-        let mut current_closest = entry_point;
-        let mut current_dist = self.dist(query, self.get_vector(entry_point as usize));
-
-        for layer_idx in (1..=entry_layer).rev() {
-            if layer_idx >= self.layers.len() {
-                continue;
-            }
-            let layer = &self.layers[layer_idx];
-            let mut changed = true;
-            let mut visited = std::collections::HashSet::with_capacity(ef.min(100));
-
-            while changed {
-                changed = false;
-                visited.insert(current_closest);
-                for &neighbor_id in layer.get_neighbors(current_closest).iter() {
-                    if visited.contains(&neighbor_id) {
-                        continue;
-                    }
-                    let dist = self.dist(query, self.get_vector(neighbor_id as usize));
-                    if dist < current_dist {
-                        current_dist = dist;
-                        current_closest = neighbor_id;
-                        changed = true;
-                    }
-                }
-            }
-        }
+        let current_closest = self.descend_upper_layers(query, entry_point, entry_layer, ef);
 
         // Fine search in base layer with PRT pre-filtering.
         if self.layers.is_empty() {
@@ -2402,6 +2260,48 @@ impl HNSWIndex {
             return Some(ep);
         }
         self.compute_entry_point()
+    }
+
+    /// Descend from `entry_point` at `entry_layer` through upper layers to layer 1,
+    /// returning the closest node found. Uses a function pointer to avoid per-call
+    /// enum dispatch on the distance metric.
+    fn descend_upper_layers(
+        &self,
+        query: &[f32],
+        entry_point: u32,
+        entry_layer: usize,
+        ef_hint: usize,
+    ) -> u32 {
+        let dist_fn = self.dist_fn();
+        let mut current_closest = entry_point;
+        let mut current_dist = dist_fn(query, self.get_vector(entry_point as usize));
+
+        for layer_idx in (1..=entry_layer).rev() {
+            if layer_idx >= self.layers.len() {
+                continue;
+            }
+            let layer = &self.layers[layer_idx];
+            let mut changed = true;
+            let mut visited = std::collections::HashSet::with_capacity(ef_hint.min(100));
+
+            while changed {
+                changed = false;
+                visited.insert(current_closest);
+                let neighbors = layer.get_neighbors(current_closest);
+                for &neighbor_id in neighbors.iter() {
+                    if visited.contains(&neighbor_id) {
+                        continue;
+                    }
+                    let dist = dist_fn(query, self.get_vector(neighbor_id as usize));
+                    if dist < current_dist {
+                        current_dist = dist;
+                        current_closest = neighbor_id;
+                        changed = true;
+                    }
+                }
+            }
+        }
+        current_closest
     }
 
     /// O(n) scan to find the node with the highest layer assignment.
