@@ -18,12 +18,12 @@
 
 #[cfg(feature = "id-compression")]
 mod idpaq_integration {
-    use vicinity::compression::{IdSetCompressor, RocCompressor};
+    use vicinity::compression::{IdSetCompressor, DeltaVarintCompressor};
 
     /// Verify that vicinity correctly delegates to idpaq for compression
     #[test]
     fn vicinity_uses_idpaq_compressor() {
-        let compressor = RocCompressor::new();
+        let compressor = DeltaVarintCompressor::new();
 
         // This pattern simulates HNSW neighbor lists
         let neighbor_ids: Vec<u32> = vec![42, 156, 789, 1234, 2345];
@@ -38,7 +38,7 @@ mod idpaq_integration {
     /// Test compression with patterns typical of IVF posting lists
     #[test]
     fn ivf_posting_list_pattern() {
-        let compressor = RocCompressor::new();
+        let compressor = DeltaVarintCompressor::new();
 
         // IVF posting lists: many IDs from a large universe
         let posting_list: Vec<u32> = (0..500).map(|i| i * 200).collect();
@@ -62,7 +62,7 @@ mod idpaq_integration {
     /// Test edge cases that might occur in ANN indexes
     #[test]
     fn ann_edge_cases() {
-        let compressor = RocCompressor::new();
+        let compressor = DeltaVarintCompressor::new();
 
         // Single neighbor (common in early HNSW layers)
         let single: Vec<u32> = vec![5000];
