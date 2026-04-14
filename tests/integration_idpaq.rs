@@ -6,7 +6,7 @@
 
 #![cfg(feature = "id-compression")]
 
-use vicinity::compression::{IdSetCompressor, RocCompressor};
+use vicinity::compression::{IdSetCompressor, DeltaVarintCompressor};
 
 // =============================================================================
 // Basic Integration Tests
@@ -14,7 +14,7 @@ use vicinity::compression::{IdSetCompressor, RocCompressor};
 
 #[test]
 fn roundtrip_small_set() {
-    let compressor = RocCompressor::new();
+    let compressor = DeltaVarintCompressor::new();
     let ids: Vec<u32> = vec![1, 5, 10, 20, 50];
     let universe = 100;
 
@@ -26,7 +26,7 @@ fn roundtrip_small_set() {
 
 #[test]
 fn roundtrip_empty_set() {
-    let compressor = RocCompressor::new();
+    let compressor = DeltaVarintCompressor::new();
     let ids: Vec<u32> = vec![];
     let universe = 100;
 
@@ -38,7 +38,7 @@ fn roundtrip_empty_set() {
 
 #[test]
 fn roundtrip_single_element() {
-    let compressor = RocCompressor::new();
+    let compressor = DeltaVarintCompressor::new();
     let ids: Vec<u32> = vec![42];
     let universe = 100;
 
@@ -56,7 +56,7 @@ fn roundtrip_single_element() {
 fn hnsw_neighbor_list_compression() {
     // HNSW typically stores M neighbors per node (e.g., M=16 or M=32)
     // These are stored as sorted ID lists
-    let compressor = RocCompressor::new();
+    let compressor = DeltaVarintCompressor::new();
 
     // Simulate a neighbor list from a graph with 10000 nodes
     let universe = 10_000;
@@ -83,7 +83,7 @@ fn hnsw_neighbor_list_compression() {
 fn ivf_cluster_compression() {
     // IVF stores lists of vector IDs per cluster
     // These can be quite large (thousands of IDs)
-    let compressor = RocCompressor::new();
+    let compressor = DeltaVarintCompressor::new();
 
     // Simulate a cluster with 500 vectors from a 100K dataset
     let universe = 100_000;
@@ -117,7 +117,7 @@ fn ivf_cluster_compression() {
 
 #[test]
 fn rejects_unsorted_ids() {
-    let compressor = RocCompressor::new();
+    let compressor = DeltaVarintCompressor::new();
     let unsorted: Vec<u32> = vec![10, 5, 20]; // Not sorted!
     let universe = 100;
 
@@ -127,7 +127,7 @@ fn rejects_unsorted_ids() {
 
 #[test]
 fn rejects_ids_exceeding_universe() {
-    let compressor = RocCompressor::new();
+    let compressor = DeltaVarintCompressor::new();
     let ids: Vec<u32> = vec![1, 5, 150]; // 150 > universe
     let universe = 100;
 
@@ -137,7 +137,7 @@ fn rejects_ids_exceeding_universe() {
 
 #[test]
 fn rejects_duplicate_ids() {
-    let compressor = RocCompressor::new();
+    let compressor = DeltaVarintCompressor::new();
     let with_dups: Vec<u32> = vec![1, 5, 5, 10]; // Duplicate 5
     let universe = 100;
 
@@ -151,7 +151,7 @@ fn rejects_duplicate_ids() {
 
 #[test]
 fn large_set_roundtrip() {
-    let compressor = RocCompressor::new();
+    let compressor = DeltaVarintCompressor::new();
 
     // Large set: 10K IDs from 1M universe
     let universe = 1_000_000;
@@ -165,7 +165,7 @@ fn large_set_roundtrip() {
 
 #[test]
 fn consecutive_ids_compress_well() {
-    let compressor = RocCompressor::new();
+    let compressor = DeltaVarintCompressor::new();
 
     // Consecutive IDs (best case for delta encoding)
     let ids: Vec<u32> = (1000..2000).collect();
@@ -202,7 +202,7 @@ mod property_tests {
             len in 0usize..100,
             universe in 100u32..10000
         ) {
-            let compressor = RocCompressor::new();
+            let compressor = DeltaVarintCompressor::new();
 
             // Generate sorted, unique IDs
             let mut ids: Vec<u32> = (0..len)
@@ -223,7 +223,7 @@ mod property_tests {
             len in 1usize..50,
             universe in 100u32..1000
         ) {
-            let compressor = RocCompressor::new();
+            let compressor = DeltaVarintCompressor::new();
 
             let ids: Vec<u32> = (0..len)
                 .map(|i| (i as u32 * 2) % universe)
