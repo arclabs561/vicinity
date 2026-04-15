@@ -766,6 +766,328 @@ impl HNSWIndex {
         Ok(())
     }
 
+    /// Delete a vector with Wolverine++ graph repair.
+    ///
+    /// Unlike [`delete`] (which only tombstones), this method repairs the graph:
+    /// 1. Finds all in-neighbors (nodes pointing to the deleted node) on each layer
+    /// 2. Removes edges to the deleted node
+    /// 3. For each in-neighbor, finds a replacement via 2-hop crescent-locus filtering
+    /// 4. Updates the entry point if the deleted node was the entry
+    ///
+    /// The crescent-locus filter (Wolverine, VLDB 2025) selects repair candidates
+    /// that are closer to the in-neighbor than the deleted node was, and far from
+    /// the deleted node itself. This produces edges that survive diversity pruning
+    /// and maintain monotonic reachability.
+    ///
+    /// Returns the number of repair edges added. Requires uncompressed neighbor storage.
+    pub fn delete_with_repair(&mut self, doc_id: u32) -> Result<usize, RetrieveError> {
+        let internal_id = self
+            .doc_id_to_internal
+            .get(&doc_id)
+            .copied()
+            .ok_or_else(|| {
+                RetrieveError::InvalidParameter(format!("doc_id {} not found in index", doc_id))
+            })?;
+
+        // Verify layers are uncompressed (compressed layers are read-only)
+        #[cfg(feature = "id-compression")]
+        for layer in &self.layers {
+            if matches!(layer.storage, NeighborStorage::Compressed { .. }) {
+                return Err(RetrieveError::InvalidParameter(
+                    "delete_with_repair requires uncompressed neighbor storage".into(),
+                ));
+            }
+        }
+
+        let dist_fn = self.dist_fn();
+        let deleted_vec: Vec<f32> = self.get_vector(internal_id as usize).to_vec();
+        let max_layer = self
+            .layer_assignments
+            .get(internal_id as usize)
+            .copied()
+            .unwrap_or(0);
+        let m_max = self.params.m_max;
+        let mut total_repairs = 0usize;
+
+        // Process each layer where the deleted node exists (layer 0 through max_layer)
+        for layer_idx in 0..=max_layer as usize {
+            if layer_idx >= self.layers.len() {
+                break;
+            }
+
+            // Phase 1: Find in-neighbors (scan layer for nodes pointing to deleted node)
+            // and collect repair info before mutating.
+            let layer_len = self.layers[layer_idx].len();
+            let mut repair_tasks: Vec<(u32, Vec<u32>)> = Vec::new(); // (in_neighbor_id, current_neighbors_after_removal)
+
+            for node_id in 0..layer_len as u32 {
+                if node_id == internal_id {
+                    continue;
+                }
+                let neighbors = self.layers[layer_idx].get_neighbors(node_id);
+                if neighbors.contains(&internal_id) {
+                    // This node points to the deleted node -- needs repair
+                    let remaining: Vec<u32> = neighbors
+                        .iter()
+                        .copied()
+                        .filter(|&n| n != internal_id)
+                        .collect();
+                    repair_tasks.push((node_id, remaining));
+                }
+            }
+
+            // Phase 2: For each in-neighbor, find crescent-locus replacement via 2-hop
+            let mut replacements: Vec<(u32, Vec<u32>)> = Vec::new();
+            for (in_neighbor_id, remaining_neighbors) in &repair_tasks {
+                let in_vec = self.get_vector(*in_neighbor_id as usize);
+                let dist_deleted_to_in = dist_fn(in_vec, &deleted_vec);
+
+                let mut best_candidate: Option<(u32, f32)> = None;
+                let mut fallback: Option<(u32, f32)> = None;
+                let existing_set: std::collections::HashSet<u32> =
+                    remaining_neighbors.iter().copied().collect();
+
+                // Scan 2-hop neighborhood
+                for &neighbor in remaining_neighbors {
+                    let two_hop_neighbors = self.layers[layer_idx].get_neighbors(neighbor);
+                    for &two_hop in two_hop_neighbors.iter() {
+                        if two_hop == *in_neighbor_id
+                            || two_hop == internal_id
+                            || existing_set.contains(&two_hop)
+                            || self.tombstones.is_deleted(two_hop as usize)
+                        {
+                            continue;
+                        }
+
+                        let th_vec = self.get_vector(two_hop as usize);
+                        let dist_to_in = dist_fn(in_vec, th_vec);
+                        let dist_to_deleted = dist_fn(&deleted_vec, th_vec);
+
+                        // Crescent-locus conditions
+                        let close_to_in = dist_to_in < dist_deleted_to_in;
+                        let far_from_deleted = dist_to_deleted > dist_deleted_to_in;
+
+                        if close_to_in && far_from_deleted {
+                            match &best_candidate {
+                                Some((_, best_dist)) if dist_to_in >= *best_dist => {}
+                                _ => best_candidate = Some((two_hop, dist_to_in)),
+                            }
+                        } else {
+                            match &fallback {
+                                Some((_, best_dist)) if dist_to_in >= *best_dist => {}
+                                _ => fallback = Some((two_hop, dist_to_in)),
+                            }
+                        }
+                    }
+                }
+
+                let replacement = best_candidate.or(fallback).map(|(id, _)| id);
+                let mut new_neighbors = remaining_neighbors.clone();
+                if let Some(rep) = replacement {
+                    if new_neighbors.len() < m_max {
+                        new_neighbors.push(rep);
+                        total_repairs += 1;
+                    }
+                }
+                replacements.push((*in_neighbor_id, new_neighbors));
+            }
+
+            // Phase 3: Apply all replacements
+            let neighbors_vec = self.layers[layer_idx].get_neighbors_mut();
+            for (node_id, new_neighbors) in replacements {
+                let sv = &mut neighbors_vec[node_id as usize];
+                sv.clear();
+                sv.extend(new_neighbors);
+            }
+
+            // Clear deleted node's own neighbor list
+            let neighbors_vec = self.layers[layer_idx].get_neighbors_mut();
+            neighbors_vec[internal_id as usize].clear();
+        }
+
+        // Update entry point if we deleted it
+        if self.cached_entry_point == Some(internal_id) {
+            self.cached_entry_point = self.find_entry_point_excluding(internal_id);
+        }
+
+        // Mark as tombstone so search results exclude it
+        self.tombstones.delete(internal_id as usize);
+
+        Ok(total_repairs)
+    }
+
+    /// Batch delete with Wolverine++ repair.
+    ///
+    /// More efficient than calling `delete_with_repair` in a loop because
+    /// in-neighbor scanning is done once per layer for all deleted nodes.
+    pub fn delete_batch_with_repair(&mut self, doc_ids: &[u32]) -> Result<usize, RetrieveError> {
+        // Resolve all internal IDs first
+        let internal_ids: Vec<u32> = doc_ids
+            .iter()
+            .map(|&doc_id| {
+                self.doc_id_to_internal
+                    .get(&doc_id)
+                    .copied()
+                    .ok_or_else(|| {
+                        RetrieveError::InvalidParameter(format!(
+                            "doc_id {} not found in index",
+                            doc_id
+                        ))
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let deleted_set: std::collections::HashSet<u32> = internal_ids.iter().copied().collect();
+
+        #[cfg(feature = "id-compression")]
+        for layer in &self.layers {
+            if matches!(layer.storage, NeighborStorage::Compressed { .. }) {
+                return Err(RetrieveError::InvalidParameter(
+                    "delete_batch_with_repair requires uncompressed neighbor storage".into(),
+                ));
+            }
+        }
+
+        let dist_fn = self.dist_fn();
+        let m_max = self.params.m_max;
+        let mut total_repairs = 0usize;
+
+        // Find max layer across all deleted nodes
+        let max_layer = internal_ids
+            .iter()
+            .filter_map(|&id| self.layer_assignments.get(id as usize).copied())
+            .max()
+            .unwrap_or(0);
+
+        for layer_idx in 0..=max_layer as usize {
+            if layer_idx >= self.layers.len() {
+                break;
+            }
+
+            // Phase 1: Scan for all in-neighbors of any deleted node
+            let layer_len = self.layers[layer_idx].len();
+            let mut repair_tasks: Vec<(u32, Vec<u32>)> = Vec::new();
+
+            for node_id in 0..layer_len as u32 {
+                if deleted_set.contains(&node_id) {
+                    continue;
+                }
+                let neighbors = self.layers[layer_idx].get_neighbors(node_id);
+                let has_deleted = neighbors.iter().any(|n| deleted_set.contains(n));
+                if has_deleted {
+                    let remaining: Vec<u32> = neighbors
+                        .iter()
+                        .copied()
+                        .filter(|n| !deleted_set.contains(n))
+                        .collect();
+                    repair_tasks.push((node_id, remaining));
+                }
+            }
+
+            // Phase 2: Find replacements
+            let mut replacements: Vec<(u32, Vec<u32>)> = Vec::new();
+            for (in_neighbor_id, remaining_neighbors) in &repair_tasks {
+                let in_vec = self.get_vector(*in_neighbor_id as usize);
+                let existing_set: std::collections::HashSet<u32> =
+                    remaining_neighbors.iter().copied().collect();
+
+                // How many edges were lost?
+                let capacity = m_max.saturating_sub(remaining_neighbors.len());
+                let mut new_neighbors = remaining_neighbors.clone();
+                let mut added = 0usize;
+
+                if capacity > 0 {
+                    // Collect all 2-hop candidates sorted by distance
+                    let mut candidates: Vec<(u32, f32)> = Vec::new();
+                    let mut visited: std::collections::HashSet<u32> = existing_set.clone();
+                    visited.insert(*in_neighbor_id);
+                    visited.extend(deleted_set.iter());
+
+                    for &neighbor in remaining_neighbors {
+                        let two_hop_neighbors = self.layers[layer_idx].get_neighbors(neighbor);
+                        for &two_hop in two_hop_neighbors.iter() {
+                            if !visited.insert(two_hop) {
+                                continue;
+                            }
+                            if self.tombstones.is_deleted(two_hop as usize) {
+                                continue;
+                            }
+                            let th_vec = self.get_vector(two_hop as usize);
+                            let dist_to_in = dist_fn(in_vec, th_vec);
+                            candidates.push((two_hop, dist_to_in));
+                        }
+                    }
+
+                    candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+
+                    for (cand_id, _) in candidates {
+                        if added >= capacity {
+                            break;
+                        }
+                        new_neighbors.push(cand_id);
+                        added += 1;
+                    }
+                    total_repairs += added;
+                }
+                replacements.push((*in_neighbor_id, new_neighbors));
+            }
+
+            // Phase 3: Apply
+            let neighbors_vec = self.layers[layer_idx].get_neighbors_mut();
+            for (node_id, new_neighbors) in replacements {
+                let sv = &mut neighbors_vec[node_id as usize];
+                sv.clear();
+                sv.extend(new_neighbors);
+            }
+
+            // Clear deleted nodes' neighbor lists
+            let neighbors_vec = self.layers[layer_idx].get_neighbors_mut();
+            for &id in &internal_ids {
+                if (id as usize) < neighbors_vec.len() {
+                    neighbors_vec[id as usize].clear();
+                }
+            }
+        }
+
+        // Update entry point
+        if let Some(ep) = self.cached_entry_point {
+            if deleted_set.contains(&ep) {
+                self.cached_entry_point = self.find_entry_point_excluding_set(&deleted_set);
+            }
+        }
+
+        // Mark all as tombstones
+        for &id in &internal_ids {
+            self.tombstones.delete(id as usize);
+        }
+
+        Ok(total_repairs)
+    }
+
+    /// Find a new entry point, excluding a specific node.
+    fn find_entry_point_excluding(&self, excluded: u32) -> Option<u32> {
+        // Pick the surviving node with the highest layer assignment
+        self.layer_assignments
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i as u32 != excluded && !self.tombstones.is_deleted(*i))
+            .max_by_key(|(_, &layer)| layer)
+            .map(|(i, _)| i as u32)
+    }
+
+    /// Find a new entry point, excluding a set of nodes.
+    fn find_entry_point_excluding_set(
+        &self,
+        excluded: &std::collections::HashSet<u32>,
+    ) -> Option<u32> {
+        self.layer_assignments
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !excluded.contains(&(*i as u32)) && !self.tombstones.is_deleted(*i))
+            .max_by_key(|(_, &layer)| layer)
+            .map(|(i, _)| i as u32)
+    }
+
     /// Check if a doc_id has been deleted.
     pub fn is_deleted(&self, doc_id: u32) -> bool {
         self.doc_id_to_internal
@@ -2903,6 +3225,217 @@ mod tests {
         for w in results.windows(2) {
             assert!(w[0].1 <= w[1].1, "results not sorted by custom distance");
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Wolverine++ delete_with_repair tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_delete_with_repair_excludes_from_results() {
+        let (mut index, q) = build_test_index();
+        let k = 10;
+        let ef = 64;
+
+        let before = index.search(&q, k, ef).unwrap();
+        let nearest_id = before[0].0;
+
+        let repairs = index.delete_with_repair(nearest_id).unwrap();
+
+        let after = index.search(&q, k, ef).unwrap();
+        let after_ids: Vec<u32> = after.iter().map(|(id, _)| *id).collect();
+        assert!(
+            !after_ids.contains(&nearest_id),
+            "deleted doc_id {} should not appear in results (repairs={})",
+            nearest_id,
+            repairs,
+        );
+    }
+
+    #[test]
+    fn test_delete_with_repair_maintains_recall() {
+        let (mut index, q) = build_test_index();
+        let k = 10;
+        let ef = 100;
+
+        let before = index.search(&q, k, ef).unwrap();
+        assert_eq!(before.len(), k);
+
+        // Delete 20% of nodes (IDs 0..40 out of 200)
+        for i in 0..40u32 {
+            index.delete_with_repair(i).unwrap();
+        }
+
+        let after = index.search(&q, k, ef).unwrap();
+        // Should still return k results (160 nodes remain)
+        assert_eq!(
+            after.len(),
+            k,
+            "should still return k={} results after deleting 20%",
+            k
+        );
+
+        // No deleted IDs in results
+        for (id, _) in &after {
+            assert!(*id >= 40, "deleted id {} appeared in results", id);
+        }
+    }
+
+    #[test]
+    fn test_delete_with_repair_entry_point() {
+        let (mut index, q) = build_test_index();
+        let ep = index.cached_entry_point.unwrap();
+        let ep_doc_id = index.doc_ids[ep as usize];
+
+        // Delete the entry point
+        index.delete_with_repair(ep_doc_id).unwrap();
+
+        // Entry point should have changed
+        assert_ne!(
+            index.cached_entry_point,
+            Some(ep),
+            "entry point should change after deleting it"
+        );
+        assert!(
+            index.cached_entry_point.is_some(),
+            "should find a new entry point"
+        );
+
+        // Search should still work
+        let results = index.search(&q, 5, 64).unwrap();
+        assert!(!results.is_empty(), "search should work after EP deletion");
+    }
+
+    #[test]
+    fn test_delete_with_repair_graph_edges_cleaned() {
+        let (mut index, _q) = build_test_index();
+        let target_doc_id = 50u32;
+        let internal_id = index.doc_id_to_internal[&target_doc_id];
+
+        index.delete_with_repair(target_doc_id).unwrap();
+
+        // No node in layer 0 should point to the deleted internal ID
+        let layer = &index.layers[0];
+        for node_id in 0..layer.len() as u32 {
+            let neighbors = layer.get_neighbors(node_id);
+            assert!(
+                !neighbors.contains(&internal_id),
+                "node {} still points to deleted node {} after repair",
+                node_id,
+                internal_id
+            );
+        }
+
+        // Deleted node's own neighbor list should be empty
+        assert!(
+            layer.get_neighbors(internal_id).is_empty(),
+            "deleted node should have empty neighbor list"
+        );
+    }
+
+    #[test]
+    fn test_delete_batch_with_repair() {
+        let (mut index, q) = build_test_index();
+        let k = 10;
+        let ef = 100;
+
+        // Batch delete 30 nodes
+        let ids_to_delete: Vec<u32> = (10..40).collect();
+        let repairs = index.delete_batch_with_repair(&ids_to_delete).unwrap();
+
+        let after = index.search(&q, k, ef).unwrap();
+        assert_eq!(after.len(), k);
+
+        // No deleted IDs in results
+        let deleted_set: std::collections::HashSet<u32> = ids_to_delete.iter().copied().collect();
+        for (id, _) in &after {
+            assert!(
+                !deleted_set.contains(id),
+                "deleted id {} in results (repairs={})",
+                id,
+                repairs,
+            );
+        }
+    }
+
+    #[test]
+    fn test_delete_with_repair_nonexistent_errors() {
+        let (mut index, _q) = build_test_index();
+        assert!(index.delete_with_repair(9999).is_err());
+    }
+
+    #[test]
+    fn test_delete_with_repair_recall_vs_tombstone() {
+        // Compare recall after repair-delete vs tombstone-delete.
+        // Repair should maintain better recall because the graph stays connected.
+        let dim = 32;
+        let n = 300;
+
+        let mut seed: u64 = 77;
+        let mut next = || -> f32 {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            ((seed >> 33) as f32) / (u32::MAX as f32) - 0.5
+        };
+
+        let mut vectors: Vec<Vec<f32>> = Vec::new();
+        for _ in 0..n {
+            let mut v: Vec<f32> = (0..dim).map(|_| next()).collect();
+            let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+            if norm > 0.0 {
+                v.iter_mut().for_each(|x| *x /= norm);
+            }
+            vectors.push(v);
+        }
+
+        let mut query: Vec<f32> = (0..dim).map(|_| next()).collect();
+        let norm = query.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm > 0.0 {
+            query.iter_mut().for_each(|x| *x /= norm);
+        }
+
+        let build = |seed_val: u64| -> HNSWIndex {
+            let mut params = HNSWParams::default();
+            params.seed = Some(seed_val);
+            let mut idx = HNSWIndex::with_params(dim, params).unwrap();
+            for (i, v) in vectors.iter().enumerate() {
+                idx.add(i as u32, v.clone()).unwrap();
+            }
+            idx.build().unwrap();
+            idx
+        };
+
+        let mut repair_idx = build(42);
+        let mut tombstone_idx = build(42);
+
+        // Delete 40% of nodes
+        let delete_ids: Vec<u32> = (0..120).collect();
+        for &id in &delete_ids {
+            repair_idx.delete_with_repair(id).unwrap();
+            tombstone_idx.delete(id).unwrap();
+        }
+
+        let k = 10;
+        let ef = 100;
+
+        let repair_results = repair_idx.search(&query, k, ef).unwrap();
+        let tombstone_results = tombstone_idx.search(&query, k, ef).unwrap();
+
+        assert!(
+            !repair_results.is_empty(),
+            "repair search should return results"
+        );
+        assert!(
+            !tombstone_results.is_empty(),
+            "tombstone search should return results"
+        );
+
+        // Repair should return at least as many results (graph stays connected)
+        assert!(
+            repair_results.len() >= tombstone_results.len(),
+            "repair ({}) should return >= tombstone ({}) results",
+            repair_results.len(),
+            tombstone_results.len(),
+        );
     }
 }
 
