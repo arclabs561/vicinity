@@ -19,6 +19,10 @@ pub struct VamanaParams {
 
     /// Default search width during query (typically 50-200)
     pub ef_search: usize,
+
+    /// Optional RNG seed for reproducible construction.
+    /// When `None` (default), uses thread-local RNG.
+    pub seed: Option<u64>,
 }
 
 #[cfg(feature = "vamana")]
@@ -29,6 +33,7 @@ impl Default for VamanaParams {
             alpha: 1.3,
             ef_construction: 200,
             ef_search: 50,
+            seed: None,
         }
     }
 }
@@ -299,6 +304,7 @@ mod tests {
             alpha: 1.3,
             ef_construction: 40,
             ef_search: 20,
+            seed: None,
         };
         let mut index = VamanaIndex::new(dim, params).unwrap();
         for (i, v) in vectors.iter().enumerate() {
@@ -322,6 +328,7 @@ mod tests {
             alpha: 1.5,
             ef_construction: 100,
             ef_search: 80,
+            seed: None,
         };
         let mut index = VamanaIndex::new(dim, params).unwrap();
         for (i, v) in vectors.iter().enumerate() {
@@ -363,6 +370,7 @@ mod tests {
             alpha: 1.3,
             ef_construction: 40,
             ef_search: 30,
+            seed: None,
         };
         let mut index = VamanaIndex::new(dim, params).unwrap();
         for (i, v) in vectors.iter().enumerate() {
@@ -392,6 +400,7 @@ mod tests {
             alpha: 1.3,
             ef_construction: 60,
             ef_search: 30,
+            seed: None,
         };
         let mut index = VamanaIndex::new(dim, params).unwrap();
         for (i, v) in vectors.iter().enumerate() {
@@ -422,6 +431,7 @@ mod tests {
             alpha: 1.3,
             ef_construction: 60,
             ef_search: 30,
+            seed: None,
         };
         let mut index = VamanaIndex::new(dim, params).unwrap();
         for (i, v) in vectors.iter().enumerate() {
@@ -459,6 +469,7 @@ mod tests {
             alpha: 1.3,
             ef_construction: 200,
             ef_search: ef,
+            seed: None,
         };
         let mut index = VamanaIndex::new(dim, params).unwrap();
         for (i, v) in vecs.iter().enumerate() {
@@ -521,6 +532,7 @@ mod tests {
             alpha: 1.5,
             ef_construction: 100,
             ef_search: 50,
+            seed: None,
         };
         let mut index = VamanaIndex::new(dim, params).unwrap();
         for (i, v) in vectors.iter().enumerate() {

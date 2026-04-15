@@ -93,6 +93,7 @@ fn build_diskann(vectors: &[Vec<f32>]) -> DiskANNIndex {
         ef_construction: 100,
         alpha: 1.2,
         ef_search: 100,
+        seed: None,
     };
     let mut idx = DiskANNIndex::new(DIM, params).expect("diskann: create");
     for (i, v) in vectors.iter().enumerate() {

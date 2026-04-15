@@ -327,6 +327,7 @@ fn run_vamana(
         alpha: 1.3,
         ef_construction: 200,
         ef_search: 50,
+        seed: None,
     };
     print!("  Building (max_degree=64, alpha=1.3, ef_construction=200)... ");
     let _ = std::io::stdout().flush();
@@ -481,6 +482,7 @@ fn run_diskann(
         alpha: 1.3,
         ef_construction: 200,
         ef_search: 50,
+        seed: None,
     };
     print!("  Building (m=64, alpha=1.3, ef_construction=200)... ");
     let _ = std::io::stdout().flush();

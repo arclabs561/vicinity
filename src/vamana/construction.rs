@@ -19,7 +19,11 @@ fn initialize_random_graph(index: &mut VamanaIndex) -> Result<(), RetrieveError>
 
     let n = index.num_vectors;
     let min_degree = (n as f64).ln().ceil() as usize;
-    let mut rng = rand::rng();
+    use rand::SeedableRng;
+    let mut rng: Box<dyn rand::RngCore> = match index.params.seed {
+        Some(s) => Box::new(rand::rngs::StdRng::seed_from_u64(s)),
+        None => Box::new(rand::rng()),
+    };
 
     for i in 0..n {
         let k = min_degree.min(n - 1);
@@ -475,6 +479,7 @@ mod tests {
             alpha: 1.3,
             ef_construction: 50,
             ef_search: 20,
+            seed: None,
         };
         let mut index = VamanaIndex::new(dim, params).unwrap();
         for (i, v) in vecs.iter().enumerate() {
@@ -503,6 +508,7 @@ mod tests {
             alpha: 1.3,
             ef_construction: 50,
             ef_search: 20,
+            seed: None,
         };
         let mut index = VamanaIndex::new(dim, params).unwrap();
         for (i, v) in vecs.iter().enumerate() {
@@ -535,6 +541,7 @@ mod tests {
             alpha: 1.3,
             ef_construction: 40,
             ef_search: 20,
+            seed: None,
         };
         let mut index = VamanaIndex::new(dim, params).unwrap();
         for (i, v) in vecs.iter().enumerate() {
@@ -577,6 +584,7 @@ mod tests {
             alpha: 1.3,
             ef_construction: 50,
             ef_search: 20,
+            seed: None,
         };
         let mut index = VamanaIndex::new(dim, params).unwrap();
         for (i, v) in vecs.iter().enumerate() {
