@@ -154,6 +154,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "sq4u" => run_sq4u(&train, &test, &gt, k, dim)?,
         #[cfg(feature = "ivf_rabitq")]
         "symphonyqg" => run_symphonyqg(&train, &test, &gt, k, dim)?,
+        #[cfg(feature = "ivf_rabitq")]
+        "symphonyqg-vr" => run_symphonyqg_vr(&train, &test, &gt, k, dim)?,
         "all" => {
             macro_rules! run_if_not_cached {
                 ($key:expr, $call:expr) => {
@@ -1110,6 +1112,73 @@ fn measure_sq4u_reranked(
     }
     let elapsed = t.elapsed().as_secs_f64();
     (recall_sum / test.len() as f64, test.len() as f64 / elapsed)
+}
+
+// ─── SymphonyQG-VR (vertex-relative RaBitQ) ─────────────────────────────────
+
+#[cfg(feature = "ivf_rabitq")]
+fn run_symphonyqg_vr(
+    train: &[Vec<f32>],
+    test: &[Vec<f32>],
+    gt: &[Vec<i32>],
+    k: usize,
+    dim: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use vicinity::hnsw::symphony_qg::SymphonyQGVRIndex;
+
+    println!("=== SymphonyQG-VR (vertex-relative RaBitQ) ===");
+    let metric = if std::env::var("VICINITY_METRIC").as_deref() == Ok("l2") {
+        vicinity::distance::DistanceMetric::L2
+    } else {
+        vicinity::distance::DistanceMetric::Cosine
+    };
+    let params = HNSWParams {
+        m: 16,
+        m_max: 32,
+        ef_construction: 200,
+        metric,
+        ..Default::default()
+    };
+    print!("  Building HNSW + per-edge RaBitQ codes... ");
+    let _ = std::io::stdout().flush();
+    let mut index = SymphonyQGVRIndex::new(dim, params, qntz::rabitq::RaBitQConfig::bits4(), 42)?;
+    for (i, v) in train.iter().enumerate() {
+        index.add_slice(i as u32, v)?;
+    }
+    let t0 = Instant::now();
+    index.build()?;
+    let build_secs = t0.elapsed().as_secs_f64();
+    println!("{build_secs:.0}s");
+
+    let params_json =
+        "\"m\":16,\"m_max\":32,\"ef_construction\":200,\"rabitq_bits\":4,\"vertex_relative\":true";
+
+    // Reranked search (primary path)
+    for ef in [10, 20, 50, 100, 200, 400] {
+        // Warmup
+        for q in test.iter().take(50) {
+            let _ = index.search_reranked(q, k, ef, ef * 2);
+        }
+        let t = Instant::now();
+        let mut recall_sum = 0.0;
+        for (i, q) in test.iter().enumerate() {
+            let res = index.search_reranked(q, k, ef, ef * 2).unwrap_or_default();
+            recall_sum += recall_at_k(&res, &gt[i], k);
+        }
+        let elapsed = t.elapsed().as_secs_f64();
+        let recall = recall_sum / test.len() as f64;
+        let qps = test.len() as f64 / elapsed;
+        println!("    ef={ef:4}  recall={:.1}%  qps={qps:.0}", recall * 100.0);
+        write_record(
+            "symphonyqg-vr",
+            recall,
+            qps,
+            Some(ef),
+            Some(build_secs),
+            Some(params_json),
+        )?;
+    }
+    Ok(())
 }
 
 // ─── Utilities ───────────────────────────────────────────────────────────────

@@ -334,23 +334,13 @@ fn approx_dist_sqr(rotated_query: &[f32], qv: &QuantizedVector) -> f32 {
 
 // ── Vertex-Relative SymphonyQG ──────────────────────────────────────────────
 
-/// Compact per-edge RaBitQ code for vertex-relative normalization.
-///
-/// For each edge (u -> v), stores the quantized code for `v` centered at `u`,
-/// plus correction scalars. At query time, the global-rotated query is used
-/// with per-edge corrections to estimate `||q - v||^2`.
-struct EdgeCode {
-    /// RaBitQ correction: approximates `||v - u||^2` contribution
+/// Per-edge correction scalars for vertex-relative RaBitQ.
+/// Stored in SoA layout (flat arrays) for cache efficiency.
+#[derive(Clone, Copy)]
+struct EdgeScalars {
     f_add: f32,
-    /// RaBitQ correction: scales the inner product term
     f_rescale: f32,
-    /// Precomputed `IP(R*u, quantized_codes)` -- subtracted at query time
     ip_u_rot_codes: f32,
-    /// Extended bits count (for cb computation)
-    ex_bits: u8,
-    /// Quantized codes as u16 (same as QuantizedVector.codes).
-    /// Indexed by dimension.
-    codes: Vec<u16>,
 }
 
 /// HNSW index with vertex-relative RaBitQ quantized graph traversal.
@@ -371,14 +361,15 @@ struct EdgeCode {
 pub struct SymphonyQGVRIndex {
     /// The underlying HNSW index (owns graph + f32 vectors).
     index: HNSWIndex,
-    /// Per-edge codes for base layer (layer 0).
-    /// Flat array: `edge_codes[neighbor_offsets[node_id] + slot]`.
-    edge_codes: Vec<EdgeCode>,
+    /// Per-edge correction scalars, indexed by edge offset.
+    edge_scalars: Vec<EdgeScalars>,
+    /// Pre-shifted quantized codes as f32: `code_val + cb`.
+    /// Flat SoA: `edge_codes_f32[edge_offset * dim .. (edge_offset+1) * dim]`.
+    /// Eliminates per-neighbor u16->f32 cast + cb addition in the hot path.
+    edge_codes_f32: Vec<f32>,
     /// Cumulative neighbor count per node: `neighbor_offsets[node_id]` is the
-    /// start index into `edge_codes` for node `node_id`'s neighbors.
+    /// start index into edge arrays for node `node_id`'s neighbors.
     neighbor_offsets: Vec<u32>,
-    /// Per-node global-rotated vectors `R * v` (kept for distance computation).
-    rotated_nodes: Vec<f32>,
     /// RaBitQ quantizer (owns rotation matrix).
     quantizer: Option<RaBitQQuantizer>,
     /// RaBitQ configuration.
@@ -402,9 +393,9 @@ impl SymphonyQGVRIndex {
         let index = HNSWIndex::with_params(dimension, params)?;
         Ok(Self {
             index,
-            edge_codes: Vec::new(),
+            edge_scalars: Vec::new(),
+            edge_codes_f32: Vec::new(),
             neighbor_offsets: Vec::new(),
-            rotated_nodes: Vec::new(),
             quantizer: None,
             rabitq_config,
             seed,
@@ -455,17 +446,22 @@ impl SymphonyQGVRIndex {
         // Build per-edge codes for base layer (layer 0).
         if self.index.layers.is_empty() {
             self.quantizer = Some(quantizer);
-            self.rotated_nodes = rotated_flat;
             return Ok(());
         }
         let base_layer = &self.index.layers[0];
         let layer_len = base_layer.len();
 
-        let mut edge_codes = Vec::new();
+        // Count total edges to pre-allocate flat arrays.
+        let total_edges: usize = (0..layer_len as u32)
+            .map(|id| base_layer.get_neighbors(id).len())
+            .sum();
+
+        let mut edge_scalars = Vec::with_capacity(total_edges);
+        let mut edge_codes_f32 = Vec::with_capacity(total_edges * dim);
         let mut neighbor_offsets = Vec::with_capacity(layer_len + 1);
 
         for node_id in 0..layer_len as u32 {
-            neighbor_offsets.push(edge_codes.len() as u32);
+            neighbor_offsets.push(edge_scalars.len() as u32);
             let neighbors = base_layer.get_neighbors(node_id);
             let u_vec = self.index.get_vector(node_id as usize);
             let u_rot = &rotated_flat[node_id as usize * dim..(node_id as usize + 1) * dim];
@@ -478,29 +474,29 @@ impl SymphonyQGVRIndex {
                     .quantize_with_centroid(v_vec, u_vec)
                     .map_err(|e| RetrieveError::InvalidParameter(format!("quantize edge: {e}")))?;
 
-                // Precompute IP(R*u, codes) using the quantized code values.
+                // Pre-shift codes to f32: code_val + cb (eliminates cast+add in hot path).
                 let cb = -((1u32 << qv.ex_bits) as f32 - 0.5);
-                let ip_u_rot: f32 = u_rot
-                    .iter()
-                    .zip(qv.codes.iter())
-                    .map(|(&ur, &c)| ur * (c as f32 + cb))
-                    .sum();
+                let mut ip_u_rot = 0.0f32;
+                for (&c, &ur) in qv.codes.iter().zip(u_rot.iter()) {
+                    let shifted = c as f32 + cb;
+                    edge_codes_f32.push(shifted);
+                    ip_u_rot += ur * shifted;
+                }
 
-                edge_codes.push(EdgeCode {
+                edge_scalars.push(EdgeScalars {
                     f_add: qv.f_add,
                     f_rescale: qv.f_rescale,
                     ip_u_rot_codes: ip_u_rot,
-                    ex_bits: qv.ex_bits as u8,
-                    codes: qv.codes,
                 });
             }
         }
         // Sentinel for the last node's range.
-        neighbor_offsets.push(edge_codes.len() as u32);
+        neighbor_offsets.push(edge_scalars.len() as u32);
 
-        self.edge_codes = edge_codes;
+        self.edge_scalars = edge_scalars;
+        self.edge_codes_f32 = edge_codes_f32;
         self.neighbor_offsets = neighbor_offsets;
-        self.rotated_nodes = rotated_flat;
+        // rotated_flat is no longer needed -- drop it (was only for ip_u_rot precomputation)
         self.quantizer = Some(quantizer);
         Ok(())
     }
@@ -559,13 +555,15 @@ impl SymphonyQGVRIndex {
         // Base layer: edge-aware beam search with per-edge codes.
         let entry_dist = self.approx_dist_vr_entry(&rotated_query, current);
         let base_layer = &self.index.layers[0];
-        let edge_codes = &self.edge_codes;
+        let edge_scalars = &self.edge_scalars;
+        let edge_codes_f32 = &self.edge_codes_f32;
         let neighbor_offsets = &self.neighbor_offsets;
 
         let dist_fn = |parent_id: u32, _neighbor_id: u32, slot: usize| -> f32 {
             let offset = neighbor_offsets[parent_id as usize] as usize + slot;
-            let edge = &edge_codes[offset];
-            approx_dist_vr(&rotated_query, edge)
+            let scalars = &edge_scalars[offset];
+            let codes = &edge_codes_f32[offset * dim..(offset + 1) * dim];
+            approx_dist_vr_flat(&rotated_query, codes, scalars)
         };
 
         let results = crate::hnsw::search::greedy_search_layer_edge_aware(
@@ -648,23 +646,20 @@ impl SymphonyQGVRIndex {
     }
 }
 
-/// Approximate L2^2 from a globally-rotated query to a vertex-relative edge code.
+/// Approximate L2^2 from a globally-rotated query to vertex-relative edge codes.
 ///
-/// Formula: `f_add + f_rescale * (IP(q_rot, codes) - ip_u_rot_codes)`
+/// Uses pre-shifted f32 codes (code_val + cb already applied at build time)
+/// for a tight IP loop with no per-element cast or addition.
 ///
-/// where `q_rot = R * (q - 0)` (global rotation, zero centroid) and the edge code
-/// was quantized with centroid = parent_u. The `ip_u_rot_codes` term corrects for
-/// the centroid difference: `R*(q - u) = R*q - R*u`, so the IP splits into
-/// `IP(R*q, codes) - IP(R*u, codes)`.
+/// Formula: `f_add + f_rescale * (IP(q_rot, shifted_codes) - ip_u_rot_codes)`
 #[inline]
-fn approx_dist_vr(rotated_query: &[f32], edge: &EdgeCode) -> f32 {
-    let cb = -((1u32 << edge.ex_bits) as f32 - 0.5);
+fn approx_dist_vr_flat(rotated_query: &[f32], shifted_codes: &[f32], scalars: &EdgeScalars) -> f32 {
+    // Tight dot product -- the compiler will auto-vectorize this on x86/ARM.
     let mut ip = 0.0f32;
-    for (i, &q) in rotated_query.iter().enumerate() {
-        let code_val = edge.codes[i] as f32 + cb;
-        ip += q * code_val;
+    for (&q, &c) in rotated_query.iter().zip(shifted_codes.iter()) {
+        ip += q * c;
     }
-    (edge.f_add + edge.f_rescale * (ip - edge.ip_u_rot_codes)).max(0.0)
+    (scalars.f_add + scalars.f_rescale * (ip - scalars.ip_u_rot_codes)).max(0.0)
 }
 
 #[cfg(test)]
