@@ -284,12 +284,18 @@ proptest! {
             }
         }
 
-        // Should return at least some results (graph not totally disconnected)
+        // Should return k results per query (graph stays connected enough)
+        let expected_min = queries.len() * k;
+        let recall_fraction = total_results as f64 / expected_min as f64;
         prop_assert!(
-            total_results > 0,
-            "no results returned after deleting {}% of {} nodes",
+            recall_fraction >= 0.3,
+            "only {:.0}% of expected results returned after deleting {}% of {} nodes \
+             ({} of {} expected)",
+            recall_fraction * 100.0,
             delete_frac,
-            n
+            n,
+            total_results,
+            expected_min,
         );
     }
 }
