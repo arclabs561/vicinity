@@ -593,6 +593,19 @@ impl IVFPQIndex {
         Ok(())
     }
 
+    /// Drop raw f32 vectors after building to reduce memory usage.
+    ///
+    /// After `build()`, search uses only PQ codes and centroids -- raw vectors
+    /// are no longer needed. Calling `compact()` frees ~`4 * dim * n` bytes.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called before `build()`.
+    pub fn compact(&mut self) {
+        assert!(self.built, "compact() called before build()");
+        self.vectors = Vec::new();
+    }
+
     /// Search for k nearest neighbors.
     pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
@@ -873,5 +886,43 @@ impl IVFPQIndex {
         }
         dists.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
         dists
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// compact() drops raw vectors; search still returns results using PQ distances.
+    #[test]
+    fn compact_search_works() {
+        let dim = 16;
+        let n = 200;
+        use rand::{Rng, SeedableRng};
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+
+        let params = IVFPQParams {
+            num_clusters: 4,
+            num_codebooks: 4,
+            codebook_size: 16,
+            nprobe: 4,
+            ..IVFPQParams::default()
+        };
+        let mut index = IVFPQIndex::new(dim, params).unwrap();
+
+        for i in 0..n {
+            let v: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
+            index.add(i as u32, v).unwrap();
+        }
+        index.build().unwrap();
+
+        let query: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
+        let before = index.search(&query, 5).unwrap();
+
+        index.compact();
+        assert!(index.vectors.is_empty());
+
+        let after = index.search(&query, 5).unwrap();
+        assert_eq!(before, after);
     }
 }
