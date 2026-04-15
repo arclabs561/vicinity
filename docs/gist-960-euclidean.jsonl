@@ -40,3 +40,15 @@
 {"algorithm":"symphonyqg","recall_at_10":0.0209,"qps":247.6,"git_sha":"378ed33"}
 {"algorithm":"symphonyqg","recall_at_10":0.0135,"qps":136.2,"git_sha":"378ed33"}
 {"algorithm":"symphonyqg","recall_at_10":0.0109,"qps":75.9,"git_sha":"378ed33"}
+{"algorithm":"symphonyqg-raw","recall_at_10":0.0367,"qps":2097.2,"git_sha":"014681a"}
+{"algorithm":"symphonyqg-raw","recall_at_10":0.0457,"qps":1455.3,"git_sha":"014681a"}
+{"algorithm":"symphonyqg-raw","recall_at_10":0.0476,"qps":695.0,"git_sha":"014681a"}
+{"algorithm":"symphonyqg-raw","recall_at_10":0.0483,"qps":400.2,"git_sha":"014681a"}
+{"algorithm":"symphonyqg-raw","recall_at_10":0.0449,"qps":222.7,"git_sha":"014681a"}
+{"algorithm":"symphonyqg-raw","recall_at_10":0.0421,"qps":122.5,"git_sha":"014681a"}
+{"algorithm":"symphonyqg","recall_at_10":0.0727,"qps":1435.0,"git_sha":"014681a"}
+{"algorithm":"symphonyqg","recall_at_10":0.1260,"qps":847.6,"git_sha":"014681a"}
+{"algorithm":"symphonyqg","recall_at_10":0.2372,"qps":387.8,"git_sha":"014681a"}
+{"algorithm":"symphonyqg","recall_at_10":0.3467,"qps":219.4,"git_sha":"014681a"}
+{"algorithm":"symphonyqg","recall_at_10":0.4545,"qps":120.2,"git_sha":"014681a"}
+{"algorithm":"symphonyqg","recall_at_10":0.5626,"qps":67.7,"git_sha":"014681a"}
