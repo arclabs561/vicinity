@@ -163,6 +163,9 @@ pub mod sparse_mips;
 #[cfg(feature = "sq4")]
 pub mod sq4;
 
+#[cfg(feature = "lemur")]
+pub mod lemur;
+
 #[cfg(feature = "sng")]
 pub mod sng;
 
