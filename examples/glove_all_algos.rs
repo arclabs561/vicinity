@@ -93,8 +93,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!("  output → {jsonl_out}\n");
 
-    // Set output path for append_jsonl (used by all runners)
+    // Set output path and dataset name for benchmark records
     std::env::set_var("VICINITY_JSONL_OUT", &jsonl_out);
+    std::env::set_var("VICINITY_DATASET", dataset_name);
 
     // Detect distance metric from dataset name
     let metric = if dataset_name.contains("euclidean") {
@@ -110,6 +111,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "cosine"
         },
     );
+
+    // Initialize benchmark context (dataset, dim, host, timestamp, etc.)
+    init_benchmark_context(dim, train.len());
 
     // Load cached results so we can skip already-measured algorithms.
     let cached = existing_algorithms();
@@ -231,9 +235,12 @@ fn run_hnsw(
         }
         let t0 = Instant::now();
         index.build()?;
-        println!("{:.0}s", t0.elapsed().as_secs_f64());
+        let build_secs = t0.elapsed().as_secs_f64();
+        println!("{build_secs:.0}s");
 
         let algo_name = format!("hnsw-m{m}");
+        let params_json =
+            format!("\"m\":{m},\"m_max\":{m_max},\"ef_construction\":{ef_construction}");
         for ef in [10, 20, 50, 100, 200, 400] {
             let (recall, qps) = measure(&index, test, gt, k, ef);
             println!(
@@ -241,7 +248,14 @@ fn run_hnsw(
                 recall * 100.0,
                 qps
             );
-            append_jsonl_ef(&algo_name, recall, qps, Some(ef))?;
+            write_record(
+                &algo_name,
+                recall,
+                qps,
+                Some(ef),
+                Some(build_secs),
+                Some(&params_json),
+            )?;
         }
     }
     Ok(())
@@ -1185,25 +1199,114 @@ fn git_sha() -> String {
 
 thread_local! {
     static SHA: String = git_sha();
+    static HOST: String = hostname();
+    static TIMESTAMP: String = timestamp_iso8601();
 }
 
-fn append_jsonl(algorithm: &str, recall: f64, qps: f64) -> Result<(), Box<dyn std::error::Error>> {
-    append_jsonl_ef(algorithm, recall, qps, None)
+fn hostname() -> String {
+    std::process::Command::new("hostname")
+        .arg("-s")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "unknown".into())
 }
 
-fn append_jsonl_ef(
+fn timestamp_iso8601() -> String {
+    // UTC timestamp without external deps -- shell fallback
+    std::process::Command::new("date")
+        .args(["-u", "+%Y-%m-%dT%H:%M:%SZ"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "unknown".into())
+}
+
+/// Session-level context shared by all records in a benchmark run.
+struct BenchmarkContext {
+    dataset: String,
+    dim: usize,
+    n_vectors: usize,
+    git_sha: String,
+    host: String,
+    timestamp: String,
+    metric: String,
+}
+
+impl BenchmarkContext {
+    fn from_env(dim: usize, n_vectors: usize) -> Self {
+        let dataset = std::env::var("VICINITY_DATASET").unwrap_or_else(|_| "unknown".into());
+        let metric = std::env::var("VICINITY_METRIC").unwrap_or_else(|_| "cosine".into());
+        Self {
+            dataset,
+            dim,
+            n_vectors,
+            git_sha: SHA.with(|s| s.clone()),
+            host: HOST.with(|s| s.clone()),
+            timestamp: TIMESTAMP.with(|s| s.clone()),
+            metric,
+        }
+    }
+
+    fn to_json_prefix(&self) -> String {
+        format!(
+            "\"dataset\":\"{}\",\"dim\":{},\"n_vectors\":{},\"metric\":\"{}\",\
+             \"git_sha\":\"{}\",\"host\":\"{}\",\"timestamp\":\"{}\"",
+            self.dataset,
+            self.dim,
+            self.n_vectors,
+            self.metric,
+            self.git_sha,
+            self.host,
+            self.timestamp,
+        )
+    }
+}
+
+thread_local! {
+    static CTX: std::cell::RefCell<Option<BenchmarkContext>> = const { std::cell::RefCell::new(None) };
+}
+
+fn init_benchmark_context(dim: usize, n_vectors: usize) {
+    CTX.with(|c| {
+        *c.borrow_mut() = Some(BenchmarkContext::from_env(dim, n_vectors));
+    });
+}
+
+/// Write a benchmark record. `params` is a pre-formatted JSON object body (no braces).
+fn write_record(
     algorithm: &str,
     recall: f64,
     qps: f64,
-    ef: Option<usize>,
+    ef_search: Option<usize>,
+    build_time_secs: Option<f64>,
+    params: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let sha = SHA.with(|s| s.clone());
-    let ef_str = ef
-        .map(|e| format!(",\"ef_search\":{e}"))
-        .unwrap_or_default();
-    let line = format!(
-        "{{\"algorithm\":\"{algorithm}\",\"recall_at_10\":{recall:.4},\"qps\":{qps:.1}{ef_str},\"git_sha\":\"{sha}\"}}\n"
-    );
+    let ctx_json = CTX.with(|c| {
+        c.borrow()
+            .as_ref()
+            .map(|ctx| ctx.to_json_prefix())
+            .unwrap_or_default()
+    });
+
+    let mut fields =
+        format!("\"algorithm\":\"{algorithm}\",\"recall_at_10\":{recall:.4},\"qps\":{qps:.1}");
+    if let Some(ef) = ef_search {
+        fields.push_str(&format!(",\"ef_search\":{ef}"));
+    }
+    if let Some(bt) = build_time_secs {
+        fields.push_str(&format!(",\"build_time_secs\":{bt:.1}"));
+    }
+    if let Some(p) = params {
+        fields.push_str(&format!(",\"params\":{{{p}}}"));
+    }
+    if !ctx_json.is_empty() {
+        fields.push_str(&format!(",{ctx_json}"));
+    }
+
+    let line = format!("{{{fields}}}\n");
     let out_path =
         std::env::var("VICINITY_JSONL_OUT").unwrap_or_else(|_| "docs/results.jsonl".into());
     let file = OpenOptions::new()
@@ -1213,6 +1316,21 @@ fn append_jsonl_ef(
     let mut w = BufWriter::new(file);
     w.write_all(line.as_bytes())?;
     Ok(())
+}
+
+/// Convenience: write a record with just ef_search (most common case).
+fn append_jsonl_ef(
+    algorithm: &str,
+    recall: f64,
+    qps: f64,
+    ef: Option<usize>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    write_record(algorithm, recall, qps, ef, None, None)
+}
+
+/// Convenience: write a record without ef_search.
+fn append_jsonl(algorithm: &str, recall: f64, qps: f64) -> Result<(), Box<dyn std::error::Error>> {
+    write_record(algorithm, recall, qps, None, None, None)
 }
 
 /// Check if results already exist for an algorithm in the output file.
