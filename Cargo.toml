@@ -284,6 +284,10 @@ harness = false
 name = "scaling"
 harness = false
 
+[[bench]]
+name = "adsampling"
+harness = false
+
 [lints.rust]
 rust_2018_idioms = { level = "warn", priority = -1 }
 rust_2021_compatibility = { level = "warn", priority = -1 }
