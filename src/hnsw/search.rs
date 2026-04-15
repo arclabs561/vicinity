@@ -533,6 +533,8 @@ pub fn greedy_search_layer_edge_aware<F: Fn(u32, u32, usize) -> f32>(
             let neighbors = layer.get_neighbors(candidate.id);
             for (slot, &neighbor_id) in neighbors.iter().enumerate() {
                 if visited.insert(neighbor_id) {
+                    // The dist_fn closure accesses per-edge data; prefetching
+                    // is the caller's responsibility via the closure itself.
                     let neighbor_distance = dist_fn(candidate.id, neighbor_id, slot);
 
                     let worst_dist = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
