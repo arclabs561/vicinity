@@ -30,3 +30,4 @@ _archive/
 # Profiling artifacts
 cargo-flamegraph.trace/
 *.svg
+Cargo.lock
