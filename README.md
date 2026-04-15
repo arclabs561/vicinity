@@ -117,6 +117,13 @@ Quantization: RaBitQ, SAQ (`quantization` feature, via `qntz` crate). PQ is part
 
 See [docs.rs](https://docs.rs/vicinity) for the full API.
 
+## Documentation
+
+- **[User guide](docs/GUIDE.md)** -- quick start, distance metrics, LID, common pitfalls
+- **[Benchmarks](docs/benchmark-results.md)** -- recall/QPS tables across datasets
+- **[ANN landscape](docs/landscape.md)** -- algorithmic principles, math foundations, research context
+- **[References](docs/references.md)** -- bibliography for every algorithm in the crate
+
 ## License
 
 MIT OR Apache-2.0
