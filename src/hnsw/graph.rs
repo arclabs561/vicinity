@@ -768,7 +768,7 @@ impl HNSWIndex {
 
     /// Delete a vector with Wolverine++ graph repair.
     ///
-    /// Unlike [`delete`] (which only tombstones), this method repairs the graph:
+    /// Unlike [`HNSWIndex::delete`](Self::delete) (which only tombstones), this method repairs the graph:
     /// 1. Finds all in-neighbors (nodes pointing to the deleted node) on each layer
     /// 2. Removes edges to the deleted node
     /// 3. For each in-neighbor, finds a replacement via 2-hop crescent-locus filtering
