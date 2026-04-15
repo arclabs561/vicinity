@@ -22,7 +22,7 @@
 //! - Weaviate blog: "Speed Up Filtered Vector Search"
 
 use crate::RetrieveError;
-use std::collections::{BinaryHeap, HashSet};
+use std::collections::{BinaryHeap, HashSet, VecDeque};
 
 /// Filter predicate for ACORN search.
 pub trait FilterPredicate: Sync {
@@ -243,10 +243,6 @@ where
         // Get direct neighbors
         let neighbors = get_neighbors(current.node_id);
 
-        // Decide whether to use two-hop expansion based on filter selectivity
-        let use_two_hop = config.enable_two_hop
-            && (state.filter_ratio() < config.two_hop_threshold || results.len() < k); // Always use two-hop if we don't have k results
-
         // Process direct neighbors
         for &neighbor in &neighbors {
             let neighbor_passes = filter.matches(neighbor);
@@ -284,8 +280,11 @@ where
                 });
             }
 
-            // Two-hop expansion for non-matching nodes
-            if !neighbor_passes && use_two_hop {
+            // ACORN-1: unconditional 2-hop expansion through non-matching nodes.
+            // Per Kraft et al. SIGMOD 2024: every node that fails the predicate
+            // gets its neighbors enqueued, preventing graph disconnection under
+            // high selectivity.
+            if config.enable_two_hop && !neighbor_passes {
                 let two_hop_neighbors = get_neighbors(neighbor);
                 let mut two_hop_count = 0;
 
@@ -329,8 +328,10 @@ where
             }
         }
 
-        // Limit exploration
-        if state.visited_count >= config.ef_search * 10 {
+        // Standard HNSW termination: stop when frontier is exhausted or
+        // we've explored enough candidates. Cap at ef * 3 (not ef * 10)
+        // to avoid runaway exploration while allowing sufficient coverage.
+        if results.len() >= k && state.visited_count >= config.ef_search * 3 {
             break;
         }
     }
@@ -397,12 +398,16 @@ where
     N: Fn(u32) -> Vec<u32>,
 {
     let mut visited = HashSet::new();
-    let mut queue = vec![entry_point];
+    let mut queue = VecDeque::with_capacity(probe_size);
+    queue.push_back(entry_point);
     let mut matches = 0u32;
     let mut total = 0u32;
 
-    while total < probe_size as u32 && !queue.is_empty() {
-        let node = queue.remove(0);
+    while total < probe_size as u32 {
+        let node = match queue.pop_front() {
+            Some(n) => n,
+            None => break,
+        };
         if !visited.insert(node) {
             continue;
         }
@@ -412,7 +417,7 @@ where
         }
         for &neighbor in &get_neighbors(node) {
             if !visited.contains(&neighbor) {
-                queue.push(neighbor);
+                queue.push_back(neighbor);
             }
         }
     }
