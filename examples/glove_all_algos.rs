@@ -1101,9 +1101,22 @@ fn run_symphonyqg(
     dim: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("=== SymphonyQG (RaBitQ graph traversal) ===");
+    let metric = if std::env::var("VICINITY_METRIC").as_deref() == Ok("l2") {
+        vicinity::distance::DistanceMetric::L2
+    } else {
+        vicinity::distance::DistanceMetric::Cosine
+    };
     print!("  Building HNSW + RaBitQ codes... ");
     let _ = std::io::stdout().flush();
-    let mut index = SymphonyQGIndex::new(dim, 16, 32)?;
+    let params = HNSWParams {
+        m: 16,
+        m_max: 32,
+        ef_construction: 200,
+        metric,
+        ..Default::default()
+    };
+    let mut index =
+        SymphonyQGIndex::with_hnsw_params(dim, params, qntz::rabitq::RaBitQConfig::bits4(), 42)?;
     for (i, v) in train.iter().enumerate() {
         index.add_slice(i as u32, v)?;
     }
