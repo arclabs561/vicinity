@@ -167,3 +167,17 @@
 {"algorithm":"vamana","recall_at_10":0.9960,"qps":3858.3}
 {"algorithm":"vamana","recall_at_10":0.9992,"qps":2202.4}
 {"algorithm":"vamana","recall_at_10":0.9999,"qps":1223.1}
+{"algorithm":"ivfpq-1024L-cb5","recall_at_10":0.4117,"qps":9129.1}
+{"algorithm":"ivfpq-1024L-cb5","recall_at_10":0.4341,"qps":4498.1}
+{"algorithm":"ivfpq-1024L-cb5","recall_at_10":0.4450,"qps":2229.1}
+{"algorithm":"ivfpq-1024L-cb5","recall_at_10":0.4487,"qps":1107.2}
+{"algorithm":"ivfpq-1024L-cb5","recall_at_10":0.4501,"qps":540.3}
+{"algorithm":"ivfpq-1024L-cb5","recall_at_10":0.4503,"qps":267.6}
+{"algorithm":"ivfpq-1024L-cb5","recall_at_10":0.4503,"qps":132.6}
+{"algorithm":"ivfpq-1024L-cb25","recall_at_10":0.7566,"qps":4696.0}
+{"algorithm":"ivfpq-1024L-cb25","recall_at_10":0.8591,"qps":2309.7}
+{"algorithm":"ivfpq-1024L-cb25","recall_at_10":0.9242,"qps":1149.0}
+{"algorithm":"ivfpq-1024L-cb25","recall_at_10":0.9618,"qps":585.2}
+{"algorithm":"ivfpq-1024L-cb25","recall_at_10":0.9791,"qps":305.2}
+{"algorithm":"ivfpq-1024L-cb25","recall_at_10":0.9851,"qps":149.4}
+{"algorithm":"ivfpq-1024L-cb25","recall_at_10":0.9866,"qps":80.1}
