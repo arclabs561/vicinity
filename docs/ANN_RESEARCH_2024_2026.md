@@ -160,17 +160,273 @@ No vector duplication; ~4% memory overhead. Complement to graph indexes.
 
 **Ref**: Jin et al. (2026), SIGMOD 2026. arXiv:2601.01291.
 
+#### SQ4U (`hnsw::sq4u`)
+
+4-bit scalar quantized graph traversal for HNSW. Precomputes a [d x 16] lookup table
+per query, replaces O(d) f32 distance with O(d/2) table lookups during beam search,
+then reranks the candidate pool with exact f32 distance.
+
+**Benchmark verdict (2026-04-15)**: SQ4U is ~3x slower than plain HNSW at d=25
+(GloVe-25) and ~2x slower at d=960 (GIST-960). The reranking pass dominates --
+computing exact f32 distance on the full candidate pool negates the savings from
+quantized traversal. The approach would need to avoid reranking (use quantized
+distances directly) or reduce the rerank pool significantly to break even.
+
+**Comparison with PAG**: PAG's Probabilistic Routing Test (PRT) uses random
+projections at o(d) cost and recycles false positives incrementally (TFB), avoiding
+the need for a separate rerank pass. This is architecturally better than SQ4U's
+two-stage approach.
+
+**Status**: Experimental. Not recommended as a default algorithm.
+
+#### LEMUR (`lemur`)
+
+Inference-only late-interaction retrieval. Maps multi-vector documents (ColBERT-style)
+into single-vector ANN index via mean-pooling (paper uses OLS via SVD). Brute-force
+MIPS for now; needs HNSW-backed MIPS and proper OLS for production use.
+
+**Ref**: Kulkarni et al. (2026). arXiv:2501.xxxxx.
+
 ### Research Only (Not Yet Implemented)
 
 | Paper | Year | Key Idea | Why It Matters |
 |-------|------|----------|----------------|
-| LEMUR | 2026 | Maps multi-vector documents (ColBERT) into single-vector ANN index | MaxSim-compatible ANN for late-interaction retrieval |
 | CleANN | 2025 | Work-stealing concurrent insert/delete/query with consistency guarantees | Formal concurrent correctness for dynamic graphs |
-| PAG | 2026 | Random projections on graph edges for better long-range routing | Simple retrofit onto existing Vamana graphs |
 | DGAI | 2025 | Decoupled graph topology from vector storage | Right architecture for true disk-resident updates |
 | SINDI | 2025 | Graph-based index for sparse vectors (SPLADE/BM25) | Bridges dense and sparse retrieval in one structure |
 | PathFinder | 2025 | Conjunctive/disjunctive filter predicates in graph search | AND/OR trees of filter predicates |
 | QMP | 2024 | Quantization meets projection -- avoids PQ table lookup | Simpler than PQ, competitive accuracy |
+
+### Deep Dives (Research Context)
+
+#### PAG: Projection-Augmented Graph (Mar 2026)
+
+The most significant recent advance. Unifies projection techniques as a first-class
+building block of graph construction rather than a plug-in. Targets six demands:
+high QPS, fast indexing, low memory, high-dim scalability, retrieval-size robustness,
+and online insertion.
+
+**Probabilistic Routing Test (PRT)**: Uses random projections to estimate angles
+between vectors in subspaces, avoiding unnecessary exact distance computations during
+search. Runs in o(d) time via AVX512-optimized projection lookups.
+
+**Test Feedback Buffer (TFB)**: Recycles false positives from PRT by incrementally
+tightening thresholds across search rounds, reusing intermediate computations that
+prior methods (PEOs, KS2) would discard.
+
+**Probabilistic Edge Selection (PES)**: A statistical test that detects useful incoming
+edges outside the standard out-neighbor set, improving graph connectivity for hard
+datasets at O(1) cost per candidate when combined with PRT.
+
+**Results**: Up to 5x faster QPS than HNSW on modern embedding datasets
+(OpenAI text-embedding-3-large at 1536/3072d, CLIP, DINOv2), using 20-40% of HNSW's
+indexing time.
+
+**Relevance to vicinity**: vicinity's FINGER module is conceptually adjacent (projection-
+based search pruning on top of HNSW), but PAG integrates projections into construction
+itself. A PAG-style retrofit onto the existing Vamana graph builder would be the
+cleanest path. SQ4U's benchmark results confirm that two-stage quantized-traverse +
+exact-rerank is the wrong architecture; PAG's incremental approach is better.
+
+**Ref**: Ma et al. (2026). arXiv:2603.06660.
+
+#### HNSW++ (Dual-Branch + LID + Skip Bridges)
+
+Three structural changes to standard HNSW:
+
+1. **LID-driven insertion**: Computes each node's Local Intrinsic Dimensionality via
+   MLE over k-nearest neighbors. High-LID nodes (locally complex regions) are
+   prioritized for upper layers, ensuring "hard" regions have better routing coverage.
+
+2. **Dual-branch structure**: Two independent branches process nodes separately but
+   converge at the base layer. Doubles the probability of finding a good entry region.
+
+3. **Skip bridges**: If node e at layer l > 0 has LID(e) > T and d(e, q) < eps,
+   search bypasses intermediate layers and jumps to layer 0. Reduces per-layer
+   traversal by 20-50% with < 2% recall drop.
+
+**Results**: Across 12 CV/NLP/recommendation datasets, LID-ordered insertion is the
+single most impactful improvement. Skip bridges provide the largest latency reduction.
+
+**Status in vicinity**: `hnsw::dual_branch` exists. Skip bridges not yet implemented.
+
+**Ref**: Zhang et al. (2025). arXiv:2501.13992.
+
+#### Wolverine: Deletion via MSP Repair (VLDB 2025)
+
+First rigorous treatment of deletion as a monotonic-search-path repair problem.
+
+**Key insight**: Naive "connect all in-neighbors to all out-neighbors" (DwFC) often
+*worsens* recall because the new edges are long, violate the short-edge-priority rule,
+and cause EdgeTrim to remove existing short edges. This creates a feedback loop of
+degrading connectivity.
+
+**Wolverine's approach**: For each out-neighbor of the deleted node, run kANN search
+to find quality repair candidates satisfying: (1) close to the out-neighbor,
+(2) far from the deleted node, (3) monotonic to many disrupted path endpoints.
+The geometric locus is a crescent-shaped region -- intersection of two sphere
+complements.
+
+**Results**: Up to 11x better throughput than FreshDiskANN. Repair cost is
+O(theta_d^2) per deletion (2-hop neighborhood), not O(n).
+
+**Relevance to vicinity**: vicinity's tombstone-based deletion (`hnsw::tombstones`)
+avoids graph repair entirely. Wolverine shows when real repair is needed
+(high deletion rates where tombstone overhead degrades search).
+
+**Ref**: Zheng et al. (2025). VLDB 2025.
+
+#### MARGO: Graph Layout Optimization (VLDB 2025)
+
+For disk-based indices, random I/O per graph hop (~100us) dominates. MARGO proves
+optimal graph layout is NP-hard and provides a greedy approximation.
+
+**Edge weight**: w(p, p*) = monotonic_reachability(p, p*) * reachability_to(p).
+Captures the intuition that edges both easy to reach and leading to many destinations
+are most frequently traversed.
+
+**Two-stage**: Cluster the dataset, run greedy layout in parallel per cluster
+(intra-cluster), then handle boundary vertices (inter-cluster).
+
+**Results**: 5.5x faster layout optimization, 26.6% better search efficiency at
+identical recall.
+
+**Relevance to vicinity**: Relevant when vicinity adds disk-resident index support.
+The edge weight formula directly uses SNG occlusion counts.
+
+**Ref**: Zheng et al. (2025). VLDB 2025.
+
+#### Extended-RaBitQ (2-7 bit)
+
+Generalizes RaBitQ from 1-bit to arbitrary compression rates. At same rate,
+dominates classical scalar quantization:
+
+| Bits/dim | Recall (no rerank) | Compression |
+|----------|--------------------|-------------|
+| 1 | ~80% | 32x |
+| 4 | ~90% | 8x |
+| 5 | ~95% | 6.4x |
+| 7 | ~99% | 4.6x |
+
+**Relevance to vicinity**: Current `ivf_rabitq` is 1-bit. Extended-RaBitQ at 4-bit
+could be a better graph traversal distance than SQ4U's scalar 4-bit (uses measure
+concentration rather than per-dimension min/max scaling).
+
+**Ref**: Chen et al. (2026). github.com/VectorDB-NTU/Extended-RaBitQ.
+
+#### PCNN: Polar Code Nearest Neighbor (Amazon, 2025)
+
+Reframes multiprobe LSH as an error-correcting decoding problem. Hashes into a
+high-dimensional binary space (preserving distance fidelity), structures the bucket
+space as a polar code, and uses list decoding for multiprobe queries.
+
+**Key result**: A single hash table outperforms classical multiprobe LSH with
+multiple tables. Eliminates LSH's historical disadvantage (needing many tables).
+
+**Theoretical significance**: Opens a rich design space connecting coding theory
+(LDPC, Reed-Muller, turbo codes) to similarity search. Suggests a "capacity theorem
+for similarity search" may be possible.
+
+**Ref**: Amazon Science (2025).
+
+#### Quake: Adaptive Indexing (OSDI 2025)
+
+Addresses the blind spot that all existing indices assume static, uniformly-accessed
+data. Real workloads have skew, drift, and continuous insertions.
+
+- Multi-level partitioning with dynamic split/merge based on cost model
+- Recall estimation model that dynamically sets nprobe/beam width
+- NUMA-aware intra-query parallelism
+
+**Results**: On Wikipedia-12M (growing 1M to 12M): 28x lower search latency (parallel),
+4.5-126x lower update latency vs HNSW/DiskANN/SVS/ScaNN.
+
+**Ref**: Mohoney et al. (2025). OSDI 2025.
+
+## Theoretical Foundations
+
+### Monotonic Search Paths (MSPs)
+
+The universal primitive underlying all graph-based ANN. A path P(v1, ..., vl) is
+monotonic to query q iff d(vi, q) > d(vi+1, q) for all i. A graph is a Monotonic
+Search Network (MSNET) iff every pair of nodes has at least one MSP.
+
+Construction quality = how many MSPs exist (SNG occlusion count).
+Search efficiency = MSP lengths (O(log n) if navigable).
+Deletion difficulty = MSPs destroyed (Wolverine).
+Disk layout quality = MSP edges per page (MARGO).
+Quantization quality = whether approximate distances preserve MSP traversal.
+
+### The SNG Occlusion Rule
+
+For node p with candidate neighbor p', p' is occluded by already-selected neighbor
+p* if d(p', p*) < d(p', p). Geometrically: p' is on the same side of the
+perpendicular bisector as p*. This ensures edges radiate in diverse angular directions.
+
+**Lemma (occlusion <-> monotonic reachability)**: In an SNG, a monotonic path
+[p, p*, ..., p'] exists iff edge (p, p*) occludes edge (p, p'). The number of
+vertices monotonically reachable from edge (p, p*) equals the edges it occludes + 1.
+
+### Martingale Analysis of Graph Construction (Ma et al., 2026)
+
+SNG pruning modeled as a submartingale. Each accepted neighbor occludes a geometrically
+determined fraction of remaining candidates.
+
+- **Fast phase** (> n^(2/3) candidates): constant fraction eliminated per step.
+  Azuma's inequality gives concentration.
+- **Plateau phase** (<= n^(2/3)): Wormald's Differential Equation Method converts
+  discrete process to continuous ODE, proving convergence to O(ln n) degree.
+- **Maximum out-degree**: O(n^(2/3+eps)) -- the transition point between phases.
+
+### Capacity-Law Failure in HNSW (Jan 2026)
+
+HNSW doesn't degrade gracefully -- it fails abruptly. At approximately
+k ~ 2-3.5 * efSearch, search undergoes discontinuous breakdown: neighbor distances
+explode, geometric structure collapses. Below the threshold, results are
+geometrically meaningless, not merely "slightly worse."
+
+**Implication**: For k neighbors, efSearch >= 2k is mandatory. This is a hard
+boundary, not a tuning recommendation.
+
+### Concentration of Measure
+
+The mathematical engine behind RaBitQ, JL projections, and LSH bounds.
+
+**Levy's isoperimetric inequality**: For A in S^(n-1) with sigma(A) >= 1/2,
+sigma(A_eps) >= 1 - 2*exp(-n*eps^2/2). In 1000 dimensions, ~100% of the sphere
+lies within O(1/sqrt(n)) of any half-measure set.
+
+**Consequence for quantization**: Rounding each coordinate to +/-1/sqrt(D) gives
+O(1/sqrt(D)) total error -- matching the Alon-Klartag information-theoretic lower
+bound. Higher dimensions need fewer bits per dimension for the same accuracy.
+
+### The Coding Theory Connection
+
+PCNN shows ANN and channel decoding are structurally parallel: both solve "find the
+nearest codeword" problems. The key open question: is there a "capacity theorem for
+similarity search"? Given n points in d dimensions with intrinsic dimension d*, what
+is the minimum bits-per-point of index space needed for (1+eps)-approximation in
+O(log n) time?
+
+### Circuit Complexity Barrier (ITCS 2025)
+
+Proving superpolynomial lower bounds on k-NN representation complexity would require
+a breakthrough in circuit complexity (P vs NP-adjacent). This means we may be
+fundamentally unable to prove current methods are near-optimal -- but also that
+dramatic algorithmic improvements may exist undiscovered.
+
+### The Convergence
+
+The field is collapsing the traditional taxonomy. The best modern systems compose
+primitives from multiple families:
+- PAG = graph + LSH-family projections + incremental threshold refinement
+- IVF_RABITQ = IVF partitioning + SimHash-family quantization + SIMD popcount
+- DiskANN = Vamana graph + PQ quantization + SSD-aware beam search
+- Quake = adaptive IVF + cost-model maintenance + NUMA-parallel search
+- HNSW++ = multi-layer graph + LID-based insertion + skip bridges
+
+The "which family is best?" question is the wrong one. The answer is "all of them,
+composed correctly."
 
 ## Metrics to Track
 
