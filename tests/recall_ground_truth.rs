@@ -280,6 +280,7 @@ fn symphonyqg_recall_vs_brute_force() {
 // Vamana
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "vamana")]
 #[test]
 fn vamana_recall_vs_brute_force() {
     use vicinity::vamana::{VamanaIndex, VamanaParams};
