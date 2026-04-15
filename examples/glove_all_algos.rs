@@ -51,6 +51,7 @@ use vicinity::ivf_rabitq::{IVFRaBitQIndex, IVFRaBitQParams};
 use vicinity::nsg::{NsgIndex, NsgParams};
 #[cfg(feature = "nsw")]
 use vicinity::nsw::NSWIndex;
+use vicinity::prt::ProbabilisticRoutingTest;
 #[cfg(feature = "vamana")]
 use vicinity::vamana::{VamanaIndex, VamanaParams};
 
@@ -142,6 +143,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         #[cfg(feature = "ivf_rabitq")]
         "ivf_rabitq" => run_ivf_rabitq(&train, &test, &gt, k, dim)?,
         "adsampling" => run_adsampling(&train, &test, &gt, k, dim)?,
+        "prt" => run_prt(&train, &test, &gt, k, dim)?,
         #[cfg(feature = "sq4")]
         "sq4u" => run_sq4u(&train, &test, &gt, k, dim)?,
         "all" => {
@@ -176,13 +178,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             #[cfg(feature = "ivf_rabitq")]
             run_if_not_cached!("ivf-rabitq-np1", run_ivf_rabitq(&train, &test, &gt, k, dim));
             run_if_not_cached!("adsampling", run_adsampling(&train, &test, &gt, k, dim));
+            run_if_not_cached!("prt", run_prt(&train, &test, &gt, k, dim));
             #[cfg(feature = "sq4")]
             run_if_not_cached!("sq4u", run_sq4u(&train, &test, &gt, k, dim));
         }
         other => {
             eprintln!(
                 "Unknown algorithm: {other}. Use: hnsw | nsw | ivfpq | vamana | ivf_avq | diskann | \
-                 kdtree | balltree | rptree | nsg | emg | ivf_rabitq | adsampling | sq4u | all"
+                 kdtree | balltree | rptree | nsg | emg | ivf_rabitq | adsampling | prt | sq4u | all"
             );
             std::process::exit(1);
         }
@@ -907,6 +910,97 @@ fn measure_adsampling(
     }
     let elapsed = t.elapsed().as_secs_f64();
     (recall_sum / test.len() as f64, test.len() as f64 / elapsed)
+}
+
+// ─── PRT (Probabilistic Routing Test) ────────────────────────────────────────
+
+fn run_prt(
+    train: &[Vec<f32>],
+    test: &[Vec<f32>],
+    gt: &[Vec<i32>],
+    k: usize,
+    dim: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    println!("=== PRT (Projection-Augmented HNSW) ===");
+    let metric = if std::env::var("VICINITY_METRIC").as_deref() == Ok("l2") {
+        vicinity::distance::DistanceMetric::L2
+    } else {
+        vicinity::distance::DistanceMetric::Cosine
+    };
+    let params = HNSWParams {
+        m: 16,
+        m_max: 32,
+        ef_construction: 200,
+        metric,
+        ..Default::default()
+    };
+    print!("  Building HNSW... ");
+    let _ = std::io::stdout().flush();
+    let mut index = HNSWIndex::with_params(dim, params)?;
+    for (i, v) in train.iter().enumerate() {
+        index.add(i as u32, v.clone())?;
+    }
+    let t0 = Instant::now();
+    index.build()?;
+    println!("{:.0}s", t0.elapsed().as_secs_f64());
+
+    // Build PRT with k = dim/4 projections (sweet spot per PAG paper)
+    let num_proj = (dim / 4).clamp(8, 128);
+    print!("  Building PRT (k={num_proj})... ");
+    let _ = std::io::stdout().flush();
+    let t0 = Instant::now();
+    let mut prt = ProbabilisticRoutingTest::new(dim, num_proj, Some(42));
+    prt.project_database(index.raw_vectors());
+    println!("{:.1}s", t0.elapsed().as_secs_f64());
+
+    for ef in [10, 20, 50, 100, 200, 400] {
+        let (recall, qps, avg_full_ratio) = measure_prt(&index, &prt, test, gt, k, ef);
+        println!(
+            "    ef={ef:4}  recall={:.1}%  qps={:.0}  full_dist={:.0}%",
+            recall * 100.0,
+            qps,
+            avg_full_ratio * 100.0,
+        );
+        append_jsonl("prt", recall, qps)?;
+    }
+    Ok(())
+}
+
+fn measure_prt(
+    index: &HNSWIndex,
+    prt: &ProbabilisticRoutingTest,
+    test: &[Vec<f32>],
+    gt: &[Vec<i32>],
+    k: usize,
+    ef: usize,
+) -> (f64, f64, f64) {
+    // Warmup
+    for q in test.iter().take(50) {
+        let _ = index.search_prt(q, k, ef, prt, 1.5, 0.95);
+    }
+    let t = Instant::now();
+    let mut recall_sum = 0.0;
+    let mut full_dist_sum = 0u64;
+    for (i, q) in test.iter().enumerate() {
+        let (res, full_dists) = index
+            .search_prt(q, k, ef, prt, 1.5, 0.95)
+            .unwrap_or_default();
+        recall_sum += recall_at_k(&res, &gt[i], k);
+        full_dist_sum += full_dists as u64;
+    }
+    let elapsed = t.elapsed().as_secs_f64();
+    // Estimate what fraction of candidate distances used full computation
+    // (vs filtered by PRT). Rough estimate: full_dists / (test.len() * ef * avg_neighbors).
+    let avg_full_per_query = full_dist_sum as f64 / test.len() as f64;
+    // Normalize against the total candidates that would be visited at this ef
+    // (heuristic: ~ef * 5 for typical HNSW graph connectivity)
+    let estimated_total = ef as f64 * 5.0;
+    let full_ratio = (avg_full_per_query / estimated_total).min(1.0);
+    (
+        recall_sum / test.len() as f64,
+        test.len() as f64 / elapsed,
+        full_ratio,
+    )
 }
 
 // ─── SQ4U (4-bit quantized HNSW traversal) ───────────────────────────────────
