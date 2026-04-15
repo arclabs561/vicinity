@@ -218,6 +218,7 @@ proptest! {
                 ef_construction: 50,
                 ef_search: 20,
                 seed: Some(s),
+                ..vicinity::vamana::VamanaParams::default()
             };
             let mut idx = vicinity::vamana::VamanaIndex::new(dim, params).unwrap();
             for (i, v) in vectors.iter().enumerate() {

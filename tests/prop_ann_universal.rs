@@ -273,6 +273,7 @@ ann_universal_tests! {
         let params = vicinity::diskann::DiskANNParams {
             m: 32, ef_construction: 100, alpha: 1.2, ef_search: 100,
             seed: None,
+            ..vicinity::diskann::DiskANNParams::default()
         };
         let mut idx = vicinity::diskann::DiskANNIndex::new(dim, params).unwrap();
         for (i, v) in data.iter().enumerate() {

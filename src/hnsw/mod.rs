@@ -185,10 +185,12 @@ pub mod symphony_qg;
 #[cfg(all(feature = "hnsw", feature = "ivf_rabitq"))]
 pub use symphony_qg::SymphonyQGIndex;
 
-// SQ4U: 4-bit scalar quantized graph traversal
+// SQ4U: 4-bit scalar quantized graph traversal (deprecated in favor of SymphonyQG)
 #[cfg(all(feature = "hnsw", feature = "sq4"))]
+#[allow(deprecated)]
 pub mod sq4u;
 #[cfg(all(feature = "hnsw", feature = "sq4"))]
+#[allow(deprecated)]
 pub use sq4u::HNSWSq4Index;
 
 // Adaptive search (DARTH-style early termination)

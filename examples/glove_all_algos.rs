@@ -39,6 +39,7 @@ use vicinity::diskann::{DiskANNIndex, DiskANNParams};
 #[cfg(feature = "emg")]
 use vicinity::emg::{EmgIndex, EmgParams};
 #[cfg(feature = "sq4")]
+#[allow(deprecated)]
 use vicinity::hnsw::sq4u::HNSWSq4Index;
 #[cfg(feature = "ivf_rabitq")]
 use vicinity::hnsw::symphony_qg::SymphonyQGIndex;
@@ -348,6 +349,7 @@ fn run_vamana(
         ef_construction: 200,
         ef_search: 50,
         seed: None,
+        ..VamanaParams::default()
     };
     print!("  Building (max_degree=64, alpha=1.3, ef_construction=200)... ");
     let _ = std::io::stdout().flush();
@@ -503,6 +505,7 @@ fn run_diskann(
         ef_construction: 200,
         ef_search: 50,
         seed: None,
+        ..DiskANNParams::default()
     };
     print!("  Building (m=64, alpha=1.3, ef_construction=200)... ");
     let _ = std::io::stdout().flush();
