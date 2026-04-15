@@ -23,11 +23,13 @@ fn build_hnsw(
     m: usize,
     seed: u64,
 ) -> (vicinity::hnsw::HNSWIndex, Vec<Vec<f32>>) {
-    let mut params = vicinity::hnsw::HNSWParams::default();
-    params.m = m;
-    params.m_max = m * 2;
-    params.ef_construction = 100;
-    params.seed = Some(seed);
+    let params = vicinity::hnsw::HNSWParams {
+        m,
+        m_max: m * 2,
+        ef_construction: 100,
+        seed: Some(seed),
+        ..vicinity::hnsw::HNSWParams::default()
+    };
     let mut idx = vicinity::hnsw::HNSWIndex::with_params(dim, params).unwrap();
 
     let vectors: Vec<Vec<f32>> = random_vectors(n, dim, seed)
