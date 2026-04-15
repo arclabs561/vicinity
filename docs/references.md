@@ -186,6 +186,9 @@ It is intended to backstop claims in module docs and to give you a starting poin
 - Chen, Wei-cheng, Yu, Dhillon, Hsieh (2022). *FINGER: Fast Inference for Graph-based Approximate Nearest Neighbor Search.* (edge-projection distance bounds; basis for `finger` module)
   `https://arxiv.org/abs/2206.11408`
 
+- Ma et al. (2026). *PAG: Projection-Augmented Graph for ANN Search.* (PRT + TFB + PES; up to 5x HNSW QPS on high-dim embeddings)
+  `https://arxiv.org/abs/2603.06660`
+
 ## Projection-quantization fusion (MRQ / QMP)
 
 - Yang, Jing, Li, Wang (2024). *Quantization Meets Projection: A Happy Marriage for Approximate k-Nearest Neighbor Search.* (projection concentrates info in leading dims; basis for `rp_quant` module)
@@ -215,6 +218,38 @@ It is intended to backstop claims in module docs and to give you a starting poin
 
 - Dong, Moses, Li (2011). *Efficient k-nearest neighbor graph construction for generic similarity measures.* (NN-descent)
   `https://doi.org/10.1145/1963405.1963487`
+
+## Extended quantization
+
+- Chen et al. (2026). *Extended-RaBitQ: Arbitrary-rate vector quantization from 2-7 bits/dim.*
+  `https://github.com/VectorDB-NTU/Extended-RaBitQ`
+
+- Google Research (2025). *SOAR: Orthogonality-Amplified Residuals for reduced correlated search failures in ScaNN.*
+  `https://research.google/blog/soar-new-algorithms-for-even-faster-vector-search-with-scann/`
+
+## Coding theory + LSH
+
+- Amazon Science (2025). *PCNN: Polar Code Nearest Neighbor -- multiprobe LSH via error-correcting code list decoding.*
+  `https://www.amazon.science/publications/approximate-nearest-neighbor-search-through-modern-error-correcting-codes`
+
+## Graph layout optimization
+
+- Zheng et al. (2025). *MARGO: Graph Layout Optimization for Disk-Based ANN via Monotonic Reachability Weighting.* (VLDB 2025)
+
+## Capacity-law failure
+
+- PMC (2026). *Capacity-limited failure in HNSW: discontinuous breakdown at k ~ 2-3.5 * efSearch.* (ResNet-50 on STL-10)
+  `https://pmc.ncbi.nlm.nih.gov/articles/PMC12942108/`
+
+## Parallel / concurrent ANN
+
+- ParlayANN (CMU, 2025). *Lock-free deterministic parallel graph-based ANN (DiskANN, HNSW, HCNNG, pyNNDescent). CLEANN-Tree: first linearizable concurrent k-NN structure.*
+  `https://arxiv.org/abs/2603.06660`
+
+## GPU graph ANN
+
+- CAGRA, CUHNSW. *GPU graph construction and search; significantly outperforms 40-thread CPU HNSW.*
+  `https://www.shimin-chen.com/papers/gpu-graph-anns-hardbdactive25.pdf`
 
 ## Practical benchmarking references
 
