@@ -35,6 +35,10 @@ jobs:
         run: cargo build --no-default-features --features hnsw
       - name: Test (unit + integration)
         run: cargo test --no-default-features --features hnsw
+      - name: Test (sq4)
+        run: cargo test --no-default-features --features hnsw,sq4
+      - name: Test (lemur)
+        run: cargo test --no-default-features --features lemur
       - name: Test (all features, lib only)
         run: cargo test --lib --all-features
         env:
