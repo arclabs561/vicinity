@@ -5,6 +5,7 @@
 //! cargo run --example glove_all_algos --release --features "hnsw,nsw,ivf_pq,vamana,ivf_avq,diskann,kdtree,balltree,rptree" -- --algo all
 //!
 //! # Individual algorithms
+//! cargo run --example glove_all_algos --release --features "hnsw,sq4" -- --algo sq4u
 //! cargo run --example glove_all_algos --release --features "hnsw,nsw,ivf_pq,vamana,ivf_avq,diskann" -- --algo hnsw
 //! cargo run --example glove_all_algos --release --features "hnsw,nsw,ivf_pq,vamana,ivf_avq,diskann" -- --algo nsw
 //! cargo run --example glove_all_algos --release --features "hnsw,nsw,ivf_pq,vamana,ivf_avq,diskann" -- --algo ivfpq
@@ -37,6 +38,8 @@ use vicinity::classic::trees::rp_forest::{RPTreeParams, RpForestIndex, RpForestP
 use vicinity::diskann::{DiskANNIndex, DiskANNParams};
 #[cfg(feature = "emg")]
 use vicinity::emg::{EmgIndex, EmgParams};
+#[cfg(feature = "sq4")]
+use vicinity::hnsw::sq4u::HNSWSq4Index;
 use vicinity::hnsw::{HNSWIndex, HNSWParams};
 #[cfg(feature = "ivf_avq")]
 use vicinity::ivf_avq::{IVFAVQIndex, IVFAVQParams};
@@ -139,6 +142,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         #[cfg(feature = "ivf_rabitq")]
         "ivf_rabitq" => run_ivf_rabitq(&train, &test, &gt, k, dim)?,
         "adsampling" => run_adsampling(&train, &test, &gt, k, dim)?,
+        #[cfg(feature = "sq4")]
+        "sq4u" => run_sq4u(&train, &test, &gt, k, dim)?,
         "all" => {
             macro_rules! run_if_not_cached {
                 ($key:expr, $call:expr) => {
@@ -171,11 +176,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             #[cfg(feature = "ivf_rabitq")]
             run_if_not_cached!("ivf-rabitq-np1", run_ivf_rabitq(&train, &test, &gt, k, dim));
             run_if_not_cached!("adsampling", run_adsampling(&train, &test, &gt, k, dim));
+            #[cfg(feature = "sq4")]
+            run_if_not_cached!("sq4u", run_sq4u(&train, &test, &gt, k, dim));
         }
         other => {
             eprintln!(
                 "Unknown algorithm: {other}. Use: hnsw | nsw | ivfpq | vamana | ivf_avq | diskann | \
-                 kdtree | balltree | rptree | nsg | emg | ivf_rabitq | adsampling | all"
+                 kdtree | balltree | rptree | nsg | emg | ivf_rabitq | adsampling | sq4u | all"
             );
             std::process::exit(1);
         }
@@ -896,6 +903,76 @@ fn measure_adsampling(
     let mut recall_sum = 0.0;
     for (i, q) in test.iter().enumerate() {
         let res = state.search_hnsw(index, q, k, ef).unwrap_or_default();
+        recall_sum += recall_at_k(&res, &gt[i], k);
+    }
+    let elapsed = t.elapsed().as_secs_f64();
+    (recall_sum / test.len() as f64, test.len() as f64 / elapsed)
+}
+
+// ─── SQ4U (4-bit quantized HNSW traversal) ───────────────────────────────────
+
+#[cfg(feature = "sq4")]
+fn run_sq4u(
+    train: &[Vec<f32>],
+    test: &[Vec<f32>],
+    gt: &[Vec<i32>],
+    k: usize,
+    dim: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    println!("=== SQ4U (4-bit quantized HNSW) ===");
+    let metric = if std::env::var("VICINITY_METRIC").as_deref() == Ok("l2") {
+        vicinity::distance::DistanceMetric::L2
+    } else {
+        vicinity::distance::DistanceMetric::Cosine
+    };
+    let params = HNSWParams {
+        m: 16,
+        m_max: 32,
+        ef_construction: 200,
+        metric,
+        ..Default::default()
+    };
+    print!("  Building (M=16, M_max=32)... ");
+    let _ = std::io::stdout().flush();
+    let mut index = HNSWSq4Index::with_params(dim, params)?;
+    for (i, v) in train.iter().enumerate() {
+        index.add_slice(i as u32, v)?;
+    }
+    let t0 = Instant::now();
+    index.build()?;
+    println!("{:.0}s", t0.elapsed().as_secs_f64());
+
+    // Reranked search: sweep ef with rerank_pool = ef (all candidates get reranked)
+    for ef in [10, 20, 50, 100, 200, 400] {
+        let (recall, qps) = measure_sq4u_reranked(&index, test, gt, k, ef, ef);
+        println!(
+            "    ef={ef:4}  recall={:.1}%  qps={:.0}",
+            recall * 100.0,
+            qps
+        );
+        append_jsonl("sq4u", recall, qps)?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "sq4")]
+fn measure_sq4u_reranked(
+    index: &HNSWSq4Index,
+    test: &[Vec<f32>],
+    gt: &[Vec<i32>],
+    k: usize,
+    ef: usize,
+    rerank_pool: usize,
+) -> (f64, f64) {
+    for q in test.iter().take(50) {
+        let _ = index.search_reranked(q, k, ef, rerank_pool);
+    }
+    let t = Instant::now();
+    let mut recall_sum = 0.0;
+    for (i, q) in test.iter().enumerate() {
+        let res = index
+            .search_reranked(q, k, ef, rerank_pool)
+            .unwrap_or_default();
         recall_sum += recall_at_k(&res, &gt[i], k);
     }
     let elapsed = t.elapsed().as_secs_f64();

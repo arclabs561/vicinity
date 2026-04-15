@@ -86,6 +86,7 @@ Each algorithm has a named feature flag:
 | Algorithm | Feature | Notes |
 |-----------|---------|-------|
 | HNSW | `hnsw` (default) | Best recall/QPS balance for in-memory search |
+| SQ4U | `hnsw` + `sq4` | HNSW with 4-bit quantized graph traversal + exact rerank; benefits high-d data |
 | SymphonyQG | `hnsw` + `ivf_rabitq` | HNSW with RaBitQ quantized graph traversal; cheap approximate beam search + exact rerank |
 | NSW | `nsw` | Flat small-world graph; competitive with HNSW on high-d data |
 | Vamana | `vamana` | DiskANN-style robust pruning; fast search, higher build time |
@@ -101,8 +102,10 @@ Each algorithm has a named feature flag:
 | BinaryFlat | `binary_index` | 1-bit quantization + full-precision rerank |
 | Curator | `curator` | K-means tree with per-label Bloom filters; low-selectivity filtered search |
 | FilteredGraph | `filtered_graph` | Predicate-filtered graph search (AND/OR metadata filters) |
+| ACORN | `hnsw` | Filtered HNSW search with subgraph sampling (SIGMOD 2024) |
 | ESG | `esg` | Range-filtered search over numeric attributes |
 | SparseMIPS | `sparse_mips` | Graph index for sparse vectors (SPLADE/BM25) |
+| LEMUR | `lemur` | Late-interaction retrieval (multi-vector MIPS); inference-only |
 | DiskANN | `diskann` | Vamana + SSD I/O layout; experimental |
 | SNG | `sng` | Small navigable graph; O(n^2) construction |
 | DEG | `hnsw` | Density-adaptive edge budgets (submodule of hnsw); O(n^2) |

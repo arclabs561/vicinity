@@ -188,3 +188,9 @@
 {"algorithm":"ivf_avq","recall_at_10":0.9081,"qps":1535.6}
 {"algorithm":"ivf_avq","recall_at_10":0.9091,"qps":773.5}
 {"algorithm":"ivf_avq","recall_at_10":0.9091,"qps":314.7}
+{"algorithm":"sq4u","recall_at_10":0.5674,"qps":17824.4}
+{"algorithm":"sq4u","recall_at_10":0.7750,"qps":11782.1}
+{"algorithm":"sq4u","recall_at_10":0.9333,"qps":5852.4}
+{"algorithm":"sq4u","recall_at_10":0.9805,"qps":3408.6}
+{"algorithm":"sq4u","recall_at_10":0.9959,"qps":1927.4}
+{"algorithm":"sq4u","recall_at_10":0.9994,"qps":1055.5}

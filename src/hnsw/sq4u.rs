@@ -62,9 +62,25 @@ pub struct HNSWSq4Index {
 }
 
 impl HNSWSq4Index {
-    /// Create a new SQ4U index.
+    /// Create a new SQ4U index with default cosine metric.
     pub fn new(dimension: usize, m: usize, m_max: usize) -> Result<Self, RetrieveError> {
         let index = HNSWIndex::new(dimension, m, m_max)?;
+        Ok(Self {
+            index,
+            codes: Vec::new(),
+            mins: Vec::new(),
+            steps: Vec::new(),
+            inv_scales: Vec::new(),
+            built: false,
+        })
+    }
+
+    /// Create a new SQ4U index with explicit HNSW parameters.
+    pub fn with_params(
+        dimension: usize,
+        params: crate::hnsw::HNSWParams,
+    ) -> Result<Self, RetrieveError> {
+        let index = HNSWIndex::with_params(dimension, params)?;
         Ok(Self {
             index,
             codes: Vec::new(),
@@ -214,7 +230,7 @@ impl HNSWSq4Index {
         }
 
         // Pack each vector.
-        let code_len = (dim + 1) / 2;
+        let code_len = dim.div_ceil(2);
         let mut codes = Vec::with_capacity(n);
         let mut buf = vec![0u8; code_len];
         for i in 0..n {
@@ -233,6 +249,7 @@ impl HNSWSq4Index {
     /// Precompute the distance table for a query: table[d][code] = (q[d] - decoded)^2.
     /// Flattened as [d * 16] f32 values.
     #[inline]
+    #[allow(clippy::needless_range_loop)]
     fn precompute_table(&self, query: &[f32]) -> Vec<f32> {
         let dim = self.index.dimension;
         let mut table = vec![0.0f32; dim * 16];
