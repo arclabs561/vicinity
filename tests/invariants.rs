@@ -555,3 +555,117 @@ fn incremental_additions_dont_corrupt_earlier_data() {
         k
     );
 }
+
+// ---------------------------------------------------------------------------
+// Test: Graph connectivity for NSW
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "nsw")]
+#[test]
+fn nsw_connectivity_every_node_findable() {
+    use vicinity::nsw::NSWIndex;
+
+    let n = 200;
+    let dim = 32;
+    let vecs = random_normalized_vectors(n, dim, 42);
+
+    let mut index = NSWIndex::new(dim, 16, 32).unwrap();
+    for (i, v) in vecs.iter().enumerate() {
+        index.add(i as u32, v.clone()).unwrap();
+    }
+    index.build().unwrap();
+
+    let mut found = 0;
+    for (i, v) in vecs.iter().enumerate() {
+        let results = index.search(v, 5, 200).unwrap();
+        if results.iter().any(|(id, _)| *id == i as u32) {
+            found += 1;
+        }
+    }
+
+    let findable_rate = found as f32 / n as f32;
+    assert!(
+        findable_rate >= 0.90,
+        "NSW: only {found}/{n} vectors findable via self-search (rate {findable_rate:.3})"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test: Graph connectivity for Vamana
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "vamana")]
+#[test]
+fn vamana_connectivity_every_node_findable() {
+    use vicinity::vamana::{VamanaIndex, VamanaParams};
+
+    let n = 200;
+    let dim = 32;
+    let vecs = random_normalized_vectors(n, dim, 42);
+
+    let params = VamanaParams {
+        max_degree: 32,
+        ef_construction: 100,
+        alpha: 1.2,
+        ef_search: 100,
+        ..VamanaParams::default()
+    };
+    let mut index = VamanaIndex::new(dim, params).unwrap();
+    for (i, v) in vecs.iter().enumerate() {
+        index.add(i as u32, v.clone()).unwrap();
+    }
+    index.build().unwrap();
+
+    let mut found = 0;
+    for (i, v) in vecs.iter().enumerate() {
+        let results = index.search(v, 5, 200).unwrap();
+        if results.iter().any(|(id, _)| *id == i as u32) {
+            found += 1;
+        }
+    }
+
+    let findable_rate = found as f32 / n as f32;
+    assert!(
+        findable_rate >= 0.90,
+        "Vamana: only {found}/{n} vectors findable via self-search (rate {findable_rate:.3})"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test: Graph connectivity for NSG
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "nsg")]
+#[test]
+fn nsg_connectivity_every_node_findable() {
+    use vicinity::nsg::{NsgIndex, NsgParams};
+
+    let n = 200;
+    let dim = 32;
+    let vecs = random_normalized_vectors(n, dim, 42);
+
+    let params = NsgParams {
+        max_degree: 32,
+        pool_size: 100,
+        ..NsgParams::default()
+    };
+    let mut index = NsgIndex::new(dim, params).unwrap();
+    for (i, v) in vecs.iter().enumerate() {
+        index.add(i as u32, v.clone()).unwrap();
+    }
+    index.build().unwrap();
+
+    let mut found = 0;
+    for (i, v) in vecs.iter().enumerate() {
+        let results = index.search_with_ef(v, 5, 200).unwrap();
+        if results.iter().any(|(id, _)| *id == i as u32) {
+            found += 1;
+        }
+    }
+
+    let findable_rate = found as f32 / n as f32;
+    assert!(
+        findable_rate >= 0.90,
+        "NSG: only {found}/{n} vectors findable via self-search (rate {findable_rate:.3})"
+    );
+}
