@@ -271,7 +271,8 @@ ann_universal_tests! {
     feature: "diskann",
     build_index: |data: &[Vec<f32>], dim: usize| {
         let params = vicinity::diskann::DiskANNParams {
-            m: 32, ef_construction: 100, alpha: 1.2, ef_search: 100
+            m: 32, ef_construction: 100, alpha: 1.2, ef_search: 100,
+            seed: None,
         };
         let mut idx = vicinity::diskann::DiskANNIndex::new(dim, params).unwrap();
         for (i, v) in data.iter().enumerate() {

@@ -208,6 +208,7 @@ impl DiskANNSearcher {
             ef_construction: params_val["ef_construction"].as_u64().unwrap_or(100) as usize,
             alpha: params_val["alpha"].as_f64().unwrap_or(1.2) as f32,
             ef_search: params_val["ef_search"].as_u64().unwrap_or(100) as usize,
+            seed: None,
         };
 
         // 2. Open Graph
@@ -360,6 +361,10 @@ pub struct DiskANNParams {
 
     /// Search width
     pub ef_search: usize,
+
+    /// Optional RNG seed for reproducible construction.
+    /// When `None` (default), uses thread-local RNG.
+    pub seed: Option<u64>,
 }
 
 impl Default for DiskANNParams {
@@ -369,6 +374,7 @@ impl Default for DiskANNParams {
             ef_construction: 100,
             alpha: 1.2,
             ef_search: 100,
+            seed: None,
         }
     }
 }
@@ -545,7 +551,11 @@ impl DiskANNIndex {
 
     /// Initialize random R-regular graph.
     fn initialize_random_graph(&mut self) {
-        let mut rng = rand::rng();
+        use rand::SeedableRng;
+        let mut rng: Box<dyn rand::RngCore> = match self.params.seed {
+            Some(s) => Box::new(rand::rngs::StdRng::seed_from_u64(s)),
+            None => Box::new(rand::rng()),
+        };
         let r = self.params.m;
 
         for i in 0..self.num_vectors {
@@ -596,7 +606,14 @@ impl DiskANNIndex {
     fn vamana_pass(&mut self, alpha: f32) -> Result<(), RetrieveError> {
         // Random permutation of nodes
         let mut nodes: Vec<u32> = (0..self.num_vectors as u32).collect();
-        nodes.shuffle(&mut rand::rng());
+        {
+            use rand::SeedableRng;
+            let mut rng: Box<dyn rand::RngCore> = match self.params.seed {
+                Some(s) => Box::new(rand::rngs::StdRng::seed_from_u64(s.wrapping_add(1))),
+                None => Box::new(rand::rng()),
+            };
+            nodes.shuffle(&mut *rng);
+        }
 
         for &i in &nodes {
             let query_vec = self.get_vector(i);
@@ -898,6 +915,7 @@ mod tests {
             ef_construction: 20,
             alpha: 1.2,
             ef_search: 20,
+            seed: None,
         };
         let mut index = DiskANNIndex::new(4, params).unwrap();
 
@@ -936,6 +954,7 @@ mod tests {
             ef_construction: 20,
             alpha: 1.2,
             ef_search: 20,
+            seed: None,
         };
         let mut index = DiskANNIndex::new(4, params).unwrap();
         for i in 0..30u32 {
@@ -963,6 +982,7 @@ mod tests {
             ef_construction: 100,
             alpha: 1.2,
             ef_search: 100,
+            seed: None,
         };
         let dim = 16;
         let n = 100u32;
@@ -1012,6 +1032,7 @@ mod tests {
             ef_construction: 30,
             alpha: 1.2,
             ef_search: 30,
+            seed: None,
         };
         let mut index = DiskANNIndex::new(4, params).unwrap();
         let n = 25u32;
@@ -1039,6 +1060,7 @@ mod tests {
             ef_construction: 20,
             alpha: 1.2,
             ef_search: 20,
+            seed: None,
         };
         // Place vector 0 far away; the cluster centroid is around index 3-4.
         // If medoid is real, start_node should not be 0.
@@ -1076,6 +1098,7 @@ mod tests {
             ef_construction: 20,
             alpha: 1.2,
             ef_search: 20,
+            seed: None,
         };
         let n = 20u32;
         let mut index = DiskANNIndex::new(4, params).unwrap();

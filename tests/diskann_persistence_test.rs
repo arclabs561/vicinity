@@ -63,6 +63,7 @@ fn test_diskann_save_load_roundtrip() {
         ef_construction: 50,
         alpha: 1.2,
         ef_search: 50,
+        seed: None,
     };
 
     let mut index = DiskANNIndex::new(d, params.clone()).expect("Failed to create index");
@@ -143,6 +144,7 @@ fn test_diskann_metadata_roundtrip() {
         ef_construction: 20,
         alpha: 1.1,
         ef_search: 20,
+        seed: None,
     };
 
     let mut index = DiskANNIndex::new(d, params.clone()).expect("Failed to create index");
