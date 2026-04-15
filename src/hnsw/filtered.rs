@@ -87,7 +87,7 @@ impl FilterPredicate for NoFilter {
 pub struct AcornConfig {
     /// Enable two-hop expansion when filter is selective
     pub enable_two_hop: bool,
-    /// Threshold for switching to two-hop (ratio of filtered/visited)
+    /// Unused since two-hop became unconditional. Retained for API compatibility.
     pub two_hop_threshold: f32,
     /// Maximum two-hop neighbors to examine per node
     pub max_two_hop_neighbors: usize,
