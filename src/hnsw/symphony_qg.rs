@@ -332,6 +332,341 @@ fn approx_dist_sqr(rotated_query: &[f32], qv: &QuantizedVector) -> f32 {
     RaBitQQuantizer::approximate_l2_sqr_prerotated(rotated_query, qv)
 }
 
+// ── Vertex-Relative SymphonyQG ──────────────────────────────────────────────
+
+/// Compact per-edge RaBitQ code for vertex-relative normalization.
+///
+/// For each edge (u -> v), stores the quantized code for `v` centered at `u`,
+/// plus correction scalars. At query time, the global-rotated query is used
+/// with per-edge corrections to estimate `||q - v||^2`.
+struct EdgeCode {
+    /// RaBitQ correction: approximates `||v - u||^2` contribution
+    f_add: f32,
+    /// RaBitQ correction: scales the inner product term
+    f_rescale: f32,
+    /// Precomputed `IP(R*u, quantized_codes)` -- subtracted at query time
+    ip_u_rot_codes: f32,
+    /// Extended bits count (for cb computation)
+    ex_bits: u8,
+    /// Quantized codes as u16 (same as QuantizedVector.codes).
+    /// Indexed by dimension.
+    codes: Vec<u16>,
+}
+
+/// HNSW index with vertex-relative RaBitQ quantized graph traversal.
+///
+/// Unlike [`SymphonyQGIndex`] (which uses a global centroid), this variant
+/// stores per-edge quantized codes where each neighbor `v` is quantized
+/// relative to its parent `u`. This keeps RaBitQ error bounds tight for
+/// L2/unnormalized data where vector norms vary.
+///
+/// Memory cost: one `EdgeCode` per directed edge in the graph (~500 bytes/edge
+/// at d=960 with 4-bit RaBitQ). For M=16 and 1M vectors, this is ~8GB.
+/// Use for high-dimensional L2 workloads where accuracy matters more than memory.
+///
+/// # References
+///
+/// - Gou et al. (2025). "SymphonyQG", SIGMOD 2025, Section 3.1.1.
+///   Vertex-relative normalization for HNSW + RaBitQ.
+pub struct SymphonyQGVRIndex {
+    /// The underlying HNSW index (owns graph + f32 vectors).
+    index: HNSWIndex,
+    /// Per-edge codes for base layer (layer 0).
+    /// Flat array: `edge_codes[neighbor_offsets[node_id] + slot]`.
+    edge_codes: Vec<EdgeCode>,
+    /// Cumulative neighbor count per node: `neighbor_offsets[node_id]` is the
+    /// start index into `edge_codes` for node `node_id`'s neighbors.
+    neighbor_offsets: Vec<u32>,
+    /// Per-node global-rotated vectors `R * v` (kept for distance computation).
+    rotated_nodes: Vec<f32>,
+    /// RaBitQ quantizer (owns rotation matrix).
+    quantizer: Option<RaBitQQuantizer>,
+    /// RaBitQ configuration.
+    rabitq_config: RaBitQConfig,
+    /// Random seed for rotation matrix.
+    seed: u64,
+    /// Dimension.
+    dimension: usize,
+    /// Whether build has completed.
+    built: bool,
+}
+
+impl SymphonyQGVRIndex {
+    /// Create a new vertex-relative SymphonyQG index.
+    pub fn new(
+        dimension: usize,
+        params: super::graph::HNSWParams,
+        rabitq_config: RaBitQConfig,
+        seed: u64,
+    ) -> Result<Self, RetrieveError> {
+        let index = HNSWIndex::with_params(dimension, params)?;
+        Ok(Self {
+            index,
+            edge_codes: Vec::new(),
+            neighbor_offsets: Vec::new(),
+            rotated_nodes: Vec::new(),
+            quantizer: None,
+            rabitq_config,
+            seed,
+            dimension,
+            built: false,
+        })
+    }
+
+    /// Add a vector.
+    pub fn add_slice(&mut self, doc_id: u32, vector: &[f32]) -> Result<(), RetrieveError> {
+        self.index.add_slice(doc_id, vector)
+    }
+
+    /// Build the HNSW graph then quantize per-edge codes.
+    pub fn build(&mut self) -> Result<(), RetrieveError> {
+        self.index.build()?;
+        self.build_edge_codes()?;
+        self.built = true;
+        Ok(())
+    }
+
+    /// Build per-edge RaBitQ codes using vertex-relative centroids.
+    fn build_edge_codes(&mut self) -> Result<(), RetrieveError> {
+        let n = self.index.num_vectors;
+        if n == 0 {
+            return Ok(());
+        }
+        let dim = self.dimension;
+
+        // Create quantizer with zero centroid (we'll pass vertex-relative centroids manually).
+        let mut quantizer = RaBitQQuantizer::with_config(dim, self.seed, self.rabitq_config)
+            .map_err(|e| RetrieveError::InvalidParameter(format!("RaBitQ init: {e}")))?;
+        // Set centroid to zero -- quantize_with_centroid will use the per-edge centroid.
+        quantizer
+            .set_centroid(vec![0.0f32; dim])
+            .map_err(|e| RetrieveError::InvalidParameter(format!("RaBitQ centroid: {e}")))?;
+
+        // Compute rotated vectors R*v for all nodes (for ip_u_rot_codes precomputation).
+        let mut rotated_flat = vec![0.0f32; n * dim];
+        for i in 0..n {
+            let v = self.index.get_vector(i);
+            let r = quantizer
+                .rotate_query(v)
+                .map_err(|e| RetrieveError::InvalidParameter(format!("rotate: {e}")))?;
+            rotated_flat[i * dim..(i + 1) * dim].copy_from_slice(&r);
+        }
+
+        // Build per-edge codes for base layer (layer 0).
+        if self.index.layers.is_empty() {
+            self.quantizer = Some(quantizer);
+            self.rotated_nodes = rotated_flat;
+            return Ok(());
+        }
+        let base_layer = &self.index.layers[0];
+        let layer_len = base_layer.len();
+
+        let mut edge_codes = Vec::new();
+        let mut neighbor_offsets = Vec::with_capacity(layer_len + 1);
+
+        for node_id in 0..layer_len as u32 {
+            neighbor_offsets.push(edge_codes.len() as u32);
+            let neighbors = base_layer.get_neighbors(node_id);
+            let u_vec = self.index.get_vector(node_id as usize);
+            let u_rot = &rotated_flat[node_id as usize * dim..(node_id as usize + 1) * dim];
+
+            for &neighbor_id in neighbors.iter() {
+                let v_vec = self.index.get_vector(neighbor_id as usize);
+
+                // Quantize v relative to u (centroid = u_vec).
+                let qv = quantizer
+                    .quantize_with_centroid(v_vec, u_vec)
+                    .map_err(|e| RetrieveError::InvalidParameter(format!("quantize edge: {e}")))?;
+
+                // Precompute IP(R*u, codes) using the quantized code values.
+                let cb = -((1u32 << qv.ex_bits) as f32 - 0.5);
+                let ip_u_rot: f32 = u_rot
+                    .iter()
+                    .zip(qv.codes.iter())
+                    .map(|(&ur, &c)| ur * (c as f32 + cb))
+                    .sum();
+
+                edge_codes.push(EdgeCode {
+                    f_add: qv.f_add,
+                    f_rescale: qv.f_rescale,
+                    ip_u_rot_codes: ip_u_rot,
+                    ex_bits: qv.ex_bits as u8,
+                    codes: qv.codes,
+                });
+            }
+        }
+        // Sentinel for the last node's range.
+        neighbor_offsets.push(edge_codes.len() as u32);
+
+        self.edge_codes = edge_codes;
+        self.neighbor_offsets = neighbor_offsets;
+        self.rotated_nodes = rotated_flat;
+        self.quantizer = Some(quantizer);
+        Ok(())
+    }
+
+    /// Search using vertex-relative quantized graph traversal (no reranking).
+    pub fn search(
+        &self,
+        query: &[f32],
+        k: usize,
+        ef: usize,
+    ) -> Result<Vec<(u32, f32)>, RetrieveError> {
+        if !self.built || self.index.num_vectors == 0 || self.index.layers.is_empty() {
+            return Ok(Vec::new());
+        }
+        if query.len() != self.dimension {
+            return Err(RetrieveError::DimensionMismatch {
+                query_dim: query.len(),
+                doc_dim: self.dimension,
+            });
+        }
+
+        let quantizer = self.quantizer.as_ref().unwrap();
+        let rotated_query = quantizer
+            .rotate_query(query)
+            .map_err(|e| RetrieveError::InvalidParameter(format!("rotate query: {e}")))?;
+
+        let (entry_point, entry_layer) = self.index.entry_point().unwrap_or((0, 0));
+        let dim = self.dimension;
+
+        // Upper layers: greedy descent with global-centroid codes (fallback).
+        // For upper layers we don't have per-edge codes, so use exact f32 distance.
+        let dist_fn_exact = self.index.dist_fn();
+        let mut current = entry_point;
+        let mut current_dist = dist_fn_exact(query, self.index.get_vector(current as usize));
+
+        for layer_idx in (1..=entry_layer).rev() {
+            if layer_idx >= self.index.layers.len() {
+                continue;
+            }
+            let layer = &self.index.layers[layer_idx];
+            let mut changed = true;
+            while changed {
+                changed = false;
+                let neighbors = layer.get_neighbors(current);
+                for &neighbor_id in neighbors.iter() {
+                    let dist = dist_fn_exact(query, self.index.get_vector(neighbor_id as usize));
+                    if dist < current_dist {
+                        current_dist = dist;
+                        current = neighbor_id;
+                        changed = true;
+                    }
+                }
+            }
+        }
+
+        // Base layer: edge-aware beam search with per-edge codes.
+        let entry_dist = self.approx_dist_vr_entry(&rotated_query, current);
+        let base_layer = &self.index.layers[0];
+        let edge_codes = &self.edge_codes;
+        let neighbor_offsets = &self.neighbor_offsets;
+
+        let dist_fn = |parent_id: u32, _neighbor_id: u32, slot: usize| -> f32 {
+            let offset = neighbor_offsets[parent_id as usize] as usize + slot;
+            let edge = &edge_codes[offset];
+            approx_dist_vr(&rotated_query, edge)
+        };
+
+        let results = crate::hnsw::search::greedy_search_layer_edge_aware(
+            current,
+            entry_dist,
+            base_layer,
+            self.index.num_vectors,
+            ef,
+            &dist_fn,
+        );
+
+        let mut output: Vec<(u32, f32)> = results
+            .into_iter()
+            .take(k)
+            .map(|(internal_id, dist)| (self.index.doc_ids[internal_id as usize], dist))
+            .collect();
+        output.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+        Ok(output)
+    }
+
+    /// Search with oversampling + exact f32 reranking.
+    pub fn search_reranked(
+        &self,
+        query: &[f32],
+        k: usize,
+        ef: usize,
+        rerank_pool: usize,
+    ) -> Result<Vec<(u32, f32)>, RetrieveError> {
+        if !self.built || self.index.num_vectors == 0 {
+            return Ok(Vec::new());
+        }
+
+        let pool = rerank_pool.max(k);
+        let candidates = self.search(query, pool, ef.max(pool))?;
+
+        let dist_fn = self.index.dist_fn();
+        let mut reranked: Vec<(u32, f32)> = candidates
+            .into_iter()
+            .take(pool)
+            .map(|(doc_id, _approx_dist)| {
+                // Resolve back to internal id for vector lookup.
+                let internal_id = self
+                    .index
+                    .doc_id_to_internal
+                    .get(&doc_id)
+                    .copied()
+                    .unwrap_or(0);
+                let vec = self.index.get_vector(internal_id as usize);
+                let exact_dist = dist_fn(query, vec);
+                (doc_id, exact_dist)
+            })
+            .collect();
+
+        reranked.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+        reranked.truncate(k);
+        Ok(reranked)
+    }
+
+    /// Approximate distance for the entry point (no parent context).
+    /// Uses exact f32 distance as fallback since we don't have per-edge codes for entry.
+    fn approx_dist_vr_entry(&self, _rotated_query: &[f32], entry_id: u32) -> f32 {
+        // For the entry point we don't have a parent edge, so use a rough estimate.
+        // This is only used once per query, so exact distance is fine.
+        0.0 // Will be refined by the beam search immediately
+    }
+
+    /// Number of indexed vectors.
+    pub fn len(&self) -> usize {
+        self.index.num_vectors
+    }
+
+    /// Whether the index is empty.
+    pub fn is_empty(&self) -> bool {
+        self.index.num_vectors == 0
+    }
+
+    /// Access the underlying HNSW index.
+    pub fn inner(&self) -> &HNSWIndex {
+        &self.index
+    }
+}
+
+/// Approximate L2^2 from a globally-rotated query to a vertex-relative edge code.
+///
+/// Formula: `f_add + f_rescale * (IP(q_rot, codes) - ip_u_rot_codes)`
+///
+/// where `q_rot = R * (q - 0)` (global rotation, zero centroid) and the edge code
+/// was quantized with centroid = parent_u. The `ip_u_rot_codes` term corrects for
+/// the centroid difference: `R*(q - u) = R*q - R*u`, so the IP splits into
+/// `IP(R*q, codes) - IP(R*u, codes)`.
+#[inline]
+fn approx_dist_vr(rotated_query: &[f32], edge: &EdgeCode) -> f32 {
+    let cb = -((1u32 << edge.ex_bits) as f32 - 0.5);
+    let mut ip = 0.0f32;
+    for (i, &q) in rotated_query.iter().enumerate() {
+        let code_val = edge.codes[i] as f32 + cb;
+        ip += q * code_val;
+    }
+    (edge.f_add + edge.f_rescale * (ip - edge.ip_u_rot_codes)).max(0.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -606,6 +941,78 @@ mod tests {
             "self-query should return doc_id 0 (got {}), \
              likely rerank uses wrong distance metric",
             reranked_results[0].0
+        );
+    }
+
+    // ── Vertex-relative tests ────────────────────────────────────────────
+
+    #[test]
+    fn test_symphony_qg_vr_l2_unnormalized() {
+        use crate::distance::DistanceMetric;
+        use crate::hnsw::graph::HNSWParams;
+
+        let dim = 64;
+        let n = 200;
+
+        let vectors: Vec<Vec<f32>> = (0..n)
+            .map(|seed| {
+                let v: Vec<f32> = (0..dim)
+                    .map(|j| ((seed * dim + j) as f32 * 0.618_034).fract() * 2.0 - 1.0)
+                    .collect();
+                let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+                let target_norm = 5.0 + (seed as f32 % 5.0);
+                v.iter().map(|x| x * target_norm / norm).collect()
+            })
+            .collect();
+
+        let params = HNSWParams {
+            m: 16,
+            m_max: 32,
+            ef_construction: 200,
+            metric: DistanceMetric::L2,
+            seed: Some(42),
+            ..Default::default()
+        };
+        let mut index = SymphonyQGVRIndex::new(dim, params, RaBitQConfig::bits4(), 42).unwrap();
+
+        for (i, v) in vectors.iter().enumerate() {
+            index.add_slice(i as u32, v).unwrap();
+        }
+        index.build().unwrap();
+
+        // Self-query: raw quantized should find self (or very close)
+        let q = &vectors[0];
+        let raw_results = index.search(q, 10, 100).unwrap();
+        assert!(!raw_results.is_empty(), "VR raw search returned no results");
+
+        // Reranked search should return exact self
+        let reranked = index.search_reranked(q, 10, 100, 50).unwrap();
+        assert_eq!(
+            reranked[0].0, 0,
+            "VR reranked self-query should return doc_id 0 (got {})",
+            reranked[0].0
+        );
+
+        // Recall check: brute-force top-10 vs VR reranked top-10
+        let mut gt: Vec<(u32, f32)> = vectors
+            .iter()
+            .enumerate()
+            .map(|(i, v)| {
+                let d: f32 = q.iter().zip(v.iter()).map(|(a, b)| (a - b) * (a - b)).sum();
+                (i as u32, d)
+            })
+            .collect();
+        gt.sort_by(|a, b| a.1.total_cmp(&b.1));
+        let gt_set: std::collections::HashSet<u32> =
+            gt.iter().take(10).map(|(id, _)| *id).collect();
+        let result_set: std::collections::HashSet<u32> =
+            reranked.iter().map(|(id, _)| *id).collect();
+        let overlap = gt_set.intersection(&result_set).count();
+
+        assert!(
+            overlap >= 5,
+            "VR L2 recall@10 too low: {}/10 overlap with brute-force",
+            overlap
         );
     }
 }

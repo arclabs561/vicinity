@@ -494,6 +494,71 @@ pub fn greedy_search_layer_custom<F: Fn(&[f32], u32) -> f32>(
     })
 }
 
+/// Greedy search where distance depends on both candidate (parent) and neighbor.
+///
+/// Used by vertex-relative quantization (SymphonyQGVR) where each edge (u -> v)
+/// has a separate quantized code relative to u.
+///
+/// The closure receives `(parent_id, neighbor_id, neighbor_slot)` where
+/// `neighbor_slot` is the index within the parent's neighbor list (for looking
+/// up per-edge codes). For the entry point, `parent_id == entry_point` (self-referential).
+pub fn greedy_search_layer_edge_aware<F: Fn(u32, u32, usize) -> f32>(
+    entry_point: u32,
+    entry_dist: f32,
+    layer: &crate::hnsw::graph::Layer,
+    num_vectors: usize,
+    ef: usize,
+    dist_fn: &F,
+) -> Vec<(u32, f32)> {
+    with_visited_set(num_vectors, ef * 2, |visited| {
+        let mut candidates: BinaryHeap<MinCandidate> = BinaryHeap::with_capacity(ef * 2);
+        let mut results: BinaryHeap<MaxResult> = BinaryHeap::with_capacity(ef + 1);
+
+        candidates.push(MinCandidate {
+            id: entry_point,
+            distance: entry_dist,
+        });
+        results.push(MaxResult {
+            id: entry_point,
+            distance: entry_dist,
+        });
+        visited.insert(entry_point);
+
+        while let Some(candidate) = candidates.pop() {
+            let worst_dist = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
+            if candidate.distance > worst_dist && results.len() >= ef {
+                break;
+            }
+
+            let neighbors = layer.get_neighbors(candidate.id);
+            for (slot, &neighbor_id) in neighbors.iter().enumerate() {
+                if visited.insert(neighbor_id) {
+                    let neighbor_distance = dist_fn(candidate.id, neighbor_id, slot);
+
+                    let worst_dist = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
+                    if results.len() < ef || neighbor_distance < worst_dist {
+                        candidates.push(MinCandidate {
+                            id: neighbor_id,
+                            distance: neighbor_distance,
+                        });
+                        results.push(MaxResult {
+                            id: neighbor_id,
+                            distance: neighbor_distance,
+                        });
+                        if results.len() > ef {
+                            results.pop();
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut output: Vec<(u32, f32)> = results.into_iter().map(|r| (r.id, r.distance)).collect();
+        output.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+        output
+    })
+}
+
 /// Greedy search with adaptive early termination.
 ///
 /// Same beam search as [`greedy_search_layer`], but uses an
