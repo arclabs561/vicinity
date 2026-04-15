@@ -67,12 +67,18 @@ pub struct SymphonyQGIndex {
 }
 
 impl SymphonyQGIndex {
-    /// Create a new SymphonyQG index with 4-bit RaBitQ (default).
+    /// Create a new SymphonyQG index with 4-bit RaBitQ and cosine distance.
+    ///
+    /// For L2 (Euclidean) distance on unnormalized vectors, use
+    /// [`with_hnsw_params`](Self::with_hnsw_params) instead -- the default
+    /// cosine metric produces wrong results on unnormalized data.
     pub fn new(dimension: usize, m: usize, m_max: usize) -> Result<Self, RetrieveError> {
         Self::with_config(dimension, m, m_max, RaBitQConfig::bits4(), 42)
     }
 
-    /// Create with specific RaBitQ configuration.
+    /// Create with specific RaBitQ configuration and cosine distance.
+    ///
+    /// For L2 distance, use [`with_hnsw_params`](Self::with_hnsw_params).
     pub fn with_config(
         dimension: usize,
         m: usize,

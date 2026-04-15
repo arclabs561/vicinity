@@ -964,7 +964,8 @@ fn run_prt(
     }
     let t0 = Instant::now();
     index.build()?;
-    println!("{:.0}s", t0.elapsed().as_secs_f64());
+    let hnsw_build_secs = t0.elapsed().as_secs_f64();
+    println!("{hnsw_build_secs:.0}s");
 
     // Build PRT with k = dim/4 projections, uncapped for high-d datasets.
     // Previous cap at 128 caused 81% recall ceiling on GIST-960 (dim=960).
@@ -974,8 +975,14 @@ fn run_prt(
     let t0 = Instant::now();
     let mut prt = ProbabilisticRoutingTest::new(dim, num_proj, Some(42));
     prt.project_database(index.raw_vectors());
-    println!("{:.1}s", t0.elapsed().as_secs_f64());
+    let prt_build_secs = t0.elapsed().as_secs_f64();
+    println!("{prt_build_secs:.1}s");
 
+    let total_build = hnsw_build_secs + prt_build_secs;
+    let params_json = format!(
+        "\"m\":16,\"m_max\":32,\"ef_construction\":200,\"num_projections\":{num_proj},\
+         \"initial_ratio\":1.5,\"decay\":0.95"
+    );
     for ef in [10, 20, 50, 100, 200, 400] {
         let (recall, qps, avg_full_ratio) = measure_prt(&index, &prt, test, gt, k, ef);
         println!(
@@ -984,7 +991,14 @@ fn run_prt(
             qps,
             avg_full_ratio * 100.0,
         );
-        append_jsonl_ef("prt", recall, qps, Some(ef))?;
+        write_record(
+            "prt",
+            recall,
+            qps,
+            Some(ef),
+            Some(total_build),
+            Some(&params_json),
+        )?;
     }
     Ok(())
 }
@@ -1136,14 +1150,24 @@ fn run_symphonyqg(
     }
     let t0 = Instant::now();
     index.build()?;
-    println!("{:.0}s", t0.elapsed().as_secs_f64());
+    let build_secs = t0.elapsed().as_secs_f64();
+    println!("{build_secs:.0}s");
+
+    let params_json = "\"m\":16,\"m_max\":32,\"ef_construction\":200,\"rabitq_bits\":4";
 
     // Quantized search (no rerank) -- tests pure RaBitQ approximation
     println!("  --- quantized (no rerank) ---");
     for ef in [10, 20, 50, 100, 200, 400] {
         let (recall, qps) = measure_symphonyqg(&index, test, gt, k, ef, false);
         println!("    ef={ef:4}  recall={:.1}%  qps={qps:.0}", recall * 100.0);
-        append_jsonl_ef("symphonyqg-raw", recall, qps, Some(ef))?;
+        write_record(
+            "symphonyqg-raw",
+            recall,
+            qps,
+            Some(ef),
+            Some(build_secs),
+            Some(params_json),
+        )?;
     }
 
     // Reranked search -- recommended path
@@ -1151,7 +1175,14 @@ fn run_symphonyqg(
     for ef in [10, 20, 50, 100, 200, 400] {
         let (recall, qps) = measure_symphonyqg(&index, test, gt, k, ef, true);
         println!("    ef={ef:4}  recall={:.1}%  qps={qps:.0}", recall * 100.0);
-        append_jsonl_ef("symphonyqg", recall, qps, Some(ef))?;
+        write_record(
+            "symphonyqg",
+            recall,
+            qps,
+            Some(ef),
+            Some(build_secs),
+            Some(params_json),
+        )?;
     }
     Ok(())
 }
