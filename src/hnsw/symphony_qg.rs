@@ -91,6 +91,26 @@ impl SymphonyQGIndex {
         })
     }
 
+    /// Create with full HNSW params and RaBitQ config.
+    ///
+    /// Use this when the default cosine metric is wrong (e.g., L2 distance datasets).
+    pub fn with_hnsw_params(
+        dimension: usize,
+        params: super::graph::HNSWParams,
+        rabitq_config: RaBitQConfig,
+        seed: u64,
+    ) -> Result<Self, RetrieveError> {
+        let index = HNSWIndex::with_params(dimension, params)?;
+        Ok(Self {
+            index,
+            codes: Vec::new(),
+            quantizer: None,
+            rabitq_config,
+            seed,
+            quantized_built: false,
+        })
+    }
+
     /// Add a vector. Must be L2-normalized for cosine distance.
     pub fn add_slice(&mut self, doc_id: u32, vector: &[f32]) -> Result<(), RetrieveError> {
         self.index.add_slice(doc_id, vector)
