@@ -185,6 +185,12 @@ pub mod symphony_qg;
 #[cfg(all(feature = "hnsw", feature = "ivf_rabitq"))]
 pub use symphony_qg::SymphonyQGIndex;
 
+// SQ4U: 4-bit scalar quantized graph traversal
+#[cfg(all(feature = "hnsw", feature = "sq4"))]
+pub mod sq4u;
+#[cfg(all(feature = "hnsw", feature = "sq4"))]
+pub use sq4u::HNSWSq4Index;
+
 // Adaptive search (DARTH-style early termination)
 #[cfg(feature = "hnsw")]
 pub use crate::adaptive::AdaptiveConfig;
