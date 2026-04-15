@@ -112,13 +112,10 @@ impl LemurEncoder {
 
         // Linear: h = W'x + b
         let mut h = self.b.clone();
-        for i in 0..self.hidden_dim {
+        for (i, h_val) in h.iter_mut().enumerate().take(self.hidden_dim) {
             let row = &self.w[i * self.input_dim..(i + 1) * self.input_dim];
-            let mut sum = 0.0f32;
-            for j in 0..self.input_dim {
-                sum += row[j] * x[j];
-            }
-            h[i] += sum;
+            let sum: f32 = row.iter().zip(x.iter()).map(|(&w, &x)| w * x).sum();
+            *h_val += sum;
         }
 
         // GELU activation
@@ -132,8 +129,12 @@ impl LemurEncoder {
             h.iter().map(|v| (v - mean) * (v - mean)).sum::<f32>() / self.hidden_dim as f32;
         let std = (var + 1e-5).sqrt();
 
-        for i in 0..self.hidden_dim {
-            h[i] = (h[i] - mean) / std * self.ln_gamma[i] + self.ln_beta[i];
+        for ((h_val, &gamma), &beta) in h
+            .iter_mut()
+            .zip(self.ln_gamma.iter())
+            .zip(self.ln_beta.iter())
+        {
+            *h_val = (*h_val - mean) / std * gamma + beta;
         }
 
         h
@@ -144,7 +145,7 @@ impl LemurEncoder {
 /// Uses the fast approximation: 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
 #[inline]
 fn gelu(x: f32) -> f32 {
-    let c = 0.7978845608f32; // sqrt(2/pi)
+    let c = 0.797_884_6_f32; // sqrt(2/pi)
     0.5 * x * (1.0 + (c * (x + 0.044715 * x * x * x)).tanh())
 }
 
