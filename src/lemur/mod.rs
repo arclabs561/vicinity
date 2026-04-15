@@ -12,6 +12,15 @@
 //! 3. **Search**: Encode query tokens through `psi`, pool (sum), then MIPS
 //!    against document weight vectors. Rerank top candidates with exact MaxSim.
 //!
+//! # Deviations from paper
+//!
+//! - **Mean-pooling instead of OLS**: Document weight vectors are computed as
+//!   the mean of `psi`-encoded tokens, not the full OLS solve (which requires
+//!   a shared feature matrix Z across all documents). This is a simplification
+//!   that reduces indexing complexity at the cost of approximation quality.
+//! - **Brute-force MIPS**: Search scans all document weights linearly. For
+//!   large corpora, wire an HNSW index over the weight vectors.
+//!
 //! # References
 //!
 //! - Kulkarni et al. (2025). "LEMUR: Improving Single-Vector Retrieval with
