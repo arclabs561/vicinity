@@ -79,11 +79,7 @@ pub fn search_sng(
             if idx < marks.len() && marks[idx] != generation {
                 marks[idx] = generation;
                 true
-            } else if idx >= marks.len() {
-                true
-            } else {
-                false
-            }
+            } else { idx >= marks.len() }
         };
 
         // Greedy search with early termination

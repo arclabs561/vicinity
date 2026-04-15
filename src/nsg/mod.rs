@@ -421,11 +421,7 @@ impl NsgIndex {
                 if idx < marks.len() && marks[idx] != generation {
                     marks[idx] = generation;
                     true
-                } else if idx >= marks.len() {
-                    true
-                } else {
-                    false
-                }
+                } else { idx >= marks.len() }
             };
 
             // Min-heap: candidates to expand (closest first)
@@ -538,11 +534,7 @@ impl NsgIndex {
                 if idx < marks.len() && marks[idx] != generation {
                     marks[idx] = generation;
                     true
-                } else if idx >= marks.len() {
-                    true
-                } else {
-                    false
-                }
+                } else { idx >= marks.len() }
             };
 
             let mut candidates: BinaryHeap<std::cmp::Reverse<(FloatOrd, u32)>> = BinaryHeap::new();
