@@ -1,184 +1,168 @@
 # Benchmark Results
 
 Machine: Apple Silicon (M-series), single-threaded, `--release`.
-Dataset: GloVe-25 (1.18M vectors, 25-d, cosine/angular), from ann-benchmarks.com.
-Ground truth: brute-force cosine k-NN on L2-normalized vectors.
 SIMD: `innr` (pure Rust SIMD, default feature).
 QPS: sequential single-query throughput (queries / wall-clock seconds). 50-query warmup.
 
-## Summary
+## GloVe-25 (1.18M vectors, 25-d, cosine)
 
-![Recall vs QPS](plots/algorithm_comparison_glove-25-angular-all-algos.png)
+Ground truth: brute-force cosine k-NN on L2-normalized vectors.
 
-| Algorithm | Best Recall@10 | QPS at best | Build (s) | Notes |
-|-----------|---------------|-------------|-----------|-------|
-| Brute | 100.0% | 45 | 0 | Exact baseline |
-| Vamana | 100.0% | 998 | 2,237 | Full 1.18M dataset |
-| HNSW | 99.1% | 4,496 | 180 | Full 1.18M dataset |
-| EMG | 98.8% | 184 | 508 | Full 1.18M dataset |
-| PiPNN | 90.1% | 140 | 589 | Full 1.18M dataset |
-| NSW | 88.6% | 2,073 | 174 | Full 1.18M dataset |
-| IVF-RaBitQ | 81.9% | 257 | 103 | Full 1.18M, 4-bit (pre-rotated) |
-| RpQuant | 62.5% | 193 | 0.3 | Full 1.18M dataset |
-| IVF-PQ | 40.9% | 187 | 491 | 5 codebooks on 25-d (known misconfiguration) |
-| NSG | 3.8% | 3,263 | 7 | Capped at 50K (4.2% of GT) |
-| SNG | 4.3% | 6,681 | 46 | Capped at 50K |
-| Finger | 4.1% | 15 | 127 | Capped at 50K |
-| FreshGraph | 4.1% | 132 | 104 | Capped at 50K |
-| FilteredGraph | 4.1% | 108 | 127 | Capped at 50K |
-| Curator | 52.0% | 4,302 | 1.3 | K-means tree, no ef sweep |
-| ESG | 99.8% | 531 | 409 | HNSW wrapper with range filter |
-| BinaryFlat | 24.0% | 5 | 0.6 | Flat scan, too slow at 1.18M |
+### Summary
 
-SymphonyQG is excluded: RaBitQ error is O(1/sqrt(d)), and at d=25 the approximation
-is too noisy (<0.3% recall). SymphonyQG is designed for d >= 128.
+| Algorithm | Best Recall@10 | QPS at best | Notes |
+|-----------|---------------|-------------|-------|
+| HNSW (M=16) | 100.0% | 2,857 | Default choice |
+| HNSW (M=32) | 100.0% | 2,017 | Higher memory, marginal recall gain |
+| Vamana | 100.0% | 1,177 | Slow build (~2000s) |
+| DiskANN | 100.0% | 1,029 | Vamana + I/O layout |
+| SQ4U | 99.9% | 1,056 | 4-bit quantized HNSW; ~3x slower than plain HNSW at d=25 |
+| NSW | 99.2% | 1,288 | |
+| IVF-PQ (cb=25) | 98.7% | 69 | 25 codebooks on 25-d (1-d subspaces) |
+| IVF-AVQ | 90.9% | 194 | ScaNN-style anisotropic VQ |
+| RP-Forest | 58.5% | 4,221 | Fast build, moderate recall |
+| IVF-PQ (cb=5) | 45.1% | 262 | 5 codebooks on 25-d (too coarse) |
+| KD-Tree | 100.0% | 22 | Exact; too slow at 1M+ |
+| Brute | 100.0% | 42 | Exact baseline |
 
-NSG, SNG, Finger, FreshGraph, and FilteredGraph are capped at 50K vectors due to
-construction cost. Their recall reflects the 50K/1.18M ground truth mismatch (~4.2%
-expected), not algorithm quality. Within the 50K subset, these algorithms work correctly.
-
-## Graph Indexes (Full Dataset)
+SQ4U and SymphonyQG are designed for high-dimensional data. At d=25, the quantization
+overhead exceeds the savings from cheaper distance computation. SymphonyQG produces
+<0.3% recall at d=25 (RaBitQ error is O(1/sqrt(d))) and is excluded.
 
 ### HNSW (M=16, ef_construction=200)
 
-Build: 180s.
+| ef_search | Recall@10 | QPS |
+|-----------|-----------|-----|
+| 10 | 77.8% | 57,747 |
+| 20 | 87.9% | 35,138 |
+| 50 | 96.1% | 17,035 |
+| 100 | 98.8% | 9,857 |
+| 200 | 99.8% | 5,463 |
+| 400 | 100.0% | 2,907 |
+
+### HNSW (M=32, ef_construction=200)
 
 | ef_search | Recall@10 | QPS |
 |-----------|-----------|-----|
-| 10 | 62.9% | 69,176 |
-| 20 | 76.0% | 47,416 |
-| 50 | 88.5% | 25,562 |
-| 100 | 94.3% | 14,742 |
-| 200 | 97.6% | 8,304 |
-| 400 | 99.1% | 4,496 |
+| 10 | 79.7% | 44,927 |
+| 20 | 90.1% | 28,098 |
+| 50 | 97.1% | 13,098 |
+| 100 | 99.2% | 7,377 |
+| 200 | 99.8% | 4,019 |
+| 400 | 100.0% | 2,017 |
 
-### Vamana (R=64, ef_construction=200)
-
-Build: 2,237s.
+### Vamana (R=64, alpha=1.3, ef_construction=200)
 
 | ef_search | Recall@10 | QPS |
 |-----------|-----------|-----|
-| 10 | 88.2% | 18,393 |
-| 20 | 94.5% | 11,292 |
-| 50 | 98.6% | 5,620 |
-| 100 | 99.6% | 3,246 |
-| 200 | 99.9% | 1,823 |
-| 400 | 100.0% | 998 |
-
-### EMG (max_degree=32)
-
-Build: 508s.
-
-| ef_search | Recall@10 | QPS |
-|-----------|-----------|-----|
-| 10 | 2.4% | 81,125 |
-| 20 | 26.2% | 36,457 |
-| 50 | 76.2% | 9,070 |
-| 100 | 90.0% | 2,815 |
-| 200 | 96.2% | 754 |
-| 400 | 98.8% | 184 |
+| 10 | 88.5% | 18,282 |
+| 20 | 94.7% | 11,222 |
+| 50 | 98.7% | 5,599 |
+| 100 | 99.7% | 3,213 |
+| 200 | 100.0% | 1,821 |
+| 400 | 100.0% | 1,177 |
 
 ### NSW (M=16)
 
-Build: 174s.
+| ef_search | Recall@10 | QPS |
+|-----------|-----------|-----|
+| 10 | 79.1% | 43,447 |
+| 20 | 88.2% | 26,043 |
+| 50 | 95.4% | 9,939 |
+| 100 | 97.7% | 4,813 |
+| 200 | 98.8% | 2,322 |
+| 400 | 99.2% | 1,288 |
+
+### SQ4U (M=16, 4-bit quantized traversal + exact rerank)
 
 | ef_search | Recall@10 | QPS |
 |-----------|-----------|-----|
-| 10 | 21.4% | 35,963 |
-| 20 | 39.9% | 18,736 |
-| 50 | 64.0% | 9,020 |
-| 100 | 76.8% | 5,650 |
-| 200 | 84.3% | 3,440 |
-| 400 | 88.6% | 2,073 |
+| 10 | 56.7% | 17,824 |
+| 20 | 77.5% | 11,782 |
+| 50 | 93.3% | 5,852 |
+| 100 | 98.1% | 3,409 |
+| 200 | 99.6% | 1,927 |
+| 400 | 99.9% | 1,056 |
 
-### PiPNN (max_degree=32, max_leaf_size=2048)
-
-Build: 589s.
+### DiskANN (R=64, alpha=1.3)
 
 | ef_search | Recall@10 | QPS |
 |-----------|-----------|-----|
-| 20 | 6.5% | 34,881 |
-| 50 | 39.5% | 7,786 |
-| 100 | 64.9% | 2,255 |
-| 200 | 81.0% | 576 |
-| 400 | 90.1% | 140 |
+| 10 | 88.7% | 17,555 |
+| 20 | 94.8% | 10,936 |
+| 50 | 98.8% | 5,505 |
+| 100 | 99.7% | 3,183 |
+| 200 | 100.0% | 1,817 |
+| 400 | 100.0% | 1,029 |
 
-## Partition-Based Indexes
-
-### IVF-RaBitQ (256 clusters, 4-bit)
-
-Build: 103s. Two-phase search: RaBitQ approximate shortlisting (pre-rotated query) + exact reranking.
+### IVF-PQ (1024 clusters, 25 codebooks)
 
 | nprobe | Recall@10 | QPS |
 |--------|-----------|-----|
-| 1 | 40.3% | 14,430 |
-| 2 | 41.9% | 8,985 |
-| 5 | 42.0% | 4,394 |
-| 10 | 42.0% | 2,411 |
-| 20 | 56.2% | 1,236 |
-| 50 | 72.6% | 508 |
-| 100 | 81.9% | 257 |
+| 4 | 81.7% | 1,200 |
+| 8 | 90.1% | 682 |
+| 16 | 94.9% | 370 |
+| 32 | 97.2% | 198 |
+| 64 | 98.3% | 110 |
+| 128 | 98.6% | 73 |
+| 256 | 98.7% | 69 |
 
-### IVF-PQ (256 clusters, 5 codebooks)
-
-Build: 491s. Recall caps at ~41%: 5 codebooks over 25 dims = 5-d subspaces,
-too coarse for 25-d data. Not a bug -- inherent quantization granularity.
+### IVF-AVQ (512 partitions, 5 codebooks)
 
 | nprobe | Recall@10 | QPS |
 |--------|-----------|-----|
-| 1 | 30.3% | 9,842 |
-| 5 | 39.4% | 1,866 |
-| 10 | 40.5% | 934 |
-| 50 | 40.9% | 187 |
+| 4 | 47.1% | 3,478 |
+| 8 | 59.1% | 2,155 |
+| 16 | 72.7% | 1,267 |
+| 32 | 82.2% | 709 |
+| 64 | 87.3% | 389 |
+| 128 | 90.3% | 206 |
+| 256 | 90.9% | 194 |
 
-### RpQuant (projected_dim=25, rerank=10)
+## GIST-960 (1M vectors, 960-d, L2)
 
-Build: <1s. Single recall point: 62.5% at 193 QPS.
+Ground truth: brute-force L2 k-NN.
 
-## Filtered / Tree-Based Indexes
+### Summary
 
-### Curator (branching=16, leaf=128)
+| Algorithm | Best Recall@10 | QPS at best | Notes |
+|-----------|---------------|-------------|-------|
+| HNSW (M=16) | 97.7% | 330 | |
+| SQ4U | 95.9% | 175 | ~2x slower than plain HNSW even at d=960 |
 
-Build: 1.3s. K-means tree with Bloom filter pruning. Single recall point (no ef sweep):
-52.0% recall at 4,302 QPS.
+SQ4U does not outperform plain HNSW at d=960. The reranking pass (exact f32 distance
+on the candidate pool) dominates, negating the savings from quantized graph traversal.
 
-### ESG (m=16, ef_search=100)
+### HNSW (M=16, ef_construction=200)
 
-Build: 409s. Wraps HNSW internally with range-filter post-processing. Single recall
-point: 99.8% recall at 531 QPS. The high recall reflects the underlying HNSW quality;
-the lower QPS is due to post-filtering overhead.
+| ef_search | Recall@10 | QPS |
+|-----------|-----------|-----|
+| 10 | 48.3% | 2,905 |
+| 20 | 62.5% | 3,175 |
+| 50 | 78.3% | 1,729 |
+| 100 | 87.9% | 1,047 |
+| 200 | 94.0% | 593 |
+| 400 | 97.7% | 330 |
 
-### BinaryFlat (rerank_factor=10)
+### SQ4U (M=16, 4-bit quantized traversal + exact rerank)
 
-Build: 0.6s. Flat binary quantization scan with full-precision reranking. Single
-recall point: 24.0% recall at 4.7 QPS. Not competitive at 1.18M scale -- designed
-for smaller datasets or as a building block for hierarchical binary indexes.
-
-## Brute Force
-
-Exact k-NN via exhaustive cosine: 100% recall at 45 QPS.
+| ef_search | Recall@10 | QPS |
+|-----------|-----------|-----|
+| 10 | 33.8% | 2,536 |
+| 20 | 49.8% | 1,800 |
+| 50 | 69.4% | 989 |
+| 100 | 81.7% | 569 |
+| 200 | 90.4% | 317 |
+| 400 | 95.9% | 175 |
 
 ## Caveats
 
-- All results on GloVe-25 (25 dims). Rankings may differ at higher dimensions.
+- GloVe-25 rankings differ from high-dimensional data. SQ4U and SymphonyQG
+  are designed for d >= 128 but underperform at all tested dimensions.
 - Build times and QPS are single-run wall-clock on a lightly loaded machine.
-- NSG, SNG, Finger, FreshGraph, FilteredGraph are capped at 50K vectors
-  during construction. Their low recall reflects the cap, not algorithm quality.
-- IVF-PQ with 5 codebooks on 25-d is a known misconfiguration.
-- SymphonyQG requires d >= 128 for useful recall; RaBitQ error O(1/sqrt(d)) is too large at d=25.
-- BinaryFlat is a flat scan; use for d >= 256 where binary quantization compresses well.
-
-## References
-
-- Malkov and Yashunin, "Efficient and Robust Approximate Nearest Neighbor
-  using Hierarchical Navigable Small World Graphs." arXiv:1603.09320.
-- Subramanya et al., "DiskANN: Fast Accurate Billion-point Nearest Neighbor
-  Search on a Single Node." NeurIPS 2019.
-- Yin et al., "delta-EMG: Error-bounded Monotonic Graph for ANN Search."
-  arXiv:2511.16921.
-- Gao and Long, "RaBitQ: Quantizing High-Dimensional Vectors with a
-  Theoretical Error Bound." SIGMOD 2024. arXiv:2405.12497.
-- Fu et al., "Fast Approximate Nearest Neighbor Search With The Navigating
-  Spreading-out Graph." PVLDB 12(5), 2019.
-- Rubel et al., "PiPNN: Partition-based Parallel Nearest Neighbor Search."
-  arXiv:2602.21247.
+- GIST-960 numbers were collected with two benchmark processes sharing CPU
+  (both equally affected; ratios are valid, absolute QPS are ~50% lower than
+  solo runs would produce).
+- IVF-PQ with 5 codebooks on 25-d is a known misconfiguration (too coarse).
+- Some algorithms from prior runs (EMG, PiPNN, NSG, IVF-RaBitQ, etc.) are not
+  yet re-benchmarked with the current optimized codebase.
