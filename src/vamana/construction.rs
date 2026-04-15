@@ -480,6 +480,7 @@ mod tests {
             ef_construction: 50,
             ef_search: 20,
             seed: None,
+            ..VamanaParams::default()
         };
         let mut index = VamanaIndex::new(dim, params).unwrap();
         for (i, v) in vecs.iter().enumerate() {
@@ -509,6 +510,7 @@ mod tests {
             ef_construction: 50,
             ef_search: 20,
             seed: None,
+            ..VamanaParams::default()
         };
         let mut index = VamanaIndex::new(dim, params).unwrap();
         for (i, v) in vecs.iter().enumerate() {
@@ -542,6 +544,7 @@ mod tests {
             ef_construction: 40,
             ef_search: 20,
             seed: None,
+            ..VamanaParams::default()
         };
         let mut index = VamanaIndex::new(dim, params).unwrap();
         for (i, v) in vecs.iter().enumerate() {
@@ -585,6 +588,7 @@ mod tests {
             ef_construction: 50,
             ef_search: 20,
             seed: None,
+            ..VamanaParams::default()
         };
         let mut index = VamanaIndex::new(dim, params).unwrap();
         for (i, v) in vecs.iter().enumerate() {

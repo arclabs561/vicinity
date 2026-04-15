@@ -209,6 +209,7 @@ impl DiskANNSearcher {
             alpha: params_val["alpha"].as_f64().unwrap_or(1.2) as f32,
             ef_search: params_val["ef_search"].as_u64().unwrap_or(100) as usize,
             seed: None,
+            ..DiskANNParams::default()
         };
 
         // 2. Open Graph
@@ -916,6 +917,7 @@ mod tests {
             alpha: 1.2,
             ef_search: 20,
             seed: None,
+            ..DiskANNParams::default()
         };
         let mut index = DiskANNIndex::new(4, params).unwrap();
 
@@ -955,6 +957,7 @@ mod tests {
             alpha: 1.2,
             ef_search: 20,
             seed: None,
+            ..DiskANNParams::default()
         };
         let mut index = DiskANNIndex::new(4, params).unwrap();
         for i in 0..30u32 {
@@ -983,6 +986,7 @@ mod tests {
             alpha: 1.2,
             ef_search: 100,
             seed: None,
+            ..DiskANNParams::default()
         };
         let dim = 16;
         let n = 100u32;
@@ -1033,6 +1037,7 @@ mod tests {
             alpha: 1.2,
             ef_search: 30,
             seed: None,
+            ..DiskANNParams::default()
         };
         let mut index = DiskANNIndex::new(4, params).unwrap();
         let n = 25u32;
@@ -1061,6 +1066,7 @@ mod tests {
             alpha: 1.2,
             ef_search: 20,
             seed: None,
+            ..DiskANNParams::default()
         };
         // Place vector 0 far away; the cluster centroid is around index 3-4.
         // If medoid is real, start_node should not be 0.
@@ -1099,6 +1105,7 @@ mod tests {
             alpha: 1.2,
             ef_search: 20,
             seed: None,
+            ..DiskANNParams::default()
         };
         let n = 20u32;
         let mut index = DiskANNIndex::new(4, params).unwrap();
