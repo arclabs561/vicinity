@@ -26,6 +26,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::time::Instant;
 
+use vicinity::adsampling::{ADSamplingParams, ADSamplingState};
 #[cfg(feature = "balltree")]
 use vicinity::classic::trees::balltree::{BallTreeIndex, BallTreeParams};
 #[cfg(feature = "kdtree")]
@@ -34,11 +35,17 @@ use vicinity::classic::trees::kdtree::{KDTreeIndex, KDTreeParams};
 use vicinity::classic::trees::rp_forest::{RPTreeParams, RpForestIndex, RpForestParams};
 #[cfg(feature = "diskann")]
 use vicinity::diskann::{DiskANNIndex, DiskANNParams};
+#[cfg(feature = "emg")]
+use vicinity::emg::{EmgIndex, EmgParams};
 use vicinity::hnsw::{HNSWIndex, HNSWParams};
 #[cfg(feature = "ivf_avq")]
 use vicinity::ivf_avq::{IVFAVQIndex, IVFAVQParams};
 #[cfg(feature = "ivf_pq")]
 use vicinity::ivf_pq::{IVFPQIndex, IVFPQParams};
+#[cfg(feature = "ivf_rabitq")]
+use vicinity::ivf_rabitq::{IVFRaBitQIndex, IVFRaBitQParams};
+#[cfg(feature = "nsg")]
+use vicinity::nsg::{NsgIndex, NsgParams};
 #[cfg(feature = "nsw")]
 use vicinity::nsw::NSWIndex;
 #[cfg(feature = "vamana")]
@@ -98,6 +105,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     );
 
+    // Load cached results so we can skip already-measured algorithms.
+    let cached = existing_algorithms();
+    if !cached.is_empty() && algo == "all" {
+        println!(
+            "Found {} cached algorithm(s). Set VICINITY_FORCE=1 to re-run all.",
+            cached.len()
+        );
+    }
+
     match algo {
         "hnsw" => run_hnsw(&train, &test, &gt, k, dim)?,
         #[cfg(feature = "nsw")]
@@ -116,28 +132,50 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "balltree" => run_balltree(&train, &test, &gt, k, dim)?,
         #[cfg(feature = "rptree")]
         "rptree" => run_rptree(&train, &test, &gt, k, dim)?,
+        #[cfg(feature = "nsg")]
+        "nsg" => run_nsg(&train, &test, &gt, k, dim)?,
+        #[cfg(feature = "emg")]
+        "emg" => run_emg(&train, &test, &gt, k, dim)?,
+        #[cfg(feature = "ivf_rabitq")]
+        "ivf_rabitq" => run_ivf_rabitq(&train, &test, &gt, k, dim)?,
+        "adsampling" => run_adsampling(&train, &test, &gt, k, dim)?,
         "all" => {
+            macro_rules! run_if_not_cached {
+                ($key:expr, $call:expr) => {
+                    if !should_skip($key, &cached) {
+                        $call?;
+                    }
+                };
+            }
             #[cfg(feature = "ivf_pq")]
-            run_ivfpq(&train, &test, &gt, k, dim)?;
+            run_if_not_cached!("ivfpq", run_ivfpq(&train, &test, &gt, k, dim));
             #[cfg(feature = "nsw")]
-            run_nsw(&train, &test, &gt, k, dim)?;
-            run_hnsw(&train, &test, &gt, k, dim)?;
+            run_if_not_cached!("nsw", run_nsw(&train, &test, &gt, k, dim));
+            run_if_not_cached!("hnsw-m16", run_hnsw(&train, &test, &gt, k, dim));
             #[cfg(feature = "vamana")]
-            run_vamana(&train, &test, &gt, k, dim)?;
+            run_if_not_cached!("vamana", run_vamana(&train, &test, &gt, k, dim));
             #[cfg(feature = "ivf_avq")]
-            run_ivf_avq(&train, &test, &gt, k, dim)?;
+            run_if_not_cached!("ivf_avq", run_ivf_avq(&train, &test, &gt, k, dim));
             #[cfg(feature = "diskann")]
-            run_diskann(&train, &test, &gt, k, dim)?;
+            run_if_not_cached!("diskann", run_diskann(&train, &test, &gt, k, dim));
             #[cfg(feature = "kdtree")]
-            run_kdtree(&train, &test, &gt, k, dim)?;
+            run_if_not_cached!("kdtree", run_kdtree(&train, &test, &gt, k, dim));
             #[cfg(feature = "balltree")]
-            run_balltree(&train, &test, &gt, k, dim)?;
+            run_if_not_cached!("balltree", run_balltree(&train, &test, &gt, k, dim));
             #[cfg(feature = "rptree")]
-            run_rptree(&train, &test, &gt, k, dim)?;
+            run_if_not_cached!("rptree", run_rptree(&train, &test, &gt, k, dim));
+            #[cfg(feature = "nsg")]
+            run_if_not_cached!("nsg", run_nsg(&train, &test, &gt, k, dim));
+            #[cfg(feature = "emg")]
+            run_if_not_cached!("emg", run_emg(&train, &test, &gt, k, dim));
+            #[cfg(feature = "ivf_rabitq")]
+            run_if_not_cached!("ivf-rabitq-np1", run_ivf_rabitq(&train, &test, &gt, k, dim));
+            run_if_not_cached!("adsampling", run_adsampling(&train, &test, &gt, k, dim));
         }
         other => {
             eprintln!(
-                "Unknown algorithm: {other}. Use: hnsw | nsw | ivfpq | vamana | ivf_avq | diskann | kdtree | balltree | rptree | all"
+                "Unknown algorithm: {other}. Use: hnsw | nsw | ivfpq | vamana | ivf_avq | diskann | \
+                 kdtree | balltree | rptree | nsg | emg | ivf_rabitq | adsampling | all"
             );
             std::process::exit(1);
         }
@@ -633,6 +671,239 @@ fn measure_rptree(
     (recall_sum / test.len() as f64, test.len() as f64 / elapsed)
 }
 
+// ─── NSG ─────────────────────────────────────────────────────────────────────
+
+#[cfg(feature = "nsg")]
+fn run_nsg(
+    train: &[Vec<f32>],
+    test: &[Vec<f32>],
+    gt: &[Vec<i32>],
+    k: usize,
+    dim: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    println!("=== NSG ===");
+    let params = NsgParams {
+        max_degree: 32,
+        pool_size: 64,
+        knn_degree: 32,
+        ..NsgParams::default()
+    };
+    print!("  Building... ");
+    let _ = std::io::stdout().flush();
+    let mut index = NsgIndex::new(dim, params)?;
+    for (i, v) in train.iter().enumerate() {
+        index.add(i as u32, v.clone())?;
+    }
+    let t0 = Instant::now();
+    index.build()?;
+    println!("{:.0}s", t0.elapsed().as_secs_f64());
+
+    for ef in [10, 20, 50, 100, 200, 400] {
+        let (recall, qps) = measure_nsg(&index, test, gt, k, ef);
+        println!("  ef={ef:4}  recall={:.1}%  qps={:.0}", recall * 100.0, qps);
+        append_jsonl("nsg", recall, qps)?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "nsg")]
+fn measure_nsg(
+    index: &NsgIndex,
+    test: &[Vec<f32>],
+    gt: &[Vec<i32>],
+    k: usize,
+    ef: usize,
+) -> (f64, f64) {
+    for q in test.iter().take(50) {
+        let _ = index.search_with_ef(q, k, ef);
+    }
+    let t = Instant::now();
+    let mut recall_sum = 0.0;
+    for (i, q) in test.iter().enumerate() {
+        let res = index.search_with_ef(q, k, ef).unwrap_or_default();
+        recall_sum += recall_at_k(&res, &gt[i], k);
+    }
+    let elapsed = t.elapsed().as_secs_f64();
+    (recall_sum / test.len() as f64, test.len() as f64 / elapsed)
+}
+
+// ─── EMG ─────────────────────────────────────────────────────────────────────
+
+#[cfg(feature = "emg")]
+fn run_emg(
+    train: &[Vec<f32>],
+    test: &[Vec<f32>],
+    gt: &[Vec<i32>],
+    k: usize,
+    dim: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    println!("=== EMG ===");
+    let params = EmgParams {
+        max_degree: 32,
+        candidate_size: 100,
+        ..EmgParams::default()
+    };
+    print!("  Building... ");
+    let _ = std::io::stdout().flush();
+    let mut index = EmgIndex::new(dim, params)?;
+    for (i, v) in train.iter().enumerate() {
+        index.add(i as u32, v.clone())?;
+    }
+    let t0 = Instant::now();
+    index.build()?;
+    println!("{:.0}s", t0.elapsed().as_secs_f64());
+
+    for ef in [10, 20, 50, 100, 200, 400] {
+        let (recall, qps) = measure_emg(&index, test, gt, k, ef);
+        println!("  ef={ef:4}  recall={:.1}%  qps={:.0}", recall * 100.0, qps);
+        append_jsonl("emg", recall, qps)?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "emg")]
+fn measure_emg(
+    index: &EmgIndex,
+    test: &[Vec<f32>],
+    gt: &[Vec<i32>],
+    k: usize,
+    ef: usize,
+) -> (f64, f64) {
+    for q in test.iter().take(50) {
+        let _ = index.search_with_ef(q, k, ef);
+    }
+    let t = Instant::now();
+    let mut recall_sum = 0.0;
+    for (i, q) in test.iter().enumerate() {
+        let res = index.search_with_ef(q, k, ef).unwrap_or_default();
+        recall_sum += recall_at_k(&res, &gt[i], k);
+    }
+    let elapsed = t.elapsed().as_secs_f64();
+    (recall_sum / test.len() as f64, test.len() as f64 / elapsed)
+}
+
+// ─── IVF-RaBitQ ──────────────────────────────────────────────────────────────
+
+#[cfg(feature = "ivf_rabitq")]
+fn run_ivf_rabitq(
+    train: &[Vec<f32>],
+    test: &[Vec<f32>],
+    gt: &[Vec<i32>],
+    k: usize,
+    dim: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    println!("=== IVF-RaBitQ ===");
+    let params = IVFRaBitQParams {
+        num_clusters: 256,
+        nprobe: 10,
+        ..IVFRaBitQParams::default()
+    };
+    print!("  Building... ");
+    let _ = std::io::stdout().flush();
+    let mut index = IVFRaBitQIndex::new(dim, params)?;
+    for (i, v) in train.iter().enumerate() {
+        index.add(i as u32, v.clone())?;
+    }
+    let t0 = Instant::now();
+    index.build()?;
+    println!("{:.0}s", t0.elapsed().as_secs_f64());
+
+    for nprobe in [1, 5, 10, 20, 50, 100] {
+        let (recall, qps) = measure_ivf_rabitq(&index, test, gt, k, nprobe);
+        println!(
+            "  nprobe={nprobe:4}  recall={:.1}%  qps={:.0}",
+            recall * 100.0,
+            qps
+        );
+        append_jsonl(&format!("ivf-rabitq-np{nprobe}"), recall, qps)?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "ivf_rabitq")]
+fn measure_ivf_rabitq(
+    index: &IVFRaBitQIndex,
+    test: &[Vec<f32>],
+    gt: &[Vec<i32>],
+    k: usize,
+    nprobe: usize,
+) -> (f64, f64) {
+    for q in test.iter().take(50) {
+        let _ = index.search_with_ef(q, k, nprobe);
+    }
+    let t = Instant::now();
+    let mut recall_sum = 0.0;
+    for (i, q) in test.iter().enumerate() {
+        let res = index.search_with_ef(q, k, nprobe).unwrap_or_default();
+        recall_sum += recall_at_k(&res, &gt[i], k);
+    }
+    let elapsed = t.elapsed().as_secs_f64();
+    (recall_sum / test.len() as f64, test.len() as f64 / elapsed)
+}
+
+// ─── ADSampling + HNSW ──────────────────────────────────────────────────────
+
+fn run_adsampling(
+    train: &[Vec<f32>],
+    test: &[Vec<f32>],
+    gt: &[Vec<i32>],
+    k: usize,
+    dim: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    println!("=== ADSampling+HNSW ===");
+    let params = HNSWParams {
+        m: 16,
+        m_max: 32,
+        ef_construction: 200,
+        ..Default::default()
+    };
+    print!("  Building HNSW... ");
+    let _ = std::io::stdout().flush();
+    let mut index = HNSWIndex::with_params(dim, params)?;
+    for (i, v) in train.iter().enumerate() {
+        index.add(i as u32, v.clone())?;
+    }
+    let t0 = Instant::now();
+    index.build()?;
+    println!("{:.0}s", t0.elapsed().as_secs_f64());
+
+    print!("  Building ADSampling state... ");
+    let _ = std::io::stdout().flush();
+    let t0 = Instant::now();
+    let state = ADSamplingState::from_hnsw(&index, ADSamplingParams::default());
+    println!("{:.1}s", t0.elapsed().as_secs_f64());
+
+    for ef in [10, 20, 50, 100, 200, 400] {
+        let (recall, qps) = measure_adsampling(&state, &index, test, gt, k, ef);
+        println!("  ef={ef:4}  recall={:.1}%  qps={:.0}", recall * 100.0, qps);
+        append_jsonl("adsampling", recall, qps)?;
+    }
+    Ok(())
+}
+
+fn measure_adsampling(
+    state: &ADSamplingState,
+    index: &HNSWIndex,
+    test: &[Vec<f32>],
+    gt: &[Vec<i32>],
+    k: usize,
+    ef: usize,
+) -> (f64, f64) {
+    for q in test.iter().take(50) {
+        let _ = state.search_hnsw(index, q, k, ef);
+    }
+    let t = Instant::now();
+    let mut recall_sum = 0.0;
+    for (i, q) in test.iter().enumerate() {
+        let res = state.search_hnsw(index, q, k, ef).unwrap_or_default();
+        recall_sum += recall_at_k(&res, &gt[i], k);
+    }
+    let elapsed = t.elapsed().as_secs_f64();
+    (recall_sum / test.len() as f64, test.len() as f64 / elapsed)
+}
+
+// ─── Utilities ───────────────────────────────────────────────────────────────
+
 fn recall_at_k(results: &[(u32, f32)], ground_truth: &[i32], k: usize) -> f64 {
     let gt: HashSet<u32> = ground_truth.iter().take(k).map(|&i| i as u32).collect();
     let found: HashSet<u32> = results.iter().map(|r| r.0).collect();
@@ -652,6 +923,39 @@ fn append_jsonl(algorithm: &str, recall: f64, qps: f64) -> Result<(), Box<dyn st
     let mut w = BufWriter::new(file);
     w.write_all(line.as_bytes())?;
     Ok(())
+}
+
+/// Check if results already exist for an algorithm in the output file.
+/// Returns the set of algorithm names that have at least one result.
+fn existing_algorithms() -> HashSet<String> {
+    let out_path =
+        std::env::var("VICINITY_JSONL_OUT").unwrap_or_else(|_| "docs/results.jsonl".into());
+    let mut algos = HashSet::new();
+    if let Ok(content) = std::fs::read_to_string(&out_path) {
+        for line in content.lines() {
+            // Parse "algorithm":"<name>" from JSONL
+            if let Some(start) = line.find("\"algorithm\":\"") {
+                let rest = &line[start + 13..];
+                if let Some(end) = rest.find('"') {
+                    algos.insert(rest[..end].to_string());
+                }
+            }
+        }
+    }
+    algos
+}
+
+/// Returns true if this algorithm should be skipped (already has results).
+fn should_skip(algo_name: &str, cached: &HashSet<String>) -> bool {
+    if std::env::var("VICINITY_FORCE").is_ok() {
+        return false;
+    }
+    if cached.contains(algo_name) {
+        println!("  [cached] {algo_name} -- skipping (set VICINITY_FORCE=1 to re-run)");
+        true
+    } else {
+        false
+    }
 }
 
 // ─── Data loading (same format as glove_benchmark.rs) ────────────────────────
