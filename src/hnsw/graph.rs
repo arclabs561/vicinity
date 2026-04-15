@@ -3394,8 +3394,10 @@ mod tests {
         }
 
         let build = |seed_val: u64| -> HNSWIndex {
-            let mut params = HNSWParams::default();
-            params.seed = Some(seed_val);
+            let params = HNSWParams {
+                seed: Some(seed_val),
+                ..HNSWParams::default()
+            };
             let mut idx = HNSWIndex::with_params(dim, params).unwrap();
             for (i, v) in vectors.iter().enumerate() {
                 idx.add(i as u32, v.clone()).unwrap();
