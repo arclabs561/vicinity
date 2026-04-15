@@ -152,12 +152,12 @@ pub fn search(
 /// The closure receives `(query, internal_node_id)` and returns a distance.
 /// This enables ADSampling and other asymmetric distance schemes.
 #[cfg(feature = "vamana")]
-pub fn search_with_distance(
+pub fn search_with_distance<F: Fn(&[f32], u32) -> f32>(
     index: &VamanaIndex,
     query: &[f32],
     k: usize,
     ef: usize,
-    dist_fn: &dyn Fn(&[f32], u32) -> f32,
+    dist_fn: &F,
 ) -> Result<Vec<(u32, f32)>, RetrieveError> {
     use std::cmp::Reverse;
     use std::collections::BinaryHeap;

@@ -1610,12 +1610,12 @@ impl HNSWIndex {
     /// (box geometry, quantization codes, etc.).
     ///
     /// Returns `(doc_id, distance)` pairs sorted by distance ascending.
-    pub fn search_with_distance(
+    pub fn search_with_distance<F: Fn(&[f32], u32) -> f32>(
         &self,
         query: &[f32],
         k: usize,
         ef: usize,
-        dist_fn: &dyn Fn(&[f32], u32) -> f32,
+        dist_fn: &F,
     ) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
             return Err(RetrieveError::InvalidParameter(

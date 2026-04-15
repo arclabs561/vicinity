@@ -416,14 +416,14 @@ pub fn greedy_search_layer_multi_entry(
 /// center vectors warm for the common case where the custom distance function
 /// reads them.
 #[cfg(feature = "hnsw")]
-pub fn greedy_search_layer_custom(
+pub fn greedy_search_layer_custom<F: Fn(&[f32], u32) -> f32>(
     query: &[f32],
     entry_point: u32,
     layer: &crate::hnsw::graph::Layer,
     vectors: &[f32],
     dimension: usize,
     ef: usize,
-    dist_fn: &dyn Fn(&[f32], u32) -> f32,
+    dist_fn: &F,
 ) -> Vec<(u32, f32)> {
     let num_vectors = vectors.len() / dimension;
 

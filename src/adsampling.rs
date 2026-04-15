@@ -223,28 +223,28 @@ impl ADSamplingState {
 
         let rotated_query = self.rotate_query(query);
 
-        // Track the k-th best accepted distance for the HNSW++ threshold.
-        // A max-heap of size k: the root is the k-th nearest (worst of the k best).
-        // This is tighter than the beam's ef-th worst but not as aggressive as
-        // tracking only the single best distance.
-        let top_k = std::cell::RefCell::new(std::collections::BinaryHeap::<FloatOrd>::new());
+        // Track the k-th best accepted distance for early termination.
+        // Uses a small sorted Vec instead of RefCell<BinaryHeap> -- avoids
+        // runtime borrow checks (~1800/query) and heap allocation overhead.
+        let top_k = std::cell::RefCell::new(Vec::<f32>::with_capacity(k + 1));
         let k_for_threshold = k;
 
         let dist_fn = |_q: &[f32], node_id: u32| -> f32 {
             let threshold = {
-                let heap = top_k.borrow();
-                if heap.len() >= k_for_threshold {
-                    heap.peek().map_or(f32::INFINITY, |fo| fo.0)
+                let v = top_k.borrow();
+                if v.len() >= k_for_threshold {
+                    v[k_for_threshold - 1]
                 } else {
                     f32::INFINITY
                 }
             };
             match self.dist_comp(&rotated_query, node_id, threshold) {
                 Some(exact_dist) => {
-                    let mut heap = top_k.borrow_mut();
-                    heap.push(FloatOrd(exact_dist));
-                    if heap.len() > k_for_threshold {
-                        heap.pop(); // evict worst
+                    let mut v = top_k.borrow_mut();
+                    let pos = v.partition_point(|&d| d < exact_dist);
+                    v.insert(pos, exact_dist);
+                    if v.len() > k_for_threshold {
+                        v.pop();
                     }
                     exact_dist
                 }
@@ -265,24 +265,25 @@ impl ADSamplingState {
         ef: usize,
     ) -> Result<Vec<(u32, f32)>, RetrieveError> {
         let rotated_query = self.rotate_query(query);
-        let top_k = std::cell::RefCell::new(std::collections::BinaryHeap::<FloatOrd>::new());
+        let top_k = std::cell::RefCell::new(Vec::<f32>::with_capacity(k + 1));
         let k_for_threshold = k;
 
         let dist_fn = |_q: &[f32], node_id: u32| -> f32 {
             let threshold = {
-                let heap = top_k.borrow();
-                if heap.len() >= k_for_threshold {
-                    heap.peek().map_or(f32::INFINITY, |fo| fo.0)
+                let v = top_k.borrow();
+                if v.len() >= k_for_threshold {
+                    v[k_for_threshold - 1]
                 } else {
                     f32::INFINITY
                 }
             };
             match self.dist_comp(&rotated_query, node_id, threshold) {
                 Some(exact_dist) => {
-                    let mut heap = top_k.borrow_mut();
-                    heap.push(FloatOrd(exact_dist));
-                    if heap.len() > k_for_threshold {
-                        heap.pop();
+                    let mut v = top_k.borrow_mut();
+                    let pos = v.partition_point(|&d| d < exact_dist);
+                    v.insert(pos, exact_dist);
+                    if v.len() > k_for_threshold {
+                        v.pop();
                     }
                     exact_dist
                 }
@@ -303,24 +304,25 @@ impl ADSamplingState {
         ef: usize,
     ) -> Result<Vec<(u32, f32)>, RetrieveError> {
         let rotated_query = self.rotate_query(query);
-        let top_k = std::cell::RefCell::new(std::collections::BinaryHeap::<FloatOrd>::new());
+        let top_k = std::cell::RefCell::new(Vec::<f32>::with_capacity(k + 1));
         let k_for_threshold = k;
 
         let dist_fn = |_q: &[f32], node_id: u32| -> f32 {
             let threshold = {
-                let heap = top_k.borrow();
-                if heap.len() >= k_for_threshold {
-                    heap.peek().map_or(f32::INFINITY, |fo| fo.0)
+                let v = top_k.borrow();
+                if v.len() >= k_for_threshold {
+                    v[k_for_threshold - 1]
                 } else {
                     f32::INFINITY
                 }
             };
             match self.dist_comp(&rotated_query, node_id, threshold) {
                 Some(exact_dist) => {
-                    let mut heap = top_k.borrow_mut();
-                    heap.push(FloatOrd(exact_dist));
-                    if heap.len() > k_for_threshold {
-                        heap.pop();
+                    let mut v = top_k.borrow_mut();
+                    let pos = v.partition_point(|&d| d < exact_dist);
+                    v.insert(pos, exact_dist);
+                    if v.len() > k_for_threshold {
+                        v.pop();
                     }
                     exact_dist
                 }

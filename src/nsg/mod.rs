@@ -487,12 +487,12 @@ impl NsgIndex {
     ///
     /// The closure receives `(query, internal_node_id)` and returns a distance.
     /// Enables ADSampling and other asymmetric distance schemes.
-    pub fn search_with_distance(
+    pub fn search_with_distance<F: Fn(&[f32], u32) -> f32>(
         &self,
         query: &[f32],
         k: usize,
         ef: usize,
-        dist_fn: &dyn Fn(&[f32], u32) -> f32,
+        dist_fn: &F,
     ) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
             return Err(RetrieveError::InvalidParameter(
