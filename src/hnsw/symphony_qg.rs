@@ -191,12 +191,13 @@ impl SymphonyQGIndex {
         let pool = rerank_pool.max(k);
         let candidates = self.search_quantized_graph(query, ef.max(pool))?;
 
+        let dist_fn = self.index.dist_fn();
         let mut reranked: Vec<(u32, f32)> = candidates
             .into_iter()
             .take(pool)
             .map(|(internal_id, _approx_dist)| {
                 let vec = self.index.get_vector(internal_id as usize);
-                let exact_dist = crate::distance::cosine_distance_normalized(query, vec);
+                let exact_dist = dist_fn(query, vec);
                 (self.index.doc_ids[internal_id as usize], exact_dist)
             })
             .collect();
@@ -418,6 +419,187 @@ mod tests {
         assert!(
             recall > 0.5,
             "reranked self-search recall too low: {recall:.2} ({hits}/{n})"
+        );
+    }
+
+    /// Diagnostic: check if RaBitQ approximate distance is correlated with true L2
+    /// on unnormalized vectors (varying norms).
+    #[test]
+    fn test_rabitq_distance_correlation_unnormalized() {
+        let dim = 128;
+        let n = 100;
+
+        // Generate vectors with norm ~5-10 (unnormalized, like GIST)
+        let vectors: Vec<Vec<f32>> = (0..n)
+            .map(|seed| {
+                let v: Vec<f32> = (0..dim)
+                    .map(|j| ((seed * dim + j) as f32 * 0.618_034).fract() * 2.0 - 1.0)
+                    .collect();
+                let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+                let target_norm = 5.0 + (seed as f32 % 5.0); // norms from 5 to 10
+                v.iter().map(|x| x * target_norm / norm).collect()
+            })
+            .collect();
+
+        let flat: Vec<f32> = vectors.iter().flat_map(|v| v.iter().copied()).collect();
+
+        let mut quantizer = RaBitQQuantizer::with_config(dim, 42, RaBitQConfig::bits4()).unwrap();
+        quantizer.fit(&flat, n).unwrap();
+
+        let codes: Vec<QuantizedVector> = vectors
+            .iter()
+            .map(|v| quantizer.quantize(v).unwrap())
+            .collect();
+
+        // Check: for a query, does the approximate ranking correlate with true L2?
+        let query = &vectors[0];
+        let rotated = quantizer.rotate_query(query).unwrap();
+
+        let mut true_dists: Vec<(usize, f32)> = vectors
+            .iter()
+            .enumerate()
+            .skip(1) // skip self
+            .map(|(i, v)| {
+                let d: f32 = query
+                    .iter()
+                    .zip(v.iter())
+                    .map(|(a, b)| (a - b) * (a - b))
+                    .sum();
+                (i, d)
+            })
+            .collect();
+        true_dists.sort_by(|a, b| a.1.total_cmp(&b.1));
+
+        let mut approx_dists: Vec<(usize, f32)> = (1..n)
+            .map(|i| {
+                let d = RaBitQQuantizer::approximate_l2_sqr_prerotated(&rotated, &codes[i]);
+                (i, d)
+            })
+            .collect();
+        approx_dists.sort_by(|a, b| a.1.total_cmp(&b.1));
+
+        // Check recall@10: how many of true top-10 are in approx top-10?
+        let true_top10: std::collections::HashSet<usize> =
+            true_dists.iter().take(10).map(|(i, _)| *i).collect();
+        let approx_top10: std::collections::HashSet<usize> =
+            approx_dists.iter().take(10).map(|(i, _)| *i).collect();
+        let overlap = true_top10.intersection(&approx_top10).count();
+
+        eprintln!(
+            "RaBitQ unnormalized recall@10: {}/10 (true top-10 vs approx top-10)",
+            overlap
+        );
+        eprintln!(
+            "  f_add range: {:.1}..{:.1}",
+            codes.iter().map(|c| c.f_add).fold(f32::INFINITY, f32::min),
+            codes
+                .iter()
+                .map(|c| c.f_add)
+                .fold(f32::NEG_INFINITY, f32::max),
+        );
+        eprintln!(
+            "  f_rescale range: {:.4}..{:.4}",
+            codes
+                .iter()
+                .map(|c| c.f_rescale)
+                .fold(f32::INFINITY, f32::min),
+            codes
+                .iter()
+                .map(|c| c.f_rescale)
+                .fold(f32::NEG_INFINITY, f32::max),
+        );
+        eprintln!(
+            "  residual_norm range: {:.2}..{:.2}",
+            codes
+                .iter()
+                .map(|c| c.residual_norm)
+                .fold(f32::INFINITY, f32::min),
+            codes
+                .iter()
+                .map(|c| c.residual_norm)
+                .fold(f32::NEG_INFINITY, f32::max),
+        );
+
+        // With badly varying norms, we expect low recall
+        // This test documents the current behavior -- it's a diagnostic, not an assertion
+        if overlap <= 2 {
+            eprintln!("WARNING: RaBitQ distance approximation is broken for unnormalized vectors");
+            eprintln!("  The correction factors (f_add, f_rescale) scale with ||residual||^2,");
+            eprintln!(
+                "  which varies wildly for unnormalized data, drowning the discriminative IP."
+            );
+        }
+        // For now, we just document: assert it's at least not zero
+        assert!(
+            overlap >= 1 || n < 20,
+            "RaBitQ has zero correlation with true L2 on unnormalized data"
+        );
+    }
+
+    /// End-to-end test: SymphonyQG with L2 metric on unnormalized vectors.
+    #[test]
+    fn test_symphony_qg_l2_unnormalized() {
+        use crate::distance::DistanceMetric;
+        use crate::hnsw::graph::HNSWParams;
+
+        let dim = 64;
+        let n = 200;
+
+        let vectors: Vec<Vec<f32>> = (0..n)
+            .map(|seed| {
+                let v: Vec<f32> = (0..dim)
+                    .map(|j| ((seed * dim + j) as f32 * 0.618_034).fract() * 2.0 - 1.0)
+                    .collect();
+                let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+                let target_norm = 5.0 + (seed as f32 % 5.0);
+                v.iter().map(|x| x * target_norm / norm).collect()
+            })
+            .collect();
+
+        let params = HNSWParams {
+            m: 16,
+            m_max: 32,
+            ef_construction: 200,
+            metric: DistanceMetric::L2,
+            seed: Some(42),
+            ..Default::default()
+        };
+        let mut index =
+            SymphonyQGIndex::with_hnsw_params(dim, params, RaBitQConfig::bits4(), 42).unwrap();
+
+        for (i, v) in vectors.iter().enumerate() {
+            index.add_slice(i as u32, v).unwrap();
+        }
+        index.build().unwrap();
+
+        // Raw quantized search
+        let q = &vectors[0];
+        let raw_results = index.search(q, 10, 100).unwrap();
+        eprintln!(
+            "L2 raw quantized: {} results, top={:?}",
+            raw_results.len(),
+            raw_results.first()
+        );
+
+        // Reranked search
+        let reranked_results = index.search_reranked(q, 10, 100, 50).unwrap();
+        eprintln!(
+            "L2 reranked: {} results, top={:?}",
+            reranked_results.len(),
+            reranked_results.first()
+        );
+
+        // Self-query should return self as nearest
+        assert!(!raw_results.is_empty(), "raw search returned no results");
+
+        // Check that reranked actually uses L2, not cosine
+        // The nearest result for self-query should be doc_id 0
+        // With cosine reranking on unnormalized vectors, this may fail
+        assert_eq!(
+            reranked_results[0].0, 0,
+            "self-query should return doc_id 0 (got {}), \
+             likely rerank uses wrong distance metric",
+            reranked_results[0].0
         );
     }
 }
