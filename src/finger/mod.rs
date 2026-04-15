@@ -481,11 +481,7 @@ impl FingerIndex {
                 if idx < marks.len() && marks[idx] != generation {
                     marks[idx] = generation;
                     true
-                } else if idx >= marks.len() {
-                    true
-                } else {
-                    false
-                }
+                } else { idx >= marks.len() }
             };
 
             let mut frontier: BinaryHeap<std::cmp::Reverse<(FloatOrd, u32)>> = BinaryHeap::new();
@@ -581,11 +577,7 @@ impl FingerIndex {
                 if idx < marks.len() && marks[idx] != generation {
                     marks[idx] = generation;
                     true
-                } else if idx >= marks.len() {
-                    true
-                } else {
-                    false
-                }
+                } else { idx >= marks.len() }
             };
 
             let mut frontier: BinaryHeap<std::cmp::Reverse<(FloatOrd, u32)>> = BinaryHeap::new();

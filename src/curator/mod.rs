@@ -480,10 +480,8 @@ impl CuratorIndex {
                 if idx < marks.len() && marks[idx] != generation {
                     marks[idx] = generation;
                     true
-                } else if idx >= marks.len() {
-                    true
                 } else {
-                    false
+                    idx >= marks.len()
                 }
             };
 
@@ -569,10 +567,8 @@ impl CuratorIndex {
                 if idx < marks.len() && marks[idx] != generation {
                     marks[idx] = generation;
                     true
-                } else if idx >= marks.len() {
-                    true
                 } else {
-                    false
+                    idx >= marks.len()
                 }
             };
 

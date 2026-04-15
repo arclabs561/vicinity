@@ -78,10 +78,8 @@ pub fn search(
             if idx < marks.len() && marks[idx] != generation {
                 marks[idx] = generation;
                 true
-            } else if idx >= marks.len() {
-                true
             } else {
-                false
+                idx >= marks.len()
             }
         };
 
@@ -199,10 +197,8 @@ pub fn search_with_distance(
             if idx < marks.len() && marks[idx] != generation {
                 marks[idx] = generation;
                 true
-            } else if idx >= marks.len() {
-                true
             } else {
-                false
+                idx >= marks.len()
             }
         };
 
