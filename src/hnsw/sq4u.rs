@@ -150,14 +150,7 @@ impl HNSWSq4Index {
         let pool = rerank_pool.max(k);
         let candidates = self.search_quantized(query, ef.max(pool))?;
 
-        let dist_fn = match self.index.params.metric {
-            crate::distance::DistanceMetric::L2 => crate::distance::l2_distance,
-            crate::distance::DistanceMetric::Cosine => crate::distance::cosine_distance_normalized,
-            crate::distance::DistanceMetric::Angular => crate::distance::angular_distance,
-            crate::distance::DistanceMetric::InnerProduct => {
-                crate::distance::inner_product_distance
-            }
-        };
+        let dist_fn = self.index.dist_fn();
 
         let mut reranked: Vec<(u32, f32)> = candidates
             .into_iter()
