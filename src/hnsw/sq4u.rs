@@ -46,6 +46,18 @@ use crate::RetrieveError;
 /// candidates with exact distance.
 ///
 /// Memory: f32 vectors (for reranking) + 0.5 bytes/dim quantized codes.
+///
+/// # Deprecation Notice
+///
+/// SQ4U is consistently slower than plain HNSW at all tested dimensions
+/// (2-3x slower on GloVe-25 and GIST-960). The mandatory rerank pass
+/// negates the quantized traversal savings. Use
+/// [`SymphonyQG`](super::symphony_qg::SymphonyQGIndex) instead -- it uses
+/// RaBitQ with provably optimal error bounds and avoids reranking at 4+ bits.
+#[deprecated(
+    since = "0.6.0",
+    note = "Use SymphonyQGIndex instead. SQ4U is 2-3x slower than plain HNSW due to mandatory reranking."
+)]
 pub struct HNSWSq4Index {
     /// The underlying HNSW index (owns graph + f32 vectors).
     index: HNSWIndex,
