@@ -47,17 +47,14 @@ use crate::RetrieveError;
 ///
 /// Memory: f32 vectors (for reranking) + 0.5 bytes/dim quantized codes.
 ///
-/// # Deprecation Notice
+/// # Status: Experimental
 ///
-/// SQ4U is consistently slower than plain HNSW at all tested dimensions
-/// (2-3x slower on GloVe-25 and GIST-960). The mandatory rerank pass
-/// negates the quantized traversal savings. Use
-/// [`SymphonyQG`](super::symphony_qg::SymphonyQGIndex) instead -- it uses
-/// RaBitQ with provably optimal error bounds and avoids reranking at 4+ bits.
-#[deprecated(
-    since = "0.6.0",
-    note = "Use SymphonyQGIndex instead. SQ4U is 2-3x slower than plain HNSW due to mandatory reranking."
-)]
+/// SQ4U is 2-3x slower than plain HNSW on tested datasets due to the
+/// mandatory rerank pass. However, it is the only quantized traversal
+/// option that works natively with L2/unnormalized data. SymphonyQG
+/// (RaBitQ) currently requires cosine/normalized vectors because it uses
+/// a global centroid; vertex-relative normalization (per the SymphonyQG
+/// paper, arXiv:2411.12229) is needed to support L2 at scale.
 pub struct HNSWSq4Index {
     /// The underlying HNSW index (owns graph + f32 vectors).
     index: HNSWIndex,

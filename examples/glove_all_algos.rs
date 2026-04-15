@@ -39,7 +39,6 @@ use vicinity::diskann::{DiskANNIndex, DiskANNParams};
 #[cfg(feature = "emg")]
 use vicinity::emg::{EmgIndex, EmgParams};
 #[cfg(feature = "sq4")]
-#[allow(deprecated)]
 use vicinity::hnsw::sq4u::HNSWSq4Index;
 #[cfg(feature = "ivf_rabitq")]
 use vicinity::hnsw::symphony_qg::SymphonyQGIndex;
