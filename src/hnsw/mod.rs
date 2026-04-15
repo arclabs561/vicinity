@@ -184,6 +184,8 @@ pub use dual_branch::{DualBranchConfig, DualBranchHNSW, DualBranchStats, SkipBri
 pub mod symphony_qg;
 #[cfg(all(feature = "hnsw", feature = "ivf_rabitq"))]
 pub use symphony_qg::SymphonyQGIndex;
+#[cfg(all(feature = "hnsw", feature = "ivf_rabitq"))]
+pub use symphony_qg::SymphonyQGVRIndex;
 
 // SQ4U: 4-bit scalar quantized graph traversal (experimental)
 #[cfg(all(feature = "hnsw", feature = "sq4"))]
