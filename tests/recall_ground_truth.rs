@@ -276,6 +276,106 @@ fn symphonyqg_recall_vs_brute_force() {
 // 1-bit.  Before the fix, correction factors were computed from binary codes
 // only, causing a ~16x/128x scale mismatch with the multi-bit inner product
 // at query time, collapsing 4-bit recall to ~6% and 8-bit to ~5%.
+// ---------------------------------------------------------------------------
+// Vamana
+// ---------------------------------------------------------------------------
+
+#[test]
+fn vamana_recall_vs_brute_force() {
+    use vicinity::vamana::{VamanaIndex, VamanaParams};
+
+    let vectors = dataset();
+    let qs = queries();
+
+    let params = VamanaParams {
+        max_degree: 32,
+        ef_construction: 100,
+        alpha: 1.2,
+        ef_search: 100,
+        ..VamanaParams::default()
+    };
+    let mut idx = VamanaIndex::new(DIM, params).unwrap();
+    for (i, v) in vectors.iter().enumerate() {
+        idx.add(i as u32, v.clone()).unwrap();
+    }
+    idx.build().unwrap();
+
+    let recall = avg_recall(&vectors, &qs, |q| idx.search(q, K, 100).unwrap());
+    assert!(
+        recall >= 0.40,
+        "Vamana avg recall@{K} = {recall:.3}, expected >= 0.40"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// IVF-PQ
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "ivf_pq")]
+#[test]
+fn ivf_pq_recall_vs_brute_force() {
+    use vicinity::ivf_pq::{IVFPQIndex, IVFPQParams};
+
+    let vectors = dataset();
+    let qs = queries();
+
+    let params = IVFPQParams {
+        num_clusters: 4,
+        nprobe: 4,
+        num_codebooks: 4,
+        codebook_size: 16,
+        ..IVFPQParams::default()
+    };
+    let mut idx = IVFPQIndex::new(DIM, params).unwrap();
+    for (i, v) in vectors.iter().enumerate() {
+        idx.add(i as u32, v.clone()).unwrap();
+    }
+    idx.build().unwrap();
+
+    let recall = avg_recall(&vectors, &qs, |q| idx.search(q, K).unwrap());
+    // IVF-PQ at low dimensions with few clusters has limited recall
+    assert!(
+        recall >= 0.20,
+        "IVF-PQ avg recall@{K} = {recall:.3}, expected >= 0.20"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ADSampling + HNSW
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "hnsw")]
+#[test]
+fn adsampling_recall_vs_brute_force() {
+    use vicinity::adsampling::{ADSamplingParams, ADSamplingState};
+    use vicinity::hnsw::HNSWIndex;
+
+    let vectors = dataset();
+    let qs = queries();
+
+    // Build HNSW
+    let mut hnsw = HNSWIndex::new(DIM, 16, 32).unwrap();
+    for (i, v) in vectors.iter().enumerate() {
+        hnsw.add_slice(i as u32, v).unwrap();
+    }
+    hnsw.build().unwrap();
+
+    // Build ADSampling from reordered HNSW vectors
+    let state = ADSamplingState::from_hnsw(&hnsw, ADSamplingParams::default());
+
+    let recall = avg_recall(&vectors, &qs, |q| {
+        state.search_hnsw(&hnsw, q, K, 64).unwrap()
+    });
+    assert!(
+        recall >= 0.40,
+        "ADSampling+HNSW avg recall@{K} = {recall:.3}, expected >= 0.40"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// SymphonyQG multi-bit regression
+// ---------------------------------------------------------------------------
+
 #[cfg(all(feature = "hnsw", feature = "ivf_rabitq"))]
 #[test]
 fn symphonyqg_multibit_recall_regression() {
