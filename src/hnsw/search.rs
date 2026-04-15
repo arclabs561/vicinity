@@ -498,6 +498,7 @@ pub fn greedy_search_layer_custom<F: Fn(&[f32], u32) -> f32>(
 ///
 /// Used by vertex-relative quantization (SymphonyQGVR) where each edge (u -> v)
 /// has a separate quantized code relative to u.
+#[cfg(feature = "ivf_rabitq")]
 ///
 /// The closure receives `(parent_id, neighbor_id, neighbor_slot)` where
 /// `neighbor_slot` is the index within the parent's neighbor list (for looking
