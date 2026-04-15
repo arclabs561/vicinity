@@ -19,7 +19,6 @@
 //! Gao, J. & Long, C. (2023). *High-Dimensional Approximate Nearest Neighbor Search:
 //! with Reliable and Efficient Distance Comparison Operations.* SIGMOD 2023.
 
-use crate::distance::FloatOrd;
 use crate::error::RetrieveError;
 
 /// Parameters for ADSampling search.

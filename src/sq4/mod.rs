@@ -262,7 +262,7 @@ impl SQ4Index {
 
 /// Pack a float vector into 4-bit codes, two per byte.
 /// Low nibble = even dimension, high nibble = odd dimension.
-fn pack_vector(v: &[f32], mins: &[f32], inv_scales: &[f32], out: &mut [u8]) {
+pub(crate) fn pack_vector(v: &[f32], mins: &[f32], inv_scales: &[f32], out: &mut [u8]) {
     let d = v.len();
     let pairs = d / 2;
     for p in 0..pairs {
@@ -278,7 +278,7 @@ fn pack_vector(v: &[f32], mins: &[f32], inv_scales: &[f32], out: &mut [u8]) {
 
 /// Quantize a single float to 4 bits [0, 15].
 #[inline]
-fn quantize_4bit(val: f32, min: f32, inv_scale: f32) -> u8 {
+pub(crate) fn quantize_4bit(val: f32, min: f32, inv_scale: f32) -> u8 {
     let q = ((val - min) * inv_scale + 0.5) as i32; // round to nearest
     q.clamp(0, 15) as u8
 }
