@@ -40,6 +40,8 @@ use vicinity::diskann::{DiskANNIndex, DiskANNParams};
 use vicinity::emg::{EmgIndex, EmgParams};
 #[cfg(feature = "sq4")]
 use vicinity::hnsw::sq4u::HNSWSq4Index;
+#[cfg(feature = "ivf_rabitq")]
+use vicinity::hnsw::symphony_qg::SymphonyQGIndex;
 use vicinity::hnsw::{HNSWIndex, HNSWParams};
 #[cfg(feature = "ivf_avq")]
 use vicinity::ivf_avq::{IVFAVQIndex, IVFAVQParams};
@@ -146,6 +148,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "prt" => run_prt(&train, &test, &gt, k, dim)?,
         #[cfg(feature = "sq4")]
         "sq4u" => run_sq4u(&train, &test, &gt, k, dim)?,
+        #[cfg(feature = "ivf_rabitq")]
+        "symphonyqg" => run_symphonyqg(&train, &test, &gt, k, dim)?,
         "all" => {
             macro_rules! run_if_not_cached {
                 ($key:expr, $call:expr) => {
@@ -181,11 +185,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             run_if_not_cached!("prt", run_prt(&train, &test, &gt, k, dim));
             #[cfg(feature = "sq4")]
             run_if_not_cached!("sq4u", run_sq4u(&train, &test, &gt, k, dim));
+            #[cfg(feature = "ivf_rabitq")]
+            run_if_not_cached!("symphonyqg", run_symphonyqg(&train, &test, &gt, k, dim));
         }
         other => {
             eprintln!(
                 "Unknown algorithm: {other}. Use: hnsw | nsw | ivfpq | vamana | ivf_avq | diskann | \
-                 kdtree | balltree | rptree | nsg | emg | ivf_rabitq | adsampling | prt | sq4u | all"
+                 kdtree | balltree | rptree | nsg | emg | ivf_rabitq | adsampling | prt | sq4u | symphonyqg | all"
             );
             std::process::exit(1);
         }
@@ -946,8 +952,9 @@ fn run_prt(
     index.build()?;
     println!("{:.0}s", t0.elapsed().as_secs_f64());
 
-    // Build PRT with k = dim/4 projections (sweet spot per PAG paper)
-    let num_proj = (dim / 4).clamp(8, 128);
+    // Build PRT with k = dim/4 projections, uncapped for high-d datasets.
+    // Previous cap at 128 caused 81% recall ceiling on GIST-960 (dim=960).
+    let num_proj = (dim / 4).max(8);
     print!("  Building PRT (k={num_proj})... ");
     let _ = std::io::stdout().flush();
     let t0 = Instant::now();
@@ -1081,6 +1088,76 @@ fn recall_at_k(results: &[(u32, f32)], ground_truth: &[i32], k: usize) -> f64 {
     let gt: HashSet<u32> = ground_truth.iter().take(k).map(|&i| i as u32).collect();
     let found: HashSet<u32> = results.iter().map(|r| r.0).collect();
     gt.intersection(&found).count() as f64 / k as f64
+}
+
+// ─── SymphonyQG (RaBitQ quantized graph) ────────────────────────────────────
+
+#[cfg(feature = "ivf_rabitq")]
+fn run_symphonyqg(
+    train: &[Vec<f32>],
+    test: &[Vec<f32>],
+    gt: &[Vec<i32>],
+    k: usize,
+    dim: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    println!("=== SymphonyQG (RaBitQ graph traversal) ===");
+    print!("  Building HNSW + RaBitQ codes... ");
+    let _ = std::io::stdout().flush();
+    let mut index = SymphonyQGIndex::new(dim, 16, 32)?;
+    for (i, v) in train.iter().enumerate() {
+        index.add_slice(i as u32, v)?;
+    }
+    let t0 = Instant::now();
+    index.build()?;
+    println!("{:.0}s", t0.elapsed().as_secs_f64());
+
+    // Quantized search (no rerank) -- tests pure RaBitQ approximation
+    println!("  --- quantized (no rerank) ---");
+    for ef in [10, 20, 50, 100, 200, 400] {
+        let (recall, qps) = measure_symphonyqg(&index, test, gt, k, ef, false);
+        println!("    ef={ef:4}  recall={:.1}%  qps={qps:.0}", recall * 100.0);
+        append_jsonl("symphonyqg-raw", recall, qps)?;
+    }
+
+    // Reranked search -- recommended path
+    println!("  --- reranked ---");
+    for ef in [10, 20, 50, 100, 200, 400] {
+        let (recall, qps) = measure_symphonyqg(&index, test, gt, k, ef, true);
+        println!("    ef={ef:4}  recall={:.1}%  qps={qps:.0}", recall * 100.0);
+        append_jsonl("symphonyqg", recall, qps)?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "ivf_rabitq")]
+fn measure_symphonyqg(
+    index: &SymphonyQGIndex,
+    test: &[Vec<f32>],
+    gt: &[Vec<i32>],
+    k: usize,
+    ef: usize,
+    rerank: bool,
+) -> (f64, f64) {
+    // Warmup
+    for q in test.iter().take(50) {
+        if rerank {
+            let _ = index.search_reranked(q, k, ef, ef * 2);
+        } else {
+            let _ = index.search(q, k, ef);
+        }
+    }
+    let t = Instant::now();
+    let mut recall_sum = 0.0;
+    for (i, q) in test.iter().enumerate() {
+        let res = if rerank {
+            index.search_reranked(q, k, ef, ef * 2).unwrap_or_default()
+        } else {
+            index.search(q, k, ef).unwrap_or_default()
+        };
+        recall_sum += recall_at_k(&res, &gt[i], k);
+    }
+    let elapsed = t.elapsed().as_secs_f64();
+    (recall_sum / test.len() as f64, test.len() as f64 / elapsed)
 }
 
 fn git_sha() -> String {
