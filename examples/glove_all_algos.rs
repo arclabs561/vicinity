@@ -987,9 +987,24 @@ fn recall_at_k(results: &[(u32, f32)], ground_truth: &[i32], k: usize) -> f64 {
     gt.intersection(&found).count() as f64 / k as f64
 }
 
+fn git_sha() -> String {
+    std::process::Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default()
+}
+
+thread_local! {
+    static SHA: String = git_sha();
+}
+
 fn append_jsonl(algorithm: &str, recall: f64, qps: f64) -> Result<(), Box<dyn std::error::Error>> {
+    let sha = SHA.with(|s| s.clone());
     let line = format!(
-        "{{\"algorithm\":\"{algorithm}\",\"recall_at_10\":{recall:.4},\"qps\":{qps:.1}}}\n"
+        "{{\"algorithm\":\"{algorithm}\",\"recall_at_10\":{recall:.4},\"qps\":{qps:.1},\"git_sha\":\"{sha}\"}}\n"
     );
     let out_path =
         std::env::var("VICINITY_JSONL_OUT").unwrap_or_else(|_| "docs/results.jsonl".into());
@@ -1003,31 +1018,44 @@ fn append_jsonl(algorithm: &str, recall: f64, qps: f64) -> Result<(), Box<dyn st
 }
 
 /// Check if results already exist for an algorithm in the output file.
-/// Returns the set of algorithm names that have at least one result.
-fn existing_algorithms() -> HashSet<String> {
+/// Returns a map of algorithm name -> git SHA of the most recent result.
+fn existing_algorithms() -> std::collections::HashMap<String, String> {
     let out_path =
         std::env::var("VICINITY_JSONL_OUT").unwrap_or_else(|_| "docs/results.jsonl".into());
-    let mut algos = HashSet::new();
+    let mut algos = std::collections::HashMap::new();
     if let Ok(content) = std::fs::read_to_string(&out_path) {
         for line in content.lines() {
-            // Parse "algorithm":"<name>" from JSONL
-            if let Some(start) = line.find("\"algorithm\":\"") {
-                let rest = &line[start + 13..];
-                if let Some(end) = rest.find('"') {
-                    algos.insert(rest[..end].to_string());
-                }
+            let algo = extract_json_str(line, "algorithm");
+            let sha = extract_json_str(line, "git_sha");
+            if let Some(a) = algo {
+                algos.insert(a, sha.unwrap_or_default());
             }
         }
     }
     algos
 }
 
-/// Returns true if this algorithm should be skipped (already has results).
-fn should_skip(algo_name: &str, cached: &HashSet<String>) -> bool {
+fn extract_json_str(line: &str, key: &str) -> Option<String> {
+    let needle = format!("\"{}\":\"", key);
+    let start = line.find(&needle)?;
+    let rest = &line[start + needle.len()..];
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
+}
+
+/// Returns true if this algorithm should be skipped (already has results from this SHA).
+fn should_skip(algo_name: &str, cached: &std::collections::HashMap<String, String>) -> bool {
     if std::env::var("VICINITY_FORCE").is_ok() {
         return false;
     }
-    if cached.contains(algo_name) {
+    if let Some(cached_sha) = cached.get(algo_name) {
+        let current_sha = SHA.with(|s| s.clone());
+        if !current_sha.is_empty() && !cached_sha.is_empty() && *cached_sha != current_sha {
+            println!(
+                "  [stale] {algo_name} -- cached from {cached_sha}, current is {current_sha}; re-running"
+            );
+            return false;
+        }
         println!("  [cached] {algo_name} -- skipping (set VICINITY_FORCE=1 to re-run)");
         true
     } else {
