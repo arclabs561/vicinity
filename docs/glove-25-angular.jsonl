@@ -194,3 +194,9 @@
 {"algorithm":"sq4u","recall_at_10":0.9805,"qps":3408.6}
 {"algorithm":"sq4u","recall_at_10":0.9959,"qps":1927.4}
 {"algorithm":"sq4u","recall_at_10":0.9994,"qps":1055.5}
+{"algorithm":"prt","recall_at_10":0.4108,"qps":53765.4,"git_sha":"d344512"}
+{"algorithm":"prt","recall_at_10":0.5095,"qps":33726.5,"git_sha":"d344512"}
+{"algorithm":"prt","recall_at_10":0.6442,"qps":16436.8,"git_sha":"d344512"}
+{"algorithm":"prt","recall_at_10":0.7441,"qps":9523.3,"git_sha":"d344512"}
+{"algorithm":"prt","recall_at_10":0.8349,"qps":5131.7,"git_sha":"d344512"}
+{"algorithm":"prt","recall_at_10":0.9098,"qps":2760.0,"git_sha":"d344512"}
