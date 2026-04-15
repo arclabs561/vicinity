@@ -55,8 +55,9 @@ impl Default for ADSamplingParams {
 /// vectors. Wraps an existing [`HNSWIndex`](crate::hnsw::HNSWIndex) to provide
 /// accelerated search via partial distance evaluation.
 pub struct ADSamplingState {
-    /// Row-major rotation matrix, D x D.
-    rotation: Vec<f32>,
+    /// Row-major transposed rotation matrix Q^T, D x D.
+    /// Stored transposed so that rotate_vector is a row-wise GEMV (contiguous access).
+    rotation_t: Vec<f32>,
     /// Rotated database vectors, stored flat (n * D).
     rotated_vectors: Vec<f32>,
     /// Vector dimensionality.
@@ -78,7 +79,9 @@ impl ADSamplingState {
     pub fn new(vectors: &[f32], dimension: usize, params: ADSamplingParams) -> Self {
         let num_vectors = vectors.len() / dimension;
         let rotation = generate_orthogonal_rotation(dimension, params.seed);
-        let rotated_vectors = rotate_all(vectors, &rotation, dimension, num_vectors);
+        // Transpose Q so rotate_vector can do contiguous row reads + innr::dot.
+        let rotation_t = transpose_square(&rotation, dimension);
+        let rotated_vectors = rotate_all(vectors, &rotation_t, dimension, num_vectors);
 
         // Precompute ratio table for each batch checkpoint.
         // Use div_ceil so that dim < delta_d still gets one batch.
@@ -93,7 +96,7 @@ impl ADSamplingState {
         }
 
         Self {
-            rotation,
+            rotation_t,
             rotated_vectors,
             dimension,
             num_vectors,
@@ -142,7 +145,7 @@ impl ADSamplingState {
     /// Rotate a query vector using the stored rotation matrix.
     #[must_use]
     pub fn rotate_query(&self, query: &[f32]) -> Vec<f32> {
-        rotate_vector(query, &self.rotation, self.dimension)
+        rotate_vector(query, &self.rotation_t, self.dimension)
     }
 
     /// Get the rotated vector for a given internal ID.
@@ -388,31 +391,58 @@ fn generate_orthogonal_rotation(dim: usize, seed: u64) -> Vec<f32> {
     q
 }
 
-/// Rotate a single vector: result = Q^T * v (row-major Q, so result[i] = dot(Q[*][i], v)).
-fn rotate_vector(v: &[f32], rotation: &[f32], dim: usize) -> Vec<f32> {
+/// Transpose a dim x dim row-major matrix in place.
+fn transpose_square(m: &[f32], dim: usize) -> Vec<f32> {
+    let mut t = vec![0.0f32; dim * dim];
+    for i in 0..dim {
+        for j in 0..dim {
+            t[i * dim + j] = m[j * dim + i];
+        }
+    }
+    t
+}
+
+/// Rotate a single vector: result[i] = dot(Q_T[i], v) where Q_T is row-major.
+fn rotate_vector(v: &[f32], rotation_t: &[f32], dim: usize) -> Vec<f32> {
     let mut result = vec![0.0f32; dim];
     for i in 0..dim {
-        let mut sum = 0.0f32;
-        for j in 0..dim {
-            sum += rotation[j * dim + i] * v[j];
+        let row = &rotation_t[i * dim..(i + 1) * dim];
+        #[cfg(feature = "innr")]
+        {
+            result[i] = innr::dot(row, v);
         }
-        result[i] = sum;
+        #[cfg(not(feature = "innr"))]
+        {
+            let mut sum = 0.0f32;
+            for j in 0..dim {
+                sum += row[j] * v[j];
+            }
+            result[i] = sum;
+        }
     }
     result
 }
 
 /// Rotate all vectors in a flat array.
-fn rotate_all(vectors: &[f32], rotation: &[f32], dim: usize, n: usize) -> Vec<f32> {
+fn rotate_all(vectors: &[f32], rotation_t: &[f32], dim: usize, n: usize) -> Vec<f32> {
     let mut result = vec![0.0f32; n * dim];
     for idx in 0..n {
         let src = &vectors[idx * dim..(idx + 1) * dim];
         let dst = &mut result[idx * dim..(idx + 1) * dim];
         for i in 0..dim {
-            let mut sum = 0.0f32;
-            for j in 0..dim {
-                sum += rotation[j * dim + i] * src[j];
+            let row = &rotation_t[i * dim..(i + 1) * dim];
+            #[cfg(feature = "innr")]
+            {
+                dst[i] = innr::dot(row, src);
             }
-            dst[i] = sum;
+            #[cfg(not(feature = "innr"))]
+            {
+                let mut sum = 0.0f32;
+                for j in 0..dim {
+                    sum += row[j] * src[j];
+                }
+                dst[i] = sum;
+            }
         }
     }
     result
@@ -548,12 +578,13 @@ mod tests {
             ..Default::default()
         };
         let rotation = generate_orthogonal_rotation(dim, params.seed);
+        let rotation_t = transpose_square(&rotation, dim);
 
         let a: Vec<f32> = (0..dim).map(|i| (i as f32) * 0.1).collect();
         let b: Vec<f32> = (0..dim).map(|i| (i as f32) * 0.1 + 1.0).collect();
 
-        let ra = rotate_vector(&a, &rotation, dim);
-        let rb = rotate_vector(&b, &rotation, dim);
+        let ra = rotate_vector(&a, &rotation_t, dim);
+        let rb = rotate_vector(&b, &rotation_t, dim);
 
         let orig_dist: f32 = a.iter().zip(&b).map(|(x, y)| (x - y) * (x - y)).sum();
         let rot_dist: f32 = ra.iter().zip(&rb).map(|(x, y)| (x - y) * (x - y)).sum();
