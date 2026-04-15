@@ -241,7 +241,7 @@ fn run_hnsw(
                 recall * 100.0,
                 qps
             );
-            append_jsonl(&algo_name, recall, qps)?;
+            append_jsonl_ef(&algo_name, recall, qps, Some(ef))?;
         }
     }
     Ok(())
@@ -270,7 +270,7 @@ fn run_nsw(
     for ef in [10, 20, 50, 100, 200, 400] {
         let (recall, qps) = measure_nsw(&index, test, gt, k, ef);
         println!("  ef={ef:4}  recall={:.1}%  qps={:.0}", recall * 100.0, qps);
-        append_jsonl("nsw", recall, qps)?;
+        append_jsonl_ef("nsw", recall, qps, Some(ef))?;
     }
     Ok(())
 }
@@ -313,7 +313,7 @@ fn run_ivfpq(
                 recall * 100.0,
                 qps
             );
-            append_jsonl(&algo_name, recall, qps)?;
+            append_jsonl_ef(&algo_name, recall, qps, Some(nprobe))?;
         }
     }
     Ok(())
@@ -348,7 +348,7 @@ fn run_vamana(
     for ef in [10, 20, 50, 100, 200, 400] {
         let (recall, qps) = measure_vamana(&index, test, gt, k, ef);
         println!("  ef={ef:4}  recall={:.1}%  qps={:.0}", recall * 100.0, qps);
-        append_jsonl("vamana", recall, qps)?;
+        append_jsonl_ef("vamana", recall, qps, Some(ef))?;
     }
     Ok(())
 }
@@ -389,7 +389,7 @@ fn run_ivf_avq(
             recall * 100.0,
             qps
         );
-        append_jsonl("ivf_avq", recall, qps)?;
+        append_jsonl_ef("ivf_avq", recall, qps, Some(nprobe))?;
     }
     Ok(())
 }
@@ -503,7 +503,7 @@ fn run_diskann(
     for ef in [10, 20, 50, 100, 200, 400] {
         let (recall, qps) = measure_diskann(&index, test, gt, k, ef);
         println!("  ef={ef:4}  recall={:.1}%  qps={:.0}", recall * 100.0, qps);
-        append_jsonl("diskann", recall, qps)?;
+        append_jsonl_ef("diskann", recall, qps, Some(ef))?;
     }
     Ok(())
 }
@@ -719,7 +719,7 @@ fn run_nsg(
     for ef in [10, 20, 50, 100, 200, 400] {
         let (recall, qps) = measure_nsg(&index, test, gt, k, ef);
         println!("  ef={ef:4}  recall={:.1}%  qps={:.0}", recall * 100.0, qps);
-        append_jsonl("nsg", recall, qps)?;
+        append_jsonl_ef("nsg", recall, qps, Some(ef))?;
     }
     Ok(())
 }
@@ -774,7 +774,7 @@ fn run_emg(
     for ef in [10, 20, 50, 100, 200, 400] {
         let (recall, qps) = measure_emg(&index, test, gt, k, ef);
         println!("  ef={ef:4}  recall={:.1}%  qps={:.0}", recall * 100.0, qps);
-        append_jsonl("emg", recall, qps)?;
+        append_jsonl_ef("emg", recall, qps, Some(ef))?;
     }
     Ok(())
 }
@@ -833,7 +833,7 @@ fn run_ivf_rabitq(
             recall * 100.0,
             qps
         );
-        append_jsonl(&format!("ivf-rabitq-np{nprobe}"), recall, qps)?;
+        append_jsonl_ef(&format!("ivf-rabitq-np{nprobe}"), recall, qps, Some(nprobe))?;
     }
     Ok(())
 }
@@ -894,7 +894,7 @@ fn run_adsampling(
     for ef in [10, 20, 50, 100, 200, 400] {
         let (recall, qps) = measure_adsampling(&state, &index, test, gt, k, ef);
         println!("  ef={ef:4}  recall={:.1}%  qps={:.0}", recall * 100.0, qps);
-        append_jsonl("adsampling", recall, qps)?;
+        append_jsonl_ef("adsampling", recall, qps, Some(ef))?;
     }
     Ok(())
 }
@@ -970,7 +970,7 @@ fn run_prt(
             qps,
             avg_full_ratio * 100.0,
         );
-        append_jsonl("prt", recall, qps)?;
+        append_jsonl_ef("prt", recall, qps, Some(ef))?;
     }
     Ok(())
 }
@@ -1053,7 +1053,7 @@ fn run_sq4u(
             recall * 100.0,
             qps
         );
-        append_jsonl("sq4u", recall, qps)?;
+        append_jsonl_ef("sq4u", recall, qps, Some(ef))?;
     }
     Ok(())
 }
@@ -1129,7 +1129,7 @@ fn run_symphonyqg(
     for ef in [10, 20, 50, 100, 200, 400] {
         let (recall, qps) = measure_symphonyqg(&index, test, gt, k, ef, false);
         println!("    ef={ef:4}  recall={:.1}%  qps={qps:.0}", recall * 100.0);
-        append_jsonl("symphonyqg-raw", recall, qps)?;
+        append_jsonl_ef("symphonyqg-raw", recall, qps, Some(ef))?;
     }
 
     // Reranked search -- recommended path
@@ -1137,7 +1137,7 @@ fn run_symphonyqg(
     for ef in [10, 20, 50, 100, 200, 400] {
         let (recall, qps) = measure_symphonyqg(&index, test, gt, k, ef, true);
         println!("    ef={ef:4}  recall={:.1}%  qps={qps:.0}", recall * 100.0);
-        append_jsonl("symphonyqg", recall, qps)?;
+        append_jsonl_ef("symphonyqg", recall, qps, Some(ef))?;
     }
     Ok(())
 }
@@ -1188,9 +1188,21 @@ thread_local! {
 }
 
 fn append_jsonl(algorithm: &str, recall: f64, qps: f64) -> Result<(), Box<dyn std::error::Error>> {
+    append_jsonl_ef(algorithm, recall, qps, None)
+}
+
+fn append_jsonl_ef(
+    algorithm: &str,
+    recall: f64,
+    qps: f64,
+    ef: Option<usize>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let sha = SHA.with(|s| s.clone());
+    let ef_str = ef
+        .map(|e| format!(",\"ef_search\":{e}"))
+        .unwrap_or_default();
     let line = format!(
-        "{{\"algorithm\":\"{algorithm}\",\"recall_at_10\":{recall:.4},\"qps\":{qps:.1},\"git_sha\":\"{sha}\"}}\n"
+        "{{\"algorithm\":\"{algorithm}\",\"recall_at_10\":{recall:.4},\"qps\":{qps:.1}{ef_str},\"git_sha\":\"{sha}\"}}\n"
     );
     let out_path =
         std::env::var("VICINITY_JSONL_OUT").unwrap_or_else(|_| "docs/results.jsonl".into());
