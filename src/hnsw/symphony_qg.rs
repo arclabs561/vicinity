@@ -532,7 +532,9 @@ impl SymphonyQGVRIndex {
             });
         }
 
-        let quantizer = self.quantizer.as_ref().unwrap();
+        let quantizer = self.quantizer.as_ref().ok_or_else(|| {
+            RetrieveError::InvalidParameter("quantizer not built (call build())".into())
+        })?;
         let rotated_query = quantizer
             .rotate_query(query)
             .map_err(|e| RetrieveError::InvalidParameter(format!("rotate query: {e}")))?;
@@ -628,7 +630,7 @@ impl SymphonyQGVRIndex {
 
     /// Approximate distance for the entry point (no parent context).
     /// Uses exact f32 distance as fallback since we don't have per-edge codes for entry.
-    fn approx_dist_vr_entry(&self, _rotated_query: &[f32], entry_id: u32) -> f32 {
+    fn approx_dist_vr_entry(&self, _rotated_query: &[f32], _entry_id: u32) -> f32 {
         // For the entry point we don't have a parent edge, so use a rough estimate.
         // This is only used once per query, so exact distance is fine.
         0.0 // Will be refined by the beam search immediately

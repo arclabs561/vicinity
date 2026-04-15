@@ -209,7 +209,6 @@ impl DiskANNSearcher {
             alpha: params_val["alpha"].as_f64().unwrap_or(1.2) as f32,
             ef_search: params_val["ef_search"].as_u64().unwrap_or(100) as usize,
             seed: None,
-            ..DiskANNParams::default()
         };
 
         // 2. Open Graph
