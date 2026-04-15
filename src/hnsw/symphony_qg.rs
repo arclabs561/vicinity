@@ -508,6 +508,20 @@ impl SymphonyQGVRIndex {
         k: usize,
         ef: usize,
     ) -> Result<Vec<(u32, f32)>, RetrieveError> {
+        let internal = self.search_internal(query, k, ef)?;
+        Ok(internal
+            .into_iter()
+            .map(|(id, d)| (self.index.doc_ids[id as usize], d))
+            .collect())
+    }
+
+    /// Internal search returning (internal_id, approx_dist).
+    fn search_internal(
+        &self,
+        query: &[f32],
+        k: usize,
+        ef: usize,
+    ) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built || self.index.num_vectors == 0 || self.index.layers.is_empty() {
             return Ok(Vec::new());
         }
@@ -575,11 +589,8 @@ impl SymphonyQGVRIndex {
             &dist_fn,
         );
 
-        let mut output: Vec<(u32, f32)> = results
-            .into_iter()
-            .take(k)
-            .map(|(internal_id, dist)| (self.index.doc_ids[internal_id as usize], dist))
-            .collect();
+        // Return internal IDs (not doc_ids) -- caller converts at the boundary.
+        let mut output: Vec<(u32, f32)> = results.into_iter().take(k).collect();
         output.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
         Ok(output)
     }
@@ -597,23 +608,16 @@ impl SymphonyQGVRIndex {
         }
 
         let pool = rerank_pool.max(k);
-        let candidates = self.search(query, pool, ef.max(pool))?;
+        let candidates = self.search_internal(query, pool, ef.max(pool))?;
 
         let dist_fn = self.index.dist_fn();
         let mut reranked: Vec<(u32, f32)> = candidates
             .into_iter()
             .take(pool)
-            .map(|(doc_id, _approx_dist)| {
-                // Resolve back to internal id for vector lookup.
-                let internal_id = self
-                    .index
-                    .doc_id_to_internal
-                    .get(&doc_id)
-                    .copied()
-                    .unwrap_or(0);
+            .map(|(internal_id, _approx_dist)| {
                 let vec = self.index.get_vector(internal_id as usize);
                 let exact_dist = dist_fn(query, vec);
-                (doc_id, exact_dist)
+                (self.index.doc_ids[internal_id as usize], exact_dist)
             })
             .collect();
 
