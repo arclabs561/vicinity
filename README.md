@@ -27,9 +27,9 @@ Each algorithm is a separate feature. Enable what you need:
 
 ```toml
 [dependencies]
-vicinity = { version = "0.4", features = ["hnsw"] }          # graph index
-# vicinity = { version = "0.4", features = ["ivf_pq"] }      # compressed index
-# vicinity = { version = "0.4", features = ["nsw"] }         # flat graph
+vicinity = { version = "0.5", features = ["hnsw"] }          # graph index
+# vicinity = { version = "0.5", features = ["ivf_pq"] }      # compressed index
+# vicinity = { version = "0.5", features = ["nsw"] }         # flat graph
 ```
 
 ## Usage
@@ -72,7 +72,7 @@ Save and load indexes with the `serde` feature:
 
 ```toml
 [dependencies]
-vicinity = { version = "0.4", features = ["hnsw", "serde"] }
+vicinity = { version = "0.5", features = ["hnsw", "serde"] }
 ```
 
 ```rust
