@@ -48,7 +48,7 @@ const DENSE_VISITED_THRESHOLD: usize = 4_000_000;
 ///
 /// Falls back to `HashSet<u32>` for large indexes where a full dense array
 /// would waste memory.
-enum VisitedSet {
+pub(crate) enum VisitedSet {
     Dense { marks: Vec<u8>, generation: u8 },
     Sparse(HashSet<u32>),
 }
@@ -99,7 +99,7 @@ impl VisitedSet {
 
     /// Mark a node as visited. Returns `true` if the node was NOT previously visited.
     #[inline]
-    fn insert(&mut self, id: u32) -> bool {
+    pub(crate) fn insert(&mut self, id: u32) -> bool {
         match self {
             VisitedSet::Dense { marks, generation } => {
                 let idx = id as usize;
@@ -158,7 +158,7 @@ thread_local! {
 
 /// Borrow the thread-local visited set, prepared for `num_nodes`.
 /// The closure receives a mutable reference to the reused set.
-fn with_visited_set<F, R>(num_nodes: usize, capacity_hint: usize, f: F) -> R
+pub(crate) fn with_visited_set<F, R>(num_nodes: usize, capacity_hint: usize, f: F) -> R
 where
     F: FnOnce(&mut VisitedSet) -> R,
 {
@@ -173,9 +173,9 @@ where
 
 /// Candidate for min-heap (explore closest first).
 #[derive(PartialEq)]
-struct MinCandidate {
-    id: u32,
-    distance: f32,
+pub(crate) struct MinCandidate {
+    pub(crate) id: u32,
+    pub(crate) distance: f32,
 }
 impl Eq for MinCandidate {}
 impl Ord for MinCandidate {
@@ -191,9 +191,9 @@ impl PartialOrd for MinCandidate {
 
 /// Result for max-heap (track worst result for pruning).
 #[derive(PartialEq)]
-struct MaxResult {
-    id: u32,
-    distance: f32,
+pub(crate) struct MaxResult {
+    pub(crate) id: u32,
+    pub(crate) distance: f32,
 }
 impl Eq for MaxResult {}
 impl Ord for MaxResult {
