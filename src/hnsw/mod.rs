@@ -1,5 +1,7 @@
 //! Hierarchical Navigable Small World (HNSW) approximate nearest neighbor search.
 //!
+//! Same algorithm as hnswlib (C++), Qdrant, Weaviate, and pgvector's `hnsw` index type.
+//!
 //! The industry-standard graph-based ANN algorithm. Pure Rust with SIMD acceleration.
 //!
 //! # Quick Start
