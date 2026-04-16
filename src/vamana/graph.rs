@@ -140,6 +140,26 @@ impl VamanaIndex {
         Ok(())
     }
 
+    /// Build using parallel batched construction (requires `parallel` feature).
+    ///
+    /// Same two-pass structure as [`build`](Self::build) but parallelizes the
+    /// neighbor search phase within each pass using rayon.
+    #[cfg(feature = "parallel")]
+    pub fn build_parallel(&mut self, batch_size: usize) -> Result<(), RetrieveError> {
+        if self.num_vectors == 0 {
+            return Err(RetrieveError::EmptyIndex);
+        }
+        if self.built {
+            return Err(RetrieveError::InvalidParameter(
+                "index already built".into(),
+            ));
+        }
+        super::construction::construct_graph_parallel(self, batch_size)?;
+        self.built = true;
+        self.reorder_for_locality();
+        Ok(())
+    }
+
     /// BFS-order graph reordering for cache-friendly traversal.
     fn reorder_for_locality(&mut self) {
         if self.num_vectors <= 1 {
