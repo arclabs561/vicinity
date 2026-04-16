@@ -188,12 +188,7 @@ pub fn validate_msp(
     let mut failed_targets = Vec::new();
 
     // Deterministic sample: evenly spaced node ids.
-    let step = if sample_size > 0 {
-        num_nodes / sample_size
-    } else {
-        1
-    }
-    .max(1);
+    let step = (num_nodes.checked_div(sample_size).unwrap_or(1)).max(1);
 
     for target_idx in 0..sample_size {
         let target = ((target_idx * step) as u32).min((num_nodes - 1) as u32);
