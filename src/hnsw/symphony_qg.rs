@@ -509,9 +509,16 @@ impl SymphonyQGVRIndex {
             let mut codes = Vec::with_capacity(neighbors.len() * packed_dim);
 
             for &neighbor_id in neighbors.iter() {
-                let v_vec = self.index.get_vector(neighbor_id as usize);
+                let v_rot =
+                    &rotated_flat[neighbor_id as usize * dim..(neighbor_id as usize + 1) * dim];
+                // Pre-rotated residual: R*(v - u) = R*v - R*u. O(d) not O(d^2).
+                let rotated_residual: Vec<f32> = v_rot
+                    .iter()
+                    .zip(u_rot.iter())
+                    .map(|(&v, &u)| v - u)
+                    .collect();
                 let qv = quantizer
-                    .quantize_with_centroid(v_vec, u_vec)
+                    .quantize_prerotated(&rotated_residual, u_vec)
                     .map_err(|e| RetrieveError::InvalidParameter(format!("quantize edge: {e}")))?;
 
                 let mut ip_u_rot = 0.0f32;
