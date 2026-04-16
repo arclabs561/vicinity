@@ -37,6 +37,8 @@ jobs:
         run: cargo test --no-default-features --features hnsw
       - name: Test (sq4)
         run: cargo test --no-default-features --features hnsw,sq4
+      - name: Test (sq8)
+        run: cargo test --no-default-features --features hnsw,sq8
       - name: Test (lemur)
         run: cargo test --no-default-features --features lemur
       - name: Test (all features, lib only)
