@@ -158,6 +158,22 @@ impl HNSWSq8Index {
         Ok(reranked)
     }
 
+    /// Batch reranked search (parallel with rayon when `parallel` feature is enabled).
+    #[cfg(feature = "parallel")]
+    pub fn search_reranked_batch(
+        &self,
+        queries: &[Vec<f32>],
+        k: usize,
+        ef: usize,
+        rerank_pool: usize,
+    ) -> Result<Vec<Vec<(u32, f32)>>, RetrieveError> {
+        use rayon::prelude::*;
+        queries
+            .par_iter()
+            .map(|q| self.search_reranked(q, k, ef, rerank_pool))
+            .collect()
+    }
+
     /// Number of indexed vectors.
     pub fn len(&self) -> usize {
         self.index.num_vectors
@@ -249,6 +265,41 @@ impl HNSWSq8Index {
         Ok(())
     }
 
+    /// Precompute distance lookup table for a query.
+    ///
+    /// Returns a flat table of `dim * 256` f32 values where
+    /// `table[d * 256 + code] = (query[d] - (min[d] + code * step[d]))^2`.
+    ///
+    /// For d <= 128 the table fits in L1 cache (~128KB); for higher d it still
+    /// avoids the per-access decode (multiply + subtract + square).
+    #[inline]
+    fn precompute_table(query: &[f32], mins: &[f32], steps: &[f32]) -> Vec<f32> {
+        let dim = query.len();
+        let mut table = vec![0.0f32; dim * 256];
+        for d in 0..dim {
+            let q = query[d];
+            let min = mins[d];
+            let step = steps[d];
+            let base = d * 256;
+            for code in 0..256u32 {
+                let decoded = min + code as f32 * step;
+                let diff = q - decoded;
+                table[base + code as usize] = diff * diff;
+            }
+        }
+        table
+    }
+
+    /// Approximate L2^2 using precomputed table lookup (zero decode per access).
+    #[inline]
+    fn approx_dist_table(table: &[f32], code: &[u8]) -> f32 {
+        let mut sum = 0.0f32;
+        for (d, &c) in code.iter().enumerate() {
+            sum += table[d * 256 + c as usize];
+        }
+        sum
+    }
+
     /// Approximate L2^2 distance: on-the-fly decode of 8-bit codes.
     ///
     /// For each dimension: `decoded = min[d] + code * step[d]`, then
@@ -319,26 +370,46 @@ impl HNSWSq8Index {
             }
         }
 
-        // Base layer: beam search with SQ8 approximate distance + prefetch.
+        // Base layer: beam search with SQ8 approximate distance.
         if self.index.layers.is_empty() {
             return Ok(Vec::new());
         }
         let base_layer = &self.index.layers[0];
-        let dist_fn = |_q: &[f32], node_id: u32| -> f32 {
-            // Prefetch next cache line of codes (hide L2 latency).
-            let offset = node_id as usize * dim;
-            let ncode = &codes[offset..offset + dim];
-            Self::approx_dist(query, ncode, mins, steps)
-        };
-        Ok(crate::hnsw::search::greedy_search_layer_custom(
-            query,
-            current,
-            base_layer,
-            &self.index.vectors,
-            self.index.dimension,
-            ef,
-            &dist_fn,
-        ))
+
+        // For dimensions <= 256, use precomputed table (fits in L1/L2 cache).
+        // For higher dimensions, decode on-the-fly to avoid table cache pressure.
+        if dim <= 256 {
+            let table = Self::precompute_table(query, mins, steps);
+            let dist_fn = |_q: &[f32], node_id: u32| -> f32 {
+                let offset = node_id as usize * dim;
+                let ncode = &codes[offset..offset + dim];
+                Self::approx_dist_table(&table, ncode)
+            };
+            Ok(crate::hnsw::search::greedy_search_layer_custom(
+                query,
+                current,
+                base_layer,
+                &self.index.vectors,
+                self.index.dimension,
+                ef,
+                &dist_fn,
+            ))
+        } else {
+            let dist_fn = |_q: &[f32], node_id: u32| -> f32 {
+                let offset = node_id as usize * dim;
+                let ncode = &codes[offset..offset + dim];
+                Self::approx_dist(query, ncode, mins, steps)
+            };
+            Ok(crate::hnsw::search::greedy_search_layer_custom(
+                query,
+                current,
+                base_layer,
+                &self.index.vectors,
+                self.index.dimension,
+                ef,
+                &dist_fn,
+            ))
+        }
     }
 }
 
