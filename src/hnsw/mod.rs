@@ -193,6 +193,12 @@ pub mod sq4u;
 #[cfg(all(feature = "hnsw", feature = "sq4"))]
 pub use sq4u::HNSWSq4Index;
 
+// SQ8U: 8-bit scalar quantized graph traversal
+#[cfg(all(feature = "hnsw", feature = "sq8"))]
+pub mod sq8u;
+#[cfg(all(feature = "hnsw", feature = "sq8"))]
+pub use sq8u::HNSWSq8Index;
+
 // Adaptive search (DARTH-style early termination)
 #[cfg(feature = "hnsw")]
 pub use crate::adaptive::AdaptiveConfig;

@@ -6,6 +6,7 @@
 //!
 //! # Individual algorithms
 //! cargo run --example glove_all_algos --release --features "hnsw,sq4" -- --algo sq4u
+//! cargo run --example glove_all_algos --release --features "hnsw,sq8" -- --algo sq8u
 //! cargo run --example glove_all_algos --release --features "hnsw,nsw,ivf_pq,vamana,ivf_avq,diskann" -- --algo hnsw
 //! cargo run --example glove_all_algos --release --features "hnsw,nsw,ivf_pq,vamana,ivf_avq,diskann" -- --algo nsw
 //! cargo run --example glove_all_algos --release --features "hnsw,nsw,ivf_pq,vamana,ivf_avq,diskann" -- --algo ivfpq
@@ -40,6 +41,8 @@ use vicinity::diskann::{DiskANNIndex, DiskANNParams};
 use vicinity::emg::{EmgIndex, EmgParams};
 #[cfg(feature = "sq4")]
 use vicinity::hnsw::sq4u::HNSWSq4Index;
+#[cfg(feature = "sq8")]
+use vicinity::hnsw::sq8u::HNSWSq8Index;
 #[cfg(feature = "ivf_rabitq")]
 use vicinity::hnsw::symphony_qg::SymphonyQGIndex;
 use vicinity::hnsw::{HNSWIndex, HNSWParams};
@@ -152,6 +155,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "prt" => run_prt(&train, &test, &gt, k, dim)?,
         #[cfg(feature = "sq4")]
         "sq4u" => run_sq4u(&train, &test, &gt, k, dim)?,
+        #[cfg(feature = "sq8")]
+        "sq8u" => run_sq8u(&train, &test, &gt, k, dim)?,
         #[cfg(feature = "ivf_rabitq")]
         "symphonyqg" => run_symphonyqg(&train, &test, &gt, k, dim)?,
         #[cfg(feature = "ivf_rabitq")]
@@ -191,13 +196,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             run_if_not_cached!("prt", run_prt(&train, &test, &gt, k, dim));
             #[cfg(feature = "sq4")]
             run_if_not_cached!("sq4u", run_sq4u(&train, &test, &gt, k, dim));
+            #[cfg(feature = "sq8")]
+            run_if_not_cached!("sq8u", run_sq8u(&train, &test, &gt, k, dim));
             #[cfg(feature = "ivf_rabitq")]
             run_if_not_cached!("symphonyqg", run_symphonyqg(&train, &test, &gt, k, dim));
         }
         other => {
             eprintln!(
                 "Unknown algorithm: {other}. Use: hnsw | nsw | ivfpq | vamana | ivf_avq | diskann | \
-                 kdtree | balltree | rptree | nsg | emg | ivf_rabitq | adsampling | prt | sq4u | symphonyqg | all"
+                 kdtree | balltree | rptree | nsg | emg | ivf_rabitq | adsampling | prt | sq4u | sq8u | symphonyqg | all"
             );
             std::process::exit(1);
         }
@@ -1093,6 +1100,76 @@ fn run_sq4u(
 #[cfg(feature = "sq4")]
 fn measure_sq4u_reranked(
     index: &HNSWSq4Index,
+    test: &[Vec<f32>],
+    gt: &[Vec<i32>],
+    k: usize,
+    ef: usize,
+    rerank_pool: usize,
+) -> (f64, f64) {
+    for q in test.iter().take(50) {
+        let _ = index.search_reranked(q, k, ef, rerank_pool);
+    }
+    let t = Instant::now();
+    let mut recall_sum = 0.0;
+    for (i, q) in test.iter().enumerate() {
+        let res = index
+            .search_reranked(q, k, ef, rerank_pool)
+            .unwrap_or_default();
+        recall_sum += recall_at_k(&res, &gt[i], k);
+    }
+    let elapsed = t.elapsed().as_secs_f64();
+    (recall_sum / test.len() as f64, test.len() as f64 / elapsed)
+}
+
+// ─── SQ8U (8-bit quantized HNSW traversal) ───────────────────────────────────
+
+#[cfg(feature = "sq8")]
+fn run_sq8u(
+    train: &[Vec<f32>],
+    test: &[Vec<f32>],
+    gt: &[Vec<i32>],
+    k: usize,
+    dim: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    println!("=== SQ8U (8-bit quantized HNSW) ===");
+    let metric = if std::env::var("VICINITY_METRIC").as_deref() == Ok("l2") {
+        vicinity::distance::DistanceMetric::L2
+    } else {
+        vicinity::distance::DistanceMetric::Cosine
+    };
+    let params = HNSWParams {
+        m: 16,
+        m_max: 32,
+        ef_construction: 200,
+        metric,
+        ..Default::default()
+    };
+    print!("  Building (M=16, M_max=32)... ");
+    let _ = std::io::stdout().flush();
+    let mut index = HNSWSq8Index::with_params(dim, params)?;
+    for (i, v) in train.iter().enumerate() {
+        index.add_slice(i as u32, v)?;
+    }
+    let t0 = Instant::now();
+    index.build()?;
+    println!("{:.0}s", t0.elapsed().as_secs_f64());
+
+    // Reranked search: sweep ef with rerank_pool = ef
+    for ef in [10, 20, 50, 100, 200, 400] {
+        let (recall, qps) = measure_sq8u_reranked(&index, test, gt, k, ef, ef);
+        println!(
+            "    ef={ef:4}  recall={:.1}%  qps={:.0}",
+            recall * 100.0,
+            qps
+        );
+        append_jsonl_ef("sq8u", recall, qps, Some(ef))?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "sq8")]
+fn measure_sq8u_reranked(
+    index: &HNSWSq8Index,
     test: &[Vec<f32>],
     gt: &[Vec<i32>],
     k: usize,
