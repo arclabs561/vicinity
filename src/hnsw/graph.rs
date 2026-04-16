@@ -1534,11 +1534,7 @@ impl HNSWIndex {
     ///
     /// Recommended `batch_size`: 4096. Larger batches improve parallelism at the
     /// cost of marginally lower recall (vectors in the same batch don't see each
-    /// other's edges). Measured recall loss is < 1% even at batch=4096.
-    ///
-    /// Measured speedups on 10-core Apple Silicon:
-    /// - SIFT-128 (1M x 128): 9.5x (448s -> 47s)
-    /// - gist-960 (1M x 960): 7.1x (2489s -> 351s)
+    /// other's edges). Recall loss is typically < 1% at batch=4096.
     #[cfg(feature = "parallel")]
     pub fn build_parallel(&mut self, batch_size: usize) -> Result<(), RetrieveError> {
         if self.built {
