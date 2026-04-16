@@ -252,10 +252,7 @@ impl PyHNSWIndex {
         let dists_arr = numpy::ndarray::Array2::from_shape_vec((nq, k), all_dists)
             .map_err(|e| PyValueError::new_err(format!("failed to reshape dists: {e}")))?;
 
-        Ok((
-            ids_arr.into_pyarray(py),
-            dists_arr.into_pyarray(py),
-        ))
+        Ok((ids_arr.into_pyarray(py), dists_arr.into_pyarray(py)))
     }
 
     /// Number of vectors in the index.
