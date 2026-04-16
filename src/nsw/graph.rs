@@ -182,6 +182,20 @@ impl NSWIndex {
         Ok(())
     }
 
+    /// Build using parallel batched construction (requires `parallel` feature).
+    #[cfg(feature = "parallel")]
+    pub fn build_parallel(&mut self, batch_size: usize) -> Result<(), RetrieveError> {
+        if self.built {
+            return Ok(());
+        }
+        if self.num_vectors == 0 {
+            return Err(RetrieveError::EmptyIndex);
+        }
+        super::construction::construct_graph_parallel(self, batch_size)?;
+        self.built = true;
+        Ok(())
+    }
+
     /// Search for k nearest neighbors.
     pub fn search(
         &self,
