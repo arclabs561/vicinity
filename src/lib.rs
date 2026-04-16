@@ -213,5 +213,7 @@ pub mod benchmark;
 pub mod compression;
 pub mod error;
 pub mod persistence;
+#[cfg(feature = "python")]
+pub mod python;
 #[cfg(feature = "hnsw")]
 pub mod streaming;

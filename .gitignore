@@ -7,8 +7,8 @@
 # Benchmark data (generated)
 /data/
 
-# Local clone used during migration; never commit it.
-/vicinity/
+# Python venv
+.venv/
 
 # Generated plots / reports
 /docs/plots/index.html
