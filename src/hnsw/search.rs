@@ -11,7 +11,7 @@ use std::collections::{BinaryHeap, HashSet};
 /// correctness does not depend on it.
 #[inline(always)]
 #[allow(unsafe_code, unused_variables)]
-fn prefetch_read_data(ptr: *const f32) {
+pub(crate) fn prefetch_read_data(ptr: *const f32) {
     #[cfg(target_arch = "x86_64")]
     {
         // SAFETY: _mm_prefetch is a hint; invalid addresses are silently ignored.

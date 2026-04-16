@@ -647,7 +647,16 @@ impl SymphonyQGVRIndex {
         let lut = nibble_lut(self.cb);
 
         let dist_fn = |parent_id: u32, _neighbor_id: u32, slot: usize| -> f32 {
-            let offset = neighbor_offsets[parent_id as usize] as usize + slot;
+            let base_offset = neighbor_offsets[parent_id as usize] as usize;
+            let offset = base_offset + slot;
+
+            // Prefetch codes for slot+2 to hide L2 cache latency (~100 cycles).
+            // At d=960, each edge = 480 bytes = 8 cache lines.
+            if offset + 2 < edge_scalars.len() {
+                let ptr = packed.as_ptr().wrapping_add((offset + 2) * packed_dim);
+                crate::hnsw::search::prefetch_read_data(ptr as *const f32);
+            }
+
             let scalars = &edge_scalars[offset];
             let codes = &packed[offset * packed_dim..(offset + 1) * packed_dim];
             approx_dist_vr_packed(&rotated_query, codes, scalars, &lut)
