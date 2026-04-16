@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
-//! Cross-crate integration tests for Tekne Stack.
+//! Cross-crate integration tests.
 //!
 //! These tests verify that cross-crate dependencies work correctly:
 //! - vicinity uses idpaq for ID compression
