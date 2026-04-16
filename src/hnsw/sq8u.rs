@@ -134,6 +134,11 @@ impl HNSWSq8Index {
         self.index.add_slice(doc_id, vector)
     }
 
+    /// Add multiple vectors at once (row-major flat layout: `ids.len() * dim` floats).
+    pub fn add_batch(&mut self, ids: &[u32], vectors: &[f32]) -> Result<(), RetrieveError> {
+        self.index.add_batch(ids, vectors)
+    }
+
     /// Build the HNSW graph and quantize all vectors to 8-bit codes.
     pub fn build(&mut self) -> Result<(), RetrieveError> {
         self.index.build()?;
