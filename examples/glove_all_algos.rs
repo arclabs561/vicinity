@@ -366,13 +366,29 @@ fn run_vamana(
     for (i, v) in train.iter().enumerate() {
         index.add(i as u32, v.clone())?;
     }
-    index.build()?;
+    #[cfg(feature = "parallel")]
+    {
+        let batch = std::env::var("VICINITY_BUILD_BATCH")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(4096);
+        index.build_parallel(batch)?;
+    }
+    #[cfg(not(feature = "parallel"))]
+    {
+        index.build()?;
+    }
     println!("{:.0}s", t0.elapsed().as_secs_f64());
 
+    let algo_name = if cfg!(feature = "parallel") {
+        "vamana-par"
+    } else {
+        "vamana"
+    };
     for ef in [10, 20, 50, 100, 200, 400] {
         let (recall, qps) = measure_vamana(&index, test, gt, k, ef);
         println!("  ef={ef:4}  recall={:.1}%  qps={:.0}", recall * 100.0, qps);
-        append_jsonl_ef("vamana", recall, qps, Some(ef))?;
+        append_jsonl_ef(algo_name, recall, qps, Some(ef))?;
     }
     Ok(())
 }
