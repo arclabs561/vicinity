@@ -642,14 +642,35 @@ impl SymphonyQGVRIndex {
         }
 
         // Base layer: edge-aware beam search with per-edge codes.
-        let entry_dist = self.approx_dist_vr_entry(&rotated_query, current);
+        //
+        // The per-edge VR formula estimates `||v - parent||^2` plus a correction
+        // proportional to `<q-parent, v-parent>`. To compare distances across
+        // different parents in the beam search priority queue, we must add the
+        // exact `||q - parent||^2` term. This is O(d) per parent node popped
+        // from the candidate heap.
         let base_layer = &self.index.layers[0];
         let edge_scalars = &self.edge_scalars;
         let packed = &self.packed_codes;
         let neighbor_offsets = &self.neighbor_offsets;
         let packed_dim = self.packed_dim;
+        let vectors = &self.index.vectors;
+        let dim = self.dimension;
         // Precompute nibble LUT once per query (16 entries, 64 bytes, L1 cache).
         let lut = nibble_lut(self.cb);
+
+        // Cache ||q - parent||^2 per parent to avoid recomputing for each neighbor.
+        // Uses RefCell for interior mutability (the Fn closure can't be FnMut).
+        let parent_dist_cache: std::cell::RefCell<std::collections::HashMap<u32, f32>> =
+            std::cell::RefCell::new(std::collections::HashMap::with_capacity(ef * 2));
+
+        // Compute entry point distance: exact ||q - entry||^2.
+        let entry_vec = &vectors[current as usize * dim..(current as usize + 1) * dim];
+        let entry_dist: f32 = query
+            .iter()
+            .zip(entry_vec.iter())
+            .map(|(a, b)| (a - b) * (a - b))
+            .sum();
+        parent_dist_cache.borrow_mut().insert(current, entry_dist);
 
         let total_bits = self.total_bits;
         let dist_fn = |parent_id: u32, _neighbor_id: u32, slot: usize| -> f32 {
@@ -664,11 +685,34 @@ impl SymphonyQGVRIndex {
 
             let scalars = &edge_scalars[offset];
             let codes = &packed[offset * packed_dim..(offset + 1) * packed_dim];
-            if total_bits >= 4 {
+            let edge_approx = if total_bits >= 4 {
                 approx_dist_vr_packed(&rotated_query, codes, scalars, &lut)
             } else {
                 approx_dist_vr_binary(&rotated_query, codes, scalars)
-            }
+            };
+
+            // Add ||q - parent||^2 for cross-parent comparability.
+            let q_parent_dist = {
+                let cache = parent_dist_cache.borrow();
+                if let Some(&d) = cache.get(&parent_id) {
+                    d
+                } else {
+                    drop(cache);
+                    let parent_vec =
+                        &vectors[parent_id as usize * dim..(parent_id as usize + 1) * dim];
+                    let d: f32 = query
+                        .iter()
+                        .zip(parent_vec.iter())
+                        .map(|(a, b)| (a - b) * (a - b))
+                        .sum();
+                    parent_dist_cache.borrow_mut().insert(parent_id, d);
+                    d
+                }
+            };
+
+            // The edge formula approximates ||v - parent||^2 - 2<q-parent, v-parent>.
+            // Adding ||q - parent||^2 gives the full ||q - v||^2 estimate.
+            (q_parent_dist + edge_approx).max(0.0)
         };
 
         let results = crate::hnsw::search::greedy_search_layer_edge_aware(
@@ -1355,6 +1399,132 @@ mod tests {
         assert!(
             build_ms < 60_000,
             "VR build took {build_ms}ms (>60s) for only {n} vectors at d={dim}"
+        );
+    }
+
+    /// Diagnostic: verify per-edge VR approximate distances correlate with exact L2 when
+    /// querying from a neighbor's perspective (the key VR use case).
+    ///
+    /// This is the core correctness check for VR. If the per-edge distance
+    /// formula doesn't produce distances correlated with true L2, the beam
+    /// search cannot navigate the graph effectively.
+    #[test]
+    fn test_vr_edge_distance_correlation() {
+        use crate::distance::DistanceMetric;
+        use crate::hnsw::graph::HNSWParams;
+
+        let dim = 128;
+        let n = 2000;
+
+        // Unnormalized vectors (like SIFT-128)
+        let vectors: Vec<Vec<f32>> = (0..n)
+            .map(|seed| {
+                (0..dim)
+                    .map(|j| ((seed * dim + j) as f32 * 0.618_034).fract() * 20.0 - 10.0)
+                    .collect()
+            })
+            .collect();
+
+        let params = HNSWParams {
+            m: 16,
+            m_max: 32,
+            ef_construction: 100,
+            metric: DistanceMetric::L2,
+            seed: Some(42),
+            ..Default::default()
+        };
+        let mut index = SymphonyQGVRIndex::new(dim, params, RaBitQConfig::bits4(), 42).unwrap();
+        for (i, v) in vectors.iter().enumerate() {
+            index.add_slice(i as u32, v).unwrap();
+        }
+        index.build().unwrap();
+
+        // For a sample of nodes, compare approximate vs exact distances to neighbors.
+        let quantizer = index.quantizer.as_ref().unwrap();
+        let base_layer = &index.index.layers[0];
+        let packed_dim = index.packed_dim;
+        let lut = nibble_lut(index.cb);
+
+        let mut concordant = 0usize;
+        let mut discordant = 0usize;
+        let mut total_pairs = 0usize;
+
+        // Sample 50 external queries (not graph nodes) and evaluate from the
+        // perspective of a nearby node (simulating beam search traversal).
+        for qi in 0..50 {
+            // External query: perturb a random vector slightly
+            let base_id = (qi * 37) % n;
+            let base_vec = index.index.get_vector(base_id);
+            let query: Vec<f32> = base_vec
+                .iter()
+                .enumerate()
+                .map(|(j, &v)| v + ((qi * dim + j) as f32 * 0.314_159).fract() * 2.0 - 1.0)
+                .collect();
+            let query = query.as_slice();
+            // Find a nearby node to use as the "current" node during traversal
+            let node_id = base_id as u32;
+            let rotated_query = quantizer.rotate_query(query).unwrap();
+            let neighbors = base_layer.get_neighbors(node_id);
+            if neighbors.len() < 2 {
+                continue;
+            }
+
+            let base_offset = index.neighbor_offsets[node_id as usize] as usize;
+
+            // Compute exact and approximate distances to each neighbor
+            let mut exact_dists: Vec<(u32, f32)> = Vec::new();
+            let mut approx_dists: Vec<(u32, f32)> = Vec::new();
+
+            for (slot, &nbr_id) in neighbors.iter().enumerate() {
+                let nbr_vec = index.index.get_vector(nbr_id as usize);
+                let exact_l2: f32 = query
+                    .iter()
+                    .zip(nbr_vec.iter())
+                    .map(|(a, b)| (a - b) * (a - b))
+                    .sum();
+
+                let offset = base_offset + slot;
+                let scalars = &index.edge_scalars[offset];
+                let codes = &index.packed_codes[offset * packed_dim..(offset + 1) * packed_dim];
+                let approx = approx_dist_vr_packed(&rotated_query, codes, scalars, &lut);
+
+                exact_dists.push((nbr_id, exact_l2));
+                approx_dists.push((nbr_id, approx));
+            }
+
+            // Kendall's tau: count concordant/discordant pairs
+            for i in 0..exact_dists.len() {
+                for j in (i + 1)..exact_dists.len() {
+                    let exact_order = exact_dists[i].1.total_cmp(&exact_dists[j].1);
+                    let approx_order = approx_dists[i].1.total_cmp(&approx_dists[j].1);
+                    if exact_order == approx_order {
+                        concordant += 1;
+                    } else {
+                        discordant += 1;
+                    }
+                    total_pairs += 1;
+                }
+            }
+        }
+
+        let tau = if total_pairs > 0 {
+            (concordant as f64 - discordant as f64) / total_pairs as f64
+        } else {
+            0.0
+        };
+
+        eprintln!(
+            "VR edge distance correlation (d={dim}, n={n}): \
+             tau={tau:.3}, concordant={concordant}, discordant={discordant}, pairs={total_pairs}"
+        );
+
+        // tau should be positive (approximate distances rank neighbors similarly to exact).
+        // A tau near 0 means no correlation -- the beam search is navigating randomly.
+        assert!(
+            tau > 0.3,
+            "VR per-edge distance has weak correlation with exact L2: tau={tau:.3}. \
+             The beam search cannot navigate effectively. \
+             Likely cause: correction factors mix rotated/unrotated spaces."
         );
     }
 }
