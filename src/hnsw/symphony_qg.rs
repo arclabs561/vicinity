@@ -1290,4 +1290,71 @@ mod tests {
             overlap
         );
     }
+
+    /// Timing validation: measure build and search speed at moderate scale.
+    /// This is a sanity check, not a performance regression test.
+    #[test]
+    fn test_vr_build_and_search_timing() {
+        use crate::distance::DistanceMetric;
+        use crate::hnsw::graph::HNSWParams;
+
+        let dim = 128;
+        let n = 5000;
+
+        let vectors: Vec<Vec<f32>> = (0..n)
+            .map(|seed| {
+                let v: Vec<f32> = (0..dim)
+                    .map(|j| ((seed * dim + j) as f32 * 0.618_034).fract() * 2.0 - 1.0)
+                    .collect();
+                let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+                let target_norm = 5.0 + (seed as f32 % 5.0);
+                v.iter().map(|x| x * target_norm / norm).collect()
+            })
+            .collect();
+
+        let params = HNSWParams {
+            m: 16,
+            m_max: 32,
+            ef_construction: 100,
+            metric: DistanceMetric::L2,
+            seed: Some(42),
+            ..Default::default()
+        };
+        let mut index = SymphonyQGVRIndex::new(dim, params, RaBitQConfig::bits4(), 42).unwrap();
+        for (i, v) in vectors.iter().enumerate() {
+            index.add_slice(i as u32, v).unwrap();
+        }
+
+        // Time build
+        let t0 = std::time::Instant::now();
+        index.build().unwrap();
+        let build_ms = t0.elapsed().as_millis();
+
+        // Time search (100 queries)
+        let queries: Vec<&[f32]> = vectors.iter().take(100).map(|v| v.as_slice()).collect();
+        let t0 = std::time::Instant::now();
+        for q in &queries {
+            let _ = index.search(q, 10, 50);
+        }
+        let search_ms = t0.elapsed().as_millis();
+        let qps = 100.0 / (search_ms as f64 / 1000.0);
+
+        // Memory report
+        let mem = index.memory_usage_bytes();
+
+        eprintln!(
+            "VR timing (n={n}, d={dim}): build={build_ms}ms, search={}ms ({qps:.0} QPS), \
+             mem={:.1}MB (codes={:.1}MB, vectors={:.1}MB)",
+            search_ms,
+            mem.total() as f64 / 1e6,
+            mem.packed_codes_bytes as f64 / 1e6,
+            mem.vectors_bytes as f64 / 1e6,
+        );
+
+        // Sanity: build should complete in reasonable time
+        assert!(
+            build_ms < 60_000,
+            "VR build took {build_ms}ms (>60s) for only {n} vectors at d={dim}"
+        );
+    }
 }
