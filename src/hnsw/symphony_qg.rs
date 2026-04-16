@@ -442,14 +442,38 @@ impl SymphonyQGVRIndex {
             .map_err(|e| RetrieveError::InvalidParameter(format!("RaBitQ centroid: {e}")))?;
 
         // Compute rotated vectors R*v for all nodes (for ip_u_rot_codes precomputation).
-        let mut rotated_flat = vec![0.0f32; n * dim];
-        for i in 0..n {
-            let v = self.index.get_vector(i);
-            let r = quantizer
-                .rotate_query(v)
-                .map_err(|e| RetrieveError::InvalidParameter(format!("rotate: {e}")))?;
-            rotated_flat[i * dim..(i + 1) * dim].copy_from_slice(&r);
-        }
+        // Parallel: each rotation is O(d^2) and independent.
+        let rotated_flat = {
+            #[cfg(feature = "parallel")]
+            {
+                use rayon::prelude::*;
+                let vectors = &self.index.vectors;
+                let mut flat = vec![0.0f32; n * dim];
+                flat.par_chunks_mut(dim)
+                    .enumerate()
+                    .try_for_each(|(i, chunk)| {
+                        let v = &vectors[i * dim..(i + 1) * dim];
+                        let r = quantizer
+                            .rotate_query(v)
+                            .map_err(|e| RetrieveError::InvalidParameter(format!("rotate: {e}")))?;
+                        chunk.copy_from_slice(&r);
+                        Ok::<_, RetrieveError>(())
+                    })?;
+                flat
+            }
+            #[cfg(not(feature = "parallel"))]
+            {
+                let mut flat = vec![0.0f32; n * dim];
+                for i in 0..n {
+                    let v = self.index.get_vector(i);
+                    let r = quantizer
+                        .rotate_query(v)
+                        .map_err(|e| RetrieveError::InvalidParameter(format!("rotate: {e}")))?;
+                    flat[i * dim..(i + 1) * dim].copy_from_slice(&r);
+                }
+                flat
+            }
+        };
 
         // Build per-edge codes for base layer (layer 0).
         if self.index.layers.is_empty() {
@@ -464,34 +488,30 @@ impl SymphonyQGVRIndex {
             .map(|id| base_layer.get_neighbors(id).len())
             .sum();
 
-        let mut edge_scalars = Vec::with_capacity(total_edges);
         let packed_dim = self.packed_dim;
-        let mut packed_codes = Vec::with_capacity(total_edges * packed_dim);
-        let mut neighbor_offsets = Vec::with_capacity(layer_len + 1);
         let cb = self.cb;
 
-        for node_id in 0..layer_len as u32 {
-            neighbor_offsets.push(edge_scalars.len() as u32);
+        // Per-node edge quantization. Each node's edges are independent.
+        // Collect (scalars, packed_bytes) per node, then flatten.
+        let quantize_node = |node_id: u32| -> Result<(Vec<EdgeScalars>, Vec<u8>), RetrieveError> {
             let neighbors = base_layer.get_neighbors(node_id);
             let u_vec = self.index.get_vector(node_id as usize);
             let u_rot = &rotated_flat[node_id as usize * dim..(node_id as usize + 1) * dim];
 
+            let mut scalars = Vec::with_capacity(neighbors.len());
+            let mut codes = Vec::with_capacity(neighbors.len() * packed_dim);
+
             for &neighbor_id in neighbors.iter() {
                 let v_vec = self.index.get_vector(neighbor_id as usize);
-
-                // Quantize v relative to u (centroid = u_vec).
                 let qv = quantizer
                     .quantize_with_centroid(v_vec, u_vec)
                     .map_err(|e| RetrieveError::InvalidParameter(format!("quantize edge: {e}")))?;
 
-                // Compute ip_u_rot from full codes, then pack to nibbles.
                 let mut ip_u_rot = 0.0f32;
                 for (&c, &ur) in qv.codes.iter().zip(u_rot.iter()) {
                     ip_u_rot += ur * (c as f32 + cb);
                 }
 
-                // Pack: two u16 codes per byte (each must fit in 4 bits for 4-bit RaBitQ).
-                // High nibble = even dimension, low nibble = odd dimension.
                 for j in 0..packed_dim {
                     let hi = (qv.codes[j * 2] & 0x0F) as u8;
                     let lo = if j * 2 + 1 < dim {
@@ -499,17 +519,46 @@ impl SymphonyQGVRIndex {
                     } else {
                         0
                     };
-                    packed_codes.push((hi << 4) | lo);
+                    codes.push((hi << 4) | lo);
                 }
 
-                edge_scalars.push(EdgeScalars {
+                scalars.push(EdgeScalars {
                     f_add: qv.f_add,
                     f_rescale: qv.f_rescale,
                     ip_u_rot_codes: ip_u_rot,
                 });
             }
+            Ok((scalars, codes))
+        };
+
+        // Parallel or sequential per-node quantization.
+        let per_node: Vec<(Vec<EdgeScalars>, Vec<u8>)> = {
+            #[cfg(feature = "parallel")]
+            {
+                use rayon::prelude::*;
+                (0..layer_len as u32)
+                    .into_par_iter()
+                    .map(quantize_node)
+                    .collect::<Result<Vec<_>, _>>()?
+            }
+            #[cfg(not(feature = "parallel"))]
+            {
+                (0..layer_len as u32)
+                    .map(quantize_node)
+                    .collect::<Result<Vec<_>, _>>()?
+            }
+        };
+
+        // Flatten into contiguous arrays with offset table.
+        let mut edge_scalars = Vec::with_capacity(total_edges);
+        let mut packed_codes = Vec::with_capacity(total_edges * packed_dim);
+        let mut neighbor_offsets = Vec::with_capacity(layer_len + 1);
+
+        for (scalars, codes) in per_node {
+            neighbor_offsets.push(edge_scalars.len() as u32);
+            edge_scalars.extend(scalars);
+            packed_codes.extend(codes);
         }
-        // Sentinel for the last node's range.
         neighbor_offsets.push(edge_scalars.len() as u32);
 
         self.edge_scalars = edge_scalars;
