@@ -32,9 +32,12 @@
 //!   data/ann-benchmarks/glove-25-angular --m 32 --ef-construction 400 --ef-search 10,50,200
 //! ```
 
+#[path = "common/mod.rs"]
+mod common;
+
 use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -1757,9 +1760,9 @@ fn run_sq8u(
         ..Default::default()
     };
     let mut index = HNSWSq8Index::with_params(dim, params).unwrap();
-    for (i, vec) in train.iter().enumerate() {
-        index.add_slice(i as u32, vec).unwrap();
-    }
+    let ids: Vec<u32> = (0..train.len() as u32).collect();
+    let flat: Vec<f32> = train.iter().flatten().copied().collect();
+    index.add_batch(&ids, &flat).unwrap();
     index.build().unwrap();
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
@@ -1948,9 +1951,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         emit_result(&cfg.results_path, &meta);
     }
 
-    let (train, dim) = load_vectors(&format!("{}/train.bin", cfg.data_dir))?;
-    let (test, _) = load_vectors(&format!("{}/test.bin", cfg.data_dir))?;
-    let (neighbors, k_gt) = load_neighbors(&format!("{}/neighbors.bin", cfg.data_dir))?;
+    let (train, dim) = common::load_vectors(&format!("{}/train.bin", cfg.data_dir))?;
+    let (test, _) = common::load_vectors(&format!("{}/test.bin", cfg.data_dir))?;
+    let (neighbors, k_gt) = common::load_neighbors(&format!("{}/neighbors.bin", cfg.data_dir))?;
 
     if !cfg.json {
         println!("Train: {} vectors x {} dims", train.len(), dim);
@@ -1984,7 +1987,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             #[cfg(feature = "nsw")]
-            "nsw" => run_nsw(&cfg, &train, &test, &neighbors, dim),
+            "nsw" if !cfg.is_euclidean => run_nsw(&cfg, &train, &test, &neighbors, dim),
+
+            #[cfg(feature = "nsw")]
+            "nsw" => {
+                eprintln!("nsw: skipping (cosine-only, dataset is euclidean)");
+            }
 
             #[cfg(not(feature = "nsw"))]
             "nsw" => {
@@ -2000,36 +2008,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             #[cfg(feature = "emg")]
-            "emg" => run_emg(&cfg, &train, &test, &neighbors, dim),
-
+            "emg" if !cfg.is_euclidean => run_emg(&cfg, &train, &test, &neighbors, dim),
+            #[cfg(feature = "emg")]
+            "emg" => eprintln!("emg: skipping (cosine-only, dataset is euclidean)"),
             #[cfg(not(feature = "emg"))]
-            "emg" => {
-                eprintln!("EMG not available (compile with --features emg)");
-            }
+            "emg" => eprintln!("EMG not available (compile with --features emg)"),
 
             #[cfg(feature = "nsg")]
-            "nsg" => run_nsg(&cfg, &train, &test, &neighbors, dim),
-
+            "nsg" if !cfg.is_euclidean => run_nsg(&cfg, &train, &test, &neighbors, dim),
+            #[cfg(feature = "nsg")]
+            "nsg" => eprintln!("nsg: skipping (cosine-only, dataset is euclidean)"),
             #[cfg(not(feature = "nsg"))]
-            "nsg" => {
-                eprintln!("NSG not available (compile with --features nsg)");
-            }
+            "nsg" => eprintln!("NSG not available (compile with --features nsg)"),
 
             #[cfg(feature = "pipnn")]
-            "pipnn" => run_pipnn(&cfg, &train, &test, &neighbors, dim),
-
+            "pipnn" if !cfg.is_euclidean => run_pipnn(&cfg, &train, &test, &neighbors, dim),
+            #[cfg(feature = "pipnn")]
+            "pipnn" => eprintln!("pipnn: skipping (cosine-only, dataset is euclidean)"),
             #[cfg(not(feature = "pipnn"))]
-            "pipnn" => {
-                eprintln!("PiPNN not available (compile with --features pipnn)");
-            }
+            "pipnn" => eprintln!("PiPNN not available (compile with --features pipnn)"),
 
             #[cfg(feature = "sng")]
-            "sng" => run_sng(&cfg, &train, &test, &neighbors, dim),
-
+            "sng" if !cfg.is_euclidean => run_sng(&cfg, &train, &test, &neighbors, dim),
+            #[cfg(feature = "sng")]
+            "sng" => eprintln!("sng: skipping (cosine-only, dataset is euclidean)"),
             #[cfg(not(feature = "sng"))]
-            "sng" => {
-                eprintln!("SNG not available (compile with --features sng)");
-            }
+            "sng" => eprintln!("SNG not available (compile with --features sng)"),
 
             #[cfg(feature = "vamana")]
             "vamana" => run_vamana(&cfg, &train, &test, &neighbors, dim),
@@ -2048,12 +2052,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             #[cfg(feature = "finger")]
-            "finger" => run_finger(&cfg, &train, &test, &neighbors, dim),
-
+            "finger" if !cfg.is_euclidean => run_finger(&cfg, &train, &test, &neighbors, dim),
+            #[cfg(feature = "finger")]
+            "finger" => eprintln!("finger: skipping (cosine-only, dataset is euclidean)"),
             #[cfg(not(feature = "finger"))]
-            "finger" => {
-                eprintln!("FINGER not available (compile with --features finger)");
-            }
+            "finger" => eprintln!("FINGER not available (compile with --features finger)"),
 
             #[cfg(feature = "fresh_graph")]
             "fresh_graph" => run_fresh_graph(&cfg, &train, &test, &neighbors, dim),
@@ -2088,7 +2091,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             #[cfg(all(feature = "hnsw", feature = "ivf_rabitq"))]
-            "symphony_qg" => run_symphony_qg(&cfg, &train, &test, &neighbors, dim),
+            "symphony_qg" if !cfg.is_euclidean => {
+                run_symphony_qg(&cfg, &train, &test, &neighbors, dim);
+            }
+
+            #[cfg(all(feature = "hnsw", feature = "ivf_rabitq"))]
+            "symphony_qg" => {
+                eprintln!("symphony_qg: skipping (cosine-only, dataset is euclidean; use symphony_qg_vr for L2)");
+            }
 
             #[cfg(not(all(feature = "hnsw", feature = "ivf_rabitq")))]
             "symphony_qg" => {
@@ -2171,74 +2181,4 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-// ─── File loading ────────────────────────────────────────────────────────────
-
-fn load_vectors(path: &str) -> Result<(Vec<Vec<f32>>, usize), Box<dyn std::error::Error>> {
-    let file = File::open(path)?;
-    let mut reader = BufReader::new(file);
-
-    let mut magic = [0u8; 4];
-    reader.read_exact(&mut magic)?;
-    assert_eq!(&magic, b"VEC1", "Invalid vector file format");
-
-    let mut header = [0u8; 8];
-    reader.read_exact(&mut header)?;
-    let n = u32::from_le_bytes([header[0], header[1], header[2], header[3]]) as usize;
-    let d = u32::from_le_bytes([header[4], header[5], header[6], header[7]]) as usize;
-
-    let mut data = vec![0u8; n * d * 4];
-    reader.read_exact(&mut data)?;
-
-    let vectors: Vec<Vec<f32>> = (0..n)
-        .map(|i| {
-            (0..d)
-                .map(|j| {
-                    let offset = (i * d + j) * 4;
-                    f32::from_le_bytes([
-                        data[offset],
-                        data[offset + 1],
-                        data[offset + 2],
-                        data[offset + 3],
-                    ])
-                })
-                .collect()
-        })
-        .collect();
-
-    Ok((vectors, d))
-}
-
-fn load_neighbors(path: &str) -> Result<(Vec<Vec<i32>>, usize), Box<dyn std::error::Error>> {
-    let file = File::open(path)?;
-    let mut reader = BufReader::new(file);
-
-    let mut magic = [0u8; 4];
-    reader.read_exact(&mut magic)?;
-    assert_eq!(&magic, b"NBR1", "Invalid neighbors file format");
-
-    let mut header = [0u8; 8];
-    reader.read_exact(&mut header)?;
-    let n = u32::from_le_bytes([header[0], header[1], header[2], header[3]]) as usize;
-    let k = u32::from_le_bytes([header[4], header[5], header[6], header[7]]) as usize;
-
-    let mut data = vec![0u8; n * k * 4];
-    reader.read_exact(&mut data)?;
-
-    let neighbors: Vec<Vec<i32>> = (0..n)
-        .map(|i| {
-            (0..k)
-                .map(|j| {
-                    let offset = (i * k + j) * 4;
-                    i32::from_le_bytes([
-                        data[offset],
-                        data[offset + 1],
-                        data[offset + 2],
-                        data[offset + 3],
-                    ])
-                })
-                .collect()
-        })
-        .collect();
-
-    Ok((neighbors, k))
-}
+// File loading now in examples/common/mod.rs (shared across benchmark examples).

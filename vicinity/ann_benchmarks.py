@@ -39,7 +39,7 @@ class VicinityHNSW:
 
     def fit(self, X: np.ndarray) -> None:
         """Build the index from training data."""
-        n, dim = X.shape
+        _n, dim = X.shape
         X = np.ascontiguousarray(X, dtype=np.float32)
 
         # Angular/cosine metrics need auto-normalization for unnormalized inputs.
