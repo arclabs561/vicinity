@@ -628,7 +628,7 @@ pub fn construct_graph_parallel(
             .map(|&current_id| search_for_neighbors(index, current_id, ep, ep_layer, dist_fn))
             .collect();
 
-        // Phase 2: sequential edge commit.
+        // Phase 2: sequential edge commit (fast: just edge insertion + forward prune).
         for result in search_results {
             commit_edges(index, &result, dist_fn);
 
@@ -639,6 +639,9 @@ pub fn construct_graph_parallel(
                 global_entry_layer = index.layer_assignments[result.current_id];
             }
         }
+
+        // Phase 3: parallel pruning of overweight reverse neighbors.
+        prune_overweight_nodes(index, dist_fn);
     }
 
     Ok(())
@@ -825,6 +828,7 @@ fn search_for_neighbors(
 }
 
 /// Commit phase: add edges from search results to the graph (sequential).
+/// Only adds edges and prunes the current node -- reverse pruning is deferred.
 #[cfg(feature = "parallel")]
 fn commit_edges(index: &mut HNSWIndex, result: &SearchResult, dist_fn: fn(&[f32], &[f32]) -> f32) {
     let current_id = result.current_id;
@@ -852,54 +856,83 @@ fn commit_edges(index: &mut HNSWIndex, result: &SearchResult, dist_fn: fn(&[f32]
             }
         }
 
-        // Prune current node's neighbors if over budget.
-        {
-            let neighbors = &mut neighbors_vec[current_id];
-            if neighbors.len() > m_actual {
-                let mut neighbor_candidates: Vec<(u32, f32)> = neighbors
-                    .iter()
-                    .map(|&id| {
-                        let vec = get_vector(&index.vectors, index.dimension, id as usize);
-                        (id, dist_fn(current_vector, vec))
-                    })
-                    .collect();
-                let pruned = select_neighbors(
-                    current_vector,
-                    &mut neighbor_candidates,
-                    m_actual,
-                    &index.vectors,
-                    index.dimension,
-                    &index.params.neighborhood_diversification,
-                    dist_fn,
-                );
-                *neighbors = pruned.into_iter().collect();
-            }
+        // Prune current node's forward neighbors if over budget.
+        // (Reverse pruning is deferred to prune_overweight_nodes.)
+        let neighbors = &mut neighbors_vec[current_id];
+        if neighbors.len() > m_actual {
+            let mut neighbor_candidates: Vec<(u32, f32)> = neighbors
+                .iter()
+                .map(|&id| {
+                    let vec = get_vector(&index.vectors, index.dimension, id as usize);
+                    (id, dist_fn(current_vector, vec))
+                })
+                .collect();
+            let pruned = select_neighbors(
+                current_vector,
+                &mut neighbor_candidates,
+                m_actual,
+                &index.vectors,
+                index.dimension,
+                &index.params.neighborhood_diversification,
+                dist_fn,
+            );
+            *neighbors = pruned.into_iter().collect();
+        }
+    }
+}
+
+/// Prune all overweight neighbor lists after a batch of insertions.
+/// This is done in parallel since each node's pruning is independent.
+#[cfg(feature = "parallel")]
+fn prune_overweight_nodes(index: &mut HNSWIndex, dist_fn: fn(&[f32], &[f32]) -> f32) {
+    let num_vectors = index.num_vectors;
+    let dimension = index.dimension;
+    let diversification = index.params.neighborhood_diversification.clone();
+    let m = index.params.m;
+    let m_max = index.params.m_max;
+
+    for layer_idx in 0..index.layers.len() {
+        let m_actual = if layer_idx == 0 { m_max } else { m };
+        let layer = &mut index.layers[layer_idx];
+        let neighbors_vec = layer.get_neighbors_mut();
+
+        // Collect IDs of overweight nodes.
+        let overweight: Vec<usize> = (0..num_vectors)
+            .filter(|&id| neighbors_vec[id].len() > m_actual)
+            .collect();
+
+        if overweight.is_empty() {
+            continue;
         }
 
-        // Prune reverse neighbors if over budget.
-        for &neighbor_id in selected {
-            let reverse_neighbors = &mut neighbors_vec[neighbor_id as usize];
-            if reverse_neighbors.len() > m_actual {
-                let neighbor_vec =
-                    get_vector(&index.vectors, index.dimension, neighbor_id as usize);
-                let mut reverse_candidates: Vec<(u32, f32)> = reverse_neighbors
+        // Compute pruned neighbor lists in parallel.
+        let pruned_lists: Vec<(usize, SmallVec<[u32; 16]>)> = overweight
+            .par_iter()
+            .map(|&node_id| {
+                let node_vec = get_vector(&index.vectors, dimension, node_id);
+                let mut candidates: Vec<(u32, f32)> = neighbors_vec[node_id]
                     .iter()
                     .map(|&id| {
-                        let vec = get_vector(&index.vectors, index.dimension, id as usize);
-                        (id, dist_fn(neighbor_vec, vec))
+                        let vec = get_vector(&index.vectors, dimension, id as usize);
+                        (id, dist_fn(node_vec, vec))
                     })
                     .collect();
                 let pruned = select_neighbors(
-                    neighbor_vec,
-                    &mut reverse_candidates,
+                    node_vec,
+                    &mut candidates,
                     m_actual,
                     &index.vectors,
-                    index.dimension,
-                    &index.params.neighborhood_diversification,
+                    dimension,
+                    &diversification,
                     dist_fn,
                 );
-                *reverse_neighbors = pruned.into_iter().collect();
-            }
+                (node_id, pruned.into_iter().collect::<SmallVec<_>>())
+            })
+            .collect();
+
+        // Apply pruned lists.
+        for (node_id, pruned) in pruned_lists {
+            neighbors_vec[node_id] = pruned;
         }
     }
 }
