@@ -362,12 +362,14 @@ pub struct SymphonyQGVRIndex {
     index: HNSWIndex,
     /// Per-edge correction scalars, indexed by edge offset.
     edge_scalars: Vec<EdgeScalars>,
-    /// Packed 4-bit quantized codes: two dimensions per byte (high nibble, low nibble).
-    /// Layout: `packed_codes[edge_offset * packed_dim .. (edge_offset+1) * packed_dim]`
-    /// where `packed_dim = ceil(dim / 2)`. Memory: 0.5 bytes/dim/edge.
+    /// Packed quantized codes. Packing depends on `total_bits`:
+    /// - 4-bit: 2 codes per byte (nibbles). `packed_dim = ceil(d/2)`.
+    /// - 1-bit: 8 codes per byte (binary). `packed_dim = ceil(d/8)`.
     packed_codes: Vec<u8>,
     /// Bytes per edge in packed_codes.
     packed_dim: usize,
+    /// Total bits per code dimension (from RaBitQConfig).
+    total_bits: usize,
     /// Code bias: `cb = -((1 << ex_bits) as f32 - 0.5)`. Constant for the index.
     cb: f32,
     /// Cumulative neighbor count per node: `neighbor_offsets[node_id]` is the
@@ -394,14 +396,18 @@ impl SymphonyQGVRIndex {
         seed: u64,
     ) -> Result<Self, RetrieveError> {
         let index = HNSWIndex::with_params(dimension, params)?;
-        let ex_bits = rabitq_config.total_bits.saturating_sub(1);
+        let total_bits = rabitq_config.total_bits;
+        let ex_bits = total_bits.saturating_sub(1);
         let cb = -((1u32 << ex_bits) as f32 - 0.5);
-        let packed_dim = (dimension + 1) / 2;
+        // Packing: codes_per_byte = 8 / total_bits. For binary: 8. For 4-bit: 2.
+        let codes_per_byte = 8 / total_bits.max(1);
+        let packed_dim = (dimension + codes_per_byte - 1) / codes_per_byte;
         Ok(Self {
             index,
             edge_scalars: Vec::new(),
             packed_codes: Vec::new(),
             packed_dim,
+            total_bits,
             cb,
             neighbor_offsets: Vec::new(),
             quantizer: None,
@@ -489,6 +495,7 @@ impl SymphonyQGVRIndex {
             .sum();
 
         let packed_dim = self.packed_dim;
+        let total_bits = self.total_bits;
         let cb = self.cb;
 
         // Per-node edge quantization. Each node's edges are independent.
@@ -512,15 +519,7 @@ impl SymphonyQGVRIndex {
                     ip_u_rot += ur * (c as f32 + cb);
                 }
 
-                for j in 0..packed_dim {
-                    let hi = (qv.codes[j * 2] & 0x0F) as u8;
-                    let lo = if j * 2 + 1 < dim {
-                        (qv.codes[j * 2 + 1] & 0x0F) as u8
-                    } else {
-                        0
-                    };
-                    codes.push((hi << 4) | lo);
-                }
+                pack_codes(&qv.codes, total_bits, dim, &mut codes);
 
                 scalars.push(EdgeScalars {
                     f_add: qv.f_add,
