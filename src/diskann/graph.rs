@@ -483,6 +483,97 @@ impl DiskANNIndex {
         Ok(())
     }
 
+    /// Build using parallel batched construction (requires `parallel` feature).
+    ///
+    /// Same two-pass Vamana construction but parallelizes the search phase
+    /// within each pass using rayon. Recommended `batch_size`: 4096.
+    #[cfg(feature = "parallel")]
+    pub fn build_parallel(&mut self, batch_size: usize) -> Result<(), RetrieveError> {
+        if self.built {
+            return Ok(());
+        }
+        if self.num_vectors == 0 {
+            return Err(RetrieveError::EmptyIndex);
+        }
+
+        self.initialize_random_graph();
+        self.start_node = self.compute_medoid();
+        self.vamana_pass_parallel(1.0, batch_size)?;
+        self.vamana_pass_parallel(self.params.alpha, batch_size)?;
+        self.built = true;
+        self.reorder_for_locality();
+        Ok(())
+    }
+
+    /// Parallel Vamana pass: batch search + sequential commit + parallel prune.
+    #[cfg(feature = "parallel")]
+    fn vamana_pass_parallel(&mut self, alpha: f32, batch_size: usize) -> Result<(), RetrieveError> {
+        use rayon::prelude::*;
+
+        let mut nodes: Vec<u32> = (0..self.num_vectors as u32).collect();
+        {
+            use rand::SeedableRng;
+            let mut rng: Box<dyn rand::RngCore> = match self.params.seed {
+                Some(s) => Box::new(rand::rngs::StdRng::seed_from_u64(s.wrapping_add(1))),
+                None => Box::new(rand::rng()),
+            };
+            nodes.shuffle(&mut *rng);
+        }
+
+        let m = self.params.m;
+        let ef_c = self.params.ef_construction;
+        let start_node = self.start_node;
+        let batch_sz = batch_size.max(1);
+
+        for batch_start in (0..nodes.len()).step_by(batch_sz) {
+            let batch_end = (batch_start + batch_sz).min(nodes.len());
+            let batch = &nodes[batch_start..batch_end];
+
+            // Phase 1: parallel search + prune (read-only on graph).
+            let results: Vec<(u32, Vec<u32>)> = batch
+                .par_iter()
+                .map(|&i| {
+                    let query_vec = self.get_vector(i);
+                    let (visited, _) = self.greedy_search(query_vec, ef_c, start_node);
+                    let new_neighbors = self.robust_prune(i, &visited, alpha, m);
+                    (i, new_neighbors)
+                })
+                .collect();
+
+            // Phase 2: sequential edge commit (forward + reverse, no reverse prune).
+            for (i, new_neighbors) in &results {
+                let i = *i;
+                self.adj[i as usize] = new_neighbors.iter().copied().collect();
+                for &j in new_neighbors {
+                    if !self.adj[j as usize].contains(&i) {
+                        self.adj[j as usize].push(i);
+                    }
+                }
+            }
+
+            // Phase 3: parallel prune of overweight nodes.
+            let overweight: Vec<u32> = (0..self.num_vectors as u32)
+                .filter(|&id| self.adj[id as usize].len() > m)
+                .collect();
+
+            if !overweight.is_empty() {
+                let pruned: Vec<(u32, Vec<u32>)> = overweight
+                    .par_iter()
+                    .map(|&id| {
+                        let candidates: Vec<u32> = self.adj[id as usize].to_vec();
+                        let pruned = self.robust_prune(id, &candidates, alpha, m);
+                        (id, pruned)
+                    })
+                    .collect();
+                for (id, new_adj) in pruned {
+                    self.adj[id as usize] = new_adj.into_iter().collect();
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// BFS-order graph reordering for cache-friendly traversal.
     fn reorder_for_locality(&mut self) {
         if self.num_vectors <= 1 {
