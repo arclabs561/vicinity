@@ -8,6 +8,9 @@ use crate::RetrieveError;
 use rand::Rng;
 use smallvec::SmallVec;
 
+#[cfg(feature = "parallel")]
+use rayon::prelude::*;
+
 /// Initialize random graph with minimum degree >= log(n).
 ///
 /// Creates initial graph structure by connecting each node to log(n) random neighbors.
@@ -650,6 +653,151 @@ pub fn construct_graph(index: &mut VamanaIndex) -> Result<(), RetrieveError> {
 
     // Step 3: Second pass - relaxed diversity (alpha>1.0)
     refine_with_rrnd(index)?;
+
+    Ok(())
+}
+
+/// Parallel Vamana construction using batched insertion.
+///
+/// Same two-pass structure as [`construct_graph`] but parallelizes the
+/// neighbor search phase within each pass using rayon.
+#[cfg(feature = "parallel")]
+pub fn construct_graph_parallel(
+    index: &mut VamanaIndex,
+    batch_size: usize,
+) -> Result<(), RetrieveError> {
+    if index.num_vectors == 0 {
+        return Err(RetrieveError::EmptyIndex);
+    }
+
+    index.medoid = compute_medoid(index);
+    initialize_random_graph(index)?;
+
+    // First pass: RND (alpha=1.0, strict diversity)
+    refine_parallel(
+        index,
+        &NeighborhoodDiversification::RelativeNeighborhood,
+        batch_size,
+    )?;
+
+    // Second pass: RRND (alpha>1.0, relaxed diversity)
+    let alpha = index.params.alpha;
+    refine_parallel(
+        index,
+        &NeighborhoodDiversification::RelaxedRelative { alpha },
+        batch_size,
+    )?;
+
+    Ok(())
+}
+
+/// Search result for one vector during parallel refine.
+#[cfg(feature = "parallel")]
+struct VamanaSearchResult {
+    current_id: usize,
+    selected: Vec<u32>,
+}
+
+/// Parallel refine pass: batch search + sequential commit + deferred prune.
+#[cfg(feature = "parallel")]
+fn refine_parallel(
+    index: &mut VamanaIndex,
+    diversification: &NeighborhoodDiversification,
+    batch_size: usize,
+) -> Result<(), RetrieveError> {
+    let n = index.num_vectors;
+    let medoid = index.medoid;
+    let max_deg = index.params.max_degree;
+    let ef_c = index.params.ef_construction;
+    let dim = index.dimension;
+    let batch_sz = batch_size.max(1);
+
+    for batch_start in (0..n).step_by(batch_sz) {
+        let batch_end = (batch_start + batch_sz).min(n);
+        let batch_ids: Vec<usize> = (batch_start..batch_end).collect();
+
+        // Phase 1: parallel search.
+        let results: Vec<VamanaSearchResult> = batch_ids
+            .par_iter()
+            .map(|&current_id| {
+                let current_vector: Vec<f32> = index.get_vector(current_id).to_vec();
+                let candidates = greedy_search_vamana(
+                    &current_vector,
+                    medoid,
+                    current_id as u32,
+                    &index.neighbors,
+                    &index.vectors,
+                    dim,
+                    ef_c,
+                );
+                let mut candidates = candidates;
+                let selected = select_neighbors(
+                    &current_vector,
+                    &mut candidates,
+                    max_deg,
+                    &index.vectors,
+                    dim,
+                    diversification,
+                    hnsw_distance::cosine_distance_normalized,
+                );
+                VamanaSearchResult {
+                    current_id,
+                    selected,
+                }
+            })
+            .collect();
+
+        // Phase 2: sequential edge commit (forward + reverse, no reverse pruning).
+        for result in &results {
+            let current_id = result.current_id;
+            // Set forward neighbors.
+            index.neighbors[current_id] = SmallVec::from_vec(result.selected.clone());
+
+            // Add reverse edges.
+            for &neighbor_id in &result.selected {
+                let rev = &mut index.neighbors[neighbor_id as usize];
+                if !rev.contains(&(current_id as u32)) {
+                    rev.push(current_id as u32);
+                }
+            }
+        }
+
+        // Phase 3: parallel pruning of overweight nodes.
+        let overweight: Vec<usize> = (0..n)
+            .filter(|&id| index.neighbors[id].len() > max_deg)
+            .collect();
+
+        if !overweight.is_empty() {
+            let pruned_lists: Vec<(usize, Vec<u32>)> = overweight
+                .par_iter()
+                .map(|&node_id| {
+                    let node_vec: Vec<f32> = index.get_vector(node_id).to_vec();
+                    let mut candidates: Vec<(u32, f32)> = index.neighbors[node_id]
+                        .iter()
+                        .map(|&id| {
+                            let s = id as usize * dim;
+                            let v = &index.vectors[s..s + dim];
+                            (id, hnsw_distance::cosine_distance_normalized(&node_vec, v))
+                        })
+                        .collect();
+                    let pruned = select_neighbors(
+                        &node_vec,
+                        &mut candidates,
+                        max_deg,
+                        &index.vectors,
+                        dim,
+                        diversification,
+                        hnsw_distance::cosine_distance_normalized,
+                    );
+                    (node_id, pruned)
+                })
+                .collect();
+
+            for (node_id, pruned) in pruned_lists {
+                index.neighbors[node_id] = SmallVec::from_vec(pruned);
+            }
+        }
+    }
 
     Ok(())
 }
