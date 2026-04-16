@@ -207,6 +207,82 @@ impl PartialOrd for MaxResult {
     }
 }
 
+// ─── Batched distance helpers ────────────────────────────────────────────────
+
+/// Process a batch of up to 4 neighbor distance computations.
+/// Computes distances for all batch entries, then inserts qualifying results
+/// into the candidate and result heaps.
+#[inline]
+fn flush_batch(
+    query: &[f32],
+    batch_ids: &[u32; 4],
+    count: usize,
+    vectors: &[f32],
+    dimension: usize,
+    dist_fn: fn(&[f32], &[f32]) -> f32,
+    candidates: &mut std::collections::BinaryHeap<MinCandidate>,
+    results: &mut std::collections::BinaryHeap<MaxResult>,
+    ef: usize,
+) {
+    // Compute all distances first (enables ILP -- CPU can overlap independent FP pipelines).
+    let mut dists = [0.0f32; 4];
+    for i in 0..count {
+        let vec = get_vector(vectors, dimension, batch_ids[i] as usize);
+        dists[i] = dist_fn(query, vec);
+    }
+
+    // Then process results.
+    for i in 0..count {
+        let worst_dist = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
+        if results.len() < ef || dists[i] < worst_dist {
+            candidates.push(MinCandidate {
+                id: batch_ids[i],
+                distance: dists[i],
+            });
+            results.push(MaxResult {
+                id: batch_ids[i],
+                distance: dists[i],
+            });
+            if results.len() > ef {
+                results.pop();
+            }
+        }
+    }
+}
+
+/// Same as [`flush_batch`] but for custom distance functions.
+#[inline]
+fn flush_batch_custom<F: Fn(&[f32], u32) -> f32>(
+    query: &[f32],
+    batch_ids: &[u32; 4],
+    count: usize,
+    dist_fn: &F,
+    candidates: &mut std::collections::BinaryHeap<MinCandidate>,
+    results: &mut std::collections::BinaryHeap<MaxResult>,
+    ef: usize,
+) {
+    let mut dists = [0.0f32; 4];
+    for i in 0..count {
+        dists[i] = dist_fn(query, batch_ids[i]);
+    }
+    for i in 0..count {
+        let worst_dist = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
+        if results.len() < ef || dists[i] < worst_dist {
+            candidates.push(MinCandidate {
+                id: batch_ids[i],
+                distance: dists[i],
+            });
+            results.push(MaxResult {
+                id: batch_ids[i],
+                distance: dists[i],
+            });
+            if results.len() > ef {
+                results.pop();
+            }
+        }
+    }
+}
+
 // ─── Search functions ────────────────────────────────────────────────────────
 
 /// Greedy search in a single layer using standard HNSW beam search.
@@ -256,44 +332,61 @@ pub fn greedy_search_layer(
                 break;
             }
 
-            // Explore neighbors
+            // Explore neighbors using batched distance computation.
+            // Collect up to 4 unvisited neighbors, prefetch their vectors,
+            // compute distances together for better ILP and cache behavior.
             let neighbors = layer.get_neighbors(candidate.id);
-            for (i, &neighbor_id) in neighbors.iter().enumerate() {
-                // Prefetch upcoming neighbors' vectors to hide DRAM latency.
-                // Two cache lines for vectors >64 bytes; 4-ahead for pipeline depth.
-                if i + 1 < neighbors.len() {
-                    let next_id = neighbors[i + 1] as usize;
-                    if next_id < num_vectors {
-                        let ptr = vectors.as_ptr().wrapping_add(next_id * dimension);
-                        prefetch_read_data(ptr);
-                        prefetch_read_data(ptr.wrapping_add(16));
-                    }
-                }
-                if i + 4 < neighbors.len() {
-                    let far_id = neighbors[i + 4] as usize;
-                    if far_id < num_vectors {
-                        prefetch_read_data(vectors.as_ptr().wrapping_add(far_id * dimension));
-                    }
-                }
-                if visited.insert(neighbor_id) {
-                    let neighbor_vector = get_vector(vectors, dimension, neighbor_id as usize);
-                    let neighbor_distance = dist_fn(query, neighbor_vector);
 
-                    let worst_dist = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
-                    if results.len() < ef || neighbor_distance < worst_dist {
-                        candidates.push(MinCandidate {
-                            id: neighbor_id,
-                            distance: neighbor_distance,
-                        });
-                        results.push(MaxResult {
-                            id: neighbor_id,
-                            distance: neighbor_distance,
-                        });
-                        if results.len() > ef {
-                            results.pop();
+            // Batch buffer: up to 4 unvisited neighbor IDs.
+            let mut batch_ids: [u32; 4] = [0; 4];
+            let mut batch_count = 0usize;
+
+            for &neighbor_id in neighbors.iter() {
+                if visited.insert(neighbor_id) {
+                    batch_ids[batch_count] = neighbor_id;
+                    batch_count += 1;
+
+                    // Prefetch the vector for this neighbor (it will be read shortly).
+                    if (neighbor_id as usize) < num_vectors {
+                        let ptr = vectors
+                            .as_ptr()
+                            .wrapping_add(neighbor_id as usize * dimension);
+                        prefetch_read_data(ptr);
+                        if dimension > 16 {
+                            prefetch_read_data(ptr.wrapping_add(16));
                         }
                     }
+
+                    if batch_count == 4 {
+                        // Flush batch: compute 4 distances and process results.
+                        flush_batch(
+                            query,
+                            &batch_ids,
+                            batch_count,
+                            vectors,
+                            dimension,
+                            dist_fn,
+                            &mut candidates,
+                            &mut results,
+                            ef,
+                        );
+                        batch_count = 0;
+                    }
                 }
+            }
+            // Flush remaining (< 4).
+            if batch_count > 0 {
+                flush_batch(
+                    query,
+                    &batch_ids,
+                    batch_count,
+                    vectors,
+                    dimension,
+                    dist_fn,
+                    &mut candidates,
+                    &mut results,
+                    ef,
+                );
             }
         }
 
@@ -450,41 +543,49 @@ pub fn greedy_search_layer_custom<F: Fn(&[f32], u32) -> f32>(
             }
 
             let neighbors = layer.get_neighbors(candidate.id);
-            for (i, &neighbor_id) in neighbors.iter().enumerate() {
-                // Prefetch: keep vectors warm even for custom distance fns
-                // that read them (the common case).
-                if i + 1 < neighbors.len() {
-                    let next_id = neighbors[i + 1] as usize;
-                    if next_id < num_vectors {
-                        let ptr = vectors.as_ptr().wrapping_add(next_id * dimension);
-                        prefetch_read_data(ptr);
-                        prefetch_read_data(ptr.wrapping_add(16));
-                    }
-                }
-                if i + 4 < neighbors.len() {
-                    let far_id = neighbors[i + 4] as usize;
-                    if far_id < num_vectors {
-                        prefetch_read_data(vectors.as_ptr().wrapping_add(far_id * dimension));
-                    }
-                }
-                if visited.insert(neighbor_id) {
-                    let neighbor_distance = dist_fn(query, neighbor_id);
+            let mut batch_ids: [u32; 4] = [0; 4];
+            let mut batch_count = 0usize;
 
-                    let worst_dist = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
-                    if results.len() < ef || neighbor_distance < worst_dist {
-                        candidates.push(MinCandidate {
-                            id: neighbor_id,
-                            distance: neighbor_distance,
-                        });
-                        results.push(MaxResult {
-                            id: neighbor_id,
-                            distance: neighbor_distance,
-                        });
-                        if results.len() > ef {
-                            results.pop();
+            for &neighbor_id in neighbors.iter() {
+                if visited.insert(neighbor_id) {
+                    batch_ids[batch_count] = neighbor_id;
+                    batch_count += 1;
+
+                    // Prefetch vector for this neighbor.
+                    if (neighbor_id as usize) < num_vectors {
+                        let ptr = vectors
+                            .as_ptr()
+                            .wrapping_add(neighbor_id as usize * dimension);
+                        prefetch_read_data(ptr);
+                        if dimension > 16 {
+                            prefetch_read_data(ptr.wrapping_add(16));
                         }
                     }
+
+                    if batch_count == 4 {
+                        flush_batch_custom(
+                            query,
+                            &batch_ids,
+                            batch_count,
+                            dist_fn,
+                            &mut candidates,
+                            &mut results,
+                            ef,
+                        );
+                        batch_count = 0;
+                    }
                 }
+            }
+            if batch_count > 0 {
+                flush_batch_custom(
+                    query,
+                    &batch_ids,
+                    batch_count,
+                    dist_fn,
+                    &mut candidates,
+                    &mut results,
+                    ef,
+                );
             }
         }
 
