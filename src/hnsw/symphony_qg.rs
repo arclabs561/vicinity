@@ -375,6 +375,9 @@ pub struct SymphonyQGVRIndex {
     /// Cumulative neighbor count per node: `neighbor_offsets[node_id]` is the
     /// start index into edge arrays for node `node_id`'s neighbors.
     neighbor_offsets: Vec<u32>,
+    /// Pre-rotated vectors R*v, flat-packed [n * dim]. Enables O(d) per-parent
+    /// query normalization: R*(q-u) = R*q - rotated_vecs[u].
+    rotated_vecs: Vec<f32>,
     /// RaBitQ quantizer (owns rotation matrix).
     quantizer: Option<RaBitQQuantizer>,
     /// RaBitQ configuration.
@@ -410,6 +413,7 @@ impl SymphonyQGVRIndex {
             total_bits,
             cb,
             neighbor_offsets: Vec::new(),
+            rotated_vecs: Vec::new(),
             quantizer: None,
             rabitq_config,
             seed,
@@ -570,7 +574,8 @@ impl SymphonyQGVRIndex {
         self.edge_scalars = edge_scalars;
         self.packed_codes = packed_codes;
         self.neighbor_offsets = neighbor_offsets;
-        // rotated_flat is no longer needed -- drop it (was only for ip_u_rot precomputation)
+        // Persist rotated vectors for per-parent query normalization at search time.
+        self.rotated_vecs = rotated_flat;
         self.quantizer = Some(quantizer);
         Ok(())
     }
@@ -643,41 +648,63 @@ impl SymphonyQGVRIndex {
 
         // Base layer: edge-aware beam search with per-edge codes.
         //
-        // The per-edge VR formula estimates `||v - parent||^2` plus a correction
-        // proportional to `<q-parent, v-parent>`. To compare distances across
-        // different parents in the beam search priority queue, we must add the
-        // exact `||q - parent||^2` term. This is O(d) per parent node popped
-        // from the candidate heap.
+        // Per SymphonyQG paper (SIGMOD 2025, Eq 2 + Algorithm 1 step 6):
+        // The full estimated distance from query q to neighbor v (via parent u) is:
+        //
+        //   ||q - v||^2 ≈ ||q - u||^2 + f_add + f_rescale * <R*(q-u), codes>
+        //
+        // where f_add and f_rescale encode ||v-u||^2 and correction terms, and
+        // <R*(q-u), codes> is the quantized inner product. The reference implementation
+        // computes R*(q-u) = R*q - R*u per-parent using cached R*u, then uses
+        // this directly (no ip_u_rot_codes subtraction needed).
+        //
+        // We store R*v for all vectors (rotated_vectors) to enable O(d) per-parent
+        // computation of R*(q-u) at search time.
         let base_layer = &self.index.layers[0];
         let edge_scalars = &self.edge_scalars;
         let packed = &self.packed_codes;
         let neighbor_offsets = &self.neighbor_offsets;
         let packed_dim = self.packed_dim;
         let vectors = &self.index.vectors;
+        let rot_vecs = &self.rotated_vecs;
         let dim = self.dimension;
-        // Precompute nibble LUT once per query (16 entries, 64 bytes, L1 cache).
         let lut = nibble_lut(self.cb);
 
-        // Cache ||q - parent||^2 per parent to avoid recomputing for each neighbor.
-        // Uses RefCell for interior mutability (the Fn closure can't be FnMut).
-        let parent_dist_cache: std::cell::RefCell<std::collections::HashMap<u32, f32>> =
+        // Per-parent cached state: (||q - u||^2, R*(q - u)).
+        // Computing R*(q-u) = R*q - R*u is O(d) using stored rotated_vectors.
+        type ParentState = (f32, Vec<f32>);
+        let parent_cache: std::cell::RefCell<std::collections::HashMap<u32, ParentState>> =
             std::cell::RefCell::new(std::collections::HashMap::with_capacity(ef * 2));
 
-        // Compute entry point distance: exact ||q - entry||^2.
-        let entry_vec = &vectors[current as usize * dim..(current as usize + 1) * dim];
-        let entry_dist: f32 = query
-            .iter()
-            .zip(entry_vec.iter())
-            .map(|(a, b)| (a - b) * (a - b))
-            .sum();
-        parent_dist_cache.borrow_mut().insert(current, entry_dist);
+        // Helper: compute parent state for a given parent_id.
+        let compute_parent_state = |parent_id: u32| -> ParentState {
+            let parent_vec = &vectors[parent_id as usize * dim..(parent_id as usize + 1) * dim];
+            let dist_sq: f32 = query
+                .iter()
+                .zip(parent_vec.iter())
+                .map(|(a, b)| (a - b) * (a - b))
+                .sum();
+            // R*(q - u) = R*q - R*u. Both are O(d) lookups.
+            let r_parent = &rot_vecs[parent_id as usize * dim..(parent_id as usize + 1) * dim];
+            let q_residual: Vec<f32> = rotated_query
+                .iter()
+                .zip(r_parent.iter())
+                .map(|(&rq, &ru)| rq - ru)
+                .collect();
+            (dist_sq, q_residual)
+        };
+
+        // Compute entry point state.
+        let entry_state = compute_parent_state(current);
+        let entry_dist = entry_state.0;
+        parent_cache.borrow_mut().insert(current, entry_state);
 
         let total_bits = self.total_bits;
         let dist_fn = |parent_id: u32, _neighbor_id: u32, slot: usize| -> f32 {
             let base_offset = neighbor_offsets[parent_id as usize] as usize;
             let offset = base_offset + slot;
 
-            // Prefetch next edge's codes to hide L2 cache latency.
+            // Prefetch next edge's codes.
             if offset + 2 < edge_scalars.len() {
                 let ptr = packed.as_ptr().wrapping_add((offset + 2) * packed_dim);
                 crate::hnsw::search::prefetch_read_data(ptr as *const f32);
@@ -685,33 +712,61 @@ impl SymphonyQGVRIndex {
 
             let scalars = &edge_scalars[offset];
             let codes = &packed[offset * packed_dim..(offset + 1) * packed_dim];
-            let edge_approx = if total_bits >= 4 {
-                approx_dist_vr_packed(&rotated_query, codes, scalars, &lut)
-            } else {
-                approx_dist_vr_binary(&rotated_query, codes, scalars)
-            };
 
-            // Add ||q - parent||^2 for cross-parent comparability.
-            let q_parent_dist = {
-                let cache = parent_dist_cache.borrow();
-                if let Some(&d) = cache.get(&parent_id) {
-                    d
-                } else {
-                    drop(cache);
-                    let parent_vec =
-                        &vectors[parent_id as usize * dim..(parent_id as usize + 1) * dim];
-                    let d: f32 = query
-                        .iter()
-                        .zip(parent_vec.iter())
-                        .map(|(a, b)| (a - b) * (a - b))
-                        .sum();
-                    parent_dist_cache.borrow_mut().insert(parent_id, d);
-                    d
+            // Get or compute per-parent state.
+            let needs_compute = {
+                let cache = parent_cache.borrow();
+                !cache.contains_key(&parent_id)
+            };
+            if needs_compute {
+                let state = compute_parent_state(parent_id);
+                parent_cache.borrow_mut().insert(parent_id, state);
+            }
+
+            let cache = parent_cache.borrow();
+            let (q_parent_dist, q_residual) = cache.get(&parent_id).unwrap();
+
+            // Compute <R*(q-u), codes+cb> directly from the per-parent residual.
+            // This replaces the old <R*q, codes> - ip_u_rot_codes subtraction,
+            // which suffered from catastrophic cancellation at large norms.
+            let ip = if total_bits >= 4 {
+                let pairs = dim / 2;
+                let mut acc = 0.0f32;
+                for j in 0..pairs {
+                    let byte = codes[j];
+                    let c0 = lut[(byte >> 4) as usize];
+                    let c1 = lut[(byte & 0x0F) as usize];
+                    acc += q_residual[j * 2] * c0 + q_residual[j * 2 + 1] * c1;
                 }
+                if dim % 2 != 0 {
+                    let byte = codes[pairs];
+                    acc += q_residual[dim - 1] * lut[(byte >> 4) as usize];
+                }
+                acc
+            } else {
+                // Binary codes: <q_residual, sign_codes - 0.5>
+                let mut sum_positive = 0.0f32;
+                let mut sum_all = 0.0f32;
+                for j in 0..codes.len() {
+                    let byte = codes[j];
+                    for bit in 0..8 {
+                        let idx = j * 8 + bit;
+                        if idx >= dim {
+                            break;
+                        }
+                        let q = q_residual[idx];
+                        sum_all += q;
+                        if byte & (1 << (7 - bit)) != 0 {
+                            sum_positive += q;
+                        }
+                    }
+                }
+                sum_positive - 0.5 * sum_all
             };
 
-            // The edge formula approximates ||v - parent||^2 - 2<q-parent, v-parent>.
-            // Adding ||q - parent||^2 gives the full ||q - v||^2 estimate.
+            // Full L2 estimate: ||q-u||^2 + f_add + f_rescale * <R*(q-u), codes>.
+            // No ip_u_rot_codes subtraction needed since we used the residual directly.
+            let edge_approx = (scalars.f_add + scalars.f_rescale * ip).max(0.0);
             (q_parent_dist + edge_approx).max(0.0)
         };
 
