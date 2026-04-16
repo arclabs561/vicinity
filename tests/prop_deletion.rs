@@ -6,7 +6,7 @@
 //! 3. Graph integrity after deletion: no edges to deleted nodes
 //! 4. Recall doesn't collapse after moderate deletion (< 50%)
 
-#![allow(clippy::unwrap_used, clippy::expect_used, dead_code)]
+#![allow(clippy::unwrap_used, clippy::expect_used, dead_code, unused_imports)]
 
 #[path = "common/mod.rs"]
 mod common;
