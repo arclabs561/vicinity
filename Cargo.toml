@@ -57,7 +57,7 @@ rmt = { version = "0.1.2", optional = true }
 sketchir = { version = "0.3.1", optional = true }
 
 # Vector quantization primitives (extracted from `vicinity`)
-qntz = { package = "qntz", version = "0.1.5", optional = true, features = [
+qntz = { package = "qntz", version = "0.1.6", optional = true, features = [
   "simd",
 ] }
 
@@ -335,5 +335,3 @@ multiple_crate_versions = "allow"
 wrong_self_convention = "allow"
 module_name_repetitions = "allow"
 
-[patch.crates-io]
-qntz = { path = "../qntz" }
