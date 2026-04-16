@@ -4,3 +4,9 @@
 {"algorithm":"hnsw-m16","recall_at_10":0.9895,"qps":4944.2}
 {"algorithm":"hnsw-m16","recall_at_10":0.9971,"qps":2657.8}
 {"algorithm":"hnsw-m16","recall_at_10":0.9991,"qps":1572.2}
+{"algorithm":"sq8u","recall_at_10":0.7661,"qps":18428.2,"ef_search":10,"dataset":"sift-128-euclidean","dim":128,"n_vectors":1000000,"metric":"l2","git_sha":"521489e","host":"charizard","timestamp":"2026-04-16T15:02:55Z"}
+{"algorithm":"sq8u","recall_at_10":0.8783,"qps":12244.4,"ef_search":20,"dataset":"sift-128-euclidean","dim":128,"n_vectors":1000000,"metric":"l2","git_sha":"521489e","host":"charizard","timestamp":"2026-04-16T15:02:55Z"}
+{"algorithm":"sq8u","recall_at_10":0.9641,"qps":6075.8,"ef_search":50,"dataset":"sift-128-euclidean","dim":128,"n_vectors":1000000,"metric":"l2","git_sha":"521489e","host":"charizard","timestamp":"2026-04-16T15:02:55Z"}
+{"algorithm":"sq8u","recall_at_10":0.9894,"qps":3597.2,"ef_search":100,"dataset":"sift-128-euclidean","dim":128,"n_vectors":1000000,"metric":"l2","git_sha":"521489e","host":"charizard","timestamp":"2026-04-16T15:02:55Z"}
+{"algorithm":"sq8u","recall_at_10":0.9971,"qps":2021.1,"ef_search":200,"dataset":"sift-128-euclidean","dim":128,"n_vectors":1000000,"metric":"l2","git_sha":"521489e","host":"charizard","timestamp":"2026-04-16T15:02:55Z"}
+{"algorithm":"sq8u","recall_at_10":0.9991,"qps":1154.9,"ef_search":400,"dataset":"sift-128-euclidean","dim":128,"n_vectors":1000000,"metric":"l2","git_sha":"521489e","host":"charizard","timestamp":"2026-04-16T15:02:55Z"}
