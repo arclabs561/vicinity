@@ -1508,10 +1508,6 @@ fn append_jsonl_ef(
 }
 
 /// Convenience: write a record without ef_search.
-fn append_jsonl(algorithm: &str, recall: f64, qps: f64) -> Result<(), Box<dyn std::error::Error>> {
-    write_record(algorithm, recall, qps, None, None, None)
-}
-
 /// Check if results already exist for an algorithm in the output file.
 /// Returns a map of algorithm name -> git SHA of the most recent result.
 fn existing_algorithms() -> std::collections::HashMap<String, String> {
