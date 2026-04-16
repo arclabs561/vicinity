@@ -500,9 +500,15 @@ impl SymphonyQGVRIndex {
 
         // Per-node edge quantization. Each node's edges are independent.
         // Collect (scalars, packed_bytes) per node, then flatten.
+        // `zero_centroid` short-circuits qntz's cross-space bias term: its
+        // compute_correction_factors dots `raw_centroid` (unrotated) with
+        // `xu_cb` (rotated-space codes), contaminating f_add with -f_rescale*<u, xu_cb>
+        // when a nonzero centroid is passed. Since we already feed R*(v-u) as the
+        // rotated residual, the centroid role is absorbed there; passing zero keeps
+        // f_add clean at ||v-u||^2.
+        let zero_centroid = vec![0.0f32; dim];
         let quantize_node = |node_id: u32| -> Result<(Vec<EdgeScalars>, Vec<u8>), RetrieveError> {
             let neighbors = base_layer.get_neighbors(node_id);
-            let u_vec = self.index.get_vector(node_id as usize);
             let u_rot = &rotated_flat[node_id as usize * dim..(node_id as usize + 1) * dim];
 
             let mut scalars = Vec::with_capacity(neighbors.len());
@@ -518,7 +524,7 @@ impl SymphonyQGVRIndex {
                     .map(|(&v, &u)| v - u)
                     .collect();
                 let qv = quantizer
-                    .quantize_prerotated(&rotated_residual, u_vec)
+                    .quantize_prerotated(&rotated_residual, &zero_centroid)
                     .map_err(|e| RetrieveError::InvalidParameter(format!("quantize edge: {e}")))?;
 
                 let mut ip_u_rot = 0.0f32;
