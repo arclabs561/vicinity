@@ -142,6 +142,15 @@ impl HNSWSq8Index {
         Ok(())
     }
 
+    /// Build with parallel HNSW construction (requires `parallel` feature).
+    #[cfg(feature = "parallel")]
+    pub fn build_parallel(&mut self, batch_size: usize) -> Result<(), RetrieveError> {
+        self.index.build_parallel(batch_size)?;
+        self.quantize_vectors()?;
+        self.built = true;
+        Ok(())
+    }
+
     /// Search with quantized graph traversal (no reranking).
     pub fn search(
         &self,
