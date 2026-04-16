@@ -5,7 +5,7 @@
 //!   - MST-based hierarchical clustering (HDBSCAN-style)
 //!   - Multi-granularity cluster extraction
 //!
-//! # Ecosystem Context: Clustering in the Tekne Stack
+//! # Ecosystem Context
 //!
 //! | Crate     | Algorithm        | Best For                      |
 //! |-----------|------------------|-------------------------------|
