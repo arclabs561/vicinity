@@ -5,6 +5,22 @@
 
 Approximate nearest-neighbor search.
 
+## Which index?
+
+```
+Which index?
+├── General purpose: HNSW (default)
+├── Memory constrained: HNSW + RaBitQ (SymphonyQG) or IVF-PQ
+├── Disk-backed / large scale: DiskANN
+├── Filtered search: ACORN (metadata filters) or Curator (label filters)
+├── Batch/static: IVF-PQ or IVF-AVQ
+└── Sparse vectors: SparseMIPS
+```
+
+For high-dimensional data (d ≥ 256), prefer SQ4U or SymphonyQG over plain HNSW — quantized
+graph traversal reduces distance computation cost. At low dimensions (d ≤ 25), plain HNSW
+wins; quantization overhead outweighs savings.
+
 ## Install
 
 Each algorithm is a separate feature. Enable what you need:
@@ -77,9 +93,21 @@ GloVe-25 (1.18M vectors, 25-d, cosine), Apple Silicon, single-threaded:
   <img src="docs/plots/algorithm_comparison_glove-25-angular.png" width="680" alt="Recall vs QPS on GloVe-25" />
 </p>
 
-Full numbers in [`docs/benchmark-results.md`](docs/benchmark-results.md).
+Summary at best recall per algorithm:
 
-## Algorithms
+| Algorithm | Recall@10 | QPS |
+|-----------|-----------|-----|
+| HNSW (M=16) | 100.0% | 2,857 |
+| Vamana | 100.0% | 1,177 |
+| DiskANN | 100.0% | 1,029 |
+| NSW (M=16) | 99.2% | 1,288 |
+| IVF-PQ | 98.7% | 69 |
+| IVF-AVQ | 90.9% | 194 |
+| RP-Forest | 58.5% | 4,221 |
+
+Full numbers and SIFT-128 results in [`docs/benchmark-results.md`](docs/benchmark-results.md).
+
+## Supported Algorithms
 
 Each algorithm has a named feature flag:
 
