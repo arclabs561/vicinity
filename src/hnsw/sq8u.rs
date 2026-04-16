@@ -65,6 +65,38 @@ pub struct HNSWSq8Index {
     built: bool,
 }
 
+/// Memory breakdown for an SQ8 index.
+#[derive(Debug, Clone)]
+pub struct SQ8MemoryReport {
+    /// Full-precision f32 vectors (for reranking).
+    pub vectors_bytes: usize,
+    /// 8-bit quantized codes.
+    pub codes_bytes: usize,
+    /// Total (vectors + codes, excludes graph overhead).
+    pub total_bytes: usize,
+    /// Number of indexed vectors.
+    pub n: usize,
+    /// Vector dimension.
+    pub dim: usize,
+}
+
+impl std::fmt::Display for SQ8MemoryReport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mb = |b: usize| b as f64 / (1024.0 * 1024.0);
+        write!(
+            f,
+            "SQ8 memory: {:.1} MB total ({:.1} MB vectors + {:.1} MB codes), \
+             {:.1} bytes/vector (n={}, d={})",
+            mb(self.total_bytes),
+            mb(self.vectors_bytes),
+            mb(self.codes_bytes),
+            self.total_bytes as f64 / self.n.max(1) as f64,
+            self.n,
+            self.dim,
+        )
+    }
+}
+
 impl HNSWSq8Index {
     /// Create a new SQ8U index with default cosine metric.
     pub fn new(dimension: usize, m: usize, m_max: usize) -> Result<Self, RetrieveError> {
@@ -194,6 +226,21 @@ impl HNSWSq8Index {
         self.codes.len()
     }
 
+    /// Memory report: vectors (f32), codes (u8), and total.
+    pub fn memory_report(&self) -> SQ8MemoryReport {
+        let n = self.index.num_vectors;
+        let dim = self.index.dimension;
+        let vectors_bytes = n * dim * 4;
+        let codes_bytes = self.codes.len();
+        SQ8MemoryReport {
+            vectors_bytes,
+            codes_bytes,
+            total_bytes: vectors_bytes + codes_bytes,
+            n,
+            dim,
+        }
+    }
+
     // ── internal ──────────────────────────────────────────────────────────
 
     fn check_ready(&self, query: &[f32]) -> Result<(), RetrieveError> {
@@ -263,41 +310,6 @@ impl HNSWSq8Index {
         self.steps = steps;
         self.inv_scales = inv_scales;
         Ok(())
-    }
-
-    /// Precompute distance lookup table for a query.
-    ///
-    /// Returns a flat table of `dim * 256` f32 values where
-    /// `table[d * 256 + code] = (query[d] - (min[d] + code * step[d]))^2`.
-    ///
-    /// For d <= 128 the table fits in L1 cache (~128KB); for higher d it still
-    /// avoids the per-access decode (multiply + subtract + square).
-    #[inline]
-    fn precompute_table(query: &[f32], mins: &[f32], steps: &[f32]) -> Vec<f32> {
-        let dim = query.len();
-        let mut table = vec![0.0f32; dim * 256];
-        for d in 0..dim {
-            let q = query[d];
-            let min = mins[d];
-            let step = steps[d];
-            let base = d * 256;
-            for code in 0..256u32 {
-                let decoded = min + code as f32 * step;
-                let diff = q - decoded;
-                table[base + code as usize] = diff * diff;
-            }
-        }
-        table
-    }
-
-    /// Approximate L2^2 using precomputed table lookup (zero decode per access).
-    #[inline]
-    fn approx_dist_table(table: &[f32], code: &[u8]) -> f32 {
-        let mut sum = 0.0f32;
-        for (d, &c) in code.iter().enumerate() {
-            sum += table[d * 256 + c as usize];
-        }
-        sum
     }
 
     /// Approximate L2^2 distance: on-the-fly decode of 8-bit codes.
@@ -375,41 +387,20 @@ impl HNSWSq8Index {
             return Ok(Vec::new());
         }
         let base_layer = &self.index.layers[0];
-
-        // For dimensions <= 256, use precomputed table (fits in L1/L2 cache).
-        // For higher dimensions, decode on-the-fly to avoid table cache pressure.
-        if dim <= 256 {
-            let table = Self::precompute_table(query, mins, steps);
-            let dist_fn = |_q: &[f32], node_id: u32| -> f32 {
-                let offset = node_id as usize * dim;
-                let ncode = &codes[offset..offset + dim];
-                Self::approx_dist_table(&table, ncode)
-            };
-            Ok(crate::hnsw::search::greedy_search_layer_custom(
-                query,
-                current,
-                base_layer,
-                &self.index.vectors,
-                self.index.dimension,
-                ef,
-                &dist_fn,
-            ))
-        } else {
-            let dist_fn = |_q: &[f32], node_id: u32| -> f32 {
-                let offset = node_id as usize * dim;
-                let ncode = &codes[offset..offset + dim];
-                Self::approx_dist(query, ncode, mins, steps)
-            };
-            Ok(crate::hnsw::search::greedy_search_layer_custom(
-                query,
-                current,
-                base_layer,
-                &self.index.vectors,
-                self.index.dimension,
-                ef,
-                &dist_fn,
-            ))
-        }
+        let dist_fn = |_q: &[f32], node_id: u32| -> f32 {
+            let offset = node_id as usize * dim;
+            let ncode = &codes[offset..offset + dim];
+            Self::approx_dist(query, ncode, mins, steps)
+        };
+        Ok(crate::hnsw::search::greedy_search_layer_custom(
+            query,
+            current,
+            base_layer,
+            &self.index.vectors,
+            self.index.dimension,
+            ef,
+            &dist_fn,
+        ))
     }
 }
 
