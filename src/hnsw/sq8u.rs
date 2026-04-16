@@ -40,6 +40,7 @@
 //! ```
 
 use crate::hnsw::graph::HNSWIndex;
+use crate::hnsw::search::prefetch_read_data;
 use crate::RetrieveError;
 
 /// HNSW index with 8-bit scalar quantized graph traversal.
@@ -299,7 +300,13 @@ impl HNSWSq8Index {
             let mut changed = true;
             while changed {
                 changed = false;
-                for &neighbor_id in layer.get_neighbors(current).iter() {
+                let neighbors = layer.get_neighbors(current);
+                for (slot, &neighbor_id) in neighbors.iter().enumerate() {
+                    // Prefetch codes for neighbor 2 slots ahead.
+                    if slot + 2 < neighbors.len() {
+                        let ahead = neighbors[slot + 2] as usize * dim;
+                        prefetch_read_data(codes.as_ptr().wrapping_add(ahead) as *const f32);
+                    }
                     let ncode =
                         &codes[neighbor_id as usize * dim..(neighbor_id as usize + 1) * dim];
                     let dist = Self::approx_dist(query, ncode, mins, steps);
