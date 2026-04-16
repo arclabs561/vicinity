@@ -1722,6 +1722,166 @@ fn run_hnsw_prt(
     }
 }
 
+#[cfg(all(feature = "hnsw", feature = "sq8"))]
+fn run_sq8u(
+    cfg: &Config,
+    train: &[Vec<f32>],
+    test: &[Vec<f32>],
+    neighbors: &[Vec<i32>],
+    dim: usize,
+) {
+    use vicinity::hnsw::{HNSWParams, HNSWSq8Index};
+    use vicinity::DistanceMetric;
+
+    let m = cfg.m;
+    let ef_construction = cfg.ef_construction;
+
+    if !cfg.json {
+        println!("--- SQ8U (M={}, ef_c={}) ---", m, ef_construction);
+    }
+
+    let metric = if cfg.is_euclidean {
+        DistanceMetric::L2
+    } else {
+        DistanceMetric::Cosine
+    };
+
+    let build_start = Instant::now();
+    let params = HNSWParams {
+        m,
+        m_max: m * 2,
+        ef_construction,
+        metric,
+        auto_normalize: !cfg.is_euclidean,
+        seed: Some(42),
+        ..Default::default()
+    };
+    let mut index = HNSWSq8Index::with_params(dim, params).unwrap();
+    for (i, vec) in train.iter().enumerate() {
+        index.add_slice(i as u32, vec).unwrap();
+    }
+    index.build().unwrap();
+    let build_time_s = build_start.elapsed().as_secs_f64();
+    let rss = current_rss_kb();
+
+    if !cfg.json {
+        println!(
+            "Build: {:.2}s ({:.0} vectors/sec)\n",
+            build_time_s,
+            train.len() as f64 / build_time_s
+        );
+        print_header();
+    }
+
+    for &ef in &cfg.ef_search_values {
+        let rerank_pool = (ef * 2).max(100);
+        let result = evaluate(
+            &|q, k| index.search_reranked(q, k, ef, rerank_pool).unwrap(),
+            test,
+            neighbors,
+            10,
+        );
+        if cfg.json {
+            let params_json = format!(
+                "{{\"m\":{},\"ef_construction\":{},\"ef_search\":{},\"rerank_pool\":{}}}",
+                m, ef_construction, ef, rerank_pool
+            );
+            emit_result(
+                &cfg.results_path,
+                &json_line("sq8u", &params_json, build_time_s, rss, &result),
+            );
+        } else {
+            print_row(&format!("ef={}", ef), &result);
+        }
+    }
+
+    if !cfg.json {
+        println!();
+    }
+}
+
+#[cfg(all(feature = "hnsw", feature = "ivf_rabitq"))]
+fn run_symphony_qg_vr(
+    cfg: &Config,
+    train: &[Vec<f32>],
+    test: &[Vec<f32>],
+    neighbors: &[Vec<i32>],
+    dim: usize,
+) {
+    use qntz::rabitq::RaBitQConfig;
+    use vicinity::hnsw::{HNSWParams, SymphonyQGVRIndex};
+    use vicinity::DistanceMetric;
+
+    let m = cfg.m;
+    let ef_construction = cfg.ef_construction;
+
+    if !cfg.json {
+        println!(
+            "--- SymphonyQG-VR (M={}, ef_c={}, L2-capable) ---",
+            m, ef_construction
+        );
+    }
+
+    let metric = if cfg.is_euclidean {
+        DistanceMetric::L2
+    } else {
+        DistanceMetric::Cosine
+    };
+
+    let build_start = Instant::now();
+    let params = HNSWParams {
+        m,
+        m_max: m * 2,
+        ef_construction,
+        metric,
+        auto_normalize: !cfg.is_euclidean,
+        seed: Some(42),
+        ..Default::default()
+    };
+    let mut index = SymphonyQGVRIndex::new(dim, params, RaBitQConfig::bits4(), 42).unwrap();
+    for (i, vec) in train.iter().enumerate() {
+        index.add_slice(i as u32, vec).unwrap();
+    }
+    index.build().unwrap();
+    let build_time_s = build_start.elapsed().as_secs_f64();
+    let rss = current_rss_kb();
+
+    if !cfg.json {
+        println!(
+            "Build: {:.2}s ({:.0} vectors/sec)\n",
+            build_time_s,
+            train.len() as f64 / build_time_s
+        );
+        print_header();
+    }
+
+    for &ef in &cfg.ef_search_values {
+        let rerank_pool = (ef * 2).max(100);
+        let result = evaluate(
+            &|q, k| index.search_reranked(q, k, ef, rerank_pool).unwrap(),
+            test,
+            neighbors,
+            10,
+        );
+        if cfg.json {
+            let params_json = format!(
+                "{{\"m\":{},\"ef_construction\":{},\"ef_search\":{},\"rerank_pool\":{}}}",
+                m, ef_construction, ef, rerank_pool
+            );
+            emit_result(
+                &cfg.results_path,
+                &json_line("symphony_qg_vr", &params_json, build_time_s, rss, &result),
+            );
+        } else {
+            print_row(&format!("ef={}", ef), &result);
+        }
+    }
+
+    if !cfg.json {
+        println!();
+    }
+}
+
 fn run_brute(cfg: &Config, train: &[Vec<f32>], test: &[Vec<f32>], neighbors: &[Vec<i32>]) {
     if !cfg.json {
         println!("--- Brute Force (linear scan) ---");
@@ -1967,6 +2127,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 eprintln!("SQ4 not available (compile with --features sq4)");
             }
 
+            #[cfg(all(feature = "hnsw", feature = "sq8"))]
+            "sq8u" => run_sq8u(&cfg, &train, &test, &neighbors, dim),
+
+            #[cfg(not(all(feature = "hnsw", feature = "sq8")))]
+            "sq8u" => {
+                eprintln!("SQ8U not available (compile with --features hnsw,sq8)");
+            }
+
+            #[cfg(all(feature = "hnsw", feature = "ivf_rabitq"))]
+            "symphony_qg_vr" => run_symphony_qg_vr(&cfg, &train, &test, &neighbors, dim),
+
+            #[cfg(not(all(feature = "hnsw", feature = "ivf_rabitq")))]
+            "symphony_qg_vr" => {
+                eprintln!("SymphonyQG-VR not available (compile with --features hnsw,ivf_rabitq)");
+            }
+
             #[cfg(feature = "hnsw")]
             "adsampling" => run_adsampling(&cfg, &train, &test, &neighbors, dim),
 
@@ -1985,7 +2161,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             other => {
                 eprintln!(
-                    "Unknown algorithm: {}. Options: hnsw, nsw, ivfpq, emg, nsg, pipnn, sng, vamana, ivf_rabitq, symphony_qg, finger, fresh_graph, filtered_graph, rp_quant, sparse_mips, curator, esg, binary_index, sq4, adsampling, lsh, hnsw_prt, brute",
+                    "Unknown algorithm: {}. Options: hnsw, nsw, ivfpq, emg, nsg, pipnn, sng, vamana, ivf_rabitq, symphony_qg, symphony_qg_vr, finger, fresh_graph, filtered_graph, rp_quant, sparse_mips, curator, esg, binary_index, sq4, sq8u, adsampling, lsh, hnsw_prt, brute",
                     other
                 );
             }
