@@ -577,7 +577,7 @@ struct SearchResult {
 /// sequentially. Vectors in the same batch don't see each other's edges,
 /// but with batch_size << n the quality impact is negligible.
 ///
-/// Typical speedup: 3-6x on 8+ core machines for datasets > 100K vectors.
+/// Speedup scales with core count and is most pronounced at medium dimensions.
 #[cfg(feature = "parallel")]
 pub fn construct_graph_parallel(
     index: &mut HNSWIndex,
