@@ -595,7 +595,7 @@ fn run_kdtree(
 
     let (recall, qps) = measure_kdtree(&index, test, gt, k);
     println!("  recall={:.1}%  qps={:.0}", recall * 100.0, qps);
-    append_jsonl("kdtree", recall, qps)?;
+    append_jsonl_ef("kdtree", recall, qps, None)?;
     Ok(())
 }
 
@@ -635,7 +635,7 @@ fn run_balltree(
 
     let (recall, qps) = measure_balltree(&index, test, gt, k);
     println!("  recall={:.1}%  qps={:.0}", recall * 100.0, qps);
-    append_jsonl("balltree", recall, qps)?;
+    append_jsonl_ef("balltree", recall, qps, None)?;
     Ok(())
 }
 
@@ -689,7 +689,7 @@ fn run_rptree(
             recall * 100.0,
             qps
         );
-        append_jsonl("rptree", recall, qps)?;
+        append_jsonl_ef("rptree", recall, qps, None)?;
     }
     Ok(())
 }
