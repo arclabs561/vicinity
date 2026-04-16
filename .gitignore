@@ -17,6 +17,7 @@
 # Python cache artifacts (scripts/)
 __pycache__/
 *.pyc
+*.so
 
 # QA reports (generated)
 qa/
