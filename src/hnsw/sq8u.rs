@@ -40,7 +40,6 @@
 //! ```
 
 use crate::hnsw::graph::HNSWIndex;
-use crate::hnsw::search::prefetch_read_data;
 use crate::RetrieveError;
 
 /// HNSW index with 8-bit scalar quantized graph traversal.
@@ -364,12 +363,7 @@ impl HNSWSq8Index {
             while changed {
                 changed = false;
                 let neighbors = layer.get_neighbors(current);
-                for (slot, &neighbor_id) in neighbors.iter().enumerate() {
-                    // Prefetch codes for neighbor 2 slots ahead.
-                    if slot + 2 < neighbors.len() {
-                        let ahead = neighbors[slot + 2] as usize * dim;
-                        prefetch_read_data(codes.as_ptr().wrapping_add(ahead) as *const f32);
-                    }
+                for &neighbor_id in neighbors.iter() {
                     let ncode =
                         &codes[neighbor_id as usize * dim..(neighbor_id as usize + 1) * dim];
                     let dist = Self::approx_dist(query, ncode, mins, steps);
@@ -382,89 +376,27 @@ impl HNSWSq8Index {
             }
         }
 
-        // Base layer: inline beam search with codes prefetch.
-        // We inline rather than using greedy_search_layer_custom because that
-        // function prefetches vectors (unused by SQ8). Here we prefetch codes
-        // for the next neighbor, which is the hot data for SQ8 traversal.
+        // Base layer: beam search with SQ8 approximate distance.
+        // Benchmarked: manual codes prefetch is slower on Apple Silicon (hardware
+        // prefetcher handles the sequential access pattern well). Use the standard
+        // search function which prefetches vectors (harmless no-op for SQ8).
         if self.index.layers.is_empty() {
             return Ok(Vec::new());
         }
         let base_layer = &self.index.layers[0];
-        let num_vectors = self.index.num_vectors;
-
-        Ok(crate::hnsw::search::with_visited_set(
-            num_vectors,
-            ef * 2,
-            |visited| {
-                use std::collections::BinaryHeap;
-
-                let mut candidates: BinaryHeap<crate::hnsw::search::MinCandidate> =
-                    BinaryHeap::with_capacity(ef * 2);
-                let mut results: BinaryHeap<crate::hnsw::search::MaxResult> =
-                    BinaryHeap::with_capacity(ef + 1);
-
-                let entry_code = &codes[current as usize * dim..(current as usize + 1) * dim];
-                let entry_dist = Self::approx_dist(query, entry_code, mins, steps);
-                candidates.push(crate::hnsw::search::MinCandidate {
-                    id: current,
-                    distance: entry_dist,
-                });
-                results.push(crate::hnsw::search::MaxResult {
-                    id: current,
-                    distance: entry_dist,
-                });
-                visited.insert(current);
-
-                while let Some(candidate) = candidates.pop() {
-                    let worst_dist = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
-                    if candidate.distance > worst_dist && results.len() >= ef {
-                        break;
-                    }
-
-                    let neighbors = base_layer.get_neighbors(candidate.id);
-                    for (slot, &neighbor_id) in neighbors.iter().enumerate() {
-                        // Prefetch codes for neighbor 2 slots ahead (codes are the hot data).
-                        if slot + 2 < neighbors.len() {
-                            let ahead_id = neighbors[slot + 2] as usize;
-                            if ahead_id < num_vectors {
-                                let ptr = codes.as_ptr().wrapping_add(ahead_id * dim);
-                                prefetch_read_data(ptr as *const f32);
-                                // Prefetch second cache line for d > 64 (each CL = 64 bytes).
-                                if dim > 64 {
-                                    prefetch_read_data(ptr.wrapping_add(64) as *const f32);
-                                }
-                            }
-                        }
-
-                        if visited.insert(neighbor_id) {
-                            let ncode = &codes
-                                [neighbor_id as usize * dim..(neighbor_id as usize + 1) * dim];
-                            let neighbor_dist = Self::approx_dist(query, ncode, mins, steps);
-
-                            let worst_dist =
-                                results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
-                            if results.len() < ef || neighbor_dist < worst_dist {
-                                candidates.push(crate::hnsw::search::MinCandidate {
-                                    id: neighbor_id,
-                                    distance: neighbor_dist,
-                                });
-                                results.push(crate::hnsw::search::MaxResult {
-                                    id: neighbor_id,
-                                    distance: neighbor_dist,
-                                });
-                                if results.len() > ef {
-                                    results.pop();
-                                }
-                            }
-                        }
-                    }
-                }
-
-                let mut output: Vec<(u32, f32)> =
-                    results.into_iter().map(|r| (r.id, r.distance)).collect();
-                output.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
-                output
-            },
+        let dist_fn = |_q: &[f32], node_id: u32| -> f32 {
+            let offset = node_id as usize * dim;
+            let ncode = &codes[offset..offset + dim];
+            Self::approx_dist(query, ncode, mins, steps)
+        };
+        Ok(crate::hnsw::search::greedy_search_layer_custom(
+            query,
+            current,
+            base_layer,
+            &self.index.vectors,
+            self.index.dimension,
+            ef,
+            &dist_fn,
         ))
     }
 }
