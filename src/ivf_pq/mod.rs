@@ -1,5 +1,7 @@
 //! IVF-PQ: Inverted File with Product Quantization.
 //!
+//! Same algorithm family as FAISS `IndexIVFPQ` and Google ScaNN's quantization backend.
+//!
 //! The workhorse of billion-scale similarity search. IVF + PQ can provide large memory savings,
 //! with the recall/latency trade-off controlled by parameters like `nprobe`, `num_clusters`, and PQ
 //! codebook configuration. Exact numbers are workload-dependent; see the references below for

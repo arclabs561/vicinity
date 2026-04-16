@@ -1,5 +1,8 @@
 //! SQ8U: HNSW with 8-bit scalar quantized graph traversal.
 //!
+//! Same quantization approach as FAISS `IndexScalarQuantizer` (SQ8) and
+//! Qdrant/Weaviate's scalar quantization option.
+//!
 //! During beam search, approximate distances are computed by decoding 8-bit
 //! codes on-the-fly and accumulating squared L2 distance against the full-
 //! precision query. Final top-k results are reranked with exact f32 distance.

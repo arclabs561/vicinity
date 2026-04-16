@@ -1,5 +1,7 @@
 //! DiskANN: Billion-scale ANN on a single machine with SSD.
 //!
+//! Same algorithm family as Microsoft DiskANN and the Vamana graph used by LanceDB.
+//!
 //! Reported to support billion-scale search with single-digit millisecond latency using NVMe
 //! storage (see DiskANN reference). Real performance depends on dataset, recall target,
 //! hardware, and index parameters.
