@@ -350,9 +350,8 @@ struct EdgeScalars {
 /// relative to its parent `u`. This keeps RaBitQ error bounds tight for
 /// L2/unnormalized data where vector norms vary.
 ///
-/// Memory cost: `2 * d` bytes per edge (u16 codes) + 12 bytes per edge (scalars).
-/// At d=128, M=16, 1M vectors: ~5GB total. Practical for d <= ~256.
-/// At d=960, M=16, 1M vectors: ~40GB -- use plain HNSW + reranking instead.
+/// Memory cost: `d/2` bytes per edge (packed 4-bit codes) + 12 bytes per edge (scalars).
+/// At d=128, M=16, 1M vectors: ~1.5GB. At d=960, M=16, 1M vectors: ~10GB.
 ///
 /// # References
 ///
@@ -363,10 +362,12 @@ pub struct SymphonyQGVRIndex {
     index: HNSWIndex,
     /// Per-edge correction scalars, indexed by edge offset.
     edge_scalars: Vec<EdgeScalars>,
-    /// Quantized codes as u16: `edge_codes[edge_offset * dim .. (edge_offset+1) * dim]`.
-    /// Uses u16 (not f32) to keep memory at 2 bytes/dim/edge instead of 4.
-    /// The cb shift is applied at query time in the IP loop.
-    edge_codes: Vec<u16>,
+    /// Packed 4-bit quantized codes: two dimensions per byte (high nibble, low nibble).
+    /// Layout: `packed_codes[edge_offset * packed_dim .. (edge_offset+1) * packed_dim]`
+    /// where `packed_dim = ceil(dim / 2)`. Memory: 0.5 bytes/dim/edge.
+    packed_codes: Vec<u8>,
+    /// Bytes per edge in packed_codes.
+    packed_dim: usize,
     /// Code bias: `cb = -((1 << ex_bits) as f32 - 0.5)`. Constant for the index.
     cb: f32,
     /// Cumulative neighbor count per node: `neighbor_offsets[node_id]` is the
@@ -395,10 +396,12 @@ impl SymphonyQGVRIndex {
         let index = HNSWIndex::with_params(dimension, params)?;
         let ex_bits = rabitq_config.total_bits.saturating_sub(1);
         let cb = -((1u32 << ex_bits) as f32 - 0.5);
+        let packed_dim = (dimension + 1) / 2;
         Ok(Self {
             index,
             edge_scalars: Vec::new(),
-            edge_codes: Vec::new(),
+            packed_codes: Vec::new(),
+            packed_dim,
             cb,
             neighbor_offsets: Vec::new(),
             quantizer: None,
@@ -462,7 +465,8 @@ impl SymphonyQGVRIndex {
             .sum();
 
         let mut edge_scalars = Vec::with_capacity(total_edges);
-        let mut edge_codes = Vec::with_capacity(total_edges * dim);
+        let packed_dim = self.packed_dim;
+        let mut packed_codes = Vec::with_capacity(total_edges * packed_dim);
         let mut neighbor_offsets = Vec::with_capacity(layer_len + 1);
         let cb = self.cb;
 
@@ -480,12 +484,23 @@ impl SymphonyQGVRIndex {
                     .quantize_with_centroid(v_vec, u_vec)
                     .map_err(|e| RetrieveError::InvalidParameter(format!("quantize edge: {e}")))?;
 
-                // Store u16 codes; compute ip_u_rot using cb shift at build time.
+                // Compute ip_u_rot from full codes, then pack to nibbles.
                 let mut ip_u_rot = 0.0f32;
                 for (&c, &ur) in qv.codes.iter().zip(u_rot.iter()) {
                     ip_u_rot += ur * (c as f32 + cb);
                 }
-                edge_codes.extend_from_slice(&qv.codes);
+
+                // Pack: two u16 codes per byte (each must fit in 4 bits for 4-bit RaBitQ).
+                // High nibble = even dimension, low nibble = odd dimension.
+                for j in 0..packed_dim {
+                    let hi = (qv.codes[j * 2] & 0x0F) as u8;
+                    let lo = if j * 2 + 1 < dim {
+                        (qv.codes[j * 2 + 1] & 0x0F) as u8
+                    } else {
+                        0
+                    };
+                    packed_codes.push((hi << 4) | lo);
+                }
 
                 edge_scalars.push(EdgeScalars {
                     f_add: qv.f_add,
@@ -498,7 +513,7 @@ impl SymphonyQGVRIndex {
         neighbor_offsets.push(edge_scalars.len() as u32);
 
         self.edge_scalars = edge_scalars;
-        self.edge_codes = edge_codes;
+        self.packed_codes = packed_codes;
         self.neighbor_offsets = neighbor_offsets;
         // rotated_flat is no longer needed -- drop it (was only for ip_u_rot precomputation)
         self.quantizer = Some(quantizer);
@@ -576,15 +591,16 @@ impl SymphonyQGVRIndex {
         let entry_dist = self.approx_dist_vr_entry(&rotated_query, current);
         let base_layer = &self.index.layers[0];
         let edge_scalars = &self.edge_scalars;
-        let edge_codes = &self.edge_codes;
+        let packed = &self.packed_codes;
         let neighbor_offsets = &self.neighbor_offsets;
+        let packed_dim = self.packed_dim;
         let cb = self.cb;
 
         let dist_fn = |parent_id: u32, _neighbor_id: u32, slot: usize| -> f32 {
             let offset = neighbor_offsets[parent_id as usize] as usize + slot;
             let scalars = &edge_scalars[offset];
-            let codes = &edge_codes[offset * dim..(offset + 1) * dim];
-            approx_dist_vr_u16(&rotated_query, codes, scalars, cb)
+            let codes = &packed[offset * packed_dim..(offset + 1) * packed_dim];
+            approx_dist_vr_packed(&rotated_query, codes, scalars, cb)
         };
 
         let results = crate::hnsw::search::greedy_search_layer_edge_aware(
@@ -657,18 +673,37 @@ impl SymphonyQGVRIndex {
     }
 }
 
-/// Approximate L2^2 from a globally-rotated query to vertex-relative edge codes.
+/// Approximate L2^2 from a globally-rotated query to packed 4-bit edge codes.
 ///
-/// Uses u16 codes with cb shift applied per-element. The compiler auto-vectorizes
-/// the inner loop on x86/ARM. Memory: 2 bytes/dim/edge (vs 4 for f32).
+/// Each byte holds two 4-bit code values (high nibble = even dim, low nibble = odd dim).
+/// Memory: 0.5 bytes/dim/edge. The unpack (shift + mask) is ~free compared to the multiply.
 ///
 /// Formula: `f_add + f_rescale * (IP(q_rot, codes + cb) - ip_u_rot_codes)`
 #[inline]
-fn approx_dist_vr_u16(rotated_query: &[f32], codes: &[u16], scalars: &EdgeScalars, cb: f32) -> f32 {
+fn approx_dist_vr_packed(
+    rotated_query: &[f32],
+    packed: &[u8],
+    scalars: &EdgeScalars,
+    cb: f32,
+) -> f32 {
     let mut ip = 0.0f32;
-    for (&q, &c) in rotated_query.iter().zip(codes.iter()) {
-        ip += q * (c as f32 + cb);
+    let dim = rotated_query.len();
+    let pairs = dim / 2;
+
+    // Process two dimensions per byte -- the hot loop.
+    for j in 0..pairs {
+        let byte = packed[j];
+        let c0 = (byte >> 4) as f32 + cb;
+        let c1 = (byte & 0x0F) as f32 + cb;
+        ip += rotated_query[j * 2] * c0 + rotated_query[j * 2 + 1] * c1;
     }
+    // Handle odd trailing dimension.
+    if dim % 2 != 0 {
+        let byte = packed[pairs];
+        let c0 = (byte >> 4) as f32 + cb;
+        ip += rotated_query[dim - 1] * c0;
+    }
+
     (scalars.f_add + scalars.f_rescale * (ip - scalars.ip_u_rot_codes)).max(0.0)
 }
 
