@@ -644,12 +644,12 @@ impl SymphonyQGVRIndex {
         // Precompute nibble LUT once per query (16 entries, 64 bytes, L1 cache).
         let lut = nibble_lut(self.cb);
 
+        let total_bits = self.total_bits;
         let dist_fn = |parent_id: u32, _neighbor_id: u32, slot: usize| -> f32 {
             let base_offset = neighbor_offsets[parent_id as usize] as usize;
             let offset = base_offset + slot;
 
-            // Prefetch codes for slot+2 to hide L2 cache latency (~100 cycles).
-            // At d=960, each edge = 480 bytes = 8 cache lines.
+            // Prefetch next edge's codes to hide L2 cache latency.
             if offset + 2 < edge_scalars.len() {
                 let ptr = packed.as_ptr().wrapping_add((offset + 2) * packed_dim);
                 crate::hnsw::search::prefetch_read_data(ptr as *const f32);
@@ -657,7 +657,11 @@ impl SymphonyQGVRIndex {
 
             let scalars = &edge_scalars[offset];
             let codes = &packed[offset * packed_dim..(offset + 1) * packed_dim];
-            approx_dist_vr_packed(&rotated_query, codes, scalars, &lut)
+            if total_bits >= 4 {
+                approx_dist_vr_packed(&rotated_query, codes, scalars, &lut)
+            } else {
+                approx_dist_vr_binary(&rotated_query, codes, scalars)
+            }
         };
 
         let results = crate::hnsw::search::greedy_search_layer_edge_aware(
@@ -822,6 +826,39 @@ impl VRMemoryReport {
     }
 }
 
+/// Pack quantized codes into bytes.
+/// - 4-bit (total_bits=4): 2 codes per byte (high nibble, low nibble).
+/// - 1-bit (total_bits=1): 8 codes per byte (MSB first).
+#[inline]
+fn pack_codes(codes: &[u16], total_bits: usize, dim: usize, out: &mut Vec<u8>) {
+    if total_bits >= 4 {
+        // 4-bit: two nibbles per byte
+        let pairs = (dim + 1) / 2;
+        for j in 0..pairs {
+            let hi = (codes[j * 2] & 0x0F) as u8;
+            let lo = if j * 2 + 1 < dim {
+                (codes[j * 2 + 1] & 0x0F) as u8
+            } else {
+                0
+            };
+            out.push((hi << 4) | lo);
+        }
+    } else {
+        // 1-bit: 8 bits per byte
+        let bytes = (dim + 7) / 8;
+        for j in 0..bytes {
+            let mut byte = 0u8;
+            for bit in 0..8 {
+                let idx = j * 8 + bit;
+                if idx < dim && codes[idx] != 0 {
+                    byte |= 1 << (7 - bit);
+                }
+            }
+            out.push(byte);
+        }
+    }
+}
+
 /// Precomputed nibble-to-f32 lookup table for 4-bit RaBitQ codes.
 /// Maps each nibble value (0-15) to `nibble as f32 + cb`.
 /// 16 entries * 4 bytes = 64 bytes -- fits in a cache line.
@@ -866,6 +903,35 @@ fn approx_dist_vr_packed(
         ip += rotated_query[dim - 1] * lut[(byte >> 4) as usize];
     }
 
+    (scalars.f_add + scalars.f_rescale * (ip - scalars.ip_u_rot_codes)).max(0.0)
+}
+
+/// Approximate L2^2 using 1-bit (binary) packed codes.
+///
+/// Each byte holds 8 sign bits. Code value is 0 or 1, cb = -0.5.
+/// The IP becomes: `sum(q[i] * (bit[i] - 0.5))` = `sum_positive - 0.5 * sum_all`
+/// where `sum_positive` sums q[i] for bits that are 1.
+#[inline]
+fn approx_dist_vr_binary(rotated_query: &[f32], packed: &[u8], scalars: &EdgeScalars) -> f32 {
+    let dim = rotated_query.len();
+    let mut sum_positive = 0.0f32;
+    let mut sum_all = 0.0f32;
+
+    for j in 0..packed.len() {
+        let byte = packed[j];
+        for bit in 0..8 {
+            let idx = j * 8 + bit;
+            if idx >= dim {
+                break;
+            }
+            let q = rotated_query[idx];
+            sum_all += q;
+            if byte & (1 << (7 - bit)) != 0 {
+                sum_positive += q;
+            }
+        }
+    }
+    let ip = sum_positive - 0.5 * sum_all;
     (scalars.f_add + scalars.f_rescale * (ip - scalars.ip_u_rot_codes)).max(0.0)
 }
 
