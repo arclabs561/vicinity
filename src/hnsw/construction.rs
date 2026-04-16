@@ -620,7 +620,6 @@ pub fn construct_graph_parallel(
         let batch_ids: Vec<usize> = (batch_start..batch_end).collect();
 
         // Phase 1: parallel neighbor search (read-only on graph).
-        // All vectors in this batch see the graph as it existed before the batch.
         let ep = global_entry_point;
         let ep_layer = global_entry_layer as usize;
         let search_results: Vec<SearchResult> = batch_ids
@@ -632,7 +631,6 @@ pub fn construct_graph_parallel(
         for result in search_results {
             commit_edges(index, &result, dist_fn);
 
-            // Update global entry point if this node reaches a new top layer.
             let current_layer = index.layer_assignments[result.current_id] as usize;
             if current_layer > (global_entry_layer as usize) {
                 global_entry_point = result.current_id as u32;
