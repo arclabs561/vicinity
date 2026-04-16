@@ -1156,7 +1156,7 @@ fn run_sq8u(
         let batch = std::env::var("VICINITY_BUILD_BATCH")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(256);
+            .unwrap_or(4096);
         index.build_parallel(batch)?;
     }
     #[cfg(not(feature = "parallel"))]
