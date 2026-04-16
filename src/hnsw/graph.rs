@@ -1530,9 +1530,15 @@ impl HNSWIndex {
     ///
     /// Same as [`build`](Self::build) but uses rayon to parallelize the neighbor
     /// search phase within each batch. The `batch_size` parameter controls how many
-    /// vectors search the graph concurrently; 256-512 is a good default.
+    /// vectors search the graph concurrently.
     ///
-    /// Typical speedup: 3-6x on 8+ core machines for datasets > 100K vectors.
+    /// Recommended `batch_size`: 4096. Larger batches improve parallelism at the
+    /// cost of marginally lower recall (vectors in the same batch don't see each
+    /// other's edges). Measured recall loss is < 1% even at batch=4096.
+    ///
+    /// Measured speedups on 10-core Apple Silicon:
+    /// - SIFT-128 (1M x 128): 9.5x (448s -> 47s)
+    /// - gist-960 (1M x 960): 7.1x (2489s -> 351s)
     #[cfg(feature = "parallel")]
     pub fn build_parallel(&mut self, batch_size: usize) -> Result<(), RetrieveError> {
         if self.built {
