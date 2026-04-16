@@ -688,6 +688,11 @@ impl SymphonyQGVRIndex {
         if !self.built || self.index.num_vectors == 0 {
             return Ok(Vec::new());
         }
+        if self.is_compacted() {
+            return Err(RetrieveError::InvalidParameter(
+                "search_reranked unavailable after compact() -- use search() instead".into(),
+            ));
+        }
 
         let pool = rerank_pool.max(k);
         let candidates = self.search_internal(query, pool, ef.max(pool))?;
@@ -709,11 +714,52 @@ impl SymphonyQGVRIndex {
     }
 
     /// Approximate distance for the entry point (no parent context).
-    /// Uses exact f32 distance as fallback since we don't have per-edge codes for entry.
     fn approx_dist_vr_entry(&self, _rotated_query: &[f32], _entry_id: u32) -> f32 {
-        // For the entry point we don't have a parent edge, so use a rough estimate.
-        // This is only used once per query, so exact distance is fine.
-        0.0 // Will be refined by the beam search immediately
+        0.0 // Refined by the beam search immediately
+    }
+
+    /// Drop f32 vectors to reclaim memory. After compaction, `search_reranked`
+    /// is unavailable -- only quantized `search` works.
+    ///
+    /// At d=960, 1M vectors, this saves 3.84 GB.
+    pub fn compact(&mut self) {
+        self.index.vectors.clear();
+        self.index.vectors.shrink_to_fit();
+    }
+
+    /// Whether vectors have been compacted (reranking unavailable).
+    pub fn is_compacted(&self) -> bool {
+        self.index.vectors.is_empty() && self.index.num_vectors > 0
+    }
+
+    /// Search multiple queries in parallel.
+    ///
+    /// Returns one result set per query. Requires the `parallel` feature.
+    #[cfg(feature = "parallel")]
+    pub fn search_batch(
+        &self,
+        queries: &[&[f32]],
+        k: usize,
+        ef: usize,
+    ) -> Result<Vec<Vec<(u32, f32)>>, RetrieveError> {
+        use rayon::prelude::*;
+        queries.par_iter().map(|q| self.search(q, k, ef)).collect()
+    }
+
+    /// Search + rerank multiple queries in parallel.
+    #[cfg(feature = "parallel")]
+    pub fn search_reranked_batch(
+        &self,
+        queries: &[&[f32]],
+        k: usize,
+        ef: usize,
+        rerank_pool: usize,
+    ) -> Result<Vec<Vec<(u32, f32)>>, RetrieveError> {
+        use rayon::prelude::*;
+        queries
+            .par_iter()
+            .map(|q| self.search_reranked(q, k, ef, rerank_pool))
+            .collect()
     }
 
     /// Number of indexed vectors.
