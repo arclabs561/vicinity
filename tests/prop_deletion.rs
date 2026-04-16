@@ -302,3 +302,55 @@ proptest! {
         );
     }
 }
+
+// ─── SQ8 property tests ─────────────────────────────────────────────────────
+
+// SQ8 quantization preserves ranking: reranked search recall is high.
+#[cfg(all(feature = "hnsw", feature = "sq8"))]
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(10))]
+
+    #[test]
+    fn prop_sq8_reranked_recall(
+        n in 100usize..500,
+        dim in prop::sample::select(vec![16, 32, 64, 128]),
+        seed in 1u64..10000,
+    ) {
+        use vicinity::distance::DistanceMetric;
+        use vicinity::hnsw::{HNSWParams, sq8u::HNSWSq8Index};
+
+        let vecs = random_vectors(n, dim, seed);
+
+        let params = HNSWParams {
+            metric: DistanceMetric::L2,
+            ..Default::default()
+        };
+        let mut index = HNSWSq8Index::with_params(dim, params).unwrap();
+        for (i, v) in vecs.iter().enumerate() {
+            index.add_slice(i as u32, v).unwrap();
+        }
+        index.build().unwrap();
+
+        let k = 10.min(n);
+        let query = &vecs[0];
+
+        // Brute-force ground truth
+        let mut gt: Vec<(u32, f32)> = vecs
+            .iter()
+            .enumerate()
+            .map(|(i, v)| (i as u32, vicinity::distance::l2_distance(query, v)))
+            .collect();
+        gt.sort_by(|a, b| a.1.total_cmp(&b.1));
+        let gt_ids: HashSet<u32> = gt.iter().take(k).map(|(id, _)| *id).collect();
+
+        let results = index.search_reranked(query, k, 64, 50).unwrap();
+        let result_ids: HashSet<u32> = results.iter().map(|(id, _)| *id).collect();
+
+        let recall = gt_ids.intersection(&result_ids).count() as f64 / k as f64;
+        prop_assert!(
+            recall >= 0.5,
+            "SQ8 reranked recall@{k} = {:.1}%, expected >= 50% (n={n}, dim={dim}, seed={seed})",
+            recall * 100.0,
+        );
+    }
+}
