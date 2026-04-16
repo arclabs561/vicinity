@@ -1,0 +1,6 @@
+{"algorithm":"sq8u","recall_at_10":0.9717,"qps":11438.4,"ef_search":10,"dataset":"fashion-mnist-784-euclidean","dim":784,"n_vectors":60000,"metric":"l2","git_sha":"8b33068","host":"charizard","timestamp":"2026-04-16T15:58:35Z"}
+{"algorithm":"sq8u","recall_at_10":0.9910,"qps":7845.7,"ef_search":20,"dataset":"fashion-mnist-784-euclidean","dim":784,"n_vectors":60000,"metric":"l2","git_sha":"8b33068","host":"charizard","timestamp":"2026-04-16T15:58:35Z"}
+{"algorithm":"sq8u","recall_at_10":0.9982,"qps":4677.9,"ef_search":50,"dataset":"fashion-mnist-784-euclidean","dim":784,"n_vectors":60000,"metric":"l2","git_sha":"8b33068","host":"charizard","timestamp":"2026-04-16T15:58:35Z"}
+{"algorithm":"sq8u","recall_at_10":0.9995,"qps":3094.1,"ef_search":100,"dataset":"fashion-mnist-784-euclidean","dim":784,"n_vectors":60000,"metric":"l2","git_sha":"8b33068","host":"charizard","timestamp":"2026-04-16T15:58:35Z"}
+{"algorithm":"sq8u","recall_at_10":0.9997,"qps":1915.8,"ef_search":200,"dataset":"fashion-mnist-784-euclidean","dim":784,"n_vectors":60000,"metric":"l2","git_sha":"8b33068","host":"charizard","timestamp":"2026-04-16T15:58:35Z"}
+{"algorithm":"sq8u","recall_at_10":1.0000,"qps":1172.2,"ef_search":400,"dataset":"fashion-mnist-784-euclidean","dim":784,"n_vectors":60000,"metric":"l2","git_sha":"8b33068","host":"charizard","timestamp":"2026-04-16T15:58:35Z"}
