@@ -643,13 +643,14 @@ impl SymphonyQGVRIndex {
         let packed = &self.packed_codes;
         let neighbor_offsets = &self.neighbor_offsets;
         let packed_dim = self.packed_dim;
-        let cb = self.cb;
+        // Precompute nibble LUT once per query (16 entries, 64 bytes, L1 cache).
+        let lut = nibble_lut(self.cb);
 
         let dist_fn = |parent_id: u32, _neighbor_id: u32, slot: usize| -> f32 {
             let offset = neighbor_offsets[parent_id as usize] as usize + slot;
             let scalars = &edge_scalars[offset];
             let codes = &packed[offset * packed_dim..(offset + 1) * packed_dim];
-            approx_dist_vr_packed(&rotated_query, codes, scalars, cb)
+            approx_dist_vr_packed(&rotated_query, codes, scalars, &lut)
         };
 
         let results = crate::hnsw::search::greedy_search_layer_edge_aware(
@@ -768,10 +769,23 @@ impl VRMemoryReport {
     }
 }
 
+/// Precomputed nibble-to-f32 lookup table for 4-bit RaBitQ codes.
+/// Maps each nibble value (0-15) to `nibble as f32 + cb`.
+/// 16 entries * 4 bytes = 64 bytes -- fits in a cache line.
+#[inline]
+fn nibble_lut(cb: f32) -> [f32; 16] {
+    let mut lut = [0.0f32; 16];
+    for i in 0..16 {
+        lut[i] = i as f32 + cb;
+    }
+    lut
+}
+
 /// Approximate L2^2 from a globally-rotated query to packed 4-bit edge codes.
 ///
-/// Each byte holds two 4-bit code values (high nibble = even dim, low nibble = odd dim).
-/// Memory: 0.5 bytes/dim/edge. The unpack (shift + mask) is ~free compared to the multiply.
+/// Uses a 16-entry nibble LUT (64 bytes, fits in L1) to avoid per-element
+/// u8->f32 conversion + cb addition. The hot loop is: load byte, two LUT
+/// lookups, two FMAs.
 ///
 /// Formula: `f_add + f_rescale * (IP(q_rot, codes + cb) - ip_u_rot_codes)`
 #[inline]
@@ -779,24 +793,24 @@ fn approx_dist_vr_packed(
     rotated_query: &[f32],
     packed: &[u8],
     scalars: &EdgeScalars,
-    cb: f32,
+    lut: &[f32; 16],
 ) -> f32 {
     let mut ip = 0.0f32;
     let dim = rotated_query.len();
     let pairs = dim / 2;
 
     // Process two dimensions per byte -- the hot loop.
+    // LUT lookups are branch-free and L1-resident.
     for j in 0..pairs {
         let byte = packed[j];
-        let c0 = (byte >> 4) as f32 + cb;
-        let c1 = (byte & 0x0F) as f32 + cb;
+        let c0 = lut[(byte >> 4) as usize];
+        let c1 = lut[(byte & 0x0F) as usize];
         ip += rotated_query[j * 2] * c0 + rotated_query[j * 2 + 1] * c1;
     }
     // Handle odd trailing dimension.
     if dim % 2 != 0 {
         let byte = packed[pairs];
-        let c0 = (byte >> 4) as f32 + cb;
-        ip += rotated_query[dim - 1] * c0;
+        ip += rotated_query[dim - 1] * lut[(byte >> 4) as usize];
     }
 
     (scalars.f_add + scalars.f_rescale * (ip - scalars.ip_u_rot_codes)).max(0.0)
