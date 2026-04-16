@@ -608,7 +608,6 @@ impl SymphonyQGVRIndex {
             .map_err(|e| RetrieveError::InvalidParameter(format!("rotate query: {e}")))?;
 
         let (entry_point, entry_layer) = self.index.entry_point().unwrap_or((0, 0));
-        let dim = self.dimension;
 
         // Upper layers: greedy descent with global-centroid codes (fallback).
         // For upper layers we don't have per-edge codes, so use exact f32 distance.
