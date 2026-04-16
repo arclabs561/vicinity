@@ -1151,10 +1151,26 @@ fn run_sq8u(
         index.add_slice(i as u32, v)?;
     }
     let t0 = Instant::now();
-    index.build()?;
+    #[cfg(feature = "parallel")]
+    {
+        let batch = std::env::var("VICINITY_BUILD_BATCH")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(256);
+        index.build_parallel(batch)?;
+    }
+    #[cfg(not(feature = "parallel"))]
+    {
+        index.build()?;
+    }
     println!("{:.0}s", t0.elapsed().as_secs_f64());
 
     // Reranked search: sweep ef with rerank_pool = ef
+    let algo_name = if cfg!(feature = "parallel") {
+        "sq8u-par"
+    } else {
+        "sq8u"
+    };
     for ef in [10, 20, 50, 100, 200, 400] {
         let (recall, qps) = measure_sq8u_reranked(&index, test, gt, k, ef, ef);
         println!(
@@ -1162,7 +1178,7 @@ fn run_sq8u(
             recall * 100.0,
             qps
         );
-        append_jsonl_ef("sq8u", recall, qps, Some(ef))?;
+        append_jsonl_ef(algo_name, recall, qps, Some(ef))?;
     }
     Ok(())
 }
