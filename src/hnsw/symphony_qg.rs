@@ -767,6 +767,7 @@ impl SymphonyQGVRIndex {
     }
 
     /// Approximate distance for the entry point (no parent context).
+    #[allow(dead_code)]
     fn approx_dist_vr_entry(&self, _rotated_query: &[f32], _entry_id: u32) -> f32 {
         0.0 // Refined by the beam search immediately
     }
