@@ -720,6 +720,52 @@ impl SymphonyQGVRIndex {
     pub fn inner(&self) -> &HNSWIndex {
         &self.index
     }
+
+    /// Memory usage breakdown in bytes.
+    pub fn memory_usage_bytes(&self) -> VRMemoryReport {
+        let vectors = self.index.vectors.len() * 4;
+        let codes = self.packed_codes.len();
+        let scalars = self.edge_scalars.len() * std::mem::size_of::<EdgeScalars>();
+        let offsets = self.neighbor_offsets.len() * 4;
+        let graph = self
+            .index
+            .layers
+            .iter()
+            .map(|l| l.len() * 16 * 4) // rough: nodes * avg_degree * u32
+            .sum::<usize>();
+        VRMemoryReport {
+            vectors_bytes: vectors,
+            packed_codes_bytes: codes,
+            edge_scalars_bytes: scalars,
+            graph_bytes: graph,
+            offsets_bytes: offsets,
+        }
+    }
+}
+
+/// Memory breakdown for [`SymphonyQGVRIndex`].
+pub struct VRMemoryReport {
+    /// f32 vectors (for reranking).
+    pub vectors_bytes: usize,
+    /// Packed 4-bit edge codes.
+    pub packed_codes_bytes: usize,
+    /// Per-edge correction scalars.
+    pub edge_scalars_bytes: usize,
+    /// HNSW graph structure.
+    pub graph_bytes: usize,
+    /// Neighbor offset table.
+    pub offsets_bytes: usize,
+}
+
+impl VRMemoryReport {
+    /// Total bytes.
+    pub fn total(&self) -> usize {
+        self.vectors_bytes
+            + self.packed_codes_bytes
+            + self.edge_scalars_bytes
+            + self.graph_bytes
+            + self.offsets_bytes
+    }
 }
 
 /// Approximate L2^2 from a globally-rotated query to packed 4-bit edge codes.
