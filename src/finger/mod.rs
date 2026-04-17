@@ -10,7 +10,7 @@
 //! # Feature Flag
 //!
 //! ```toml
-//! vicinity = { version = "0.3", features = ["finger"] }
+//! vicinity = { version = "0.5", features = ["finger"] }
 //! ```
 //!
 //! # Quick Start
