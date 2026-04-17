@@ -496,17 +496,12 @@ impl SymphonyQGVRIndex {
 
         let packed_dim = self.packed_dim;
         let total_bits = self.total_bits;
-        let cb = self.cb;
 
-        // Per-node edge quantization. Each node's edges are independent.
-        // Collect (scalars, packed_bytes) per node, then flatten.
-        // `zero_centroid` short-circuits qntz's cross-space bias term: its
-        // compute_correction_factors dots `raw_centroid` (unrotated) with
-        // `xu_cb` (rotated-space codes), contaminating f_add with -f_rescale*<u, xu_cb>
-        // when a nonzero centroid is passed. Since we already feed R*(v-u) as the
-        // rotated residual, the centroid role is absorbed there; passing zero keeps
-        // f_add clean at ||v-u||^2.
-        let zero_centroid = vec![0.0f32; dim];
+        // Per-node edge quantization using qntz's type-safe edge API.
+        // `quantize_edge_prerotated` bakes in `<R*u, xu_cb>` and enforces the
+        // zero-centroid contract that makes `f_add = ||v-u||^2` a decomposable
+        // term, so adding external `||q-u||^2` at search time yields an
+        // absolute cross-parent-comparable distance.
         let quantize_node = |node_id: u32| -> Result<(Vec<EdgeScalars>, Vec<u8>), RetrieveError> {
             let neighbors = base_layer.get_neighbors(node_id);
             let u_rot = &rotated_flat[node_id as usize * dim..(node_id as usize + 1) * dim];
@@ -523,21 +518,16 @@ impl SymphonyQGVRIndex {
                     .zip(u_rot.iter())
                     .map(|(&v, &u)| v - u)
                     .collect();
-                let qv = quantizer
-                    .quantize_prerotated(&rotated_residual, &zero_centroid)
+                let edge = quantizer
+                    .quantize_edge_prerotated(u_rot, &rotated_residual)
                     .map_err(|e| RetrieveError::InvalidParameter(format!("quantize edge: {e}")))?;
 
-                let mut ip_u_rot = 0.0f32;
-                for (&c, &ur) in qv.codes.iter().zip(u_rot.iter()) {
-                    ip_u_rot += ur * (c as f32 + cb);
-                }
-
-                pack_codes(&qv.codes, total_bits, dim, &mut codes);
+                pack_codes(&edge.quantized.codes, total_bits, dim, &mut codes);
 
                 scalars.push(EdgeScalars {
-                    f_add: qv.f_add,
-                    f_rescale: qv.f_rescale,
-                    ip_u_rot_codes: ip_u_rot,
+                    f_add: edge.quantized.f_add,
+                    f_rescale: edge.quantized.f_rescale,
+                    ip_u_rot_codes: edge.ip_parent_rot_codes,
                 });
             }
             Ok((scalars, codes))

@@ -4,7 +4,7 @@
 //!
 //! Requires the `vamana` feature:
 //! ```toml
-//! vicinity = { version = "0.5", features = ["vamana"] }
+//! vicinity = { version = "0.6", features = ["vamana"] }
 //! ```
 //!
 //! Vamana is a graph-based ANN algorithm that uses two-pass construction with

@@ -1,6 +1,6 @@
 [package]
 name = "vicinity"
-version = "0.5.0"
+version = "0.6.0"
 authors = ["Arc <attobop@gmail.com>"]
 edition = "2021"
 rust-version = "1.89"
@@ -57,7 +57,7 @@ rmt = { version = "0.1.2", optional = true }
 sketchir = { version = "0.3.1", optional = true }
 
 # Vector quantization primitives (extracted from `vicinity`)
-qntz = { package = "qntz", version = "0.1.6", optional = true, features = [
+qntz = { package = "qntz", version = "0.1.8", optional = true, features = [
   "simd",
 ] }
 
