@@ -63,7 +63,7 @@
 
 use crate::distance::FloatOrd;
 use crate::RetrieveError;
-use qntz::rabitq::{QuantizedVector, RaBitQConfig, RaBitQQuantizer};
+use qntz::rabitq::{RaBitQConfig, RaBitQQuantizer};
 
 /// IVF-RaBitQ parameters.
 #[derive(Clone, Debug)]
@@ -90,12 +90,19 @@ impl Default for IVFRaBitQParams {
 }
 
 /// A cluster (inverted list) storing RaBitQ-quantized residual vectors.
+///
+/// Vectors are quantized via qntz's edge API: each `v` is stored as an
+/// [`EdgeQuantizedVector`](qntz::rabitq::EdgeQuantizedVector) whose "parent"
+/// is the cluster centroid. At search time the caller adds the per-cluster
+/// `||q - cluster_c||^2` to each edge term, yielding an absolute distance
+/// that is consistent across clusters (and therefore rankable against other
+/// probed clusters in a shared heap).
 #[derive(Debug)]
 struct Cluster {
     /// Indices into the global vector array (insertion order).
     vector_indices: Vec<u32>,
-    /// RaBitQ-quantized residuals for each vector in this cluster.
-    quantized: Vec<QuantizedVector>,
+    /// Edge-quantized residuals (`v - cluster_c`) for each vector in this cluster.
+    quantized: Vec<qntz::rabitq::EdgeQuantizedVector>,
 }
 
 /// IVF-RaBitQ index.
@@ -256,21 +263,37 @@ impl IVFRaBitQIndex {
             cluster_indices[cluster_idx].push(vector_idx as u32);
         }
 
-        // Stage 3: quantize residuals per cluster
+        // Stage 3: quantize residuals per cluster via qntz's typed edge API.
+        // Each cluster centroid plays the role of `parent` in VR; baking
+        // `<R*cluster_c, xu_cb>` into the edge lets search form an absolute
+        // `||q - v||^2` that is comparable across probed clusters.
         self.clusters = Vec::with_capacity(num_clusters);
         for (cluster_idx, indices) in cluster_indices.into_iter().enumerate() {
             let centroid = self.get_centroid(cluster_idx).to_vec();
+            let centroid_rot = self.quantizer.rotate_query(&centroid).map_err(|e| {
+                RetrieveError::InvalidParameter(format!("RaBitQ rotate centroid: {e}"))
+            })?;
             let mut quantized = Vec::with_capacity(indices.len());
 
             for &vector_idx in &indices {
                 let vec = self.get_vector(vector_idx as usize);
-                let qv = self
+                // R*(v - c) via O(d) subtraction of the pre-rotated views.
+                let vec_rot = self
                     .quantizer
-                    .quantize_with_centroid(vec, &centroid)
+                    .rotate_query(vec)
+                    .map_err(|e| RetrieveError::InvalidParameter(format!("RaBitQ rotate: {e}")))?;
+                let residual_rot: Vec<f32> = vec_rot
+                    .iter()
+                    .zip(centroid_rot.iter())
+                    .map(|(a, b)| a - b)
+                    .collect();
+                let edge = self
+                    .quantizer
+                    .quantize_edge_prerotated(&centroid_rot, &residual_rot)
                     .map_err(|e| {
                         RetrieveError::InvalidParameter(format!("RaBitQ quantize: {e}"))
                     })?;
-                quantized.push(qv);
+                quantized.push(edge);
             }
 
             self.clusters.push(Cluster {
@@ -350,15 +373,32 @@ impl IVFRaBitQIndex {
         let mut heap: std::collections::BinaryHeap<(FloatOrd, u32)> =
             std::collections::BinaryHeap::with_capacity(rerank_size + 1);
 
-        for (cluster_idx, _centroid_dist) in &cluster_distances {
+        for (cluster_idx, _coarse_dist) in &cluster_distances {
             let cluster = &self.clusters[*cluster_idx];
             if cluster.vector_indices.is_empty() {
                 continue;
             }
 
-            for (i, qv) in cluster.quantized.iter().enumerate() {
-                // Use squared distance directly -- sqrt is monotone so ranking is preserved.
-                let dist = RaBitQQuantizer::approximate_l2_sqr_prerotated(&rotated_query, qv);
+            // `rotated_query` is R*q (quantizer has no centroid set, so
+            // rotate_query does not subtract one). edge_distance_term_prerotated
+            // expects exactly that. Add ||q - cluster_c||^2 to compose a true
+            // absolute distance comparable across probed clusters.
+            //
+            // `_coarse_dist` from find_nearest_centroids is cosine distance
+            // (or HNSW-metric distance), not guaranteed to be L2-squared, so
+            // we recompute ||q - c||^2 directly here. One O(d) op per probed
+            // cluster is cheap relative to the per-vector edge loop below.
+            let cluster_centroid = self.get_centroid(*cluster_idx);
+            let q_c_sqr: f32 = query
+                .iter()
+                .zip(cluster_centroid.iter())
+                .map(|(a, b)| (a - b) * (a - b))
+                .sum();
+
+            for (i, edge) in cluster.quantized.iter().enumerate() {
+                let edge_term =
+                    RaBitQQuantizer::edge_distance_term_prerotated(&rotated_query, edge);
+                let dist = q_c_sqr + edge_term;
                 let vec_idx = cluster.vector_indices[i];
 
                 if heap.len() < rerank_size {
@@ -410,10 +450,11 @@ impl IVFRaBitQIndex {
             .clusters
             .iter()
             .flat_map(|c| &c.quantized)
-            .map(|qv| {
-                qv.binary_codes.len()
-                    + qv.extended_codes.len()
-                    + qv.codes.len() * std::mem::size_of::<u16>()
+            .map(|edge| {
+                edge.quantized.binary_codes.len()
+                    + edge.quantized.extended_codes.len()
+                    + edge.quantized.codes.len() * std::mem::size_of::<u16>()
+                    + std::mem::size_of::<f32>() // ip_parent_rot_codes per edge
             })
             .sum();
 
