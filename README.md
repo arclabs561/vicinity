@@ -3,26 +3,12 @@
 [![crates.io](https://img.shields.io/crates/v/vicinity.svg)](https://crates.io/crates/vicinity)
 [![docs.rs](https://docs.rs/vicinity/badge.svg)](https://docs.rs/vicinity)
 
-Approximate nearest-neighbor search. Supports 23 index algorithms
-(HNSW, Vamana/DiskANN, IVF-PQ, NSW, filtered search, sparse vectors)
-with quantized variants for high-dimensional data. Each algorithm is a
-separate feature flag -- depend on only what you use.
+Approximate nearest-neighbor search. Each algorithm is a separate
+feature flag -- depend on only what you use.
 
-Default distance is cosine. L2, angular, and inner product are also
-available via `DistanceMetric`:
-
-```rust
-use vicinity::hnsw::HNSWIndex;
-use vicinity::DistanceMetric;
-
-let index = HNSWIndex::builder(128)
-    .metric(DistanceMetric::L2)
-    .build()?;
-```
-
-For cosine distance, enable `auto_normalize` to L2-normalize vectors on
-insert -- this prevents the most common recall issue (un-normalized vectors
-with cosine distance).
+Default distance is cosine. L2, angular, and inner product via
+`DistanceMetric`. For cosine, enable `auto_normalize` to L2-normalize
+on insert.
 
 ## Which index?
 
