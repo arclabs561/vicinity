@@ -14,7 +14,7 @@
 //! # Feature Flag
 //!
 //! ```toml
-//! vicinity = { version = "0.3", features = ["filtered_graph"] }
+//! vicinity = { version = "0.5", features = ["filtered_graph"] }
 //! ```
 //!
 //! # Quick Start
