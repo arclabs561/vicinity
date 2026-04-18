@@ -1,0 +1,98 @@
+name: publish-pypi
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type 'publish' to publish wheels + sdist to PyPI"
+        required: true
+        default: "dry-run"
+permissions:
+  id-token: write
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Guard
+        run: |
+          if [ "${{ inputs.confirm }}" != "publish" ]; then
+            echo "Refusing to publish: set workflow input confirm=publish"
+            exit 1
+          fi
+
+  build-wheels:
+    needs: guard
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            platform: manylinux
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            platform: manylinux
+          - os: macos-14
+            target: aarch64-apple-darwin
+            platform: macosx
+          - os: macos-13
+            target: x86_64-apple-darwin
+            platform: macosx
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            platform: windows
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist --features "hnsw,python,parallel"
+          manylinux: ${{ matrix.platform == 'manylinux' && '2_28' || 'auto' }}
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.platform }}-${{ matrix.target }}
+          path: dist/*.whl
+          if-no-files-found: error
+
+  build-sdist:
+    needs: guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build sdist
+        uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
+      - name: Upload sdist
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    needs: [build-wheels, build-sdist]
+    runs-on: ubuntu-latest
+    environment: pypi
+    steps:
+      - name: Gather dist artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish to PyPI (trusted publishing)
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist
