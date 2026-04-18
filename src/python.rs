@@ -280,8 +280,11 @@ impl PyHNSWIndex {
 }
 
 /// Register the Python module.
+///
+/// The module name (`_core`) must match the last path segment of
+/// `module-name` in `pyproject.toml` (`pyvicinity._core`).
 #[pymodule]
-fn _vicinity(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyDistanceMetric>()?;
     m.add_class::<PyHNSWIndex>()?;
     Ok(())

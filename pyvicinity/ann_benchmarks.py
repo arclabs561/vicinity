@@ -1,11 +1,11 @@
-"""ann-benchmarks / big-ann-benchmarks BaseANN wrapper for vicinity.
+"""ann-benchmarks / big-ann-benchmarks BaseANN wrapper for pyvicinity.
 
 Usage with ann-benchmarks:
-    Copy or symlink this into ann_benchmarks/algorithms/vicinity/module.py
+    Copy or symlink this into ann_benchmarks/algorithms/pyvicinity/module.py
     and create the corresponding config.yml and Dockerfile.
 
 Standalone usage:
-    from vicinity.ann_benchmarks import VicinityHNSW
+    from pyvicinity.ann_benchmarks import VicinityHNSW
     algo = VicinityHNSW("cosine", {"M": 16, "efConstruction": 200})
     algo.fit(train_vectors)
     algo.set_query_arguments(100)  # ef_search
@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from vicinity._vicinity import DistanceMetric, HNSWIndex
+from pyvicinity._core import DistanceMetric, HNSWIndex
 
 
 class VicinityHNSW:

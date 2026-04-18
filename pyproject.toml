@@ -3,11 +3,11 @@ requires = ["maturin>=1.9.4,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "vicinity"
+name = "pyvicinity"
 dynamic = ["version"]
 requires-python = ">=3.9"
 dependencies = ["numpy"]
-description = "Approximate nearest-neighbor search"
+description = "Multi-algorithm approximate nearest-neighbor search (Rust-backed)"
 license = { text = "MIT OR Apache-2.0" }
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -16,6 +16,10 @@ classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",
 ]
+
+[project.urls]
+Homepage = "https://github.com/arclabs561/vicinity"
+Source = "https://github.com/arclabs561/vicinity"
 
 [project.optional-dependencies]
 ann-benchmarks = ["h5py"]
@@ -27,5 +31,6 @@ target-version = "py39"
 select = ["E", "F", "UP", "B", "SIM", "I"]
 
 [tool.maturin]
-module-name = "vicinity._vicinity"
+module-name = "pyvicinity._core"
 features = ["pyo3/extension-module", "python"]
+python-source = "."
