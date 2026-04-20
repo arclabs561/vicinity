@@ -1,4 +1,15 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, dead_code)]
+#![cfg(all(
+    feature = "hnsw",
+    feature = "nsg",
+    feature = "emg",
+    feature = "finger",
+    feature = "pipnn",
+    feature = "vamana",
+    feature = "ivf_pq",
+    feature = "ivf_rabitq",
+    feature = "fresh_graph"
+))]
 //! Brute-force recall tests for algorithms that previously lacked ground-truth coverage.
 //!
 //! Each test builds an index from normalized random vectors, searches with held-out

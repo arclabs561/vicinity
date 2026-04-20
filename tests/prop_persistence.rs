@@ -1,3 +1,5 @@
+#![cfg(all(feature = "hnsw", feature = "persistence"))]
+
 //! Property-based tests for HNSW persistence roundtrips.
 //!
 //! Verifies the "KeyedVectors separation" principle: external doc_ids survive
