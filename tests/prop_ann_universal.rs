@@ -1,3 +1,17 @@
+#![cfg(all(
+    feature = "hnsw",
+    feature = "nsw",
+    feature = "diskann",
+    feature = "emg",
+    feature = "finger",
+    feature = "fresh_graph",
+    feature = "ivf_rabitq",
+    feature = "nsg",
+    feature = "pipnn",
+    feature = "sng",
+    feature = "vamana"
+))]
+
 //! Universal ANN property tests across all algorithms.
 //!
 //! Every ANN index must satisfy these invariants regardless of implementation:

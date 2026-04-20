@@ -1,3 +1,5 @@
+#![cfg(all(feature = "hnsw", feature = "vamana"))]
+
 //! Property tests for Wolverine++ deletion and seeded RNG reproducibility.
 //!
 //! Properties tested:

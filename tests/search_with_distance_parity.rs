@@ -1,3 +1,5 @@
+#![cfg(feature = "hnsw")]
+
 //! Test: does search_with_distance() give the same results as search()?
 //!
 //! This test is ADSampling-independent. It verifies that the two HNSW

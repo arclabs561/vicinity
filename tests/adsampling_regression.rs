@@ -1,3 +1,5 @@
+#![cfg(feature = "hnsw")]
+
 //! Regression tests for ADSampling.
 //!
 //! These tests encode specific bugs and edge cases found during development.

@@ -1,4 +1,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, dead_code)]
+#![cfg(all(
+    feature = "hnsw",
+    feature = "ivf_pq",
+    feature = "ivf_avq",
+    feature = "nsw"
+))]
 //! Correctness regression tests for fixed algorithm bugs.
 //!
 //! - IVF-PQ: metric consistency (cosine on normalized vectors)
