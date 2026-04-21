@@ -1,5 +1,15 @@
 // Crate-level lint configuration
 #![warn(missing_docs)]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::needless_update,
+        clippy::needless_range_loop,
+        clippy::useless_vec
+    )
+)]
 
 //! vicinity: Approximate Nearest Neighbor Search primitives.
 //!

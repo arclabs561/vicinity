@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::needless_update)]
 //! Multi-algorithm GloVe-25 benchmark — outputs JSONL for plot_comparison.py.
 //!
 //! ```bash
@@ -20,8 +21,6 @@
 //! # Output appended to docs/glove-25-angular.jsonl; regenerate plot with:
 //! # uv run scripts/plot_comparison.py docs/glove-25-angular.jsonl
 //! ```
-
-#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
