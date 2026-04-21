@@ -4,7 +4,7 @@
     feature = "diskann",
     feature = "sng"
 ))]
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::needless_update)]
 //! Cross-algorithm consistency tests.
 //!
 //! Verifies that all graph-based ANN algorithms (HNSW, NSW, DiskANN, SNG)

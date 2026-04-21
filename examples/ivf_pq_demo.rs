@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::needless_update)]
 //! IVF-PQ: Inverted File with Product Quantization
 //!
 //! The workhorse of billion-scale search. Combines two ideas:

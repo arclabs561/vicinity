@@ -265,8 +265,8 @@ mod enabled {
         }
     }
 
-    pub use FsDirectory as PublicFsDirectory;
-    pub use MemoryDirectory as PublicMemoryDirectory;
+    pub use self::FsDirectory as PublicFsDirectory;
+    pub use self::MemoryDirectory as PublicMemoryDirectory;
 }
 
 #[cfg(feature = "persistence")]

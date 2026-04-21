@@ -401,7 +401,7 @@ impl SymphonyQGVRIndex {
         let cb = -((1u32 << ex_bits) as f32 - 0.5);
         // Packing: codes_per_byte = 8 / total_bits. For binary: 8. For 4-bit: 2.
         let codes_per_byte = 8 / total_bits.max(1);
-        let packed_dim = (dimension + codes_per_byte - 1) / codes_per_byte;
+        let packed_dim = dimension.div_ceil(codes_per_byte);
         Ok(Self {
             index,
             edge_scalars: Vec::new(),
@@ -882,7 +882,7 @@ impl VRMemoryReport {
 fn pack_codes(codes: &[u16], total_bits: usize, dim: usize, out: &mut Vec<u8>) {
     if total_bits >= 4 {
         // 4-bit: two nibbles per byte
-        let pairs = (dim + 1) / 2;
+        let pairs = dim.div_ceil(2);
         for j in 0..pairs {
             let hi = (codes[j * 2] & 0x0F) as u8;
             let lo = if j * 2 + 1 < dim {
@@ -894,7 +894,7 @@ fn pack_codes(codes: &[u16], total_bits: usize, dim: usize, out: &mut Vec<u8>) {
         }
     } else {
         // 1-bit: 8 bits per byte
-        let bytes = (dim + 7) / 8;
+        let bytes = dim.div_ceil(8);
         for j in 0..bytes {
             let mut byte = 0u8;
             for bit in 0..8 {
@@ -914,8 +914,8 @@ fn pack_codes(codes: &[u16], total_bits: usize, dim: usize, out: &mut Vec<u8>) {
 #[inline]
 fn nibble_lut(cb: f32) -> [f32; 16] {
     let mut lut = [0.0f32; 16];
-    for i in 0..16 {
-        lut[i] = i as f32 + cb;
+    for (i, slot) in lut.iter_mut().enumerate() {
+        *slot = i as f32 + cb;
     }
     lut
 }
@@ -947,7 +947,7 @@ fn approx_dist_vr_packed(
         ip += rotated_query[j * 2] * c0 + rotated_query[j * 2 + 1] * c1;
     }
     // Handle odd trailing dimension.
-    if dim % 2 != 0 {
+    if !dim.is_multiple_of(2) {
         let byte = packed[pairs];
         ip += rotated_query[dim - 1] * lut[(byte >> 4) as usize];
     }
@@ -966,8 +966,7 @@ fn approx_dist_vr_binary(rotated_query: &[f32], packed: &[u8], scalars: &EdgeSca
     let mut sum_positive = 0.0f32;
     let mut sum_all = 0.0f32;
 
-    for j in 0..packed.len() {
-        let byte = packed[j];
+    for (j, &byte) in packed.iter().enumerate() {
         for bit in 0..8 {
             let idx = j * 8 + bit;
             if idx >= dim {

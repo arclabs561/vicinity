@@ -1,4 +1,5 @@
 #![cfg(all(feature = "hnsw", feature = "vamana"))]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::needless_update)]
 
 //! Property tests for Wolverine++ deletion and seeded RNG reproducibility.
 //!
@@ -8,7 +9,7 @@
 //! 3. Graph integrity after deletion: no edges to deleted nodes
 //! 4. Recall doesn't collapse after moderate deletion (< 50%)
 
-#![allow(clippy::unwrap_used, clippy::expect_used, dead_code, unused_imports)]
+#![allow(dead_code, unused_imports)]
 
 #[path = "common/mod.rs"]
 mod common;

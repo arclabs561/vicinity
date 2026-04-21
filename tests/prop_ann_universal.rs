@@ -11,6 +11,7 @@
     feature = "sng",
     feature = "vamana"
 ))]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::needless_update)]
 
 //! Universal ANN property tests across all algorithms.
 //!
@@ -25,7 +26,7 @@
 //! Each algorithm is tested across multiple parameterizations (varying n, dim,
 //! connectivity, seeds) via proptest.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, unused_imports, dead_code)]
+#![allow(unused_imports, dead_code)]
 
 #[path = "common/mod.rs"]
 mod common;

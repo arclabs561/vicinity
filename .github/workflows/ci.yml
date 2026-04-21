@@ -26,11 +26,9 @@ jobs:
       - name: Check formatting
         run: cargo fmt --check
       - name: Clippy (hnsw)
-        run: cargo clippy --no-default-features --features hnsw --all-targets -- -D clippy::correctness
+        run: cargo clippy --no-default-features --features hnsw --all-targets -- -D warnings
       - name: Clippy (all features)
-        run: cargo clippy --all-features --all-targets -- -D clippy::correctness
-        env:
-          RUSTFLAGS: "" # don't escalate pre-existing warnings in feature-gated code to errors
+        run: cargo clippy --all-features --all-targets -- -D warnings
       - name: Build
         run: cargo build --no-default-features --features hnsw
       - name: Test (unit + integration)

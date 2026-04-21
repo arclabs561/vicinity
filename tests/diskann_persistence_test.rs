@@ -1,5 +1,5 @@
 #![cfg(feature = "diskann")]
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::needless_update)]
 //! Integration test for DiskANN persistence.
 //!
 //! Tests the full cycle: build -> save -> load -> search
