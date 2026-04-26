@@ -1,6 +1,6 @@
 //! RaBitQ: Randomized Binary Quantization
 //!
-//! RaBitQ achieves state-of-the-art compression without training data.
+//! RaBitQ achieves 32x compression with no training data.
 //! The key insight: random orthogonal rotation makes quantization error predictable.
 //!
 //! # Why Random Rotation Works

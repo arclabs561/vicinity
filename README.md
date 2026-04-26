@@ -4,7 +4,7 @@
 [![docs.rs](https://docs.rs/vicinity/badge.svg)](https://docs.rs/vicinity)
 
 Approximate nearest-neighbor search. Each algorithm is a separate
-feature flag -- depend on only what you use.
+feature flag. Depend on only what you use.
 
 Default distance is cosine. L2, angular, and inner product via
 `DistanceMetric`. For cosine, enable `auto_normalize` to L2-normalize
@@ -22,7 +22,7 @@ Which index?
 └── Sparse vectors: SparseMIPS
 ```
 
-For high-dimensional data (d ≥ 256), prefer SQ4U or SymphonyQG over plain HNSW — quantized
+For high-dimensional data (d ≥ 256), prefer SQ4U or SymphonyQG over plain HNSW. Quantized
 graph traversal reduces distance computation cost. At low dimensions (d ≤ 25), plain HNSW
 wins; quantization overhead outweighs savings.
 
@@ -41,7 +41,7 @@ vicinity = { version = "0.6", features = ["hnsw"] }          # graph index
 
 ### HNSW
 
-High recall, in-memory. Best default choice.
+High recall, in-memory. Default index.
 
 ```rust
 use vicinity::hnsw::HNSWIndex;
@@ -92,7 +92,7 @@ See [`examples/06_save_and_load.rs`](examples/06_save_and_load.rs) for a full ex
 
 ## Benchmark
 
-GloVe-25 (1.18M vectors, 25-d, cosine), Apple Silicon, single-threaded:
+GloVe-25 (1.18M vectors, 25-d, angular distance), Apple Silicon, single-threaded:
 
 <p align="center">
   <img src="docs/plots/algorithm_comparison_glove-25-angular.png" width="680" alt="Recall vs QPS on GloVe-25" />
@@ -123,7 +123,7 @@ Each algorithm has a named feature flag:
 | SymphonyQG | `hnsw` + `ivf_rabitq` | HNSW with RaBitQ quantized graph traversal; cheap approximate beam search + exact rerank |
 | NSW | `nsw` | Flat small-world graph; competitive with HNSW on high-d data |
 | Vamana | `vamana` | DiskANN-style robust pruning; fast search, higher build time |
-| NSG | `nsg` | Monotonic RNG pruning; 50K cap due to O(n) ensure_connectivity |
+| NSG | `nsg` | Monotonic RNG pruning; build slows above ~50K vectors due to O(n) ensure_connectivity |
 | EMG | `emg` | Multi-scale graph with alpha-pruning |
 | FINGER | `finger` | Projection-based distance lower bounds for search pruning |
 | PiPNN | `pipnn` | Partition-then-refine with HashPrune; reduces I/O during build |
@@ -152,10 +152,10 @@ See [docs.rs](https://docs.rs/vicinity) for the full API.
 
 ## Documentation
 
-- **[User guide](docs/GUIDE.md)** -- quick start, distance metrics, LID, common pitfalls
-- **[Benchmarks](docs/benchmark-results.md)** -- recall/QPS tables across datasets
-- **[ANN landscape](docs/landscape.md)** -- algorithmic principles, math foundations, research context
-- **[References](docs/references.md)** -- bibliography for every algorithm in the crate
+- [User guide](docs/GUIDE.md): quick start, distance metrics, LID, common pitfalls
+- [Benchmarks](docs/benchmark-results.md): recall/QPS tables across datasets
+- [ANN landscape](docs/landscape.md): algorithmic principles, math foundations, research context
+- [References](docs/references.md): bibliography for every algorithm in the crate
 
 ## License
 

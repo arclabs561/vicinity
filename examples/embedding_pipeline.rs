@@ -31,7 +31,7 @@ const DIM: usize = 64;
 /// Mock embedding function.
 ///
 /// Hashes each word and scatters contributions across dimensions, then
-/// normalizes. Texts sharing words produce similar vectors -- enough to
+/// normalizes. Texts sharing words produce similar vectors: enough to
 /// demonstrate the retrieval pattern without a real model.
 fn embed(text: &str, dim: usize) -> Vec<f32> {
     let mut v = vec![0.0_f32; dim];
