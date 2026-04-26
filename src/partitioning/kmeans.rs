@@ -1,8 +1,8 @@
 //! k-means clustering wrappers around `clump`.
 //!
 //! Two variants:
-//! - [`KMeans`] — cosine distance, for partitioning normalized vectors (IVF-PQ, IVF-AVQ coarse).
-//! - `KMeansEuclidean` — L2 distance, for clustering residual vectors (IVF-AVQ PQ codebooks).
+//! - [`KMeans`]: cosine distance, for partitioning normalized vectors (IVF-PQ, IVF-AVQ coarse).
+//! - `KMeansEuclidean`: L2 distance, for clustering residual vectors (IVF-AVQ PQ codebooks).
 //!
 //! All computation is delegated to `clump`. This module provides the same public API
 //! that vicinity's partitioning and IVF-PQ code expects (SoA flat-buffer input, mutable
