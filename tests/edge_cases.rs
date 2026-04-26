@@ -340,3 +340,117 @@ fn k_equals_n() {
         n
     );
 }
+
+// =============================================================================
+// External-label-id round-trip edge cases
+//
+// vicinity returns the user-provided `doc_id` directly via
+// `doc_id_to_internal: HashMap<u32, usize>`. A regression that returned the
+// internal slot index instead of the external `doc_id` would be silently
+// wrong. These tests pin the external-id contract at the high end of the u32
+// range, where a wraparound or off-by-one is most likely to surface.
+// =============================================================================
+
+#[test]
+fn search_returns_external_doc_ids_at_high_offset() {
+    let dim = 16;
+    let mut hnsw = HNSWIndex::new(dim, 16, 16).expect("Failed to create");
+
+    let offset: u32 = u32::MAX - 200;
+    let n: u32 = 100;
+
+    // Deterministic vectors via a simple LCG so the test does not depend on
+    // a thread-local RNG.
+    let mut state: u64 = 0xCAFE_F00D_DEAD_BEEF;
+    let mut next_f32 = || -> f32 {
+        state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+        ((state >> 33) as f32) / (u32::MAX as f32) - 0.5
+    };
+
+    for i in 0..n {
+        let v: Vec<f32> = (0..dim).map(|_| next_f32()).collect();
+        let v = normalize(&v);
+        hnsw.add(offset.wrapping_add(i), v)
+            .expect("add at high offset should succeed");
+    }
+    hnsw.build().expect("Failed to build");
+
+    let query: Vec<f32> = (0..dim).map(|_| next_f32()).collect();
+    let query = normalize(&query);
+    let results = hnsw.search(&query, 5, 50).expect("Search failed");
+
+    assert!(!results.is_empty(), "should return some results");
+    for (id, _dist) in &results {
+        assert!(
+            *id >= offset,
+            "got id {} below offset {}; likely returning internal slot index instead of external doc_id",
+            id,
+            offset
+        );
+        // Also ensure the id is one we actually inserted.
+        assert!(
+            id.wrapping_sub(offset) < n,
+            "id {} is past the inserted range [{}, {}]",
+            id,
+            offset,
+            offset.wrapping_add(n)
+        );
+    }
+}
+
+// =============================================================================
+// Degenerate query edge cases
+//
+// `src/hnsw/graph.rs:1406` documents that zero vectors are accepted under
+// `auto_normalize` ("degenerate but valid"). Without `auto_normalize`, the
+// search path normalizes the query in cosine mode and divides by the norm.
+// A zero query is a 0/0 path; the contract is "either reject explicitly or
+// return finite distances", not panic.
+// =============================================================================
+
+#[test]
+fn zero_query_does_not_panic_with_auto_normalize() {
+    let dim = 16;
+    let mut hnsw = HNSWIndex::builder(dim)
+        .m(16)
+        .ef_search(50)
+        .auto_normalize(true)
+        .build()
+        .expect("Failed to build builder");
+
+    // Populate with normal data.
+    let mut state: u64 = 1;
+    let mut next_f32 = || -> f32 {
+        state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+        ((state >> 33) as f32) / (u32::MAX as f32) - 0.5
+    };
+    for i in 0..50u32 {
+        let v: Vec<f32> = (0..dim).map(|_| next_f32()).collect();
+        hnsw.add_slice(i, &v).expect("add should succeed");
+    }
+    hnsw.build().expect("Failed to build");
+
+    // The all-zero query.
+    let zero = vec![0.0_f32; dim];
+    let result = hnsw.search(&zero, 5, 50);
+
+    match result {
+        Ok(r) => {
+            // If the search succeeded, every distance must be finite; the
+            // contract bans NaN/Inf escaping back to the caller even on a
+            // 0/0 normalization path.
+            for (id, dist) in &r {
+                assert!(
+                    dist.is_finite(),
+                    "doc_id {} returned non-finite distance {}",
+                    id,
+                    dist
+                );
+            }
+        }
+        Err(_) => {
+            // Explicit rejection is also a valid contract; documenting the
+            // path is acceptable.
+        }
+    }
+}
