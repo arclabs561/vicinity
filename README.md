@@ -139,12 +139,14 @@ Each algorithm has a named feature flag:
 | ESG | `esg` | Range-filtered search over numeric attributes |
 | SparseMIPS | `sparse_mips` | Graph index for sparse vectors (SPLADE/BM25) |
 | LEMUR | `lemur` | Late-interaction retrieval (multi-vector MIPS); inference-only |
+| LSH | `lsh` | Cross-Polytope LSH (Andoni et al. 2015); single hash table + multiprobe |
+| LsmIndex | `hnsw` | LSM-tree tiered HNSW for streaming insert/delete/update workloads |
 | DiskANN | `diskann` | Vamana + SSD I/O layout; experimental |
 | SNG | `sng` | Small navigable graph; O(n^2) construction |
 | DEG | `hnsw` | Density-adaptive edge budgets (submodule of hnsw); O(n^2) |
-| KD-Tree | `kdtree` | Exact NN; fast for d <= 20 |
-| Ball Tree | `balltree` | Exact NN; slightly better than KD-Tree for d=20-50 |
-| RP-Forest | `rptree` | Approximate; fast build, moderate recall |
+| KD-Tree | `kdtree` | Exact NN; fast for d <= 20 (experimental) |
+| Ball Tree | `balltree` | Exact NN; slightly better than KD-Tree for d=20-50 (experimental) |
+| RP-Forest | `rptree` | Approximate; fast build, moderate recall (experimental) |
 
 Quantization: RaBitQ, SAQ (`quantization` feature, via `qntz` crate). PQ is part of `ivf_pq`.
 
