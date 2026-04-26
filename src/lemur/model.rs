@@ -2,23 +2,23 @@
 //!
 //! Architecture: `psi(x) = LayerNorm(GELU(W'x + b))`
 //!
-//! W' is [hidden_dim x input_dim], b is [hidden_dim].
+//! W' has shape `[hidden_dim, input_dim]`, b has shape `[hidden_dim]`.
 //! The outer linear layer W is only used during training (for OLS targets)
 //! and is not needed at inference.
 
 /// Two-layer MLP encoder.
 ///
 /// Loads pre-trained weights and runs the forward pass for query/document
-/// token encoding. No training support -- train externally (e.g., PyTorch)
+/// token encoding. No training support: train externally (e.g., PyTorch)
 /// and load the weights.
 pub struct LemurEncoder {
-    /// Weight matrix W': [hidden_dim x input_dim], row-major.
+    /// Weight matrix W' of shape `[hidden_dim, input_dim]`, row-major.
     w: Vec<f32>,
-    /// Bias vector b: [hidden_dim].
+    /// Bias vector b of shape `[hidden_dim]`.
     b: Vec<f32>,
-    /// LayerNorm gamma (scale): [hidden_dim].
+    /// LayerNorm gamma (scale) of shape `[hidden_dim]`.
     ln_gamma: Vec<f32>,
-    /// LayerNorm beta (shift): [hidden_dim].
+    /// LayerNorm beta (shift) of shape `[hidden_dim]`.
     ln_beta: Vec<f32>,
     /// Input dimension.
     input_dim: usize,
@@ -32,10 +32,10 @@ impl LemurEncoder {
     /// # Arguments
     /// * `input_dim` - Token embedding dimension
     /// * `hidden_dim` - MLP hidden dimension (d', typically 2048)
-    /// * `w` - Weight matrix [hidden_dim x input_dim], row-major
-    /// * `b` - Bias vector [hidden_dim]
-    /// * `ln_gamma` - LayerNorm scale [hidden_dim]
-    /// * `ln_beta` - LayerNorm shift [hidden_dim]
+    /// * `w` - Weight matrix of shape `[hidden_dim, input_dim]`, row-major
+    /// * `b` - Bias vector of shape `[hidden_dim]`
+    /// * `ln_gamma` - LayerNorm scale of shape `[hidden_dim]`
+    /// * `ln_beta` - LayerNorm shift of shape `[hidden_dim]`
     pub fn new(
         input_dim: usize,
         hidden_dim: usize,
