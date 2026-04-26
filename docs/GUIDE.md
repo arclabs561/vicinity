@@ -7,21 +7,23 @@ Approximate nearest neighbor search and local intrinsic dimensionality.
 ```rust
 use vicinity::hnsw::HNSWIndex;
 
-// 1. Create index
-let mut index = HNSWIndex::new(768, 16, 32)?;
+// 1. Create index (builder is the recommended path)
+let mut index = HNSWIndex::builder(768).m(16).ef_search(50).build()?;
 
 // 2. Add vectors
 for (id, vec) in embeddings.iter().enumerate() {
-    index.add(id as u32, vec.clone())?;
+    index.add_slice(id as u32, &vec)?;
 }
 index.build()?;
 
-// 3. Search
-let results = index.search(&query, 10, 50)?;  // k=10, ef=50
+// 3. Search (k=10, ef=50)
+let results = index.search(&query, 10, 50)?;
 for (id, distance) in results {
     println!("{}: {:.3}", id, 1.0 - distance);  // similarity
 }
 ```
+
+(`HNSWIndex::new(dim, m, m_max)` is also exposed for callers that prefer the direct constructor.)
 
 Run the example: `cargo run --example hnsw_benchmark --release`
 
@@ -133,11 +135,16 @@ println!("LID: {:.1}", estimate.lid);
 
 ### Outlier Detection
 
-```rust
-use vicinity::lid::LidCategory;
+`LidEstimate` itself does not carry a category. To classify a point, build a `LidStats`
+summary across many estimates and call `categorize(lid)`:
 
-// High LID = sparse region = potential outlier
-if estimate.category == LidCategory::Sparse {
+```rust
+use vicinity::lid::{LidCategory, LidStats};
+
+// Compute estimates for the dataset, then summarize.
+let stats = LidStats::from_estimates(&estimates);
+
+if stats.categorize(estimate.lid) == LidCategory::Sparse {
     println!("Point is in a sparse region");
 }
 ```
