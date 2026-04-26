@@ -2635,7 +2635,7 @@ impl HNSWIndex {
     /// Use this to build auxiliary data structures (ADSampling rotation, quantization
     /// codes) that are indexed by internal node ID.
     ///
-    /// Prefer [`raw_vectors()`](Self::raw_vectors) — this is a legacy alias.
+    /// Prefer [`raw_vectors()`](Self::raw_vectors); this is a legacy alias.
     #[must_use]
     pub fn vectors_raw(&self) -> &[f32] {
         self.raw_vectors()

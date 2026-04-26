@@ -163,7 +163,7 @@ impl PyHNSWIndex {
     ///     ef: Search width (overrides default ef_search if provided).
     ///
     /// Returns:
-    ///     Tuple of ``(ids, distances)`` — both 1-D arrays of length k.
+    ///     Tuple of ``(ids, distances)``: both 1-D arrays of length k.
     #[pyo3(signature = (query, k, ef=None))]
     fn search<'py>(
         &self,
@@ -200,7 +200,7 @@ impl PyHNSWIndex {
     ///     ef: Search width (overrides default ef_search if provided).
     ///
     /// Returns:
-    ///     Tuple of ``(ids, distances)`` — both 2-D arrays of shape ``(nq, k)``.
+    ///     Tuple of ``(ids, distances)``: both 2-D arrays of shape ``(nq, k)``.
     #[pyo3(signature = (queries, k, ef=None))]
     fn batch_search<'py>(
         &self,
