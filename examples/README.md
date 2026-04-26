@@ -93,7 +93,7 @@ datasets are smaller but still useful for algorithm comparison.
 
 ## Advanced (Research Implementations)
 
-Recent research algorithms. Useful for understanding state-of-the-art.
+Recent research algorithms. Useful for understanding ongoing work in graph-based ANN.
 
 | Example | Algorithm | Paper |
 |---------|-----------|-------|

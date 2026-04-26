@@ -1,7 +1,7 @@
 # ANN Algorithmic Landscape
 
 How approximate nearest neighbor search works, why it works, and where
-the field is heading. This document is canonical -- updated as the
+the field is heading. This document is canonical: updated as the
 landscape evolves, not time-stamped.
 
 For the bibliography, see [references.md](references.md).
@@ -15,7 +15,7 @@ For benchmark numbers, see [benchmark-results.md](benchmark-results.md).
 
 Exact nearest neighbor search in high dimensions is intractable. The
 Delaunay graph (the perfect proximity structure) degenerates to a
-complete graph in high dimensions -- degree grows as $2^{\Theta(d)}$.
+complete graph in high dimensions; degree grows as $2^{\Theta(d)}$.
 Every ANN method is an approximation strategy for avoiding this while
 preserving enough navigational structure for greedy search to converge.
 
@@ -32,7 +32,7 @@ Every design decision in graph-based ANN traces back to MSPs:
 | Concern | MSP connection |
 |---------|---------------|
 | Construction quality | How many MSPs exist (SNG occlusion count) |
-| Search efficiency | MSP lengths -- $O(\log n)$ if the graph is navigable |
+| Search efficiency | MSP lengths: $O(\log n)$ if the graph is navigable |
 | Deletion difficulty | How many MSPs are destroyed (Wolverine) |
 | Disk layout quality | How many MSP edges share a page (MARGO) |
 | Quantization quality | Whether approximate distances preserve MSP traversal |
@@ -66,7 +66,7 @@ concentrate around $\pm 1/\sqrt{D}$, and why rounding to those values
 loses surprisingly little information.
 
 **Consequence for quantization**: $O(1/\sqrt{D})$ total error from 1-bit
-quantization -- matching the Alon-Klartag information-theoretic lower
+quantization, matching the Alon-Klartag information-theoretic lower
 bound. Higher dimensions need *fewer* bits per dimension for the same
 accuracy.
 
@@ -82,17 +82,17 @@ For any $\varepsilon \in (0,1)$ and $n$ points in $\mathbb{R}^d$, there
 exists a map $f: \mathbb{R}^d \to \mathbb{R}^k$ with
 $k = O(\varepsilon^{-2} \ln n)$ preserving all pairwise distances within
 $(1 \pm \varepsilon)$. The target dimension depends only on $\ln n$ and
-$\varepsilon$ -- not on $d$. This is why random projections work for
+$\varepsilon$, not on $d$. This is why random projections work for
 modern high-dimensional embeddings.
 
 On manifolds with bounded curvature and reach, the target dimension
 improves to $k = O(d^* \ln(n\tau\kappa/\varepsilon) / \varepsilon^2)$
-where $d^*$ is intrinsic dimension -- much smaller than $\ln n$ when
+where $d^*$ is intrinsic dimension, much smaller than $\ln n$ when
 the data has low-dimensional structure.
 
 ### Capacity-law failure
 
-HNSW doesn't degrade gracefully -- it fails abruptly. At approximately
+HNSW doesn't degrade gracefully. It fails abruptly. At approximately
 $k \approx 2\text{-}3.5 \times \text{efSearch}$, search undergoes
 discontinuous breakdown: neighbor distances explode, geometric structure
 collapses completely. Below the threshold, results are geometrically
@@ -140,7 +140,7 @@ codebooks; random rotation performs surprisingly well (concentration
 balances variance across subspaces).
 
 **RaBitQ**: 1-bit/dim via random rotation + hypercube projection.
-32x compression. Error $O(1/\sqrt{D})$ -- provably optimal (matches
+32x compression. Error $O(1/\sqrt{D})$, provably optimal (matches
 Alon-Klartag). Distance reduces to binary dot product + popcount
 (single-cycle on modern CPUs via AVX512-VPOPCNTDQ or SVE).
 
@@ -164,8 +164,8 @@ dominates hyperplane LSH.
 
 **LSH sensitivity bounds**: Log-convexity of noise stability (Fourier
 analysis on the Boolean hypercube) gives tight $\rho \geq 1/c$ for
-data-independent LSH. Data-dependent LSH achieves $\rho \leq 1/(2c-1)$
--- the gap quantifies the value of adaptation.
+data-independent LSH. Data-dependent LSH achieves $\rho \leq 1/(2c-1)$;
+the gap quantifies the value of adaptation.
 
 **PCNN**: Reframes multiprobe LSH as polar code decoding. Single hash
 table outperforms multiple-table classical LSH. Opens a design space
@@ -243,13 +243,13 @@ As $\delta \to 1$, it contracts (efficiency, sparse graph).
 
 **Key lemma**: For $w \in \text{Occ}_\delta(u,v)$ and query $q$
 satisfying $d(q,v) < \delta \cdot d(q,u)$: $d(q,w) < d(q,u)$.
-Proof uses only triangle inequality and inner product geometry -- no
+Proof uses only triangle inequality and inner product geometry; no
 distributional assumptions.
 
 ### Voronoi collapse in high dimensions
 
 The Voronoi diagram of $n$ points in $\mathbb{R}^d$ has complexity
-$\Theta(n^{\lceil d/2 \rceil})$ -- exponential in dimension. The
+$\Theta(n^{\lceil d/2 \rceil})$, exponential in dimension. The
 Delaunay graph (dual) degenerates to a complete graph for uniform points.
 This is the fundamental reason the entire ANN field exists.
 
@@ -268,7 +268,7 @@ Tight for data-independent LSH. Data-dependent achieves $1/(2c-1)$.
 
 ITCS 2025: proving superpolynomial lower bounds on k-NN representation
 complexity would require a circuit complexity breakthrough (P vs NP
--adjacent). We may be unable to prove current methods are near-optimal --
+-adjacent). We may be unable to prove current methods are near-optimal,
 but this also means undiscovered improvements may exist.
 
 ---

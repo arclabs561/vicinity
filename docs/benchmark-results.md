@@ -4,9 +4,9 @@ Machine: Apple Silicon (M-series), single-threaded, `--release`.
 SIMD: `innr` (pure Rust SIMD, default feature).
 QPS: sequential single-query throughput (queries / wall-clock seconds). 50-query warmup.
 
-## GloVe-25 (1.18M vectors, 25-d, cosine)
+## GloVe-25 (1.18M vectors, 25-d, angular distance)
 
-Ground truth: brute-force cosine k-NN on L2-normalized vectors.
+Ground truth: brute-force k-NN on L2-normalized vectors (angular ≡ cosine for unit vectors).
 
 ### Summary
 

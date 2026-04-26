@@ -6,7 +6,7 @@
 //!
 //! The data contains 4 "topics" with 5 near-duplicate vectors each. The query
 //! overlaps all topics, so raw retrieval returns results sorted by distance
-//! alone -- often clustering same-topic items together. MMR reshuffles the
+//! alone, often clustering same-topic items together. MMR reshuffles the
 //! list to ensure cross-topic coverage early in the ranking.
 //!
 //! ```bash

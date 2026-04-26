@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::needless_update)]
-//! Multi-algorithm GloVe-25 benchmark — outputs JSONL for plot_comparison.py.
+//! Multi-algorithm GloVe-25 benchmark. Outputs JSONL for plot_comparison.py.
 //!
 //! ```bash
 //! # All algorithms
