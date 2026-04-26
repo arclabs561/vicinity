@@ -3322,6 +3322,92 @@ mod tests {
         }
     }
 
+    /// Companion to `test_delete_with_repair_maintains_recall`.
+    ///
+    /// The original test asserts the right *count* of results comes back and
+    /// that deleted IDs are absent. It does NOT verify recall against ground
+    /// truth on the surviving IDs. This test does:
+    ///
+    /// 1. Generate the same 200 deterministic vectors used by `build_test_index`.
+    /// 2. Compute the brute-force top-`k` cosine neighbors of the query among
+    ///    the surviving IDs `40..200`.
+    /// 3. Run the HNSW search after deletion.
+    /// 4. Assert the overlap (recall) between the brute-force ground truth and
+    ///    the HNSW results is at least 0.7. The threshold is conservative for
+    ///    a 200-node graph; the relevant signal is "no recall cliff", not "near 1.0".
+    #[test]
+    fn test_delete_with_repair_recall_floor_against_ground_truth() {
+        let dim = 32usize;
+        let n = 200u32;
+        let deleted_count = 40u32;
+        let k = 10usize;
+        let ef = 100usize;
+        let recall_floor = 0.7f32;
+
+        // Reproduce the exact vector generation used by build_test_index().
+        let mut seed: u64 = 42;
+        let mut next = || -> f32 {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            ((seed >> 33) as f32) / (u32::MAX as f32) - 0.5
+        };
+        let mut vectors: Vec<Vec<f32>> = Vec::with_capacity(n as usize);
+        for _ in 0..n {
+            let mut v: Vec<f32> = (0..dim).map(|_| next()).collect();
+            let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+            if norm > 0.0 {
+                v.iter_mut().for_each(|x| *x /= norm);
+            }
+            vectors.push(v);
+        }
+        // Same query construction as build_test_index().
+        let mut q: Vec<f32> = (0..dim).map(|_| next()).collect();
+        let qnorm = q.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if qnorm > 0.0 {
+            q.iter_mut().for_each(|x| *x /= qnorm);
+        }
+
+        // Brute-force ground truth on the surviving IDs only.
+        let mut ground: Vec<(u32, f32)> = (deleted_count..n)
+            .map(|i| {
+                let v = &vectors[i as usize];
+                // 1 - dot product = cosine distance for unit vectors.
+                let dot: f32 = q.iter().zip(v.iter()).map(|(a, b)| a * b).sum();
+                (i, 1.0 - dot)
+            })
+            .collect();
+        ground.sort_by(|a, b| a.1.total_cmp(&b.1));
+        let truth_ids: std::collections::HashSet<u32> =
+            ground.iter().take(k).map(|(id, _)| *id).collect();
+
+        // Build the index and apply the same deletions as the count test above.
+        let mut index = HNSWIndex::new(dim, 16, 32).unwrap();
+        for (i, v) in vectors.iter().enumerate() {
+            index.add(i as u32, v.clone()).unwrap();
+        }
+        index.build().unwrap();
+        for i in 0..deleted_count {
+            index.delete_with_repair(i).unwrap();
+        }
+
+        // Recall = |hnsw_topk ∩ truth_topk| / k.
+        let results = index.search(&q, k, ef).unwrap();
+        assert_eq!(results.len(), k, "search should return k results");
+        let hits = results
+            .iter()
+            .filter(|(id, _)| truth_ids.contains(id))
+            .count();
+        let recall = hits as f32 / k as f32;
+        assert!(
+            recall >= recall_floor,
+            "post-delete recall@{}={:.2} fell below floor {:.2}; deleted_count={}, n={}",
+            k,
+            recall,
+            recall_floor,
+            deleted_count,
+            n
+        );
+    }
+
     #[test]
     fn test_delete_with_repair_entry_point() {
         let (mut index, q) = build_test_index();
