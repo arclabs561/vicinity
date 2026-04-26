@@ -102,11 +102,13 @@ Simple, fast to load, no dependencies.
 
 ### HDF5 (ann-benchmarks)
 
-Standard format with train/test/neighbors groups. Requires hdf5 feature.
+Standard format with train/test/neighbors groups. vicinity does not include
+an HDF5 reader; convert downloaded `.hdf5` files to the binary format first
+with `scripts/download_ann_benchmarks.py`:
 
-```rust
-// Enable HDF5 support
-// Cargo.toml: vicinity = { features = ["hdf5"] }
+```sh
+uv run scripts/download_ann_benchmarks.py glove-25-angular
+# writes data/ann-benchmarks/glove-25-angular/{train,test,neighbors}.bin
 ```
 
 ## Recommendations by Task
