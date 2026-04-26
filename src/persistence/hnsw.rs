@@ -8,6 +8,7 @@
 
 use crate::persistence::directory::Directory;
 use crate::persistence::error::PersistenceResult;
+use crate::persistence::format::{FORMAT_VERSION, HNSW_SEGMENT_MAGIC};
 use std::io::{Read, Write};
 
 #[cfg(feature = "hnsw")]
@@ -133,9 +134,21 @@ impl HNSWSegmentWriter {
         params_file.write_all(&[if index.params.auto_normalize { 1 } else { 0 }])?;
         params_file.flush()?;
 
-        // Write metadata
+        // Write metadata.
+        //
+        // Layout (v1):
+        //   [0..8]   HNSW_SEGMENT_MAGIC  (8 bytes, "VCNHNSW\x01")
+        //   [8..12]  FORMAT_VERSION      (u32 LE)
+        //   [12..16] dimension           (u32 LE)
+        //   [16..20] num_vectors         (u32 LE)
+        //   [20]     is_built            (u8 flag)
+        //
+        // Legacy v0 (vicinity 0.6.x): no magic/version prefix; the first 4
+        // bytes are the dimension u32.
         let metadata_path = format!("{}/metadata.bin", segment_dir);
         let mut metadata_file = self.directory.create_file(&metadata_path)?;
+        metadata_file.write_all(&HNSW_SEGMENT_MAGIC)?;
+        metadata_file.write_all(&FORMAT_VERSION.to_le_bytes())?;
         metadata_file.write_all(&(index.dimension as u32).to_le_bytes())?;
         metadata_file.write_all(&(index.num_vectors as u32).to_le_bytes())?;
         metadata_file.write_all(&[if index.is_built() { 1 } else { 0 }])?;
@@ -159,22 +172,75 @@ pub struct HNSWSegmentReader {
 #[cfg(feature = "hnsw")]
 impl HNSWSegmentReader {
     /// Load an HNSW segment from disk.
+    ///
+    /// Supports two on-disk layouts:
+    ///
+    /// - **v1** (vicinity 0.7+): `metadata.bin` starts with `HNSW_SEGMENT_MAGIC` (8 bytes)
+    ///   followed by `FORMAT_VERSION` (u32 LE), then `dimension`, `num_vectors`, `is_built`.
+    ///
+    /// - **v0** (vicinity 0.6.x legacy): no magic/version prefix; the file starts directly
+    ///   with `dimension` (u32 LE), `num_vectors` (u32 LE), `is_built` (u8).
+    ///
+    /// If the first 8 bytes match the magic but the version exceeds [`FORMAT_VERSION`], an
+    /// error is returned immediately. If the first 8 bytes don't match the magic, v0 decode
+    /// is attempted using the first 4 bytes as the dimension field. If that also produces
+    /// unreasonable values, a `PersistenceError::Format` is returned.
     pub fn load(directory: Box<dyn Directory>, segment_id: u64) -> PersistenceResult<Self> {
         let segment_dir = format!("segments/segment_hnsw_{}", segment_id);
 
-        // Load metadata
+        // Load metadata -- detect magic to distinguish v1 from legacy v0.
         let metadata_path = format!("{}/metadata.bin", segment_dir);
         let mut metadata_file = directory.open_file(&metadata_path)?;
-        let mut dim_bytes = [0u8; 4];
-        let mut num_vec_bytes = [0u8; 4];
-        let mut built_byte = [0u8; 1];
-        metadata_file.read_exact(&mut dim_bytes)?;
-        metadata_file.read_exact(&mut num_vec_bytes)?;
-        metadata_file.read_exact(&mut built_byte)?;
 
-        let dimension = u32::from_le_bytes(dim_bytes) as usize;
-        let num_vectors = u32::from_le_bytes(num_vec_bytes) as usize;
-        let built = built_byte[0] != 0;
+        // Read the first 8 bytes to check for the magic marker.
+        let mut magic_buf = [0u8; 8];
+        metadata_file.read_exact(&mut magic_buf)?;
+
+        let (dimension, num_vectors, built) = if magic_buf == HNSW_SEGMENT_MAGIC {
+            // v1 file: read FORMAT_VERSION, then the three metadata fields.
+            let mut version_bytes = [0u8; 4];
+            metadata_file.read_exact(&mut version_bytes)?;
+            let version = u32::from_le_bytes(version_bytes);
+            if version > FORMAT_VERSION {
+                return Err(crate::persistence::error::PersistenceError::Format(
+                    format!("unsupported format version {version}, expected {FORMAT_VERSION}"),
+                ));
+            }
+
+            let mut dim_bytes = [0u8; 4];
+            let mut num_vec_bytes = [0u8; 4];
+            let mut built_byte = [0u8; 1];
+            metadata_file.read_exact(&mut dim_bytes)?;
+            metadata_file.read_exact(&mut num_vec_bytes)?;
+            metadata_file.read_exact(&mut built_byte)?;
+            (
+                u32::from_le_bytes(dim_bytes) as usize,
+                u32::from_le_bytes(num_vec_bytes) as usize,
+                built_byte[0] != 0,
+            )
+        } else {
+            // Possible v0 (legacy, no magic).
+            //
+            // v0 layout: dimension (u32 LE) | num_vectors (u32 LE) | is_built (u8).
+            // The first 4 bytes of magic_buf are the dimension; bytes 4..8 are num_vectors.
+            // We read one more byte for the is_built flag.
+            //
+            // NOTE: If this produces unreasonable values (caught below by the size guards),
+            // we propagate a Format error rather than guessing further.
+            let dim_bytes: [u8; 4] = [magic_buf[0], magic_buf[1], magic_buf[2], magic_buf[3]];
+            let num_vec_bytes: [u8; 4] = [magic_buf[4], magic_buf[5], magic_buf[6], magic_buf[7]];
+            let mut built_byte = [0u8; 1];
+            if metadata_file.read_exact(&mut built_byte).is_err() {
+                return Err(crate::persistence::error::PersistenceError::Format(
+                    "bad magic and legacy decode failed: file too short for v0 header".into(),
+                ));
+            }
+            (
+                u32::from_le_bytes(dim_bytes) as usize,
+                u32::from_le_bytes(num_vec_bytes) as usize,
+                built_byte[0] != 0,
+            )
+        };
 
         // Guard against crafted files that claim enormous sizes.
         const MAX_VECTORS: usize = 100_000_000; // 100M vectors
