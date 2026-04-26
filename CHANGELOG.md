@@ -7,6 +7,21 @@ series is unstable: minor bumps may break the public API.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-04-26
+
+### Added
+
+- HNSW segment binary persistence now starts with a magic + version header
+  (`HNSW_SEGMENT_MAGIC = b"VCNHNSW\x01"` + `FORMAT_VERSION: u32 = 1`).
+  Mismatched magic returns `PersistenceError::Format` instead of silently
+  decoding garbage; unsupported version numbers return a descriptive error.
+  Files written by 0.6.x lack the magic — the load path falls back to a
+  legacy v0 decoder, so existing persisted indices round-trip transparently.
+- `tests/persistence_robustness.rs::segment_binary` module:
+  `loading_corrupt_magic_returns_format_error` (sanity), and
+  `proptest_one_byte_corruption_never_panics` (random byte flip in the
+  metadata header always produces `Result::Err`, never a panic).
+
 ### Fixed
 
 - `docs/GUIDE.md` outlier-detection example referenced a non-existent

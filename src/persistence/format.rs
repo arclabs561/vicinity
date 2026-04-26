@@ -1,6 +1,24 @@
 //! Persistence format types.
 //!
-//! Contains serializable entry types used by the WAL subsystem.
+//! Contains serializable entry types used by the WAL subsystem, and binary
+//! format constants for the HNSW segment persistence path.
+
+// ---------------------------------------------------------------------------
+// HNSW segment binary format constants
+// ---------------------------------------------------------------------------
+
+/// Magic bytes prepended to `metadata.bin` in HNSW segments written by
+/// vicinity 0.7+.
+///
+/// Files written by 0.6.x have no magic; the loader recognises legacy files
+/// by the absence of this marker and applies the v0 decode path.
+pub const HNSW_SEGMENT_MAGIC: [u8; 8] = *b"VCNHNSW\x01";
+
+/// Format version stored as a little-endian u32 immediately after the magic.
+///
+/// Increment this when the on-disk layout changes in a backward-incompatible
+/// way. The loader rejects files whose version exceeds this constant.
+pub const FORMAT_VERSION: u32 = 1;
 
 /// Graph-level WAL entries for streaming HNSW updates.
 ///

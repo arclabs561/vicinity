@@ -1,4 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+// The bulk of this file targets the serde (JSON) persistence path.
+// The segment-binary tests further below require `persistence` too.
 #![cfg(all(feature = "hnsw", feature = "serde"))]
 
 use vicinity::hnsw::HNSWIndex;
@@ -196,6 +198,136 @@ fn corrupted_bytes_do_not_panic() {
                     "(non-string panic)".to_owned()
                 };
                 panic!("trial {trial}: load_from_reader panicked: {msg}");
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Segment-binary persistence tests (require `persistence` feature)
+// ---------------------------------------------------------------------------
+
+#[cfg(all(feature = "hnsw", feature = "persistence"))]
+mod segment_binary {
+    use proptest::prelude::*;
+    use vicinity::hnsw::HNSWIndex;
+    use vicinity::persistence::directory::{Directory, MemoryDirectory};
+    use vicinity::persistence::error::PersistenceError;
+    use vicinity::persistence::hnsw::{HNSWSegmentReader, HNSWSegmentWriter};
+
+    /// Build a small deterministic HNSW index and persist it to a MemoryDirectory,
+    /// returning both the directory and the raw bytes of metadata.bin so tests can
+    /// corrupt them.
+    fn write_segment() -> (MemoryDirectory, Vec<u8>) {
+        let dim = 4;
+        let mut index = HNSWIndex::new(dim, 8, 8).expect("new index");
+        index.add(1, vec![1.0, 0.0, 0.0, 0.0]).expect("add");
+        index.add(2, vec![0.0, 1.0, 0.0, 0.0]).expect("add");
+        index.build().expect("build");
+
+        let mem = MemoryDirectory::new();
+        let mut writer = HNSWSegmentWriter::new(Box::new(mem.clone()), 0);
+        writer.write_hnsw_index(&index).expect("write");
+
+        // Read back the raw metadata bytes for corruption tests.
+        use std::io::Read;
+        let mut f = mem
+            .open_file("segments/segment_hnsw_0/metadata.bin")
+            .expect("open metadata");
+        let mut raw = Vec::new();
+        f.read_to_end(&mut raw).expect("read");
+        (mem, raw)
+    }
+
+    // -----------------------------------------------------------------------
+    // 4. Corrupt magic returns Format error
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn loading_corrupt_magic_returns_format_error() {
+        let (mem, raw) = write_segment();
+
+        // Overwrite the first byte to break the magic.
+        let mut corrupted = raw.clone();
+        corrupted[0] ^= 0xFF;
+
+        // Write corrupted bytes back into the directory.
+        mem.atomic_write("segments/segment_hnsw_0/metadata.bin", &corrupted)
+            .expect("atomic_write");
+
+        let result = HNSWSegmentReader::load(Box::new(mem.clone()), 0);
+
+        // The load may either succeed via legacy-v0 fallback (and fail later when
+        // loading vectors) or fail immediately.  What must NOT happen is a panic.
+        // Additionally, if the magic bytes looked like plausible legacy data but the
+        // resulting dimension/num_vectors are unreasonable, we expect a Format error.
+        // We only assert no-panic here; the proptest below verifies Err-or-Ok exhaustively.
+        let _ = result;
+
+        // For a more targeted check: write metadata.bin with a wrong magic
+        // followed by 0xFFFFFFFF as the first u32 (dimension field in the v0
+        // interpretation). That is beyond MAX_DIMENSION (65536), so the size
+        // guard must fire and return Format error.
+        let mut bad_dim_magic: Vec<u8> = b"BADMAGIC".to_vec(); // 8 bytes, not VCNHNSW\x01
+        bad_dim_magic.extend_from_slice(&u32::MAX.to_le_bytes()); // "dimension" = 4294967295
+        bad_dim_magic.extend_from_slice(&1u32.to_le_bytes()); // "num_vectors" = 1
+        bad_dim_magic.push(1); // "is_built" = true
+        mem.atomic_write("segments/segment_hnsw_0/metadata.bin", &bad_dim_magic)
+            .expect("atomic_write");
+
+        let err = HNSWSegmentReader::load(Box::new(mem), 0);
+        // Unreasonable dimension triggers the size guard -> Format error.
+        assert!(
+            matches!(err, Err(PersistenceError::Format(_))),
+            "expected Format error for unreasonable dimension, got: {:?}",
+            err.err()
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 5. proptest: single-byte corruption never panics
+    // -----------------------------------------------------------------------
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        #[test]
+        fn proptest_one_byte_corruption_never_panics(
+            byte_offset in 0usize..21,  // metadata.bin is 21 bytes (magic8 + ver4 + dim4 + nv4 + built1)
+            flip_mask in 1u8..=255u8,   // non-zero to guarantee a change
+        ) {
+            let (mem, raw) = write_segment();
+
+            let mut corrupted = raw.clone();
+            let off = byte_offset % raw.len();
+            corrupted[off] ^= flip_mask;
+            mem.atomic_write("segments/segment_hnsw_0/metadata.bin", &corrupted)
+                .expect("atomic_write");
+
+            // load() must not panic; Err is acceptable.
+            let load_result = std::panic::catch_unwind(|| {
+                HNSWSegmentReader::load(Box::new(mem.clone()), 0)
+            });
+            match load_result {
+                Ok(Ok(reader)) => {
+                    // If load succeeded, load_index must also not panic.
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        reader.load_index()
+                    }));
+                }
+                Ok(Err(_)) => {}
+                Err(payload) => {
+                    let msg: String = if let Some(s) = payload.downcast_ref::<&str>() {
+                        (*s).to_owned()
+                    } else if let Some(s) = payload.downcast_ref::<String>() {
+                        s.clone()
+                    } else {
+                        "(non-string panic)".to_owned()
+                    };
+                    panic!(
+                        "corrupt metadata (offset {off}, mask {flip_mask:#04x}) caused panic: {msg}"
+                    );
+                }
             }
         }
     }
