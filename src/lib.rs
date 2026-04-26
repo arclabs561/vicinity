@@ -39,7 +39,7 @@
 //! | **High-d Compression** (768d+) | `rp_quant::RpQuantIndex` | `rp_quant` | No |
 //! | **Quantized Graph** (HNSW + RaBitQ) | `hnsw::SymphonyQGIndex` | `hnsw` + `ivf_rabitq` | No |
 //! | **Binary Quantization** (1-bit + rerank) | `binary_index::BinaryFlatIndex` | `binary_index` | No |
-//! | **Out-of-Core** (SSD-based) | `diskann` | `diskann` (experimental) | Yes (mmap) |
+//! | **Out-of-Core** (SSD-based) | `diskann` | `diskann` (experimental) | Yes (file-based save/load; mmap planned) |
 //! | **4-bit Scalar Quant** (8x compression) | `sq4::SQ4Index` | `sq4` | No |
 //!
 //! **Default features**: `hnsw`, `innr` (SIMD).
