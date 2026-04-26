@@ -72,7 +72,7 @@
 //! - **Flat vs hierarchical graphs**: Munyampirwa et al. (2024) empirically argue that, on
 //!   high-dimensional datasets, a flat small-world graph can match HNSW’s recall/latency
 //!   benefits because “hub” nodes provide routing power without explicit hierarchy
-//!   (arXiv:2412.01940). This doesn’t make HNSW “wrong” — it just means NSW is often a
+//!   (arXiv:2412.01940). This doesn’t make HNSW “wrong”; it just means NSW is often a
 //!   worthwhile baseline to benchmark.
 //!
 //! - **Memory**: for modern embeddings, the raw vector store (n × d × 4 bytes) can dominate.

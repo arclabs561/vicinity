@@ -216,7 +216,7 @@ pub mod graph_analysis;
 #[cfg(feature = "hnsw")]
 pub use graph_analysis::{analyze_graph_quality, validate_msp, GraphQuality, MspValidation};
 
-/// Dynamic Edge Navigation Graph (DEG) — density-adaptive edge count.
+/// Dynamic Edge Navigation Graph (DEG): density-adaptive edge count.
 ///
 /// Requires the `hnsw` feature. O(n^2) construction; suitable for n < ~10K.
 #[cfg(feature = "hnsw")]

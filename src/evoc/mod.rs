@@ -1,4 +1,4 @@
-//! EVoC (Embedding Vector Oriented Clustering) -- thin wrapper around `clump::EVoC`.
+//! EVoC (Embedding Vector Oriented Clustering): thin wrapper around `clump::EVoC`.
 //!
 //! This module re-exports the core clustering types from the `clump` crate and provides
 //! a compatibility adapter that accepts vicinity's SoA (flat `&[f32]`) input format.

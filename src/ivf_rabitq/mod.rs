@@ -1,7 +1,7 @@
 //! IVF-RaBitQ: Inverted File with Randomized Binary Quantization.
 //!
 //! Combines IVF partitioning with RaBitQ quantization for memory-efficient ANN
-//! search. Unlike IVF-PQ, RaBitQ requires no codebook training -- only a random
+//! search. Unlike IVF-PQ, RaBitQ requires no codebook training, only a random
 //! rotation matrix and per-vector correction factors.
 //!
 //! # Feature Flag
