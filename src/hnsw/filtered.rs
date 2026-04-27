@@ -806,4 +806,100 @@ mod tests {
             assert!(*id >= 8, "Node {} should be >= 8", id);
         }
     }
+
+    /// One-shot measurement of the wrapper-vs-direct cost for AcornStats.
+    /// `acorn_search` is implemented as a thin wrapper around
+    /// `acorn_search_with_stats` that discards the stats. In release
+    /// builds with inlining enabled this should be free; this probe
+    /// confirms it. If the gap is meaningful (>5%) the wrapper needs
+    /// `#[inline(always)]` or the call sites should call
+    /// `_with_stats` directly. Marked `#[ignore]` because it's a
+    /// measurement, not a regression guard.
+    ///
+    /// Run with:
+    ///   cargo test --release --features hnsw
+    ///       hnsw::filtered::tests::acorn_stats_overhead_probe
+    ///       -- --ignored --nocapture
+    #[test]
+    #[ignore = "measurement only; run with --release --ignored --nocapture"]
+    fn acorn_stats_overhead_probe() {
+        use std::time::Instant;
+
+        let (neighbors, distances) = mock_graph();
+        let filter = FnFilter(|id: u32| id.is_multiple_of(2));
+        let config = AcornConfig::default();
+        let iters = 100_000;
+
+        // Warm up both code paths to prime icache + branch predictor; the
+        // first measured loop otherwise pays a one-time setup cost that
+        // shows up as artificial overhead for whichever runs first.
+        for _ in 0..1000 {
+            let _ = acorn_search(
+                3,
+                &config,
+                &filter,
+                |id| neighbors[id as usize].clone(),
+                |id| distances[id as usize],
+                0,
+            )
+            .unwrap();
+            let _ = acorn_search_with_stats(
+                3,
+                &config,
+                &filter,
+                |id| neighbors[id as usize].clone(),
+                |id| distances[id as usize],
+                0,
+            )
+            .unwrap();
+        }
+
+        // Run interleaved (one of each per round) to even out any
+        // remaining timing-source drift across the long measurement
+        // window.
+        let mut acc_no_stats_ns = 0u128;
+        let mut acc_with_stats_ns = 0u128;
+        let mut sink = 0u32;
+        for _ in 0..iters {
+            let t = Instant::now();
+            let r = acorn_search(
+                3,
+                &config,
+                &filter,
+                |id| neighbors[id as usize].clone(),
+                |id| distances[id as usize],
+                0,
+            )
+            .unwrap();
+            acc_no_stats_ns += t.elapsed().as_nanos();
+            sink = sink.wrapping_add(r.len() as u32);
+
+            let t = Instant::now();
+            let (r, _stats) = acorn_search_with_stats(
+                3,
+                &config,
+                &filter,
+                |id| neighbors[id as usize].clone(),
+                |id| distances[id as usize],
+                0,
+            )
+            .unwrap();
+            acc_with_stats_ns += t.elapsed().as_nanos();
+            sink = sink.wrapping_add(r.len() as u32);
+        }
+        let no_stats_ns_per = acc_no_stats_ns as f64 / iters as f64;
+        let with_stats_ns_per = acc_with_stats_ns as f64 / iters as f64;
+
+        // Force the compiler to keep both loops live.
+        std::hint::black_box(sink);
+
+        println!("# acorn_stats_overhead_probe ({} iters)", iters);
+        println!("# acorn_search             {:.0} ns/op", no_stats_ns_per);
+        println!("# acorn_search_with_stats  {:.0} ns/op", with_stats_ns_per);
+        println!(
+            "# delta                     {:+.0} ns/op ({:+.1}%)",
+            with_stats_ns_per - no_stats_ns_per,
+            100.0 * (with_stats_ns_per - no_stats_ns_per) / no_stats_ns_per
+        );
+    }
 }
