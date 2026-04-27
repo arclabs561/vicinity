@@ -1223,7 +1223,7 @@ mod tests {
         println!("# orphan-protection scaling probe");
         println!("# n, cycles, dim, build_ms, cycle_total_ms, cycle_us_per_op");
 
-        for &n in &[100usize, 500, 1000, 2000, 5000, 10000] {
+        for &n in &[100usize, 500, 1000, 2000, 5000, 10000, 25000, 50000] {
             let dim = 32;
             let cycles = (n / 4).clamp(50, 500);
             let extra_pool = cycles + n;

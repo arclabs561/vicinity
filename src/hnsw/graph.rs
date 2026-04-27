@@ -2970,6 +2970,62 @@ mod tests {
         assert!(!dir.path().join("index.json.tmp").exists());
     }
 
+    /// One-shot measurement of save_to_file overhead vs a non-atomic
+    /// File::create+write baseline. The atomic path adds: temp file
+    /// creation, sync_all on the temp, rename, parent-dir sync_all.
+    /// On SSD, sync_all is the dominant cost (single-digit ms typical).
+    /// For a JSON-serialized HNSW index in the 100KB-few-MB range, the
+    /// total is dominated by serialization + write throughput, not the
+    /// extra fsyncs. This probe prints both numbers so future work can
+    /// compare. Marked `#[ignore]` because it's a measurement, not a
+    /// regression guard.
+    ///
+    /// Run with:
+    ///   cargo test --release --features hnsw,serde
+    ///       hnsw::graph::tests::save_to_file_overhead_probe
+    ///       -- --ignored --nocapture
+    #[cfg(feature = "serde")]
+    #[test]
+    #[ignore = "measurement only; run with --release --ignored --nocapture"]
+    fn save_to_file_overhead_probe() {
+        use std::time::Instant;
+
+        let (index, _q) = build_test_index();
+        let dir = tempfile::tempdir().unwrap();
+
+        // Atomic path (current code): temp + sync + rename + dir sync.
+        let iters = 30;
+        let path = dir.path().join("atomic.json");
+        let t = Instant::now();
+        for _ in 0..iters {
+            index.save_to_file(&path).unwrap();
+        }
+        let atomic_ms_per = t.elapsed().as_secs_f64() * 1000.0 / iters as f64;
+
+        // Non-atomic baseline: File::create + write + drop. No syncs.
+        let path2 = dir.path().join("naive.json");
+        let t = Instant::now();
+        for _ in 0..iters {
+            let f = std::fs::File::create(&path2).unwrap();
+            index.save_to_writer(std::io::BufWriter::new(f)).unwrap();
+        }
+        let naive_ms_per = t.elapsed().as_secs_f64() * 1000.0 / iters as f64;
+
+        let file_kb = std::fs::metadata(&path).unwrap().len() / 1024;
+        println!("# save_to_file_overhead_probe");
+        println!(
+            "# build_test_index ({} vectors, {} dim, ~{} KB JSON)",
+            index.num_vectors, index.dimension, file_kb
+        );
+        println!("# atomic   {:.2} ms/op", atomic_ms_per);
+        println!("# naive    {:.2} ms/op", naive_ms_per);
+        println!(
+            "# overhead {:.2} ms/op ({:+.0}%)",
+            atomic_ms_per - naive_ms_per,
+            100.0 * (atomic_ms_per - naive_ms_per) / naive_ms_per
+        );
+    }
+
     /// End-to-end build → save_to_file → drop → load_from_file → search
     /// equality. The in-memory roundtrip
     /// (`test_hnsw_save_load_roundtrip`) covers the
