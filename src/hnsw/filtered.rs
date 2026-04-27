@@ -83,6 +83,24 @@ impl FilterPredicate for NoFilter {
 }
 
 /// ACORN search configuration.
+///
+/// # Selectivity regimes
+///
+/// 2-hop expansion (Patel et al. SIGMOD 2024) is most effective when the
+/// filter passes 2-20% of nodes. Outside that band:
+///
+/// - **>20% selectivity**: 2-hop is mostly overhead; standard HNSW search
+///   with post-filter performs comparably. The branch still fires but
+///   adds little.
+/// - **<2% selectivity**: 2-hop hits a recall floor near 0.2 regardless
+///   of `max_two_hop_neighbors` (Weaviate engineering data; ACORN paper
+///   §5.4). The qualifying set is too sparse for graph traversal to
+///   find enough hits even with aggressive expansion. At this regime,
+///   prefer [`selectivity_search`] with `matching_ids` populated -- the
+///   `Low` branch falls back to a brute-force scan over the pre-
+///   filtered ID set, which is the right answer below ~2%. Curator
+///   (arxiv:2601.01291) is the published alternative when pre-filter
+///   IDs aren't available; ACORN simply isn't designed for this regime.
 #[derive(Clone, Debug)]
 pub struct AcornConfig {
     /// Enable two-hop expansion when filter is selective
