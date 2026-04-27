@@ -141,7 +141,7 @@ Each algorithm has a named feature flag:
 | Curator | `curator` | K-means tree with per-label Bloom filters; low-selectivity filtered search |
 | FilteredGraph | `filtered_graph` | Predicate-filtered graph search (AND/OR metadata filters) |
 | ACORN | `hnsw` | Filtered HNSW search with subgraph sampling (SIGMOD 2024) |
-| ESG | `esg` | Range-filtered search over numeric attributes |
+| RangeFiltered | `range_filtered` | HNSW + attribute-range post-filter (renamed from `esg` in 0.8.0) |
 | SparseMIPS | `sparse_mips` | Graph index for sparse vectors (SPLADE/BM25) |
 | LEMUR | `lemur` | Late-interaction MIPS; needs externally-provided encoder weights (no in-tree training); mean-pool used in place of OLS |
 | LSH | `lsh` | Cross-Polytope LSH (Andoni et al. 2015); single hash table + multiprobe |

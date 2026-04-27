@@ -1,22 +1,30 @@
-//! ESG: Elastic Graphs for range-filtered approximate nearest neighbor search.
+//! Range-filtered ANN search (HNSW + attribute-range post-filter).
 //!
 //! Handles queries of the form "find k nearest neighbors of q among vectors
-//! whose attribute falls in [l, r]". Builds a single HNSW index over all
-//! vectors; range filtering is applied as a post-filter on search results.
+//! whose attribute falls in `[l, r]`". Builds a single HNSW index over all
+//! vectors and post-filters search results by the attribute range.
+//!
+//! Renamed from `esg` in 0.8.0. The original name implied fidelity to Yang
+//! et al. 2025 (arXiv:2504.04018), which describes a partition-aware
+//! structure (subrange-partitioned subgraphs with elastic relaxation,
+//! reducing required subranges to at most two). The shipped implementation
+//! is the paper's strawman baseline; the rename reflects what it does.
+//! A paper-fidelity ESG variant is planned as a separate module.
 //!
 //! # Feature Flag
 //!
 //! ```toml
-//! vicinity = { version = "0.7", features = ["esg"] }
+//! vicinity = { version = "0.8", features = ["range_filtered"] } # 0.8.0+
+//! # or, on 0.7.x: features = ["esg"]
 //! ```
 //!
 //! # Quick Start
 //!
 //! ```ignore
-//! use vicinity::esg::{EsgIndex, EsgParams};
+//! use vicinity::range_filtered::{RangeFilteredIndex, RangeFilteredParams};
 //!
-//! let params = EsgParams::default();
-//! let mut index = EsgIndex::new(128, params)?;
+//! let params = RangeFilteredParams::default();
+//! let mut index = RangeFilteredIndex::new(128, params)?;
 //!
 //! // Add vectors with numeric attributes (e.g., timestamps)
 //! index.add(0, vec![0.1; 128], 1000.0)?;
@@ -38,34 +46,19 @@
 //! # References
 //!
 //! - Yang et al. (2025). "ESG: Elastic Graphs for Range-Filtering Approximate
-//!   kNN Search." arXiv:2504.04018.
+//!   kNN Search." arXiv:2504.04018. Cited for context only -- this module
+//!   does *not* implement the paper's partition-aware structure; it ships
+//!   the post-filter baseline.
 
 use crate::RetrieveError;
 
-/// ESG parameters.
+/// Range-filtered index parameters.
 ///
-/// **Note on the implementation**: this module currently builds a single
-/// HNSW over all points and applies the attribute range as a post-filter
-/// on the search candidate set. The original ESG paper (Yang et al. 2025)
-/// describes a partition-aware structure that constrains edges to nodes
-/// sharing attribute intervals; that structure is not yet implemented
-/// here. For an explicit predicate filter on top of HNSW, see
+/// The shipped implementation is HNSW + attribute-range post-filter.
+/// For an explicit predicate filter on top of HNSW, see
 /// [`crate::hnsw::filtered`] / ACORN.
 #[derive(Clone, Debug)]
-pub struct EsgParams {
-    /// Number of checkpoints per direction.
-    ///
-    /// Kept on the struct for API compatibility but unused: the partition-
-    /// aware structure that consumed this parameter was never wired up,
-    /// and the post-filter implementation that ships today does not need
-    /// it. Will be removed in a future minor when the partition-aware
-    /// implementation lands or when this module is collapsed into
-    /// [`crate::hnsw::filtered`].
-    #[deprecated(
-        since = "0.7.3",
-        note = "unused; the partition-aware path that consumed it was never implemented"
-    )]
-    pub num_checkpoints: usize,
+pub struct RangeFilteredParams {
     /// HNSW M parameter for index construction.
     pub hnsw_m: usize,
     /// HNSW ef_construction.
@@ -74,11 +67,9 @@ pub struct EsgParams {
     pub ef_search: usize,
 }
 
-impl Default for EsgParams {
+impl Default for RangeFilteredParams {
     fn default() -> Self {
-        #[allow(deprecated)]
         Self {
-            num_checkpoints: 16,
             hnsw_m: 16,
             hnsw_ef_construction: 200,
             ef_search: 100,
@@ -93,10 +84,10 @@ struct AttributedPoint {
     attribute: f64,
 }
 
-/// ESG index for range-filtered ANN search.
-pub struct EsgIndex {
+/// Range-filtered ANN index (HNSW + attribute-range post-filter).
+pub struct RangeFilteredIndex {
     dimension: usize,
-    params: EsgParams,
+    params: RangeFilteredParams,
     built: bool,
 
     /// Normalized vectors in sorted-by-attribute order.
@@ -112,9 +103,9 @@ pub struct EsgIndex {
     full_index: Option<crate::hnsw::HNSWIndex>,
 }
 
-impl EsgIndex {
-    /// Create a new ESG index.
-    pub fn new(dimension: usize, params: EsgParams) -> Result<Self, RetrieveError> {
+impl RangeFilteredIndex {
+    /// Create a new range-filtered index.
+    pub fn new(dimension: usize, params: RangeFilteredParams) -> Result<Self, RetrieveError> {
         if dimension == 0 {
             return Err(RetrieveError::InvalidParameter(
                 "dimension must be > 0".into(),
@@ -305,10 +296,9 @@ mod tests {
     #[test]
     fn build_and_range_search() {
         let dim = 16;
-        let mut index = EsgIndex::new(
+        let mut index = RangeFilteredIndex::new(
             dim,
-            EsgParams {
-                num_checkpoints: 4,
+            RangeFilteredParams {
                 hnsw_m: 8,
                 hnsw_ef_construction: 50,
                 ef_search: 50,
@@ -341,10 +331,9 @@ mod tests {
     #[test]
     fn full_range_search() {
         let dim = 16;
-        let mut index = EsgIndex::new(
+        let mut index = RangeFilteredIndex::new(
             dim,
-            EsgParams {
-                num_checkpoints: 4,
+            RangeFilteredParams {
                 hnsw_m: 8,
                 hnsw_ef_construction: 50,
                 ef_search: 50,
@@ -366,10 +355,9 @@ mod tests {
     #[test]
     fn narrow_range_returns_subset() {
         let dim = 16;
-        let mut index = EsgIndex::new(
+        let mut index = RangeFilteredIndex::new(
             dim,
-            EsgParams {
-                num_checkpoints: 4,
+            RangeFilteredParams {
                 hnsw_m: 8,
                 hnsw_ef_construction: 50,
                 ef_search: 50,
@@ -400,10 +388,9 @@ mod tests {
     #[test]
     fn empty_range_returns_empty() {
         let dim = 16;
-        let mut index = EsgIndex::new(
+        let mut index = RangeFilteredIndex::new(
             dim,
-            EsgParams {
-                num_checkpoints: 4,
+            RangeFilteredParams {
                 hnsw_m: 8,
                 hnsw_ef_construction: 50,
                 ef_search: 50,
