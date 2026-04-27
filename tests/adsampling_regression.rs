@@ -236,33 +236,39 @@ mod tests {
         for qi in 0..20 {
             let query = &test_vectors[qi * dim..(qi + 1) * dim];
 
-            // Brute-force ground truth using reordered vectors
-            let raw = index.vectors_raw();
+            // Brute-force ground truth in doc_id space. The original
+            // input is still in scope (line 209) and was added with
+            // doc_ids = 0..n in insertion order, so vectors[i * dim..]
+            // maps directly to doc_id `i`. This avoids the "we don't
+            // have internal->doc_id mapping" issue that previously
+            // forced this test to compare ADS against HNSW (a
+            // correlated oracle: both share the graph, so they tend to
+            // be wrong together).
             let mut gt: Vec<(u32, f32)> = (0..n)
                 .map(|i| {
-                    let v = &raw[i * dim..(i + 1) * dim];
+                    let v = &vectors[i * dim..(i + 1) * dim];
                     (i as u32, vicinity::distance::l2_distance(query, v))
                 })
                 .collect();
             gt.sort_by(|a, b| a.1.total_cmp(&b.1));
-            // Map internal IDs to doc_ids for ground truth comparison
-            // (search returns doc_ids, brute force uses internal IDs)
-            // Since we don't have the mapping externally, compare via HNSW search
-            let hnsw_results = index.search(query, k, ef).unwrap();
-            let ads_results = state.search_hnsw(&index, query, k, ef).unwrap();
+            let gt_top: HashSet<u32> = gt.iter().take(k).map(|(id, _)| *id).collect();
 
-            let hnsw_ids: HashSet<u32> = hnsw_results.iter().map(|r| r.0).collect();
+            let ads_results = state.search_hnsw(&index, query, k, ef).unwrap();
             let ads_ids: HashSet<u32> = ads_results.iter().map(|r| r.0).collect();
 
-            // Compare ADSampling against HNSW (not brute force -- both use the same graph)
-            let overlap = hnsw_ids.intersection(&ads_ids).count();
+            let overlap = gt_top.intersection(&ads_ids).count();
             total_ads_recall += overlap as f64 / k as f64;
         }
 
         let avg_parity = total_ads_recall / 20.0;
+        // ADSampling on L2-built HNSW should approximately track the
+        // brute-force oracle. The 0.5 floor accommodates the fact that
+        // HNSW itself has imperfect recall at these parameters; an
+        // ADSampling regression that returned random ids would be far
+        // below this floor.
         assert!(
-            avg_parity > 0.7,
-            "ADSampling should find >=70% of HNSW's results on L2, got {:.1}%",
+            avg_parity > 0.5,
+            "ADSampling recall@k vs brute force on L2 = {:.1}%, expected > 50%",
             avg_parity * 100.0
         );
     }

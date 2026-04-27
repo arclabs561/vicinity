@@ -226,8 +226,16 @@ fn opq_does_not_degrade_on_uncorrelated_data() {
     eprintln!("  PQ  distance MAE: {pq_mae:.6}");
     eprintln!("  OPQ distance MAE: {opq_mae:.6}");
 
+    // Empirically OPQ on this fixture lands at ~0.97x PQ MAE (slightly
+    // better than PQ even on uncorrelated data, because the Procrustes
+    // step finds a near-identity rotation and the codebook re-fit is
+    // mildly beneficial). A 1.5x ceiling preserves headroom for legit
+    // optimization variance while catching a real OPQ regression that
+    // makes it materially worse than vanilla PQ. The previous 3x slack
+    // would pass even when a broken Procrustes solve returned codes
+    // 2-3x worse than PQ -- exactly the bug class the test names.
     assert!(
-        opq_mae <= pq_mae * 3.0 + 0.01,
-        "OPQ MAE ({opq_mae:.6}) is more than 3x worse than PQ MAE ({pq_mae:.6}) on uncorrelated data"
+        opq_mae <= pq_mae * 1.5 + 0.01,
+        "OPQ MAE ({opq_mae:.6}) is more than 1.5x worse than PQ MAE ({pq_mae:.6}) on uncorrelated data"
     );
 }

@@ -336,7 +336,16 @@ fn ivf_pq_recall_vs_brute_force() {
     idx.build().unwrap();
 
     let recall = avg_recall(&vectors, &qs, |q| idx.search(q, K).unwrap());
-    // IVF-PQ at low dimensions with few clusters has limited recall
+    // IVF-PQ at this regime (N=300, DIM=32, num_codebooks=4,
+    // codebook_size=16, nprobe=4=num_clusters) lands at ~0.21 recall
+    // empirically: 4 codebooks * 16 centroids over 8-d subspaces with
+    // 300 training vectors is a high-quantization-error regime, even
+    // with full-cluster coverage. The 0.20 floor is calibrated to the
+    // empirical landing zone, not paper-grounded; tightening it
+    // without expanding the test parameters (more codebooks / larger
+    // codebook_size) risks CI flakiness on within-seed variance.
+    // A regression that drops recall below 0.20 indicates a real
+    // codebook-corruption or cluster-routing bug, not noise.
     assert!(
         recall >= 0.20,
         "IVF-PQ avg recall@{K} = {recall:.3}, expected >= 0.20"
