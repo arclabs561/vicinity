@@ -9,6 +9,17 @@ series is unstable: minor bumps may break the public API.
 
 ### Added
 
+- `src/fresh_graph/mod.rs::tests::delete_reinsert_cycles_preserve_reachability`
+  (currently `#[ignore]`-marked; documents an open bug). After 200
+  delete-reinsert cycles on a 60-vector FreshGraph, ~8% of live IDs
+  become unreachable; after only 50 cycles, ~48% are unreachable. The
+  unreachable set spans both newly inserted IDs and original IDs that
+  were never deleted, implicating a missing in-edge repair on the
+  delete path and/or a stale medoid-based entry point when the medoid
+  itself is among the deleted nodes. arxiv:2407.07871 describes the
+  same failure mode for naive HNSW variants. The test is committed
+  rather than dropped so a future fix can flip it on by removing
+  `#[ignore]`.
 - `tests/edge_cases.rs::search_returns_external_doc_ids_at_high_offset`
   pins the external-doc_id contract at `u32::MAX - 200` (catches a
   regression where the search path returns an internal slot index).
