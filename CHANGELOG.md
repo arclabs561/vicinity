@@ -7,6 +7,47 @@ series is unstable: minor bumps may break the public API.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-04-27
+
+### Changed (breaking)
+
+- Renamed `esg` module to `range_filtered`. The 0.7.x `esg` name implied
+  fidelity to the partition-aware structure of Yang et al. 2025
+  (arXiv:2504.04018); the shipped implementation is the paper's
+  strawman baseline (HNSW + attribute-range post-filter), so the rename
+  reflects what the module actually does. A paper-fidelity ESG variant
+  is planned as a separate module.
+  - `EsgIndex` -> `RangeFilteredIndex`
+  - `EsgParams` -> `RangeFilteredParams`
+  - feature `esg` -> `range_filtered`
+  - module path `vicinity::esg::*` -> `vicinity::range_filtered::*`
+  - `RangeFilteredParams::num_checkpoints` removed (was deprecated in
+    0.7.3; the partition-aware path that consumed it was never
+    implemented).
+- `vicinity::spectral` module visibility downgraded from `pub` to
+  `pub(crate)`. The Marchenko-Pastur helpers were reachable only via
+  `ADSamplingState::new_auto`, which has no production consumer. The
+  `rmt-spectral` feature and the `rmt` dep remain available for the
+  internal `new_auto` path; the public wrappers `mp_lambda_plus` and
+  `count_mp_outliers` are no longer accessible from outside the crate.
+
+### Migration from 0.7.x
+
+```diff
+-vicinity = { version = "0.7", features = ["esg"] }
++vicinity = { version = "0.8", features = ["range_filtered"] }
+
+-use vicinity::esg::{EsgIndex, EsgParams};
++use vicinity::range_filtered::{RangeFilteredIndex, RangeFilteredParams};
+
+ let params = EsgParams {
+-    num_checkpoints: 16,  // remove
+     hnsw_m: 16,
+     hnsw_ef_construction: 200,
+     ef_search: 100,
+ };
+```
+
 ## [0.7.2] - 2026-04-27
 
 ### Changed
