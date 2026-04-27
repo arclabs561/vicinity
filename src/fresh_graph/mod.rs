@@ -1191,6 +1191,69 @@ mod tests {
         }
     }
 
+    /// Direct invariant guard for `inbound_count`: for every node `v`, the
+    /// stored count must equal the number of forward edges in the graph that
+    /// point at `v`. The connectivity test above only catches drift once it
+    /// pushes a count to zero (orphans); this test catches drift in either
+    /// direction (over- or under-count) at every node, which would silently
+    /// corrupt the orphan-protection branch in `add_reverse_edge_protected`.
+    ///
+    /// Edges from tombstoned source nodes count as real in-edges -- the doc
+    /// comment on the field documents this, and beam search traverses through
+    /// tombstones. We exercise build, then a sequence of `insert` and
+    /// `delete`, asserting consistency at each step so a regression points
+    /// at the exact operation that broke it.
+    #[test]
+    fn inbound_count_matches_forward_edges_through_inserts_and_deletes() {
+        fn assert_consistent(index: &FreshGraphIndex, ctx: &str) {
+            let n = index.num_vectors;
+            let mut actual = vec![0u32; n];
+            for adj in &index.neighbors {
+                for &id in adj {
+                    if (id as usize) < n {
+                        actual[id as usize] += 1;
+                    }
+                }
+            }
+            for v in 0..n {
+                assert_eq!(
+                    index.inbound_count[v], actual[v],
+                    "{ctx}: inbound_count[{v}]={} but actual in-edge count={} \
+                     (drift in incremental tracking; fresh recompute would have \
+                     produced {})",
+                    index.inbound_count[v], actual[v], actual[v],
+                );
+            }
+        }
+
+        let dim = 8;
+        let total = 50;
+        let data = make_vectors(total, dim, 0xC0DE);
+
+        let mut index = FreshGraphIndex::new(dim, default_params()).unwrap();
+        for i in 0..30 {
+            index
+                .add_slice(i as u32, &data[i * dim..(i + 1) * dim])
+                .unwrap();
+        }
+        index.build().unwrap();
+        assert_consistent(&index, "after build");
+
+        for i in 30..total {
+            index
+                .insert(i as u32, &data[i * dim..(i + 1) * dim])
+                .unwrap();
+            assert_consistent(&index, &format!("after insert doc_id={i}"));
+        }
+
+        // Delete a spread of doc_ids covering the build-time and post-build
+        // ranges, the entry point neighborhood, and a few late inserts.
+        for &doc_id in &[1u32, 5, 12, 18, 22, 28, 33, 40, 44, 49] {
+            index.delete(doc_id).unwrap();
+            assert_consistent(&index, &format!("after delete doc_id={doc_id}"));
+        }
+    }
+
     /// Manual scaling probe for orphan-protection cost in `insert()`.
     ///
     /// Two costs interact in `insert()`'s reverse-edge phase:
