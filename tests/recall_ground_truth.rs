@@ -45,16 +45,7 @@ fn queries() -> Vec<Vec<f32>> {
         .collect()
 }
 
-fn exact_knn(vectors: &[Vec<f32>], query: &[f32], k: usize) -> Vec<(u32, f32)> {
-    let mut dists: Vec<(u32, f32)> = vectors
-        .iter()
-        .enumerate()
-        .map(|(i, v)| (i as u32, vicinity::distance::cosine_distance(v, query)))
-        .collect();
-    dists.sort_by(|a, b| a.1.total_cmp(&b.1));
-    dists.truncate(k);
-    dists
-}
+use common::exact_knn_with_distances as exact_knn;
 
 fn avg_recall(
     vectors: &[Vec<f32>],

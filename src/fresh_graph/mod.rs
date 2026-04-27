@@ -1015,8 +1015,10 @@ mod tests {
 
         // Deterministic LCG so failures bisect.
         let mut rng_state: u64 = 0xDEAD_BEEF_CAFE_F00D;
-        let mut rand_index = |bound: usize, state: &mut u64| -> usize {
-            *state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+        let rand_index = |bound: usize, state: &mut u64| -> usize {
+            *state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
             ((*state >> 33) as usize) % bound.max(1)
         };
 
