@@ -971,4 +971,90 @@ mod tests {
         let mut index = FreshGraphIndex::new(8, FreshGraphParams::default()).unwrap();
         assert!(index.add(0, vec![1.0; 16]).is_err());
     }
+
+    /// Regression guard for delete-then-reinsert cycles in FreshGraph.
+    ///
+    /// **Currently `#[ignore]` because this test surfaces an open bug.**
+    ///
+    /// arxiv:2407.07871 documents that naive HNSW variants accumulate
+    /// unreachable nodes after delete-reinsert sequences (3-4% after
+    /// ~3000 cycles in the paper's setup). When this test was first run
+    /// against FreshGraph it hit a much steeper rate: 29 of 60 live IDs
+    /// (~48%) became unreachable after only 50 cycles, and 5 of 60 (~8%)
+    /// after 200. The unreachable set includes both newly inserted IDs and
+    /// original IDs that were never deleted — implicating an in-edge
+    /// repair gap on the delete path rather than an "outlier insertion"
+    /// failure. The medoid-based entry point may also be affected when
+    /// the initial-batch medoid is among the deleted nodes.
+    ///
+    /// The test is kept (rather than dropped) so that any future fix
+    /// can flip it on by removing `#[ignore]`. The expected fix involves
+    /// either (a) repairing in-edges to deleted nodes during `delete()`,
+    /// or (b) re-running the medoid selection when the entry-point node
+    /// is deleted, or both.
+    #[test]
+    #[ignore = "open bug: ~8-48% of live IDs become unreachable after 50-200 \
+                delete-reinsert cycles. Likely an in-edge repair gap on the \
+                delete path or stale medoid entry point. See test body."]
+    fn delete_reinsert_cycles_preserve_reachability() {
+        let dim = 16;
+        let n = 60;
+        let cycles = 200;
+        let extra_pool = cycles + n;
+        let data = make_vectors(extra_pool, dim, 0xC0FFEE);
+        let vec_at = |id: u32| &data[id as usize * dim..(id as usize + 1) * dim];
+
+        let mut index = FreshGraphIndex::new(dim, default_params()).unwrap();
+        for i in 0..n as u32 {
+            index.add_slice(i, vec_at(i)).unwrap();
+        }
+        index.build().unwrap();
+
+        let mut active: Vec<u32> = (0..n as u32).collect();
+        let mut next_id: u32 = n as u32;
+
+        // Deterministic LCG so failures bisect.
+        let mut rng_state: u64 = 0xDEAD_BEEF_CAFE_F00D;
+        let mut rand_index = |bound: usize, state: &mut u64| -> usize {
+            *state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            ((*state >> 33) as usize) % bound.max(1)
+        };
+
+        for _ in 0..cycles {
+            let victim_pos = rand_index(active.len(), &mut rng_state);
+            let victim = active.swap_remove(victim_pos);
+            assert!(index.delete(victim).unwrap());
+
+            // Re-insert with a fresh doc_id and a fresh vector slot.
+            let new_id = next_id;
+            next_id += 1;
+            assert!(new_id < extra_pool as u32);
+            index.insert(new_id, vec_at(new_id)).unwrap();
+            active.push(new_id);
+        }
+
+        // After all cycles, every live doc_id should still be reachable
+        // by searching for its own vector.
+        let mut missing: Vec<u32> = Vec::new();
+        for &id in &active {
+            let v = vec_at(id);
+            // ef_search high enough that "missing" really means unreachable,
+            // not just "didn't fit in the small candidate pool".
+            let results = index
+                .search_with_ef(v, 5, 200)
+                .expect("search after cycles");
+            if !results.iter().any(|(rid, _)| *rid == id) {
+                missing.push(id);
+            }
+        }
+
+        assert!(
+            missing.is_empty(),
+            "{} of {} live IDs became unreachable after {} delete-reinsert cycles: {:?}",
+            missing.len(),
+            active.len(),
+            cycles,
+            &missing[..missing.len().min(10)]
+        );
+    }
 }
