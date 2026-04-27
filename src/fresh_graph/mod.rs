@@ -1149,40 +1149,46 @@ mod tests {
     /// no other node needs to point at it for reachability).
     #[test]
     fn build_post_state_every_non_entry_node_has_inbound_edge() {
+        // Walk multiple seeds: a single-seed connectivity test can pass on
+        // a layout that happens to leave no orphans even when the underlying
+        // invariants are weakened. Five seeds give a wider sample without
+        // appreciable runtime cost (n=100, build is cheap).
         let dim = 16;
         let n = 100;
-        let data = make_vectors(n, dim, 0xABCD);
+        for &seed in &[0xABCDu64, 0x1234, 0xDEADBEEF, 0x42, 0xC0FFEE] {
+            let data = make_vectors(n, dim, seed);
 
-        let mut index = FreshGraphIndex::new(dim, default_params()).unwrap();
-        for i in 0..n {
-            index
-                .add_slice(i as u32, &data[i * dim..(i + 1) * dim])
-                .unwrap();
-        }
-        index.build().unwrap();
-
-        let entry = index.entry_point;
-        let mut orphans: Vec<u32> = Vec::new();
-        for i in 0..n as u32 {
-            if i == entry {
-                continue;
+            let mut index = FreshGraphIndex::new(dim, default_params()).unwrap();
+            for i in 0..n {
+                index
+                    .add_slice(i as u32, &data[i * dim..(i + 1) * dim])
+                    .unwrap();
             }
-            if index.inbound_count[i as usize] == 0 {
-                orphans.push(i);
-            }
-        }
+            index.build().unwrap();
 
-        assert!(
-            orphans.is_empty(),
-            "{} of {} non-entry nodes have zero inbound edges after build: {:?}. \
-             likely cause: ensure_connectivity failed to bridge an isolated \
-             component, or the RNG-prune evicted the only remaining in-edge \
-             to these nodes (invariant I2 broken at build time, not just \
-             after delete-reinsert cycles).",
-            orphans.len(),
-            n - 1,
-            &orphans[..orphans.len().min(10)],
-        );
+            let entry = index.entry_point;
+            let mut orphans: Vec<u32> = Vec::new();
+            for i in 0..n as u32 {
+                if i == entry {
+                    continue;
+                }
+                if index.inbound_count[i as usize] == 0 {
+                    orphans.push(i);
+                }
+            }
+
+            assert!(
+                orphans.is_empty(),
+                "seed {seed:#x}: {} of {} non-entry nodes have zero inbound edges \
+                 after build: {:?}. likely cause: ensure_connectivity failed to \
+                 bridge an isolated component, or the RNG-prune evicted the only \
+                 remaining in-edge to these nodes (invariant I2 broken at build \
+                 time, not just after delete-reinsert cycles).",
+                orphans.len(),
+                n - 1,
+                &orphans[..orphans.len().min(10)],
+            );
+        }
     }
 
     /// Manual scaling probe for orphan-protection cost in `insert()`.
