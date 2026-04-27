@@ -1143,18 +1143,29 @@ impl HNSWIndex {
 
     /// Save this index to a file path (JSON).
     ///
-    /// Convenience wrapper over [`Self::save_to_writer`].
-    #[cfg(feature = "serde")]
-    /// Serialize the index to a file path (JSON), atomically.
+    /// Serialize the index to a file path (JSON), atomically and durably.
     ///
-    /// Writes to a sibling temp file (`<path>.tmp`), fsyncs the bytes to
-    /// disk, then renames into place. A crash mid-write leaves the prior
-    /// file intact rather than truncated. P-HNSW (MDPI 2025) flags
-    /// partial-write corruption as a recurring failure mode for graph-
-    /// index persistence; this routine is the in-tree counterpart to
-    /// `durability::storage::Directory::atomic_write`, used here because
-    /// `save_to_file` is `serde`-gated (broader than the
-    /// `persistence`-gated `Directory` layer).
+    /// Three-step pipeline:
+    /// 1. Write to a sibling temp file (`<path>.tmp`).
+    /// 2. `sync_all` on the temp file (push bytes through the page cache to
+    ///    the device).
+    /// 3. `std::fs::rename` into place. POSIX rename is atomic within a
+    ///    filesystem; on Windows it uses `MoveFileExW` with REPLACE_EXISTING.
+    /// 4. `sync_all` on the parent directory (best-effort) so the rename
+    ///    survives a crash on filesystems that journal data and metadata
+    ///    independently (XFS, some ext4 configs, overlayfs). Without this,
+    ///    the rename can succeed in memory while the directory entry is
+    ///    still buffered, leaving the file unfindable after a crash. ext4
+    ///    with `auto_da_alloc` does this implicitly; XFS and tmpfs do not.
+    ///
+    /// P-HNSW (MDPI 2025) flags partial-write corruption as a recurring
+    /// failure mode for graph-index persistence; this routine is the
+    /// in-tree counterpart to `durability::storage::FsDirectory::atomic_write`,
+    /// inlined here because `save_to_file` is `serde`-gated (broader than the
+    /// `persistence`-gated `Directory` layer). Callers operating through a
+    /// `Directory` should prefer that path -- it covers the same shape and
+    /// composes with the rest of the durability stack (WAL, recovery).
+    #[cfg(feature = "serde")]
     pub fn save_to_file<P: AsRef<std::path::Path>>(&self, path: P) -> Result<(), RetrieveError> {
         let path = path.as_ref();
         let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
@@ -1178,16 +1189,24 @@ impl HNSWIndex {
             file.sync_all()?;
         }
 
-        // POSIX rename is atomic within a filesystem; on Windows
-        // std::fs::rename uses MoveFileExW with REPLACE_EXISTING.
-        // If the rename fails, leave the temp behind for the caller
-        // to inspect rather than silently dropping a half-written file.
         std::fs::rename(&tmp_path, path).map_err(|e| {
             // Best-effort cleanup of the temp; ignore the cleanup error
             // because the rename error is the more informative one.
             let _ = std::fs::remove_file(&tmp_path);
             RetrieveError::from(e)
         })?;
+
+        // Make the *name* durable: the rename above is atomic but the
+        // directory entry can still be buffered. Open the parent and
+        // sync_all. Best-effort because some platforms (notably Windows)
+        // don't allow opening a directory as a File and will return
+        // PermissionDenied / NotFound; the file data itself is already
+        // durable from the sync_all above, so a parent-dir sync failure
+        // is a graceful degradation, not a save failure.
+        if let Ok(dir_file) = std::fs::File::open(parent) {
+            let _ = dir_file.sync_all();
+        }
+
         Ok(())
     }
 
@@ -2949,6 +2968,43 @@ mod tests {
         let _ = HNSWIndex::load_from_file(&path).expect("post-overwrite file must load");
         // No temp leftover.
         assert!(!dir.path().join("index.json.tmp").exists());
+    }
+
+    /// End-to-end build → save_to_file → drop → load_from_file → search
+    /// equality. The in-memory roundtrip
+    /// (`test_hnsw_save_load_roundtrip`) covers the
+    /// `save_to_writer`/`load_from_reader` half; the v0 fixture decode
+    /// tests pin a static byte sequence; this test plugs the gap by
+    /// proving the writer and reader are mutually consistent through the
+    /// path-based API on a freshly built live index.
+    ///
+    /// qdrant ships an analogous round-trip test for its `GraphLayers`
+    /// persistence; this is the same shape adapted to vicinity's HNSW.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn test_hnsw_build_save_reload_search_equality() {
+        let (index, q) = build_test_index();
+        let k = 10;
+        let ef = 64;
+        let original_results = index.search(&q, k, ef).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("index.json");
+        index.save_to_file(&path).unwrap();
+        // Drop the in-memory copy explicitly so the load is from disk,
+        // not aliasing.
+        drop(index);
+
+        let loaded = HNSWIndex::load_from_file(&path).expect("load_from_file roundtrip");
+        let loaded_results = loaded.search(&q, k, ef).unwrap();
+
+        assert_eq!(
+            loaded_results, original_results,
+            "search results diverged across path-based save/load roundtrip. \
+             likely cause: writer and reader formats drifted (one side \
+             changed without the other), or a transient field was \
+             dropped during serialization that affects search behavior."
+        );
     }
 
     /// Gate-fired check that `save_to_file` actually uses temp+rename and
