@@ -226,8 +226,16 @@ macro_rules! ann_universal_tests {
                     }
                     let avg_recall = total_recall / queries.len() as f32;
 
+                    // ef-search monotonicity: a wider beam can never see fewer
+                    // candidates, so recall should not decrease as ef rises.
+                    // Allow up to 5pp of stochastic variance for the LCG /
+                    // BinaryHeap tie-break noise on the small (200-vec, 5-query)
+                    // regime; a real regression that prunes candidates as ef
+                    // grows produces 10pp+ drops, which this catches. The
+                    // previous 10pp tolerance was loose enough to mask that
+                    // class of bug.
                     assert!(
-                        avg_recall >= prev_recall - 0.10,
+                        avg_recall >= prev_recall - 0.05,
                         "{}: recall decreased from {:.3} to {:.3} at ef={}",
                         stringify!($mod), prev_recall, avg_recall, ef
                     );

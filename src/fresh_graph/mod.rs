@@ -1062,6 +1062,30 @@ mod tests {
         assert_eq!(index.num_deleted(), 0);
         assert_eq!(index.len(), n / 2);
 
+        // inbound_count must be consistent with the rebuilt neighbor lists.
+        // compact remaps neighbor IDs and calls recompute_inbound_count;
+        // a regression in the remap loop (e.g. dropping a neighbor reference)
+        // would leave the count under-reporting in-edges and re-fire the
+        // orphan-protection branch incorrectly on subsequent inserts.
+        {
+            let n_post = index.num_vectors;
+            let mut actual = vec![0u32; n_post];
+            for adj in &index.neighbors {
+                for &id in adj {
+                    if (id as usize) < n_post {
+                        actual[id as usize] += 1;
+                    }
+                }
+            }
+            for v in 0..n_post {
+                assert_eq!(
+                    index.inbound_count[v], actual[v],
+                    "post-compact inbound_count[{v}]={} but actual in-edges={}",
+                    index.inbound_count[v], actual[v],
+                );
+            }
+        }
+
         // Search still works for surviving docs
         let query = &data[(n / 2) * dim..(n / 2 + 1) * dim];
         let results = index.search(query, 3).unwrap();
