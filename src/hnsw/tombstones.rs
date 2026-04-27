@@ -3,6 +3,15 @@
 //! Inspired by FreshDiskANN (Singh et al., 2021) and IP-DiskANN (Xu et al., 2025),
 //! this module provides soft deletion via tombstones rather than immediate graph repair.
 //!
+//! # Status: building block, used internally by `HNSWIndex`
+//!
+//! `TombstoneSet` is consumed by [`crate::hnsw::HNSWIndex`] to back its
+//! soft-delete state. The module is re-exported as `pub mod tombstones`
+//! at the `hnsw` boundary for inspection / advanced custom-index use,
+//! but most callers should use the higher-level [`crate::hnsw::HNSWIndex::delete`]
+//! and [`crate::hnsw::HNSWIndex::delete_with_repair`] methods rather
+//! than constructing a `TombstoneSet` directly.
+//!
 //! # Why Tombstones?
 //!
 //! Graph-based ANN indices have expensive deletion:

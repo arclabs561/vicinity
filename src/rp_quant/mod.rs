@@ -6,9 +6,21 @@
 //! for a fast approximate distance scan, followed by an optional re-ranking
 //! step against the original vectors.
 //!
-//! Useful for high-dimensional embeddings (768-1536d) where full-precision
-//! distance computation is expensive. Projection + quantization gives 10-50x
-//! compression with modest recall loss.
+//! # Choosing between rp_quant and quantization::RaBitQ
+//!
+//! Both give 10-50x compression on high-d embeddings. Use [`crate::quantization`]'s
+//! RaBitQ as the default: it preserves the original dimension, has provable error
+//! bounds, and integrates with the SymphonyQG graph traversal path for fast
+//! distance computation inside HNSW. Use `rp_quant` only when you specifically
+//! need *dimensionality reduction* (project 768d -> 64d, then scan the
+//! reduced-dimension store) rather than *bit-level compression* at the original
+//! dimension. The two answer different cost questions; this module is the
+//! dimension-reduction tool.
+//!
+//! No head-to-head benchmark in this repo yet compares rp_quant against
+//! RaBitQ at equal compression on a shared dataset; if you need that
+//! comparison, the `glove_all_algos` example is the natural place to add
+//! both runners.
 //!
 //! # Feature Flag
 //!

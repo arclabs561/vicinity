@@ -28,7 +28,7 @@
 //!
 //! | Situation | Recommendation | Feature | Persistence |
 //! |-----------|----------------|---------|-------------|
-//! | **General Purpose** (Best Recall/Speed) | [`hnsw::HNSWIndex`] | `hnsw` (default) | Yes (`serde`, `persistence`) |
+//! | **General Purpose** (Best Recall/Speed) | [`hnsw::HNSWIndex`] | `hnsw` (default) | Yes: JSON via `serde` (`save_to_file`); binary via `persistence` (segment writer) |
 //! | **Billion-Scale** (Memory Constrained) | `ivf_pq::IVFPQIndex` | `ivf_pq` | No |
 //! | **Flat Graph** (Simpler, competitive on high-d) | `nsw::NSWIndex` | `nsw` | No |
 //! | **Label Filtering** (Low selectivity) | `curator::CuratorIndex` | `curator` | No |

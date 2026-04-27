@@ -219,7 +219,12 @@ pub use graph_analysis::{analyze_graph_quality, validate_msp, GraphQuality, MspV
 
 /// Dynamic Edge Navigation Graph (DEG): density-adaptive edge count.
 ///
-/// Requires the `hnsw` feature. O(n^2) construction; suitable for n < ~10K.
+/// **Experimental, in-house variant.** No published reference paper
+/// (the previous citation was speculative; verified absent from arXiv
+/// and Semantic Scholar 2026-04-27). No standalone benchmark in the
+/// repo. Use HNSW or Vamana unless you have a specific reason to
+/// evaluate this. Requires the `hnsw` feature. O(n^2) construction;
+/// suitable for n < ~10K.
 #[cfg(feature = "hnsw")]
 pub mod deg;
 #[cfg(feature = "hnsw")]
