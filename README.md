@@ -148,7 +148,7 @@ Each algorithm has a named feature flag:
 | LsmIndex | `hnsw` | LSM-tree tiered HNSW for streaming insert/delete/update workloads |
 | DiskANN | `diskann` | Vamana + SSD I/O layout; experimental |
 | SNG | `sng` | OPT-SNG (auto-tuned sparse neighborhood graph); sub-quadratic build per arXiv:2509.15531 |
-| DEG | `hnsw` | Density-adaptive edge budgets (submodule of hnsw); O(n^2) |
+| DEG | `hnsw` | Density-adaptive edge budgets (in-house experimental variant; no benchmark) |
 | KD-Tree | `kdtree` | Exact NN; fast for d <= 20 (experimental) |
 | Ball Tree | `balltree` | Exact NN; slightly better than KD-Tree for d=20-50 (experimental) |
 | RP-Forest | `rptree` | Approximate; fast build, moderate recall (experimental) |

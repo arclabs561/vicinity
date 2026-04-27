@@ -1,8 +1,18 @@
-//! Dynamic Edge Navigation Graph (DEG) for bimodal data hybrid search.
+//! Dynamic Edge Navigation Graph (DEG): density-adaptive variant of HNSW.
 //!
-//! DEG is optimized for scenarios where data has bimodal structure -
-//! dense clusters with sparse inter-cluster connectivity. It adapts
-//! graph structure dynamically based on local density.
+//! **Status: experimental, in-house design.** A literature search for
+//! "Dynamic Edge Navigation Graph" / "DEG hybrid vector search" returns
+//! no matching peer-reviewed paper or arXiv preprint as of 2026-04-27;
+//! a previous citation here was speculative and has been removed. The
+//! implementation borrows ideas from density-adaptive graph
+//! construction (allocating more edges to sparse regions) but has no
+//! standalone benchmark in this repo and is not yet recommended as a
+//! production index. Use HNSW or Vamana unless you have a specific
+//! reason to evaluate this variant.
+//!
+//! Suited to bimodal datasets: dense clusters with sparse inter-cluster
+//! connectivity. It adapts graph structure dynamically based on local
+//! density.
 //!
 //! # Key Features
 //!
@@ -22,10 +32,6 @@
 //!    - Navigate using greedy search
 //!    - Expand exploration in sparse regions
 //!    - Contract in dense regions to reduce computation
-//!
-//! # References
-//!
-//! - DEG (2025): "Dynamic Edge Navigation Graph for Hybrid Vector Search"
 
 use crate::RetrieveError;
 use std::collections::{BinaryHeap, HashSet};
