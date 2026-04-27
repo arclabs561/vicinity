@@ -11,7 +11,7 @@
 //! # Feature Flag
 //!
 //! ```toml
-//! vicinity = { version = "0.7", features = ["sparse_mips"] }
+//! vicinity = { version = "0.8", features = ["sparse_mips"] }
 //! ```
 //!
 //! # Quick Start

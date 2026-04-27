@@ -7,7 +7,7 @@
 //! # Feature Flag
 //!
 //! ```toml
-//! vicinity = { version = "0.7", features = ["ivf_rabitq"] }
+//! vicinity = { version = "0.8", features = ["ivf_rabitq"] }
 //! ```
 //!
 //! # Quick Start
