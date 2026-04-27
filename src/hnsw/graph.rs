@@ -3408,6 +3408,87 @@ mod tests {
         );
     }
 
+    /// Self-search reachability under aggressive deletion.
+    ///
+    /// Existing tests for `delete_with_repair` cover small deletion ratios
+    /// (20-30%) and assert recall against a ground-truth top-k or that the
+    /// result count survives. None probe the failure mode where many
+    /// repairs leave individual live nodes orphaned -- the analog of
+    /// FreshGraph's delete-reinsert reachability bug (arxiv:2407.07871).
+    ///
+    /// This test deletes 60% of nodes and asserts every surviving doc_id
+    /// is still self-search-reachable. If a live node becomes unreachable
+    /// after repair (e.g., its only in-edges were through nodes that were
+    /// later deleted, and the crescent-locus replacement failed to add
+    /// new in-edges), the assertion lists the orphaned ids.
+    ///
+    /// HNSW does not currently support post-build inserts, so this is a
+    /// long-delete test rather than a delete-reinsert cycle. The bug class
+    /// is the same: cumulative repair operations eroding reachability for
+    /// the surviving subgraph.
+    #[test]
+    fn test_delete_with_repair_preserves_self_search_reachability() {
+        let dim = 32usize;
+        let n = 300u32;
+        let delete_ratio = 0.6f32;
+        let deleted_count = (n as f32 * delete_ratio) as u32;
+        let k = 5usize;
+        let ef = 200usize;
+
+        // Same deterministic LCG as build_test_index().
+        let mut seed: u64 = 42;
+        let mut next = || -> f32 {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            ((seed >> 33) as f32) / (u32::MAX as f32) - 0.5
+        };
+        let mut vectors: Vec<Vec<f32>> = Vec::with_capacity(n as usize);
+        for _ in 0..n {
+            let mut v: Vec<f32> = (0..dim).map(|_| next()).collect();
+            let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+            if norm > 0.0 {
+                v.iter_mut().for_each(|x| *x /= norm);
+            }
+            vectors.push(v);
+        }
+
+        let mut index = HNSWIndex::new(dim, 16, 32).unwrap();
+        for (i, v) in vectors.iter().enumerate() {
+            index.add(i as u32, v.clone()).unwrap();
+        }
+        index.build().unwrap();
+
+        // Delete the first `deleted_count` ids. Pseudo-random selection
+        // would be more thorough but the IDs are already random with
+        // respect to graph layout (assign_layer is the only ID-correlated
+        // structure, and it's an exponential RV per node).
+        for i in 0..deleted_count {
+            index.delete_with_repair(i).unwrap();
+        }
+
+        // For each surviving id, self-search and check reachability.
+        let mut unreachable: Vec<u32> = Vec::new();
+        for id in deleted_count..n {
+            let results = index.search(&vectors[id as usize], k, ef).unwrap();
+            if !results.iter().any(|(rid, _)| *rid == id) {
+                unreachable.push(id);
+            }
+        }
+
+        assert!(
+            unreachable.is_empty(),
+            "{} of {} live ids became unreachable after deleting {} (ratio {:.0}%): {:?}. \
+             likely cause: cumulative delete_with_repair calls left live nodes orphaned -- \
+             crescent-locus replacement may have failed to add in-edges, or the entry-point \
+             repromotion in find_entry_point_excluding picked an anchor whose neighborhood \
+             has drifted away from these ids.",
+            unreachable.len(),
+            n - deleted_count,
+            deleted_count,
+            delete_ratio * 100.0,
+            &unreachable[..unreachable.len().min(10)]
+        );
+    }
+
     #[test]
     fn test_delete_with_repair_entry_point() {
         let (mut index, q) = build_test_index();
