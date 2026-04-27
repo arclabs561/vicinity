@@ -27,7 +27,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Authenticate (Trusted Publishing)
         id: auth
-        uses: rust-lang/crates-io-auth-action@v1
+        # Pin to a specific tag: rust-lang/crates-io-auth-action does not
+        # publish a sliding `v1` major tag, so `@v1` resolves to v1.0.0
+        # (Node 20). v1.0.4 uses Node 24 and avoids the deprecation
+        # warning enforced June 2026.
+        uses: rust-lang/crates-io-auth-action@v1.0.4
       - name: cargo publish (vicinity)
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
