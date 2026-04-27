@@ -1086,6 +1086,66 @@ mod tests {
         assert!(index.add(0, vec![1.0; 16]).is_err());
     }
 
+    /// Manual scaling probe for the orphan-protection cost in `insert()`.
+    ///
+    /// `insert()`'s reverse-edge prune rebuilds an `inbound_count: Vec<u32>`
+    /// over the entire graph each call, costing `O(n * max_degree)` per
+    /// insert. This test prints per-op latency at growing `n` so a
+    /// future change considering an incremental inbound-count
+    /// maintenance can compare against a measured baseline rather than a
+    /// hypothetical one.
+    ///
+    /// Marked `#[ignore]` because it's a measurement, not a regression
+    /// guard. Run with:
+    ///   cargo test --release --features fresh_graph
+    ///       fresh_graph::tests::orphan_protection_scaling_probe
+    ///       -- --ignored --nocapture
+    #[test]
+    #[ignore = "measurement only; run with --release --ignored --nocapture"]
+    fn orphan_protection_scaling_probe() {
+        use std::time::Instant;
+
+        println!("# orphan-protection scaling probe");
+        println!("# n, cycles, dim, build_ms, cycle_total_ms, cycle_us_per_op");
+
+        for &n in &[100usize, 500, 1000, 2000] {
+            let dim = 32;
+            let cycles = (n / 4).max(50);
+            let extra_pool = cycles + n;
+            let data = make_vectors(extra_pool, dim, 0xC0FFEE);
+            let vec_at = |id: u32| -> &[f32] {
+                &data[id as usize * dim..(id as usize + 1) * dim]
+            };
+
+            let mut index = FreshGraphIndex::new(dim, default_params()).unwrap();
+            for i in 0..n as u32 {
+                index.add_slice(i, vec_at(i)).unwrap();
+            }
+            let t_build = Instant::now();
+            index.build().unwrap();
+            let build_ms = t_build.elapsed().as_secs_f64() * 1000.0;
+
+            let mut active: Vec<u32> = (0..n as u32).collect();
+            let mut rng_state: u64 = 0xDEAD_BEEF_CAFE_F00D;
+            let t_cycle = Instant::now();
+            for new_id in (n as u32..).take(cycles) {
+                rng_state = rng_state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1);
+                let victim_pos = ((rng_state >> 33) as usize) % active.len().max(1);
+                let victim = active.swap_remove(victim_pos);
+                index.delete(victim).unwrap();
+                index.insert(new_id, vec_at(new_id)).unwrap();
+                active.push(new_id);
+            }
+            let cycle_total_ms = t_cycle.elapsed().as_secs_f64() * 1000.0;
+            let cycle_us_per_op = (cycle_total_ms * 1000.0) / cycles as f64;
+            println!(
+                "{n},{cycles},{dim},{build_ms:.1},{cycle_total_ms:.1},{cycle_us_per_op:.1}"
+            );
+        }
+    }
+
     /// Regression guard for delete-then-reinsert cycles in FreshGraph.
     ///
     /// arxiv:2407.07871 describes naive HNSW variants accumulating
