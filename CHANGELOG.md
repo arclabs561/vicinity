@@ -7,6 +7,94 @@ series is unstable: minor bumps may break the public API.
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-04-27
+
+### Changed
+
+- `FreshGraphIndex::insert` no longer rebuilds the per-node `inbound_count`
+  array from scratch on every call. The count is maintained as a struct
+  field across `add_slice` / `insert` / `build` / `compact` and updated
+  per neighbor-list mutation. Per-insert cost was
+  `O(max_degree²) + O(n × max_degree)` and is now `O(max_degree²)` -
+  flat in `n` once every node is at cap. Measured on Apple Silicon at
+  dim=32, max_degree=16: ~120 µs/op at n=10K..50K vs an extrapolated
+  ~920 µs/op pre-fix at n=50K (~7x speedup at scale). Both
+  reachability invariants (I1 entry-point liveness, I2 in-edge
+  survival under reverse-edge prune) survive the refactor.
+- `HNSWIndex::save_to_file` is now atomic and durable. Writes to a
+  sibling temp file, fsyncs the temp, atomically renames into place,
+  then fsyncs the parent directory so the rename survives a crash on
+  filesystems that journal data and metadata independently (XFS,
+  some ext4 configs, overlayfs). A crash mid-write leaves the prior
+  file intact rather than truncated. P-HNSW (MDPI 2025) flagged
+  partial-write corruption as a recurring failure mode; this routine
+  is the in-tree counterpart to
+  `durability::storage::FsDirectory::atomic_write` (which is gated
+  behind the `persistence` feature). Cost: ~13 ms/op (durability
+  syncs) vs ~0.5 ms/op for the prior non-atomic path; trade-off is
+  correctness, dominated by typical save cadence.
+- `AcornConfig` docstring now names the selectivity regimes where
+  2-hop expansion is load-bearing (2-20%), where it's overhead
+  (>20%), and where it hits a recall floor (<2%, fall back to
+  `selectivity_search` with `matching_ids`). Doc-only change;
+  `selectivity_search`'s Low branch already routes correctly.
+
+### Added
+
+- `acorn_search_with_stats` returns an `AcornStats { two_hop_invocations,
+  two_hop_nodes_examined }` struct alongside results, so regression
+  tests can assert "the 2-hop branch fired N>=1 times" rather than
+  relying on a noisier black-box recall delta. The existing
+  `acorn_search` becomes a thin wrapper that discards stats; signature
+  unchanged. `AcornStats` is `#[non_exhaustive]` so additional
+  counters can be added without bumping major. The wrapper has no
+  measurable overhead in release builds (Rust inlines the
+  discard-stats indirection; measured 803 ns/op for both entry
+  points).
+- `tests/hnsw_integration_tests.rs::test_acorn_two_hop_branch_fires_at_sparse_selectivity`
+  asserts the 2-hop branch fires at least once at ~2.5% selectivity.
+  Verified to catch the gate-disabled regression by toggling
+  `enable_two_hop=false` and confirming the assertion fires with
+  `two_hop_invocations=0`.
+- `src/hnsw/graph.rs::tests::test_delete_with_repair_preserves_self_search_reachability`
+  asserts every surviving doc_id is self-search-reachable after
+  deleting 60% of nodes via `delete_with_repair`. Existing tests
+  stop at 20-30% deletion and check result count or top-k recall;
+  this guards the failure mode where many cumulative repair calls
+  leave individual live nodes orphaned.
+- `src/fresh_graph/mod.rs::tests::build_post_state_every_non_entry_node_has_inbound_edge`
+  is a static post-build connectivity guard: every non-entry node
+  has at least one inbound edge. Adapted from qdrant's
+  `test_graph_connectivity` shape, parameterized over five seeds.
+  Catches build-time orphans the dynamic delete-reinsert cycle
+  test wouldn't surface.
+- `src/hnsw/graph.rs::tests::test_hnsw_save_to_file_uses_rename_not_truncate`
+  is a Unix-only inode-based gate guard: truncate-overwrite preserves
+  the inode, rename-overwrite replaces it. Verified to catch the
+  regression by reverting `save_to_file` to non-atomic and confirming
+  this test fails (left==right) while the happy-path roundtrip tests
+  still pass.
+- `src/hnsw/graph.rs::tests::test_hnsw_build_save_reload_search_equality`
+  end-to-end build -> save_to_file -> drop -> load_from_file -> search-
+  equality round-trip via the path-based API on a fresh live index.
+  Plugs the gap between the in-memory roundtrip (already covered)
+  and the v0 fixture decode tests (which pin a static byte sequence
+  but don't exercise the writer).
+- Three `#[ignore]`'d perf probes (`orphan_protection_scaling_probe`
+  extended to n=50K; `save_to_file_overhead_probe`;
+  `acorn_stats_overhead_probe`) for one-shot validation of the
+  changes above. Same shape as the existing scaling probe; not run
+  in CI.
+
+### Dependencies
+
+- No upstream dependency bumps. The session also added a
+  `sync_parent_of_path` helper to `durability` (0.6.4) for the
+  upstream concern that motivated `save_to_file`'s atomic refactor;
+  vicinity's own `save_to_file` inlines the equivalent pattern
+  rather than taking the helper as a dep, since `save_to_file` is
+  `serde`-gated and `durability` is `persistence`-gated.
+
 ## [0.7.1] - 2026-04-26
 
 ### Added
