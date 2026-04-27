@@ -2970,6 +2970,46 @@ mod tests {
         assert!(!dir.path().join("index.json.tmp").exists());
     }
 
+    /// Negative-path cleanup guarantee: when `save_to_file` fails at the
+    /// rename step, it must not leak the `<path>.tmp` sibling. We force the
+    /// rename to fail by pre-creating a directory at the target path; POSIX
+    /// rename refuses to replace a non-empty directory with a file (EISDIR /
+    /// ENOTEMPTY), and Windows MoveFileEx refuses similarly. The exact errno
+    /// is platform-dependent so we don't assert on the error variant; we
+    /// only assert the cleanup happened.
+    ///
+    /// Without the `remove_file(&tmp_path)` line in the rename-error branch,
+    /// callers retrying the save would race against a stale temp from the
+    /// previous attempt or accumulate junk files in the target directory.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn test_hnsw_save_to_file_cleans_up_tmp_on_rename_failure() {
+        let (index, _q) = build_test_index();
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("save.json");
+
+        // Pre-create a directory at the target path so the rename of
+        // `<target>.tmp -> <target>` fails. The directory must be non-empty
+        // on some platforms to guarantee EISDIR/ENOTEMPTY; an inner sentinel
+        // file ensures the rename can't succeed by accident.
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("blocker"), b"x").unwrap();
+
+        let result = index.save_to_file(&target);
+        assert!(
+            result.is_err(),
+            "rename into a non-empty directory should fail"
+        );
+
+        let tmp_path = dir.path().join("save.json.tmp");
+        assert!(
+            !tmp_path.exists(),
+            "save_to_file failed but left a temp file at {} \
+             (rename-failure cleanup branch did not fire)",
+            tmp_path.display(),
+        );
+    }
+
     /// One-shot measurement of save_to_file overhead vs a non-atomic
     /// File::create+write baseline. The atomic path adds: temp file
     /// creation, sync_all on the temp, rename, parent-dir sync_all.
