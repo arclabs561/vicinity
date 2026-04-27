@@ -5,6 +5,17 @@
 //! traversal. Inspired by the Projection-Augmented Graph (PAG) approach
 //! (Lu et al., 2026, arXiv:2603.06660).
 //!
+//! # Status: search accelerator, not a standalone index
+//!
+//! PRT is a building block. It does not implement an ANN index trait,
+//! has no `search()` method on the public type, and is intended to be
+//! wired *into* another index's traversal loop (the example below shows
+//! the manual-integration shape). A user looking for "an index to search
+//! with" should pick HNSW, Vamana, etc. and treat PRT as an optimization
+//! to drop in later. A `PrtHNSWIndex` convenience wrapper that hides the
+//! manual integration is on the followup list; until it lands, integrating
+//! PRT requires reading the host index's traversal code.
+//!
 //! # How it works
 //!
 //! 1. Pre-compute k random projection vectors (k << d).
