@@ -9,35 +9,34 @@ series is unstable: minor bumps may break the public API.
 
 ### Added
 
-- `src/fresh_graph/mod.rs::tests::delete_reinsert_cycles_preserve_reachability`
-  (currently `#[ignore]`-marked; documents an open bug). After 200
-  delete-reinsert cycles on a 60-vector FreshGraph, ~8% of live IDs
-  become unreachable; after only 50 cycles, ~48% are unreachable. The
-  unreachable set spans both newly inserted IDs and original IDs that
-  were never deleted, implicating a missing in-edge repair on the
-  delete path and/or a stale medoid-based entry point when the medoid
-  itself is among the deleted nodes. arxiv:2407.07871 describes the
-  same failure mode for naive HNSW variants. The test is committed
-  rather than dropped so a future fix can flip it on by removing
-  `#[ignore]`.
 - `tests/edge_cases.rs::search_returns_external_doc_ids_at_high_offset`
-  pins the external-doc_id contract at `u32::MAX - 200` (catches a
+  pins the external-`doc_id` contract at `u32::MAX - 200` (catches a
   regression where the search path returns an internal slot index).
 - `tests/edge_cases.rs::zero_query_does_not_panic_with_auto_normalize`
-  pins the documented zero-query path (`src/hnsw/graph.rs:1406`): finite
-  distances or an explicit error, never a panic on the 0/0 normalization
+  pins the documented zero-query path: search returns finite distances
+  or an explicit error, never a panic on the `0 / ||q||` normalization
   step.
 - `src/hnsw/graph.rs::tests::test_delete_with_repair_recall_floor_against_ground_truth`
   is a recall-floor companion to the existing
-  `test_delete_with_repair_maintains_recall`. The original asserts result
-  count and absence-of-deleted-IDs; this adds a recall-vs-brute-force
-  ground-truth assertion at >=0.7 after deleting 20% of nodes.
+  `test_delete_with_repair_maintains_recall`. The original asserts
+  result count and absence-of-deleted-ids; this adds a
+  recall-vs-brute-force ground-truth assertion at >= 0.7 after deleting
+  20% of nodes.
 - `tests/hnsw_integration_tests.rs::test_acorn_low_selectivity_returns_valid_results`
-  guards ACORN at ~2.5% predicate selectivity. An earlier draft of this
-  test compared `enable_two_hop` true vs false and asserted a positive
-  recall gap; in measurement the gap flipped sign at sparse selectivity
-  (2-hop adds candidates that displace better ones in a tight beam).
-  Reframed as a sparse-predicate regression guard with a 0.5 recall floor.
+  guards ACORN at ~2.5% predicate selectivity. An earlier draft compared
+  `enable_two_hop` true vs false and asserted a positive recall gap;
+  in measurement the gap flipped sign at sparse selectivity (2-hop adds
+  candidates that displace better ones in a tight beam). Reframed as a
+  sparse-predicate regression guard with a 0.5 recall floor.
+- `src/fresh_graph/mod.rs::tests::delete_reinsert_cycles_preserve_reachability`
+  guards two FreshGraph invariants that together close the
+  delete-reinsert unreachability failure mode of arxiv:2407.07871:
+  (I1) `entry_point` always references a non-tombstoned internal id,
+  and (I2) `insert`'s reverse-edge prune never evicts a node whose
+  only remaining in-edge would be the one through the neighbor being
+  pruned at. Runs 200 cycles on a 60-vector graph and asserts every
+  live `doc_id` is self-search-reachable. The assertion message names
+  the broken invariant when it fires.
 
 ### Changed
 
@@ -45,14 +44,41 @@ series is unstable: minor bumps may break the public API.
   is responsible for L2-normalization. Un-normalized inner-product
   ranking is dominated by magnitude, which is rarely the intended
   retrieval behavior (Milvus discussion #32479).
-- `FreshGraph::delete` now repromotes `entry_point` when the deleted
-  node was the medoid. Previously the entry point was left pointing at
-  the tombstoned internal index after deletion, which left subsequent
-  searches and inserts rooted at a dead anchor. The fix prefers a live
-  neighbor of the stale entry, falling back to a linear scan only if
-  the entire neighborhood is tombstoned. (This change does not close
-  the open delete-reinsert reachability bug noted under Added; that
-  bug is in the insert reverse-edge prune, not the delete path.)
+
+### Fixed
+
+- FreshGraph delete-reinsert unreachability. Two paired changes:
+  - `delete()` now repromotes `entry_point` when it tombstones the
+    medoid. Previously the entry-point field was left pointing at the
+    deleted internal index, so subsequent searches and inserts rooted
+    their beam at a dead anchor. The repromotion prefers a live
+    neighbor of the stale entry (preserves graph locality) and falls
+    back to a linear scan over live nodes only if the entire
+    neighborhood is tombstoned.
+  - `insert()`'s reverse-edge prune now computes a per-insert inbound-
+    degree count, marks any candidate whose count is `<= 1` as
+    orphan-protected, and runs RNG-prune only over the unprotected
+    remainder. Without this, repeated cycles can evict a long-existing
+    in-edge from every list that referenced it, leaving its target
+    unreachable even though the node was never deleted.
+  - The two changes are paired because the entry-point fix alone left
+    the same unreachable set on the regression test (5 of 60 live ids
+    after 200 cycles). The orphan-protection change is the
+    load-bearing one; the entry-point fix is shipped because rooting
+    search at a tombstoned anchor is incorrect on its own merits.
+
+## [0.7.1] - 2026-04-26
+
+### Added
+
+- Real v0.6.2-written segment fixture under `tests/fixtures/v0_segment_dim8/`
+  (~2.6 KB total) and a regression test
+  (`real_v0_fixture_loads_and_searches_correctly`) that loads it via the v1
+  reader and asserts the search ordering matches the original v0.6.2 run.
+  This guards the legacy v0 decode path against silent regression and
+  documents that 0.6.x → 0.7.x persistence migration works on real data.
+  The 0.7.0 test set only proved no-panic on random bytes; it did not
+  prove correctness on a real legacy file.
 
 ## [0.7.0] - 2026-04-26
 

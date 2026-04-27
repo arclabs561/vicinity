@@ -266,28 +266,104 @@ impl FreshGraphIndex {
         // Set new node's neighbor list
         self.neighbors[new_id as usize] = selected.iter().map(|&(id, _)| id).collect();
 
-        // Add reverse edges with degree cap
+        // Build an inbound-degree count: for each node, how many neighbor
+        // lists reference it. Used below to protect orphan-prone nodes
+        // from being evicted by the reverse-edge prune. O(n * max_degree)
+        // per insert; acceptable for the n's this index targets, but a
+        // production-scale workload should maintain this incrementally.
+        let mut inbound_count: Vec<u32> = vec![0; self.num_vectors];
+        for nbrs in &self.neighbors {
+            for &id in nbrs {
+                if (id as usize) < inbound_count.len() {
+                    inbound_count[id as usize] += 1;
+                }
+            }
+        }
+        // Account for the forward edges from new_id we just added.
+        // (selected was applied above into self.neighbors[new_id], so
+        // those increments are already in inbound_count.)
+
+        // Add reverse edges with degree cap and orphan protection.
         let max_deg = self.params.max_degree;
         for &(neighbor_id, _) in &selected {
             let nid = neighbor_id as usize;
-            if !self.neighbors[nid].contains(&new_id) {
-                if self.neighbors[nid].len() < max_deg {
-                    self.neighbors[nid].push(new_id);
-                } else {
-                    // Re-prune the reverse neighbor's list
-                    let nv = self.get_vector(nid).to_vec();
-                    let rev_cands: Vec<(u32, f32)> = self.neighbors[nid]
+            if self.neighbors[nid].contains(&new_id) {
+                continue;
+            }
+            if self.neighbors[nid].len() < max_deg {
+                self.neighbors[nid].push(new_id);
+                inbound_count[new_id as usize] += 1;
+                continue;
+            }
+
+            // Degree is at max. Choose what to evict carefully: a candidate
+            // X whose only inbound edge is from this node F (`nid`) would
+            // become unreachable on eviction. Protect those by keeping
+            // them in the result set unconditionally; RNG-prune only over
+            // candidates with redundancy elsewhere.
+            //
+            // This addresses arxiv:2407.07871-style unreachability
+            // accumulation: original IDs that survived all deletes but
+            // whose only navigable in-edge happened to fall here.
+            let nv = self.get_vector(nid).to_vec();
+            let mut rev_cands: Vec<(u32, f32, bool)> = self.neighbors[nid]
+                .iter()
+                .copied()
+                .chain(std::iter::once(new_id))
+                .map(|id| {
+                    let d = cosine_distance_normalized(&nv, self.get_vector(id as usize));
+                    let is_orphan_if_evicted = inbound_count[id as usize] <= 1;
+                    (id, d, is_orphan_if_evicted)
+                })
+                .collect();
+
+            // Always include orphan-prone candidates; RNG-prune the rest.
+            let mut keepers: Vec<(u32, f32)> = rev_cands
+                .iter()
+                .filter(|(_, _, orphan)| *orphan)
+                .map(|&(id, d, _)| (id, d))
+                .collect();
+
+            // Cap orphan keepers at max_deg; if they overflow, the graph
+            // is already pathologically sparse and we can't honor every
+            // protection. Fall back to RNG-prune over all candidates.
+            if keepers.len() > max_deg {
+                rev_cands.sort_by(|a, b| a.1.total_cmp(&b.1));
+                let flat: Vec<(u32, f32)> = rev_cands.iter().map(|&(id, d, _)| (id, d)).collect();
+                let pruned = self.rng_prune(&nv, &flat);
+                keepers = pruned.iter().map(|&(id, d)| (id, d)).collect();
+            } else {
+                let remaining_slots = max_deg - keepers.len();
+                if remaining_slots > 0 {
+                    let unprotected: Vec<(u32, f32)> = rev_cands
                         .iter()
-                        .chain(std::iter::once(&new_id))
-                        .map(|&id| {
-                            let d = cosine_distance_normalized(&nv, self.get_vector(id as usize));
-                            (id, d)
-                        })
+                        .filter(|(_, _, orphan)| !*orphan)
+                        .map(|&(id, d, _)| (id, d))
                         .collect();
-                    let pruned = self.rng_prune(&nv, &rev_cands);
-                    self.neighbors[nid] = pruned.iter().map(|&(id, _)| id).collect();
+                    let pruned = self.rng_prune(&nv, &unprotected);
+                    for (id, d) in pruned.into_iter().take(remaining_slots) {
+                        keepers.push((id, d));
+                    }
                 }
             }
+
+            // Apply: rebuild neighbors[nid] and update inbound_count for
+            // any evictions / additions.
+            let new_set: std::collections::HashSet<u32> =
+                keepers.iter().map(|(id, _)| *id).collect();
+            let old_set: std::collections::HashSet<u32> =
+                self.neighbors[nid].iter().copied().collect();
+            for &evicted in old_set.difference(&new_set) {
+                if (evicted as usize) < inbound_count.len() && inbound_count[evicted as usize] > 0 {
+                    inbound_count[evicted as usize] -= 1;
+                }
+            }
+            for &added in new_set.difference(&old_set) {
+                if (added as usize) < inbound_count.len() {
+                    inbound_count[added as usize] += 1;
+                }
+            }
+            self.neighbors[nid] = keepers.iter().map(|(id, _)| *id).collect();
         }
 
         Ok(())
@@ -1012,42 +1088,36 @@ mod tests {
 
     /// Regression guard for delete-then-reinsert cycles in FreshGraph.
     ///
-    /// **Currently `#[ignore]` because this test surfaces an open bug.**
-    ///
-    /// arxiv:2407.07871 documents that naive HNSW variants accumulate
+    /// arxiv:2407.07871 describes naive HNSW variants accumulating
     /// unreachable nodes after delete-reinsert sequences (3-4% after
-    /// ~3000 cycles in the paper's setup). vicinity's FreshGraph hits a
-    /// steeper rate: 5 of 60 live IDs (~8%) unreachable after 200 cycles,
-    /// 29 of 60 (~48%) after only 50.
+    /// ~3000 cycles in their setup). FreshGraph holds two invariants
+    /// that together close that failure mode:
     ///
-    /// The unreachable set is exclusively *original* IDs that were never
-    /// deleted, which rules out the obvious "delete didn't repair edges"
-    /// hypothesis. The bug is on the *insert* path. When an inserted
-    /// node's selected forward neighbor F is at `max_degree`, the
-    /// reverse-edge handler RNG-prunes the union `[neighbors[F]...,
-    /// new_id]` and replaces the list with the pruned subset (see
-    /// `insert` body around the `else` branch of the degree-cap check).
-    /// RNG-prune has no preference for long-existing edges; any of the
-    /// originals can be evicted. Over many cycles, an original ID can be
-    /// evicted from every list that still references it.
+    /// **I1. Entry-point liveness.** `entry_point` always references a
+    /// non-tombstoned internal id (or the index has no live nodes at
+    /// all). `delete()` repromotes when it tombstones the current
+    /// entry; without this, search and insert root their beam at a
+    /// dead anchor whose neighbor list points at a subgraph the live
+    /// set may have drifted away from.
     ///
-    /// One contributing cause was fixed in d977f64: when the entry
-    /// point's doc_id was deleted, `entry_point` was left pointing at
-    /// the tombstoned internal index. `delete()` now calls
-    /// `repromote_entry_point()`. That fix did NOT close this test (same
-    /// 5 unreachable IDs before and after), confirming the eviction
-    /// mechanism above is the load-bearing one.
+    /// **I2. In-edge survival under reverse-edge prune.** When
+    /// `insert()` adds a reverse edge to a forward neighbor `F` that
+    /// is already at `max_degree`, the prune step never evicts a node
+    /// whose only remaining inbound edge would be the one through `F`.
+    /// RNG-prune runs only over candidates with redundancy elsewhere
+    /// (inbound count > 1). Without this, the reverse-edge handler
+    /// can evict any long-existing edge with no preference for
+    /// connectivity, so an original id whose other in-edges have been
+    /// pruned away in earlier cycles becomes unreachable in this one.
     ///
-    /// Fixing the eviction needs either Wolverine-style MSP-aware repair
-    /// on delete (VLDB 2025), or eviction-protection in insert's reverse-
-    /// edge prune (e.g., never evict a node whose only remaining
-    /// in-edge would be the one being considered). Both are deeper than
-    /// the targeted entry-point fix shipped in d977f64.
+    /// Concretely: this test runs 200 delete-reinsert cycles on a
+    /// 60-vector FreshGraph and asserts every live doc_id is reachable
+    /// by self-search. If either invariant breaks (e.g., the entry-
+    /// point repromotion is removed, or the orphan-protection branch
+    /// in `insert`'s reverse-edge prune is bypassed), the test reports
+    /// the unreachable ids and the assertion message names the
+    /// invariant for the reader to look up.
     #[test]
-    #[ignore = "open bug: ~8-48% of live IDs become unreachable after 50-200 \
-                delete-reinsert cycles. Mechanism: insert reverse-edge RNG-prune \
-                evicts long-existing neighbors. See test body for the proposed \
-                Wolverine / eviction-protection fixes."]
     fn delete_reinsert_cycles_preserve_reachability() {
         let dim = 16;
         let n = 60;
@@ -1104,7 +1174,10 @@ mod tests {
 
         assert!(
             missing.is_empty(),
-            "{} of {} live IDs became unreachable after {} delete-reinsert cycles: {:?}",
+            "{} of {} live ids became unreachable after {} delete-reinsert cycles: {:?}. \
+             likely cause: invariant I1 (entry-point liveness in delete) or I2 \
+             (in-edge survival in insert reverse-edge prune) was broken. \
+             see this test's docstring for what each invariant guarantees.",
             missing.len(),
             active.len(),
             cycles,

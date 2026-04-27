@@ -331,4 +331,69 @@ mod segment_binary {
             }
         }
     }
+
+    /// Real v0.6.2-written segment fixture loads correctly under v1 reader.
+    ///
+    /// The fixture under tests/fixtures/v0_segment_dim8/ was produced by
+    /// vicinity 0.6.2 (commit 6b92ae9) via the binary HNSWSegmentWriter on a
+    /// deterministic 20-vector dim=8 index.  This test guards the legacy v0
+    /// decode path in HNSWSegmentReader::load (no MAGIC prefix, raw u32+u32+u8
+    /// metadata layout) against silent regression.
+    #[test]
+    fn real_v0_fixture_loads_and_searches_correctly() {
+        use std::path::PathBuf;
+        use vicinity::persistence::directory::FsDirectory;
+
+        let fixture_root: PathBuf =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/v0_segment_dim8");
+        assert!(
+            fixture_root
+                .join("segments/segment_hnsw_1/metadata.bin")
+                .exists(),
+            "fixture must exist at {}",
+            fixture_root.display()
+        );
+
+        // Sanity: confirm metadata.bin has no v1 magic.
+        let metadata_bytes =
+            std::fs::read(fixture_root.join("segments/segment_hnsw_1/metadata.bin")).unwrap();
+        assert_eq!(metadata_bytes.len(), 9, "v0 metadata is exactly 9 bytes");
+        assert_ne!(
+            &metadata_bytes[..8],
+            b"VCNHNSW\x01",
+            "fixture must NOT start with v1 magic"
+        );
+
+        let dir = FsDirectory::new(&fixture_root).expect("open fixture directory");
+        let reader = HNSWSegmentReader::load(Box::new(dir), 1).expect("load v0 segment");
+        let loaded = reader.load_index().expect("load_index");
+
+        // Reproduce the same query the fixture-generation example used.
+        // (gen_v0_fixture.rs in v0.6.2 worktree, query = deterministic_vec(1000, 8))
+        let dim = 8;
+        let mut seed: u64 = (1000_u64)
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1);
+        let mut next = || -> f32 {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            ((seed >> 33) as f32) / (u32::MAX as f32) - 0.5
+        };
+        let mut query: Vec<f32> = (0..dim).map(|_| next()).collect();
+        let qn = query.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if qn > 0.0 {
+            query.iter_mut().for_each(|x| *x /= qn);
+        }
+
+        let results = loaded.search(&query, 5, 50).expect("search");
+        let result_ids: Vec<u32> = results.iter().map(|(id, _)| *id).collect();
+
+        // Expected IDs from v0.6.2 fixture-generation run (same seed, same algorithm).
+        // Distance values are not asserted (small float drift is acceptable across
+        // versions); IDs and ordering are the load-bearing invariant.
+        let expected_ids: Vec<u32> = vec![5, 12, 14, 19, 2];
+        assert_eq!(
+            result_ids, expected_ids,
+            "v0->v1 legacy decode must reproduce the original v0.6.2 search ordering"
+        );
+    }
 }
