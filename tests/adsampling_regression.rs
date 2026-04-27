@@ -96,8 +96,15 @@ mod tests {
         let correct_gap = (hnsw_1st - correct_1st).abs();
         let wrong_gap = (hnsw_1st - wrong_1st).abs();
         if n > 50 {
+            // If both versions essentially match HNSW (gap < 0.01), we cannot
+            // tell them apart -- legit no-signal case. Otherwise the wrong
+            // version must diverge more than the correct one. The previous
+            // shape `wrong_gap > correct_gap || correct_gap < 0.01` would
+            // pass whenever the correct version returned the self-match
+            // regardless of what the wrong version did.
+            let both_match = correct_gap < 0.01 && wrong_gap < 0.01;
             assert!(
-                wrong_gap > correct_gap || correct_gap < 0.01,
+                wrong_gap > correct_gap || both_match,
                 "Wrong version should diverge more: correct_gap={correct_gap:.4}, wrong_gap={wrong_gap:.4}"
             );
         }

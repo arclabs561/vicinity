@@ -295,15 +295,28 @@ mod nsw_tests {
         };
         let mut index = NSWIndex::with_params(8, params).unwrap();
         let mut rng = Lcg::new(42);
+        let mut vectors: Vec<Vec<f32>> = Vec::with_capacity(500);
         for i in 0..500u32 {
             let v = rng.next_normalized(8);
+            vectors.push(v.clone());
             index.add(i, v).unwrap();
         }
         index.build().unwrap();
-        // Sanity: search still works
-        let query = rng.next_normalized(8);
-        let results = index.search(&query, 5, 20).unwrap();
-        assert!(!results.is_empty());
+
+        // A self-query against the first inserted vector must return that
+        // vector in its top-k. Earlier shape was `assert!(!results.is_empty())`
+        // which passes if the index returns any candidate at all -- a
+        // construction that built a star graph (one hub touching everything,
+        // O(n^2) build) would still pass that. Self-query recovery is a
+        // direct construction-quality check at low cost.
+        let self_query = vectors[0].clone();
+        let results = index.search(&self_query, 5, 30).unwrap();
+        let found_self = results.iter().any(|(id, _)| *id == 0);
+        assert!(
+            found_self,
+            "self-query for vector 0 should return id=0 in top-5; got {:?}",
+            results.iter().map(|(id, _)| *id).collect::<Vec<_>>()
+        );
     }
 
     #[test]
