@@ -255,6 +255,18 @@ impl ADSamplingState {
     }
 
     /// Search a Vamana index using ADSampling.
+    ///
+    /// **Post-build reorder pitfall** (same shape as the HNSW case
+    /// guarded by [`Self::from_hnsw`]): Vamana's `build()` reorders
+    /// vectors for cache locality. The `node_id` arguments threaded
+    /// through `dist_comp` here are post-reorder internal IDs. If this
+    /// `ADSamplingState` was constructed via [`Self::new`] over the
+    /// original (pre-build) vector array, the indices will not line up
+    /// and recall collapses to near zero. Construct the state from the
+    /// post-build, post-reorder layout (`index.vectors_raw()`) before
+    /// calling this method. A `from_vamana` convenience constructor
+    /// is not yet provided; track the post-reorder layout manually
+    /// or wait for that constructor to land.
     #[cfg(feature = "vamana")]
     pub fn search_vamana(
         &self,
@@ -294,6 +306,11 @@ impl ADSamplingState {
     }
 
     /// Search an NSG index using ADSampling.
+    ///
+    /// **Post-build reorder pitfall**: same as [`Self::search_vamana`].
+    /// Construct the `ADSamplingState` from the post-build NSG layout;
+    /// the `node_id` arguments threaded through `dist_comp` are post-
+    /// reorder internal IDs.
     #[cfg(feature = "nsg")]
     pub fn search_nsg(
         &self,

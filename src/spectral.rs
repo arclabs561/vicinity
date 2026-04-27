@@ -2,6 +2,16 @@
 //!
 //! These utilities are intentionally lightweight and *do not* change any default behavior.
 //! They can be used by callers that already have eigenvalue sequences (e.g. from PCA/covariance).
+//!
+//! # Status: building block, no shipped consumer
+//!
+//! The only in-tree consumer is `estimate_signal_dimensions` in
+//! [`crate::adsampling`], which feeds [`crate::adsampling::ADSamplingState::new_auto`].
+//! That auto-construction path is exercised only by an internal test; no
+//! example, bench, or integration test enables the `rmt-spectral` feature.
+//! If you are evaluating the `rmt` dep cost, treat this module as
+//! WATCH-tier: the feature exists, the math is correct, but no shipped
+//! search path activates it today.
 
 /// Marchenko–Pastur upper bulk edge \(\lambda_+\) for a sample covariance spectrum.
 ///
