@@ -3,6 +3,31 @@
 //! Converts multi-vector (ColBERT-style) MaxSim retrieval into single-vector
 //! MIPS by training a small MLP to approximate MaxSim contributions.
 //!
+//! # Status: inference-only stub
+//!
+//! Three things are missing before this module produces useful results on
+//! a real workload:
+//!
+//! 1. **No in-tree training path.** `LemurIndex::new` requires a pre-trained
+//!    [`LemurEncoder`]; there is no training loop, no loss computation, and
+//!    no integration with any ML framework. Random encoder weights produce
+//!    random retrieval. Bring your own externally-trained encoder weights
+//!    (the `LemurEncoder::random` constructor exists for tests, not for
+//!    production indexing).
+//! 2. **Mean-pool substitutes for OLS.** Document weight vectors are computed
+//!    as the mean of `psi`-encoded tokens, not the full OLS solve described
+//!    in the paper (which requires a shared feature matrix Z across all
+//!    documents). This is a known approximation-quality regression on top
+//!    of the training gap.
+//! 3. **Brute-force MIPS.** Search scans all document weights linearly. For
+//!    any corpus above a few thousand documents, wire an HNSW index over the
+//!    weight vectors externally.
+//!
+//! In short: this module is a working inference scaffold that needs an
+//! external encoder, an external HNSW for scale, and either the OLS solve
+//! or acceptance of the mean-pool approximation. Treat the API as a
+//! reference implementation, not a turn-key index.
+//!
 //! # Algorithm
 //!
 //! 1. **Offline**: Train a two-layer MLP `psi(x) = LayerNorm(GELU(W'x + b))`
@@ -11,15 +36,6 @@
 //!    over `psi`-encoded tokens. Store as the document's MIPS embedding.
 //! 3. **Search**: Encode query tokens through `psi`, pool (sum), then MIPS
 //!    against document weight vectors. Rerank top candidates with exact MaxSim.
-//!
-//! # Deviations from paper
-//!
-//! - **Mean-pooling instead of OLS**: Document weight vectors are computed as
-//!   the mean of `psi`-encoded tokens, not the full OLS solve (which requires
-//!   a shared feature matrix Z across all documents). This is a simplification
-//!   that reduces indexing complexity at the cost of approximation quality.
-//! - **Brute-force MIPS**: Search scans all document weights linearly. For
-//!   large corpora, wire an HNSW index over the weight vectors.
 //!
 //! # References
 //!

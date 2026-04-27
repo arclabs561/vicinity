@@ -6,8 +6,12 @@ use vicinity::persistence::directory::{Directory, MemoryDirectory};
 use vicinity::persistence::wal::{WalEntry, WalWriter};
 
 /// Verify that WAL entries survive a write+flush+drop cycle and can be replayed.
-#[tokio::test]
-async fn wal_roundtrip_replays_written_entries() -> anyhow::Result<()> {
+///
+/// Previously `#[tokio::test] async fn`. The body uses only synchronous
+/// APIs (`WalWriter::append`, `flush`, `WalReader::replay`); de-asyncing
+/// drops the `tokio` dev-dep.
+#[test]
+fn wal_roundtrip_replays_written_entries() -> anyhow::Result<()> {
     let dir: Arc<dyn Directory> = Arc::new(MemoryDirectory::new());
     let mut writer = WalWriter::new(dir.clone());
 
