@@ -298,9 +298,8 @@ mod tests {
 
     #[test]
     fn saq_new_valid_params() {
-        let q = SAQQuantizer::new(16, 4, 8);
-        assert!(q.is_ok());
-        let q = q.unwrap();
+        let q =
+            SAQQuantizer::new(16, 4, 8).expect("SAQQuantizer::new must succeed for valid params");
         assert_eq!(q.dimension, 16);
         assert_eq!(q.num_segments, 4);
         assert_eq!(q.segment_bounds.len(), 4);

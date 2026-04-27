@@ -992,9 +992,8 @@ mod tests {
 
     #[test]
     fn test_create_index() {
-        let index = DiskANNIndex::new(4, DiskANNParams::default());
-        assert!(index.is_ok());
-        let index = index.unwrap();
+        let index = DiskANNIndex::new(4, DiskANNParams::default())
+            .expect("DiskANNIndex::new must succeed for valid params");
         assert_eq!(index.dimension(), 4);
         assert_eq!(index.num_vectors(), 0);
     }
