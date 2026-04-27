@@ -1447,29 +1447,28 @@ fn run_curator(
     }
 }
 
-#[cfg(all(feature = "esg", feature = "hnsw"))]
-fn run_esg(
+#[cfg(all(feature = "range_filtered", feature = "hnsw"))]
+fn run_range_filtered(
     cfg: &Config,
     train: &[Vec<f32>],
     test: &[Vec<f32>],
     neighbors: &[Vec<i32>],
     dim: usize,
 ) {
-    use vicinity::esg::{EsgIndex, EsgParams};
+    use vicinity::range_filtered::{RangeFilteredIndex, RangeFilteredParams};
 
-    let params = EsgParams {
+    let params = RangeFilteredParams {
         hnsw_m: 16,
         hnsw_ef_construction: 200,
         ef_search: 100,
-        ..Default::default()
     };
 
     if !cfg.json {
-        println!("--- ESG (m=16, ef_search=100) ---");
+        println!("--- RangeFiltered (m=16, ef_search=100) ---");
     }
 
     let build_start = Instant::now();
-    let mut index = EsgIndex::new(dim, params).unwrap();
+    let mut index = RangeFilteredIndex::new(dim, params).unwrap();
     for (i, vec) in train.iter().enumerate() {
         index.add(i as u32, vec.clone(), 0.0).unwrap();
     }
@@ -1491,7 +1490,7 @@ fn run_esg(
         let params_json = r#"{"hnsw_m":16,"ef_search":100}"#;
         emit_result(
             &cfg.results_path,
-            &json_line("esg", params_json, build_time_s, rss, &result),
+            &json_line("range_filtered", params_json, build_time_s, rss, &result),
         );
     } else {
         print_row("--", &result);
@@ -2113,12 +2112,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 eprintln!("Curator not available (compile with --features curator)");
             }
 
-            #[cfg(all(feature = "esg", feature = "hnsw"))]
-            "esg" => run_esg(&cfg, &train, &test, &neighbors, dim),
+            #[cfg(all(feature = "range_filtered", feature = "hnsw"))]
+            "range_filtered" => run_range_filtered(&cfg, &train, &test, &neighbors, dim),
 
-            #[cfg(not(all(feature = "esg", feature = "hnsw")))]
-            "esg" => {
-                eprintln!("ESG not available (compile with --features esg,hnsw)");
+            #[cfg(not(all(feature = "range_filtered", feature = "hnsw")))]
+            "range_filtered" => {
+                eprintln!(
+                    "range_filtered not available (compile with --features range_filtered,hnsw)"
+                );
             }
 
             #[cfg(feature = "binary_index")]
@@ -2171,7 +2172,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             other => {
                 eprintln!(
-                    "Unknown algorithm: {}. Options: hnsw, nsw, ivfpq, emg, nsg, pipnn, sng, vamana, ivf_rabitq, symphony_qg, symphony_qg_vr, finger, fresh_graph, filtered_graph, rp_quant, sparse_mips, curator, esg, binary_index, sq4, sq8u, adsampling, lsh, hnsw_prt, brute",
+                    "Unknown algorithm: {}. Options: hnsw, nsw, ivfpq, emg, nsg, pipnn, sng, vamana, ivf_rabitq, symphony_qg, symphony_qg_vr, finger, fresh_graph, filtered_graph, rp_quant, sparse_mips, curator, range_filtered, binary_index, sq4, sq8u, adsampling, lsh, hnsw_prt, brute",
                     other
                 );
             }

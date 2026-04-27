@@ -19,7 +19,7 @@
 //! - **Graph + quantization**: `hnsw::symphony_qg` (RaBitQ inside HNSW beam search)
 //! - **Partition-based**: `ivf_pq`, `ivf_avq`, `ivf_rabitq`, `curator`
 //! - **Quantization**: `quantization` (RaBitQ, SAQ), `rp_quant`, `binary_index` (1-bit + rerank)
-//! - **Filtered**: `filtered_graph` (predicate filters), `esg` (range filters), `curator` (label filters)
+//! - **Filtered**: `filtered_graph` (predicate filters), `range_filtered` (numeric range filters), `curator` (label filters)
 //! - **Sparse vectors**: `sparse_mips` (inner-product graph for SPLADE/BM25)
 //! - **Streaming**: `streaming::lsm` (LSM-tree tiered HNSW)
 //! - **Clustering**: `evoc` (EVoC hierarchical clustering)
@@ -33,7 +33,7 @@
 //! | **Flat Graph** (Simpler, competitive on high-d) | `nsw::NSWIndex` | `nsw` | No |
 //! | **Label Filtering** (Low selectivity) | `curator::CuratorIndex` | `curator` | No |
 //! | **Complex Predicates** (AND/OR filters) | `filtered_graph::FilteredGraphIndex` | `filtered_graph` | No |
-//! | **Range Filtering** (Numeric attributes) | `esg::EsgIndex` | `esg` | No |
+//! | **Range Filtering** (Numeric attributes) | `range_filtered::RangeFilteredIndex` | `range_filtered` | No |
 //! | **Dynamic Insert/Delete** | `fresh_graph::FreshGraphIndex` | `fresh_graph` | No |
 //! | **Sparse Vectors** (SPLADE/BM25) | `sparse_mips::SparseMipsIndex` | `sparse_mips` | No |
 //! | **High-d Compression** (768d+) | `rp_quant::RpQuantIndex` | `rp_quant` | No |
@@ -115,28 +115,15 @@ pub mod diskann;
 #[cfg(feature = "emg")]
 pub mod emg;
 
-#[cfg(feature = "esg")]
-pub mod esg;
-
-/// Range-filtered ANN search (HNSW + range post-filter).
+/// Range-filtered ANN search (HNSW + attribute-range post-filter).
 ///
-/// Alias for [`crate::esg`], re-exported under the more descriptive
-/// `range_filtered` name. The shipped implementation is HNSW with an
-/// attribute-range post-filter -- *not* the partition-aware structure
-/// described in arXiv:2504.04018 ("ESG: Elastic Graphs for Range-
-/// Filtering Approximate kNN Search"); the original paper builds
-/// subrange-partitioned subgraphs and outperforms the post-filter
-/// baseline at low selectivity. The `esg` name was confusing because
-/// it implied paper-fidelity that the implementation does not deliver.
-///
-/// Both module paths (`esg` and `range_filtered`) are stable in 0.7.x.
-/// New code should import from `range_filtered`; the `esg` name will
-/// be removed in 0.8.0 once a paper-fidelity ESG variant or a clear
-/// deprecation window is ready.
-#[cfg(feature = "esg")]
-pub mod range_filtered {
-    pub use crate::esg::*;
-}
+/// Renamed from `esg` in 0.8.0. The 0.7.x `esg` name implied fidelity
+/// to the partition-aware structure of arXiv:2504.04018; the shipped
+/// implementation is the paper's strawman baseline (HNSW + range
+/// post-filter), so the module was renamed to reflect what it actually
+/// does. A paper-fidelity ESG variant is planned as a separate module.
+#[cfg(feature = "range_filtered")]
+pub mod range_filtered;
 
 // Shared helpers for clump-backed modules (evoc, kmeans partitioning).
 #[cfg(any(
@@ -210,6 +197,9 @@ pub(crate) mod adaptive;
 pub mod adsampling;
 pub mod partitioning;
 #[cfg(feature = "ivf_pq")]
+// pq_simd at crate root (not under `quantization::`) because the
+// `quantization` mod is feature-gated by `quantization` while these
+// kernels are needed by `ivf_pq` independently. Both are pub(crate).
 pub(crate) mod pq_simd;
 #[cfg(feature = "hnsw")]
 pub mod prt;
@@ -231,9 +221,10 @@ pub mod lid;
 pub mod memory;
 pub(crate) mod simd;
 
-// Spectral sanity helpers (feature-gated).
+// Spectral sanity helpers (feature-gated). Folded into the only
+// consumer (`adsampling`) in 0.8.0 to drop the unused public path.
 #[cfg(feature = "rmt-spectral")]
-pub mod spectral;
+pub(crate) mod spectral;
 
 // Re-exports
 pub use distance::DistanceMetric;
