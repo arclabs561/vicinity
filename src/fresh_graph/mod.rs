@@ -1133,7 +1133,7 @@ mod tests {
         index.build().unwrap();
 
         let mut active: Vec<u32> = (0..n as u32).collect();
-        let mut next_id: u32 = n as u32;
+        // new doc_ids start at n and count up monotonically as we cycle.
 
         // Deterministic LCG so failures bisect.
         let mut rng_state: u64 = 0xDEAD_BEEF_CAFE_F00D;
@@ -1144,14 +1144,12 @@ mod tests {
             ((*state >> 33) as usize) % bound.max(1)
         };
 
-        for _ in 0..cycles {
+        for new_id in (n as u32..).zip(0..cycles).map(|(id, _)| id) {
             let victim_pos = rand_index(active.len(), &mut rng_state);
             let victim = active.swap_remove(victim_pos);
             assert!(index.delete(victim).unwrap());
 
             // Re-insert with a fresh doc_id and a fresh vector slot.
-            let new_id = next_id;
-            next_id += 1;
             assert!(new_id < extra_pool as u32);
             index.insert(new_id, vec_at(new_id)).unwrap();
             active.push(new_id);
