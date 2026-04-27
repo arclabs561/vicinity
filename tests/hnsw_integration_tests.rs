@@ -13,7 +13,7 @@ mod common;
 use common::*;
 
 use std::collections::HashSet;
-use vicinity::hnsw::filtered::{acorn_search, AcornConfig, FnFilter};
+use vicinity::hnsw::filtered::{acorn_search, acorn_search_with_stats, AcornConfig, FnFilter};
 use vicinity::hnsw::{HNSWIndex, HNSWParams};
 
 /// Compute exact k-NN using cosine distance.
@@ -945,5 +945,105 @@ fn test_acorn_low_selectivity_returns_valid_results() {
         recall >= 0.5,
         "ACORN recall at ~2.5% selectivity dropped below floor: {:.3} < 0.50",
         recall
+    );
+}
+
+/// Direct regression guard for the ACORN 2-hop branch firing.
+///
+/// `test_acorn_low_selectivity_returns_valid_results` (above) asserts a
+/// recall floor under sparse selectivity, which is sensitive but black-
+/// box: the recall delta cannot disentangle "2-hop fired and helped"
+/// from "2-hop fired and was net neutral" from "2-hop did not fire."
+/// This test uses the `AcornStats` counters returned by
+/// `acorn_search_with_stats` to assert directly that the 2-hop branch
+/// fires at least once at sparse selectivity (the regime that motivates
+/// 2-hop in the first place).
+///
+/// If a future change accidentally disables the branch (e.g., dead-code
+/// elimination, an off-by-one on `enable_two_hop`, or a refactor that
+/// short-circuits the non-matching-neighbor path), this test fails with
+/// a precise message rather than a slow recall regression elsewhere.
+#[test]
+fn test_acorn_two_hop_branch_fires_at_sparse_selectivity() {
+    let dim = 32;
+    let n = 400;
+    let k = 5;
+    let neighbors_per_node = 8;
+
+    let vectors: Vec<Vec<f32>> = random_vectors(n, dim, 7777)
+        .into_iter()
+        .map(|v| normalize(&v))
+        .collect();
+
+    // ~2.5% selectivity, same regime as the recall-floor test.
+    let category_of = |id: u32| -> bool { id.is_multiple_of(40) };
+
+    let mut graph: Vec<HashSet<u32>> = (0..n).map(|_| HashSet::new()).collect();
+    for i in 0..n {
+        let mut dists: Vec<(u32, f32)> = (0..n)
+            .filter(|&j| j != i)
+            .map(|j| {
+                (
+                    j as u32,
+                    vicinity::distance::cosine_distance(&vectors[i], &vectors[j]),
+                )
+            })
+            .collect();
+        dists.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        for &(j, _) in dists.iter().take(neighbors_per_node) {
+            graph[i].insert(j);
+            graph[j as usize].insert(i as u32);
+        }
+    }
+    let graph: Vec<Vec<u32>> = graph.into_iter().map(|s| s.into_iter().collect()).collect();
+
+    // One query is enough for a branch-fired check; the recall test
+    // above already covers query diversity.
+    let query = normalize(&random_vectors(1, dim, 8888).into_iter().next().unwrap());
+    let entry_point = (0..n as u32)
+        .min_by(|&a, &b| {
+            let da = vicinity::distance::cosine_distance(&vectors[a as usize], &query);
+            let db = vicinity::distance::cosine_distance(&vectors[b as usize], &query);
+            da.partial_cmp(&db).unwrap()
+        })
+        .unwrap();
+
+    let filter = FnFilter(|id: u32| category_of(id));
+    let config = AcornConfig {
+        enable_two_hop: true,
+        two_hop_threshold: 0.5,
+        max_two_hop_neighbors: 16,
+        ef_search: 64,
+    };
+
+    let (_results, stats) = acorn_search_with_stats(
+        k,
+        &config,
+        &filter,
+        |id| graph[id as usize].clone(),
+        |id| vicinity::distance::cosine_distance(&vectors[id as usize], &query),
+        entry_point,
+    )
+    .expect("acorn_search_with_stats failed");
+
+    // The 2-hop branch must have fired at least once. With ~2.5%
+    // selectivity, almost every visited neighbor fails the predicate
+    // and is supposed to trigger the branch.
+    assert!(
+        stats.two_hop_invocations >= 1,
+        "ACORN 2-hop branch did not fire at ~2.5% selectivity: \
+         two_hop_invocations={}, two_hop_nodes_examined={}. \
+         likely cause: enable_two_hop wired wrong or the predicate-failing \
+         path was short-circuited.",
+        stats.two_hop_invocations,
+        stats.two_hop_nodes_examined,
+    );
+    // And it must have done real work (visited fresh nodes), not just
+    // re-encountered already-visited ones.
+    assert!(
+        stats.two_hop_nodes_examined >= 1,
+        "ACORN 2-hop branch fired ({} times) but examined zero new nodes. \
+         likely cause: SearchState dedup is masking the branch's contribution.",
+        stats.two_hop_invocations,
     );
 }
