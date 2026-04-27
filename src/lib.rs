@@ -37,10 +37,12 @@
 //! | **Dynamic Insert/Delete** | `fresh_graph::FreshGraphIndex` | `fresh_graph` | No |
 //! | **Sparse Vectors** (SPLADE/BM25) | `sparse_mips::SparseMipsIndex` | `sparse_mips` | No |
 //! | **High-d Compression** (768d+) | `rp_quant::RpQuantIndex` | `rp_quant` | No |
-//! | **Quantized Graph** (HNSW + RaBitQ) | `hnsw::SymphonyQGIndex` | `hnsw` + `ivf_rabitq` | No |
+//! | **Quantized Graph** (HNSW + RaBitQ, cosine) | `hnsw::SymphonyQGIndex` | `hnsw` + `ivf_rabitq` | No |
+//! | **Quantized Graph** (HNSW + RaBitQ, cosine + L2) | `hnsw::SymphonyQGVRIndex` | `hnsw` + `ivf_rabitq` | No |
 //! | **Binary Quantization** (1-bit + rerank) | `binary_index::BinaryFlatIndex` | `binary_index` | No |
 //! | **Out-of-Core** (SSD-based) | `diskann` | `diskann` (experimental) | Yes (file-based save/load; mmap planned) |
 //! | **4-bit Scalar Quant** (8x compression) | `sq4::SQ4Index` | `sq4` | No |
+//! | **8-bit Scalar Quant** (4x compression) | `hnsw::HNSWSq8Index` | `hnsw` + `sq8` | No |
 //!
 //! **Default features**: `hnsw`, `innr` (SIMD).
 //!
@@ -61,10 +63,10 @@
 //!
 //! ```toml
 //! # Minimal (HNSW + SIMD)
-//! vicinity = "0.6"
+//! vicinity = "0.7"
 //!
 //! # With quantization support
-//! vicinity = { version = "0.4", features = ["ivf_pq"] }
+//! vicinity = { version = "0.7", features = ["ivf_pq"] }
 //! ```
 //!
 //! # Notes (evidence-backed)

@@ -753,6 +753,15 @@ impl HNSWIndex {
     /// The vector's storage is not reclaimed until the index is rebuilt.
     /// Graph edges from/to deleted nodes remain intact for navigation;
     /// deleted nodes are filtered from final results only.
+    ///
+    /// # Persistence caveat
+    ///
+    /// Tombstones are *not* serialized by [`Self::save_to_writer`] or
+    /// [`Self::save_to_file`]: a tombstoned doc_id will reappear in search
+    /// results after a save / load roundtrip. For deletions that must
+    /// survive serialization, use [`Self::delete_with_repair`], which
+    /// physically removes graph edges and updates the entry point so the
+    /// deletion is captured by the persisted graph state.
     pub fn delete(&mut self, doc_id: u32) -> Result<(), RetrieveError> {
         let internal_id = self
             .doc_id_to_internal
@@ -1136,6 +1145,11 @@ impl HNSWIndex {
     /// The `metadata` store and `doc_id_to_internal` reverse map are not
     /// serialized. The reverse map is rebuilt on [`Self::load_from_reader`]; metadata
     /// must be re-added if filtered search is needed.
+    ///
+    /// **Tombstones are not serialized.** A doc_id removed via
+    /// [`Self::delete`] before this call will reappear in search results
+    /// after [`Self::load_from_reader`]. Use [`Self::delete_with_repair`]
+    /// for deletions that must survive a save / load roundtrip.
     #[cfg(feature = "serde")]
     pub fn save_to_writer<W: std::io::Write>(&self, writer: W) -> Result<(), RetrieveError> {
         serde_json::to_writer(writer, self).map_err(|e| RetrieveError::Serialization(e.to_string()))
@@ -1165,6 +1179,9 @@ impl HNSWIndex {
     /// `persistence`-gated `Directory` layer). Callers operating through a
     /// `Directory` should prefer that path -- it covers the same shape and
     /// composes with the rest of the durability stack (WAL, recovery).
+    ///
+    /// **Tombstones are not persisted.** See [`Self::save_to_writer`] for
+    /// details; for durable deletion, use [`Self::delete_with_repair`].
     #[cfg(feature = "serde")]
     pub fn save_to_file<P: AsRef<std::path::Path>>(&self, path: P) -> Result<(), RetrieveError> {
         let path = path.as_ref();

@@ -10,7 +10,7 @@
 //! # Feature Flag
 //!
 //! ```toml
-//! vicinity = { version = "0.6", features = ["fresh_graph"] }
+//! vicinity = { version = "0.7", features = ["fresh_graph"] }
 //! ```
 //!
 //! # Quick Start
@@ -85,6 +85,13 @@ impl Default for FreshGraphParams {
 }
 
 /// FreshGraph index.
+///
+/// Uses **cosine distance only**. Vectors are L2-normalized in
+/// [`Self::add_slice`] / [`Self::insert`]; callers do not need to
+/// pre-normalize. Pre-normalized input is also fine (the second
+/// normalization is a no-op up to f32 rounding). This module does not
+/// honor the [`crate::distance::DistanceMetric`] enum; for L2 or inner
+/// product on a streaming graph, use a different index.
 pub struct FreshGraphIndex {
     dimension: usize,
     params: FreshGraphParams,

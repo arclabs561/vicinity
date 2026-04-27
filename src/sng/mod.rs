@@ -5,7 +5,7 @@
 //! # Feature Flag
 //!
 //! ```toml
-//! vicinity = { version = "0.6", features = ["sng"] }
+//! vicinity = { version = "0.7", features = ["sng"] }
 //! ```
 //!
 //! # Status: Experimental

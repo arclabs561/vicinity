@@ -6,9 +6,13 @@
 Approximate nearest-neighbor search. Each algorithm is a separate
 feature flag. Depend on only what you use.
 
-Default distance is cosine. L2, angular, and inner product via
-`DistanceMetric`. For cosine, enable `auto_normalize` to L2-normalize
-on insert.
+Default distance is cosine; most graph indices L2-normalize on insert
+and operate on the cosine-equivalent unit sphere (so angular and inner
+product over normalized vectors fall out for free). True L2 distance is
+natively wired only in `ivf_avq` (which targets MIPS). The
+`DistanceMetric` enum in `distance.rs` is consumed by evaluation
+utilities and brute-force comparison; per-index metric selection is
+algorithm-specific.
 
 ## Which index?
 
@@ -16,7 +20,8 @@ on insert.
 Which index?
 ├── General purpose: HNSW (default)
 ├── Memory constrained: HNSW + RaBitQ (SymphonyQG) or IVF-PQ
-├── Disk-backed / large scale: DiskANN
+├── Disk-backed / large scale: DiskANN (experimental; file-based, mmap planned)
+├── Streaming insert/delete: FreshGraph (per-op latency) or LsmIndex (write throughput)
 ├── Filtered search: ACORN (metadata filters) or Curator (label filters)
 ├── Batch/static: IVF-PQ or IVF-AVQ
 └── Sparse vectors: SparseMIPS
@@ -138,11 +143,11 @@ Each algorithm has a named feature flag:
 | ACORN | `hnsw` | Filtered HNSW search with subgraph sampling (SIGMOD 2024) |
 | ESG | `esg` | Range-filtered search over numeric attributes |
 | SparseMIPS | `sparse_mips` | Graph index for sparse vectors (SPLADE/BM25) |
-| LEMUR | `lemur` | Late-interaction retrieval (multi-vector MIPS); inference-only |
+| LEMUR | `lemur` | Late-interaction MIPS; needs externally-provided encoder weights (no in-tree training); mean-pool used in place of OLS |
 | LSH | `lsh` | Cross-Polytope LSH (Andoni et al. 2015); single hash table + multiprobe |
 | LsmIndex | `hnsw` | LSM-tree tiered HNSW for streaming insert/delete/update workloads |
 | DiskANN | `diskann` | Vamana + SSD I/O layout; experimental |
-| SNG | `sng` | Small navigable graph; O(n^2) construction |
+| SNG | `sng` | OPT-SNG (auto-tuned sparse neighborhood graph); sub-quadratic build per arXiv:2509.15531 |
 | DEG | `hnsw` | Density-adaptive edge budgets (submodule of hnsw); O(n^2) |
 | KD-Tree | `kdtree` | Exact NN; fast for d <= 20 (experimental) |
 | Ball Tree | `balltree` | Exact NN; slightly better than KD-Tree for d=20-50 (experimental) |
