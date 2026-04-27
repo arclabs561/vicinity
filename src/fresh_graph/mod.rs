@@ -182,39 +182,50 @@ impl FreshGraphIndex {
             self.build_knn_graph_random();
         }
 
-        // RNG pruning pass: for each node, beam search for candidates then prune
+        // Initialize inbound_count from the kNN graph laid down by
+        // build_knn_graph_*. The orphan-protection helper below maintains
+        // it incrementally as edges are added or evicted.
+        let mut inbound_count: Vec<u32> = vec![0; n];
+        for nbrs in &self.neighbors {
+            for &id in nbrs {
+                if (id as usize) < inbound_count.len() {
+                    inbound_count[id as usize] += 1;
+                }
+            }
+        }
+
+        // RNG pruning pass: for each node, beam search for candidates then prune.
+        // Reverse edges go through `add_reverse_edge_protected` so that nodes
+        // whose only remaining inbound edge would be the one through this
+        // forward neighbor are kept (orphan protection -- invariant I2 of the
+        // delete-reinsert reachability test).
         for i in 0..n {
             let vi = self.get_vector(i).to_vec();
             let candidates = self.beam_search_internal(&vi, self.params.ef_construction, None);
             let selected = self.rng_prune(&vi, &candidates);
 
+            // Replacing self.neighbors[i] mutates the inbound counts of the
+            // old and new forward neighbors. Apply those deltas before the
+            // reverse-edge loop so the protection check sees a consistent
+            // count when it inspects neighbors[nid] further down.
             let old_neighbors = std::mem::replace(
                 &mut self.neighbors[i],
                 selected.iter().map(|&(id, _)| id).collect(),
             );
+            for &old in &old_neighbors {
+                if (old as usize) < inbound_count.len() && inbound_count[old as usize] > 0 {
+                    inbound_count[old as usize] -= 1;
+                }
+            }
+            for (id, _) in &selected {
+                if (*id as usize) < inbound_count.len() {
+                    inbound_count[*id as usize] += 1;
+                }
+            }
 
-            // Add reverse edges with degree cap + re-prune if needed
             let max_deg = self.params.max_degree;
             for &(neighbor_id, _) in &selected {
-                let nid = neighbor_id as usize;
-                if !self.neighbors[nid].contains(&(i as u32)) {
-                    if self.neighbors[nid].len() < max_deg {
-                        self.neighbors[nid].push(i as u32);
-                    } else {
-                        let nv = self.get_vector(nid).to_vec();
-                        let rev_cands: Vec<(u32, f32)> = self.neighbors[nid]
-                            .iter()
-                            .chain(std::iter::once(&(i as u32)))
-                            .map(|&id| {
-                                let d =
-                                    cosine_distance_normalized(&nv, self.get_vector(id as usize));
-                                (id, d)
-                            })
-                            .collect();
-                        let pruned = self.rng_prune(&nv, &rev_cands);
-                        self.neighbors[nid] = pruned.iter().map(|&(id, _)| id).collect();
-                    }
-                }
+                self.add_reverse_edge_protected(neighbor_id, i as u32, max_deg, &mut inbound_count);
             }
 
             drop(old_neighbors);
@@ -263,14 +274,15 @@ impl FreshGraphIndex {
         // RNG prune the candidate list
         let selected = self.rng_prune(&new_vec, &candidates);
 
-        // Set new node's neighbor list
+        // Set new node's neighbor list (forward edges).
         self.neighbors[new_id as usize] = selected.iter().map(|&(id, _)| id).collect();
 
-        // Build an inbound-degree count: for each node, how many neighbor
-        // lists reference it. Used below to protect orphan-prone nodes
-        // from being evicted by the reverse-edge prune. O(n * max_degree)
-        // per insert; acceptable for the n's this index targets, but a
-        // production-scale workload should maintain this incrementally.
+        // Build inbound_count over all neighbor lists. The
+        // `add_reverse_edge_protected` helper maintains it incrementally
+        // as edges are added or evicted. O(n * max_degree) per insert;
+        // acceptable for the n's this index targets, but a production-
+        // scale workload should maintain this incrementally across calls
+        // (see orphan_protection_scaling_probe for measured cost).
         let mut inbound_count: Vec<u32> = vec![0; self.num_vectors];
         for nbrs in &self.neighbors {
             for &id in nbrs {
@@ -279,94 +291,104 @@ impl FreshGraphIndex {
                 }
             }
         }
-        // Account for the forward edges from new_id we just added.
-        // (selected was applied above into self.neighbors[new_id], so
-        // those increments are already in inbound_count.)
 
-        // Add reverse edges with degree cap and orphan protection.
         let max_deg = self.params.max_degree;
         for &(neighbor_id, _) in &selected {
-            let nid = neighbor_id as usize;
-            if self.neighbors[nid].contains(&new_id) {
-                continue;
-            }
-            if self.neighbors[nid].len() < max_deg {
-                self.neighbors[nid].push(new_id);
-                inbound_count[new_id as usize] += 1;
-                continue;
-            }
-
-            // Degree is at max. Choose what to evict carefully: a candidate
-            // X whose only inbound edge is from this node F (`nid`) would
-            // become unreachable on eviction. Protect those by keeping
-            // them in the result set unconditionally; RNG-prune only over
-            // candidates with redundancy elsewhere.
-            //
-            // This addresses arxiv:2407.07871-style unreachability
-            // accumulation: original IDs that survived all deletes but
-            // whose only navigable in-edge happened to fall here.
-            let nv = self.get_vector(nid).to_vec();
-            let mut rev_cands: Vec<(u32, f32, bool)> = self.neighbors[nid]
-                .iter()
-                .copied()
-                .chain(std::iter::once(new_id))
-                .map(|id| {
-                    let d = cosine_distance_normalized(&nv, self.get_vector(id as usize));
-                    let is_orphan_if_evicted = inbound_count[id as usize] <= 1;
-                    (id, d, is_orphan_if_evicted)
-                })
-                .collect();
-
-            // Always include orphan-prone candidates; RNG-prune the rest.
-            let mut keepers: Vec<(u32, f32)> = rev_cands
-                .iter()
-                .filter(|(_, _, orphan)| *orphan)
-                .map(|&(id, d, _)| (id, d))
-                .collect();
-
-            // Cap orphan keepers at max_deg; if they overflow, the graph
-            // is already pathologically sparse and we can't honor every
-            // protection. Fall back to RNG-prune over all candidates.
-            if keepers.len() > max_deg {
-                rev_cands.sort_by(|a, b| a.1.total_cmp(&b.1));
-                let flat: Vec<(u32, f32)> = rev_cands.iter().map(|&(id, d, _)| (id, d)).collect();
-                let pruned = self.rng_prune(&nv, &flat);
-                keepers = pruned.iter().map(|&(id, d)| (id, d)).collect();
-            } else {
-                let remaining_slots = max_deg - keepers.len();
-                if remaining_slots > 0 {
-                    let unprotected: Vec<(u32, f32)> = rev_cands
-                        .iter()
-                        .filter(|(_, _, orphan)| !*orphan)
-                        .map(|&(id, d, _)| (id, d))
-                        .collect();
-                    let pruned = self.rng_prune(&nv, &unprotected);
-                    for (id, d) in pruned.into_iter().take(remaining_slots) {
-                        keepers.push((id, d));
-                    }
-                }
-            }
-
-            // Apply: rebuild neighbors[nid] and update inbound_count for
-            // any evictions / additions.
-            let new_set: std::collections::HashSet<u32> =
-                keepers.iter().map(|(id, _)| *id).collect();
-            let old_set: std::collections::HashSet<u32> =
-                self.neighbors[nid].iter().copied().collect();
-            for &evicted in old_set.difference(&new_set) {
-                if (evicted as usize) < inbound_count.len() && inbound_count[evicted as usize] > 0 {
-                    inbound_count[evicted as usize] -= 1;
-                }
-            }
-            for &added in new_set.difference(&old_set) {
-                if (added as usize) < inbound_count.len() {
-                    inbound_count[added as usize] += 1;
-                }
-            }
-            self.neighbors[nid] = keepers.iter().map(|(id, _)| *id).collect();
+            self.add_reverse_edge_protected(neighbor_id, new_id, max_deg, &mut inbound_count);
         }
 
         Ok(())
+    }
+
+    /// Add a reverse edge `nid <- new_id` with degree-cap eviction that
+    /// preserves graph reachability.
+    ///
+    /// Three branches:
+    /// 1. `nid` already lists `new_id`: nothing to do.
+    /// 2. `nid` is below `max_deg`: append `new_id`; increment its
+    ///    inbound count.
+    /// 3. `nid` is at `max_deg`: orphan-protected re-prune. Candidates
+    ///    are `neighbors[nid] ∪ {new_id}`. A candidate whose
+    ///    `inbound_count <= 1` would become unreachable if evicted
+    ///    (its only in-edge is the one through `nid`); those are kept
+    ///    unconditionally. RNG-prune chooses among the unprotected
+    ///    remainder for the remaining slots. If protected candidates
+    ///    overflow `max_deg`, fall back to plain RNG-prune over all
+    ///    (the graph is already pathologically sparse and can't honor
+    ///    every protection).
+    ///
+    /// `inbound_count` is updated in place.
+    fn add_reverse_edge_protected(
+        &mut self,
+        neighbor_id: u32,
+        new_id: u32,
+        max_deg: usize,
+        inbound_count: &mut [u32],
+    ) {
+        let nid = neighbor_id as usize;
+        if self.neighbors[nid].contains(&new_id) {
+            return;
+        }
+        if self.neighbors[nid].len() < max_deg {
+            self.neighbors[nid].push(new_id);
+            if (new_id as usize) < inbound_count.len() {
+                inbound_count[new_id as usize] += 1;
+            }
+            return;
+        }
+
+        let nv = self.get_vector(nid).to_vec();
+        let mut rev_cands: Vec<(u32, f32, bool)> = self.neighbors[nid]
+            .iter()
+            .copied()
+            .chain(std::iter::once(new_id))
+            .map(|id| {
+                let d = cosine_distance_normalized(&nv, self.get_vector(id as usize));
+                let is_orphan_if_evicted =
+                    (id as usize) < inbound_count.len() && inbound_count[id as usize] <= 1;
+                (id, d, is_orphan_if_evicted)
+            })
+            .collect();
+
+        let mut keepers: Vec<(u32, f32)> = rev_cands
+            .iter()
+            .filter(|(_, _, orphan)| *orphan)
+            .map(|&(id, d, _)| (id, d))
+            .collect();
+
+        if keepers.len() > max_deg {
+            rev_cands.sort_by(|a, b| a.1.total_cmp(&b.1));
+            let flat: Vec<(u32, f32)> = rev_cands.iter().map(|&(id, d, _)| (id, d)).collect();
+            let pruned = self.rng_prune(&nv, &flat);
+            keepers = pruned.iter().map(|&(id, d)| (id, d)).collect();
+        } else {
+            let remaining_slots = max_deg - keepers.len();
+            if remaining_slots > 0 {
+                let unprotected: Vec<(u32, f32)> = rev_cands
+                    .iter()
+                    .filter(|(_, _, orphan)| !*orphan)
+                    .map(|&(id, d, _)| (id, d))
+                    .collect();
+                let pruned = self.rng_prune(&nv, &unprotected);
+                for (id, d) in pruned.into_iter().take(remaining_slots) {
+                    keepers.push((id, d));
+                }
+            }
+        }
+
+        let new_set: std::collections::HashSet<u32> = keepers.iter().map(|(id, _)| *id).collect();
+        let old_set: std::collections::HashSet<u32> = self.neighbors[nid].iter().copied().collect();
+        for &evicted in old_set.difference(&new_set) {
+            if (evicted as usize) < inbound_count.len() && inbound_count[evicted as usize] > 0 {
+                inbound_count[evicted as usize] -= 1;
+            }
+        }
+        for &added in new_set.difference(&old_set) {
+            if (added as usize) < inbound_count.len() {
+                inbound_count[added as usize] += 1;
+            }
+        }
+        self.neighbors[nid] = keepers.iter().map(|(id, _)| *id).collect();
     }
 
     /// Mark a vector as deleted by its doc_id (logical tombstone).
