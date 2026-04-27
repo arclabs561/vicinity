@@ -1113,9 +1113,7 @@ mod tests {
             let cycles = (n / 4).max(50);
             let extra_pool = cycles + n;
             let data = make_vectors(extra_pool, dim, 0xC0FFEE);
-            let vec_at = |id: u32| -> &[f32] {
-                &data[id as usize * dim..(id as usize + 1) * dim]
-            };
+            let vec_at = |id: u32| -> &[f32] { &data[id as usize * dim..(id as usize + 1) * dim] };
 
             let mut index = FreshGraphIndex::new(dim, default_params()).unwrap();
             for i in 0..n as u32 {
@@ -1140,9 +1138,7 @@ mod tests {
             }
             let cycle_total_ms = t_cycle.elapsed().as_secs_f64() * 1000.0;
             let cycle_us_per_op = (cycle_total_ms * 1000.0) / cycles as f64;
-            println!(
-                "{n},{cycles},{dim},{build_ms:.1},{cycle_total_ms:.1},{cycle_us_per_op:.1}"
-            );
+            println!("{n},{cycles},{dim},{build_ms:.1},{cycle_total_ms:.1},{cycle_us_per_op:.1}");
         }
     }
 
