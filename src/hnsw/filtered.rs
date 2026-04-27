@@ -174,6 +174,30 @@ impl Ord for Candidate {
     }
 }
 
+/// Internal counters for an ACORN search.
+///
+/// Useful for regression guards that want to assert which branches fired
+/// (rather than only the final recall, which is a noisier proxy -- see
+/// `test_design_pitfalls.md`). Returned from
+/// [`acorn_search_with_stats`]; [`acorn_search`] discards it.
+///
+/// `#[non_exhaustive]`: new counters may be added without bumping major.
+#[derive(Clone, Copy, Debug, Default)]
+#[non_exhaustive]
+pub struct AcornStats {
+    /// Number of times the 2-hop expansion branch was entered, i.e. the
+    /// search visited a non-matching neighbor while
+    /// `AcornConfig::enable_two_hop` was set. Each entry triggers up to
+    /// `max_two_hop_neighbors` 2-hop visits.
+    pub two_hop_invocations: u64,
+    /// Total number of distinct 2-hop nodes actually examined across all
+    /// invocations. Bounded above by
+    /// `two_hop_invocations * max_two_hop_neighbors`. Zero when the
+    /// 2-hop branch never fired or every visited 2-hop node had been
+    /// seen already.
+    pub two_hop_nodes_examined: u64,
+}
+
 /// ACORN-style filtered search on HNSW graph.
 ///
 /// This function performs filtered k-NN search with adaptive two-hop expansion.
@@ -189,6 +213,9 @@ impl Ord for Candidate {
 ///
 /// # Returns
 /// Vector of (node_id, distance) pairs for nodes passing the filter.
+///
+/// Use [`acorn_search_with_stats`] when you also need the internal
+/// branch-fired counters (`AcornStats`) for testing.
 pub fn acorn_search<F, N, D>(
     k: usize,
     config: &AcornConfig,
@@ -202,6 +229,33 @@ where
     N: Fn(u32) -> Vec<u32>,
     D: Fn(u32) -> f32,
 {
+    acorn_search_with_stats(
+        k,
+        config,
+        filter,
+        get_neighbors,
+        compute_distance,
+        entry_point,
+    )
+    .map(|(results, _)| results)
+}
+
+/// Same as [`acorn_search`] but also returns the internal `AcornStats`
+/// counters. Equivalent in behavior; only the return type differs.
+pub fn acorn_search_with_stats<F, N, D>(
+    k: usize,
+    config: &AcornConfig,
+    filter: &F,
+    get_neighbors: N,
+    compute_distance: D,
+    entry_point: u32,
+) -> Result<(Vec<(u32, f32)>, AcornStats), RetrieveError>
+where
+    F: FilterPredicate,
+    N: Fn(u32) -> Vec<u32>,
+    D: Fn(u32) -> f32,
+{
+    let mut stats = AcornStats::default();
     let mut state = SearchState::new();
 
     // Result candidates (filtered nodes only)
@@ -285,6 +339,7 @@ where
             // gets its neighbors enqueued, preventing graph disconnection under
             // high selectivity.
             if config.enable_two_hop && !neighbor_passes {
+                stats.two_hop_invocations += 1;
                 let two_hop_neighbors = get_neighbors(neighbor);
                 let mut two_hop_count = 0;
 
@@ -297,6 +352,7 @@ where
                     if !state.visit(two_hop, two_hop_passes) {
                         continue;
                     }
+                    stats.two_hop_nodes_examined += 1;
 
                     let two_hop_dist = compute_distance(two_hop);
 
@@ -345,7 +401,7 @@ where
     result_vec.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
     result_vec.truncate(k);
 
-    Ok(result_vec)
+    Ok((result_vec, stats))
 }
 
 /// Selectivity regime for filtered search.
