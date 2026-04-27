@@ -363,7 +363,9 @@ fn search_returns_external_doc_ids_at_high_offset() {
     // a thread-local RNG.
     let mut state: u64 = 0xCAFE_F00D_DEAD_BEEF;
     let mut next_f32 = || -> f32 {
-        state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1);
         ((state >> 33) as f32) / (u32::MAX as f32) - 0.5
     };
 
@@ -421,7 +423,9 @@ fn zero_query_does_not_panic_with_auto_normalize() {
     // Populate with normal data.
     let mut state: u64 = 1;
     let mut next_f32 = || -> f32 {
-        state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1);
         ((state >> 33) as f32) / (u32::MAX as f32) - 0.5
     };
     for i in 0..50u32 {

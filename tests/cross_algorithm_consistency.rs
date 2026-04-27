@@ -21,24 +21,10 @@ use vicinity::hnsw::HNSWIndex;
 use vicinity::nsw::NSWIndex;
 use vicinity::sng::{SNGIndex, SNGParams};
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// Brute-force exact k-NN using cosine distance.
-///
-/// For normalized vectors the ranking is the same regardless of whether the
-/// index uses cosine, dot-product, or L2 internally.
-fn exact_knn(vectors: &[Vec<f32>], query: &[f32], k: usize) -> Vec<(u32, f32)> {
-    let mut dists: Vec<(u32, f32)> = vectors
-        .iter()
-        .enumerate()
-        .map(|(i, v)| (i as u32, vicinity::distance::cosine_distance(v, query)))
-        .collect();
-    dists.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
-    dists.truncate(k);
-    dists
-}
+// Use the shared `exact_knn_with_distances` helper from `common::`. For
+// normalized vectors the ranking is the same regardless of whether the
+// index uses cosine, dot-product, or L2 internally.
+use common::exact_knn_with_distances as exact_knn;
 
 // ---------------------------------------------------------------------------
 // Shared dataset

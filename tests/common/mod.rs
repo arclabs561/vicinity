@@ -56,6 +56,22 @@ pub fn brute_force_knn(query: &[f32], vectors: &[Vec<f32>], k: usize) -> Vec<u32
     dists.into_iter().take(k).map(|(id, _)| id).collect()
 }
 
+/// Like [`brute_force_knn`], but returns `(doc_id, distance)` pairs in sorted
+/// order. Useful for callers that compare distances or feed into
+/// [`recall_at_k_sets`].
+///
+/// Uses `f32::total_cmp` so NaN inputs sort deterministically.
+pub fn exact_knn_with_distances(vectors: &[Vec<f32>], query: &[f32], k: usize) -> Vec<(u32, f32)> {
+    let mut dists: Vec<(u32, f32)> = vectors
+        .iter()
+        .enumerate()
+        .map(|(i, v)| (i as u32, vicinity::distance::cosine_distance(v, query)))
+        .collect();
+    dists.sort_by(|a, b| a.1.total_cmp(&b.1));
+    dists.truncate(k);
+    dists
+}
+
 /// Recall@k: fraction of ground truth IDs found in search results.
 ///
 /// `results` is the ANN search output (doc_id, distance pairs).
