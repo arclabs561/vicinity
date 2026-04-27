@@ -344,9 +344,7 @@ impl FreshGraphIndex {
         // Fall back to a linear scan. This costs O(n) but only fires when
         // the deleted entry's whole neighborhood is also tombstoned, which
         // means the graph is already badly degraded.
-        if let Some(alt) = (0..self.num_vectors as u32)
-            .find(|&j| !self.deleted[j as usize])
-        {
+        if let Some(alt) = (0..self.num_vectors as u32).find(|&j| !self.deleted[j as usize]) {
             self.entry_point = alt;
         }
         // If even the linear scan fails, every node is deleted; leave
@@ -1018,24 +1016,38 @@ mod tests {
     ///
     /// arxiv:2407.07871 documents that naive HNSW variants accumulate
     /// unreachable nodes after delete-reinsert sequences (3-4% after
-    /// ~3000 cycles in the paper's setup). When this test was first run
-    /// against FreshGraph it hit a much steeper rate: 29 of 60 live IDs
-    /// (~48%) became unreachable after only 50 cycles, and 5 of 60 (~8%)
-    /// after 200. The unreachable set includes both newly inserted IDs and
-    /// original IDs that were never deleted — implicating an in-edge
-    /// repair gap on the delete path rather than an "outlier insertion"
-    /// failure. The medoid-based entry point may also be affected when
-    /// the initial-batch medoid is among the deleted nodes.
+    /// ~3000 cycles in the paper's setup). vicinity's FreshGraph hits a
+    /// steeper rate: 5 of 60 live IDs (~8%) unreachable after 200 cycles,
+    /// 29 of 60 (~48%) after only 50.
     ///
-    /// The test is kept (rather than dropped) so that any future fix
-    /// can flip it on by removing `#[ignore]`. The expected fix involves
-    /// either (a) repairing in-edges to deleted nodes during `delete()`,
-    /// or (b) re-running the medoid selection when the entry-point node
-    /// is deleted, or both.
+    /// The unreachable set is exclusively *original* IDs that were never
+    /// deleted, which rules out the obvious "delete didn't repair edges"
+    /// hypothesis. The bug is on the *insert* path. When an inserted
+    /// node's selected forward neighbor F is at `max_degree`, the
+    /// reverse-edge handler RNG-prunes the union `[neighbors[F]...,
+    /// new_id]` and replaces the list with the pruned subset (see
+    /// `insert` body around the `else` branch of the degree-cap check).
+    /// RNG-prune has no preference for long-existing edges; any of the
+    /// originals can be evicted. Over many cycles, an original ID can be
+    /// evicted from every list that still references it.
+    ///
+    /// One contributing cause was fixed in d977f64: when the entry
+    /// point's doc_id was deleted, `entry_point` was left pointing at
+    /// the tombstoned internal index. `delete()` now calls
+    /// `repromote_entry_point()`. That fix did NOT close this test (same
+    /// 5 unreachable IDs before and after), confirming the eviction
+    /// mechanism above is the load-bearing one.
+    ///
+    /// Fixing the eviction needs either Wolverine-style MSP-aware repair
+    /// on delete (VLDB 2025), or eviction-protection in insert's reverse-
+    /// edge prune (e.g., never evict a node whose only remaining
+    /// in-edge would be the one being considered). Both are deeper than
+    /// the targeted entry-point fix shipped in d977f64.
     #[test]
     #[ignore = "open bug: ~8-48% of live IDs become unreachable after 50-200 \
-                delete-reinsert cycles. Likely an in-edge repair gap on the \
-                delete path or stale medoid entry point. See test body."]
+                delete-reinsert cycles. Mechanism: insert reverse-edge RNG-prune \
+                evicts long-existing neighbors. See test body for the proposed \
+                Wolverine / eviction-protection fixes."]
     fn delete_reinsert_cycles_preserve_reachability() {
         let dim = 16;
         let n = 60;
