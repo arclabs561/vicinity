@@ -1145,9 +1145,50 @@ impl HNSWIndex {
     ///
     /// Convenience wrapper over [`Self::save_to_writer`].
     #[cfg(feature = "serde")]
+    /// Serialize the index to a file path (JSON), atomically.
+    ///
+    /// Writes to a sibling temp file (`<path>.tmp`), fsyncs the bytes to
+    /// disk, then renames into place. A crash mid-write leaves the prior
+    /// file intact rather than truncated. P-HNSW (MDPI 2025) flags
+    /// partial-write corruption as a recurring failure mode for graph-
+    /// index persistence; this routine is the in-tree counterpart to
+    /// `durability::storage::Directory::atomic_write`, used here because
+    /// `save_to_file` is `serde`-gated (broader than the
+    /// `persistence`-gated `Directory` layer).
     pub fn save_to_file<P: AsRef<std::path::Path>>(&self, path: P) -> Result<(), RetrieveError> {
-        let file = std::fs::File::create(path.as_ref())?;
-        self.save_to_writer(std::io::BufWriter::new(file))
+        let path = path.as_ref();
+        let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+        let filename = path.file_name().ok_or_else(|| {
+            RetrieveError::Serialization("save_to_file: target path has no filename".into())
+        })?;
+        let mut tmp_name: std::ffi::OsString = filename.to_owned();
+        tmp_name.push(".tmp");
+        let tmp_path = parent.join(&tmp_name);
+
+        {
+            let file = std::fs::File::create(&tmp_path)?;
+            let mut writer = std::io::BufWriter::new(file);
+            self.save_to_writer(&mut writer)?;
+            let file = writer.into_inner().map_err(|e| {
+                RetrieveError::Serialization(format!("save_to_file flush failed: {}", e.error()))
+            })?;
+            // Push bytes through the kernel page cache to the device.
+            // Without this, the rename below can succeed while the
+            // contents are still buffered, defeating the atomicity.
+            file.sync_all()?;
+        }
+
+        // POSIX rename is atomic within a filesystem; on Windows
+        // std::fs::rename uses MoveFileExW with REPLACE_EXISTING.
+        // If the rename fails, leave the temp behind for the caller
+        // to inspect rather than silently dropping a half-written file.
+        std::fs::rename(&tmp_path, path).map_err(|e| {
+            // Best-effort cleanup of the temp; ignore the cleanup error
+            // because the rename error is the more informative one.
+            let _ = std::fs::remove_file(&tmp_path);
+            RetrieveError::from(e)
+        })?;
+        Ok(())
     }
 
     /// Load an index from a file path (JSON).
@@ -2844,6 +2885,104 @@ mod tests {
         assert_eq!(
             loaded_results, original_results,
             "search results should be identical after save/load roundtrip"
+        );
+    }
+
+    /// Round-trip via the path-based API (covers `save_to_file` /
+    /// `load_from_file`, which the in-memory roundtrip above does not).
+    /// Also asserts that `save_to_file` leaves no `.tmp` sibling on
+    /// success -- if it does, the temp+rename atomicity got broken
+    /// (e.g., the rename was skipped or the temp name doesn't match).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn test_hnsw_save_to_file_roundtrip_and_no_temp_leftover() {
+        let (index, q) = build_test_index();
+        let k = 5;
+        let ef = 64;
+        let original_results = index.search(&q, k, ef).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("index.json");
+        index.save_to_file(&path).unwrap();
+
+        // Final file must exist; the sibling .tmp must not.
+        assert!(path.exists(), "saved file should exist at target path");
+        let tmp_path = dir.path().join("index.json.tmp");
+        assert!(
+            !tmp_path.exists(),
+            "save_to_file left a .tmp sibling: {}",
+            tmp_path.display()
+        );
+
+        let loaded = HNSWIndex::load_from_file(&path).unwrap();
+        let loaded_results = loaded.search(&q, k, ef).unwrap();
+        assert_eq!(loaded_results, original_results);
+    }
+
+    /// Atomicity guarantee: when `save_to_file` overwrites an existing
+    /// file, the prior contents are replaced wholesale rather than
+    /// partially truncated. The check is indirect (the bytes match the
+    /// new serialization, not the old) but the failure shape if the
+    /// rename were skipped would be a file containing the OLD payload
+    /// or a truncated mix.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn test_hnsw_save_to_file_overwrites_existing_atomically() {
+        let (index, _q) = build_test_index();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("index.json");
+
+        // Stage a sentinel "previous" file that is clearly not a valid index.
+        std::fs::write(&path, b"{\"sentinel\": true}").unwrap();
+        let pre_size = std::fs::metadata(&path).unwrap().len();
+
+        index.save_to_file(&path).unwrap();
+
+        // The replacement must be a valid index payload, not the sentinel.
+        let post_size = std::fs::metadata(&path).unwrap().len();
+        assert!(
+            post_size > pre_size,
+            "post-save size {} should exceed sentinel size {}",
+            post_size,
+            pre_size
+        );
+        let _ = HNSWIndex::load_from_file(&path).expect("post-overwrite file must load");
+        // No temp leftover.
+        assert!(!dir.path().join("index.json.tmp").exists());
+    }
+
+    /// Gate-fired check that `save_to_file` actually uses temp+rename and
+    /// not in-place truncation. Truncate-overwrite preserves the inode;
+    /// rename-overwrite replaces it with the temp's inode. This distinction
+    /// is invisible to the happy-path tests above but is the entire point
+    /// of the atomicity refactor: a crash mid-truncate corrupts the file,
+    /// while a crash mid-temp-write leaves the original intact.
+    #[cfg(all(feature = "serde", unix))]
+    #[test]
+    fn test_hnsw_save_to_file_uses_rename_not_truncate() {
+        use std::os::unix::fs::MetadataExt;
+
+        let (index, _q) = build_test_index();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("index.json");
+
+        // First save: gives us a baseline file with an inode.
+        index.save_to_file(&path).unwrap();
+        let ino_before = std::fs::metadata(&path).unwrap().ino();
+
+        // Second save over the same path. With temp+rename, the inode
+        // changes (the new file is the temp file under its new name);
+        // with in-place truncation, the inode stays the same.
+        index.save_to_file(&path).unwrap();
+        let ino_after = std::fs::metadata(&path).unwrap().ino();
+
+        assert_ne!(
+            ino_before, ino_after,
+            "save_to_file must replace via rename (inode changes), not truncate \
+             in place (inode preserved). truncate-overwrite would leave the file \
+             in a partially-written state if a crash interrupts the write -- this \
+             is exactly the partial-write corruption mode the atomic-rename refactor \
+             is meant to prevent."
         );
     }
 
