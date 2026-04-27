@@ -45,6 +45,14 @@ series is unstable: minor bumps may break the public API.
   is responsible for L2-normalization. Un-normalized inner-product
   ranking is dominated by magnitude, which is rarely the intended
   retrieval behavior (Milvus discussion #32479).
+- `FreshGraph::delete` now repromotes `entry_point` when the deleted
+  node was the medoid. Previously the entry point was left pointing at
+  the tombstoned internal index after deletion, which left subsequent
+  searches and inserts rooted at a dead anchor. The fix prefers a live
+  neighbor of the stale entry, falling back to a linear scan only if
+  the entire neighborhood is tombstoned. (This change does not close
+  the open delete-reinsert reachability bug noted under Added; that
+  bug is in the insert reverse-edge prune, not the delete path.)
 
 ## [0.7.0] - 2026-04-26
 

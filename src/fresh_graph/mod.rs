@@ -308,10 +308,50 @@ impl FreshGraphIndex {
             if self.doc_ids[i] == doc_id && !self.deleted[i] {
                 self.deleted[i] = true;
                 self.num_deleted += 1;
+
+                // If the deleted node was the entry point, promote a live
+                // neighbor (preferred) or any live node (fallback) so future
+                // searches and inserts start from a non-tombstoned anchor.
+                // Without this, repeated delete-reinsert cycles that happen
+                // to victimize the medoid leave the search beam rooted in a
+                // tombstone whose neighbor list points at a subgraph the
+                // post-cycle live set may have drifted away from.
+                if self.entry_point == i as u32 {
+                    self.repromote_entry_point();
+                }
+
                 return Ok(true);
             }
         }
         Ok(false)
+    }
+
+    /// Pick a new entry point after the previous one was deleted. Prefer a
+    /// live neighbor of the now-tombstoned entry (preserves graph locality);
+    /// otherwise scan for any live node.
+    fn repromote_entry_point(&mut self) {
+        let stale = self.entry_point as usize;
+
+        // Try the stale entry's own neighbors first; one of them is almost
+        // certainly still live and well-connected.
+        for &candidate in &self.neighbors[stale] {
+            if !self.deleted[candidate as usize] {
+                self.entry_point = candidate;
+                return;
+            }
+        }
+
+        // Fall back to a linear scan. This costs O(n) but only fires when
+        // the deleted entry's whole neighborhood is also tombstoned, which
+        // means the graph is already badly degraded.
+        if let Some(alt) = (0..self.num_vectors as u32)
+            .find(|&j| !self.deleted[j as usize])
+        {
+            self.entry_point = alt;
+        }
+        // If even the linear scan fails, every node is deleted; leave
+        // entry_point alone. search() / insert() will handle an empty live
+        // set higher up.
     }
 
     /// Search for the k nearest neighbors of a query vector.
