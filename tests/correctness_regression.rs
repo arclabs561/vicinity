@@ -276,9 +276,15 @@ mod nsw_tests {
         }
 
         let avg_recall = total_recall / num_queries as f32;
+        // Empirical baseline at these parameters (m=16, ef_construction=50,
+        // ef_search=50, n=200, dim=16) is recall@5 ~ 1.0. Floor at 0.9 gives
+        // 10pp slack for legit construction-time noise but catches a real
+        // regression that drops from ~1.0 to ~0.85. The previous 0.6 floor
+        // would pass at recall=0.61, masking a 40pp construction-quality
+        // collapse.
         assert!(
-            avg_recall >= 0.6,
-            "NSW recall={avg_recall:.3} below 0.6 (construction quality regression)"
+            avg_recall >= 0.9,
+            "NSW recall={avg_recall:.3} below 0.9 (construction quality regression)"
         );
     }
 
