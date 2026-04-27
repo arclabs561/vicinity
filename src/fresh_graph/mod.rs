@@ -97,6 +97,14 @@ pub struct FreshGraphIndex {
     /// Per-node adjacency lists (internal IDs).
     neighbors: Vec<SmallVec<[u32; 16]>>,
 
+    /// In-edge count per node, maintained incrementally across `add_slice`,
+    /// `build`, `insert`, and `compact`. Drives the orphan-protection check
+    /// in `add_reverse_edge_protected` (invariant I2). Edges from tombstoned
+    /// nodes still count: search traverses through tombstones, so those
+    /// in-edges are real for reachability purposes until `compact` removes
+    /// the source nodes and rebuilds the count.
+    inbound_count: Vec<u32>,
+
     /// Tombstone flags. True = deleted (traversed but excluded from results).
     deleted: Vec<bool>,
     num_deleted: usize,
@@ -126,6 +134,7 @@ impl FreshGraphIndex {
             num_vectors: 0,
             doc_ids: Vec::new(),
             neighbors: Vec::new(),
+            inbound_count: Vec::new(),
             deleted: Vec::new(),
             num_deleted: 0,
             entry_point: 0,
@@ -158,6 +167,21 @@ impl FreshGraphIndex {
         Ok(())
     }
 
+    /// Recompute `inbound_count` from scratch over the current neighbor lists.
+    /// O(n × avg_degree). Used after wholesale graph mutations
+    /// (`build_knn_graph_*`, `compact`, `ensure_connectivity`) where
+    /// incremental tracking would be more invasive than the one-shot cost.
+    fn recompute_inbound_count(&mut self) {
+        self.inbound_count = vec![0; self.num_vectors];
+        for nbrs in &self.neighbors {
+            for &id in nbrs {
+                if (id as usize) < self.inbound_count.len() {
+                    self.inbound_count[id as usize] += 1;
+                }
+            }
+        }
+    }
+
     /// Build the initial graph from staged vectors.
     ///
     /// After `build`, use `insert` for new vectors and `delete` for removals.
@@ -183,22 +207,17 @@ impl FreshGraphIndex {
         }
 
         // Initialize inbound_count from the kNN graph laid down by
-        // build_knn_graph_*. The orphan-protection helper below maintains
-        // it incrementally as edges are added or evicted.
-        let mut inbound_count: Vec<u32> = vec![0; n];
-        for nbrs in &self.neighbors {
-            for &id in nbrs {
-                if (id as usize) < inbound_count.len() {
-                    inbound_count[id as usize] += 1;
-                }
-            }
-        }
+        // build_knn_graph_*. After this point the helper maintains it
+        // incrementally as edges are added or evicted, and the per-row
+        // forward-edge swap below adjusts it explicitly.
+        self.recompute_inbound_count();
 
         // RNG pruning pass: for each node, beam search for candidates then prune.
         // Reverse edges go through `add_reverse_edge_protected` so that nodes
         // whose only remaining inbound edge would be the one through this
         // forward neighbor are kept (orphan protection -- invariant I2 of the
         // delete-reinsert reachability test).
+        let mut inbound_count = std::mem::take(&mut self.inbound_count);
         for i in 0..n {
             let vi = self.get_vector(i).to_vec();
             let candidates = self.beam_search_internal(&vi, self.params.ef_construction, None);
@@ -230,9 +249,13 @@ impl FreshGraphIndex {
 
             drop(old_neighbors);
         }
+        self.inbound_count = inbound_count;
 
-        // Ensure all nodes are reachable from the entry point
+        // Ensure all nodes are reachable from the entry point. The bridge
+        // edges this adds are not tracked through the helper, so the
+        // count is recomputed once after.
         self.ensure_connectivity();
+        self.recompute_inbound_count();
 
         self.built = true;
         Ok(())
@@ -262,6 +285,9 @@ impl FreshGraphIndex {
         self.deleted.push(false);
         self.num_vectors += 1;
         self.neighbors.push(SmallVec::new());
+        // Track the new node in inbound_count starting at 0; the forward-
+        // and reverse-edge phases below update it as edges are written.
+        self.inbound_count.push(0);
 
         let new_vec = self.get_vector(new_id as usize).to_vec();
 
@@ -274,28 +300,25 @@ impl FreshGraphIndex {
         // RNG prune the candidate list
         let selected = self.rng_prune(&new_vec, &candidates);
 
-        // Set new node's neighbor list (forward edges).
+        // Set new node's neighbor list (forward edges) and increment the
+        // inbound_count of every forward neighbor that just gained an
+        // in-edge from new_id.
         self.neighbors[new_id as usize] = selected.iter().map(|&(id, _)| id).collect();
-
-        // Build inbound_count over all neighbor lists. The
-        // `add_reverse_edge_protected` helper maintains it incrementally
-        // as edges are added or evicted. O(n * max_degree) per insert;
-        // acceptable for the n's this index targets, but a production-
-        // scale workload should maintain this incrementally across calls
-        // (see orphan_protection_scaling_probe for measured cost).
-        let mut inbound_count: Vec<u32> = vec![0; self.num_vectors];
-        for nbrs in &self.neighbors {
-            for &id in nbrs {
-                if (id as usize) < inbound_count.len() {
-                    inbound_count[id as usize] += 1;
-                }
+        for &(f, _) in &selected {
+            if (f as usize) < self.inbound_count.len() {
+                self.inbound_count[f as usize] += 1;
             }
         }
 
+        // Reverse-edge phase. The helper takes `inbound_count` by `&mut [u32]`
+        // so it can update counts as it appends or evicts; mem::take satisfies
+        // the borrow checker without copying.
         let max_deg = self.params.max_degree;
+        let mut inbound_count = std::mem::take(&mut self.inbound_count);
         for &(neighbor_id, _) in &selected {
             self.add_reverse_edge_protected(neighbor_id, new_id, max_deg, &mut inbound_count);
         }
+        self.inbound_count = inbound_count;
 
         Ok(())
     }
@@ -545,6 +568,7 @@ impl FreshGraphIndex {
             self.num_vectors = 0;
             self.doc_ids.clear();
             self.neighbors.clear();
+            self.inbound_count.clear();
             self.deleted.clear();
             self.num_deleted = 0;
             self.entry_point = 0;
@@ -584,8 +608,11 @@ impl FreshGraphIndex {
         self.num_deleted = 0;
         self.entry_point = new_entry;
 
-        // Re-establish connectivity lost when deleted nodes were removed
+        // Re-establish connectivity lost when deleted nodes were removed.
+        // ensure_connectivity may add bridge edges that bypass the helper,
+        // so the count is recomputed once after both steps complete.
         self.ensure_connectivity();
+        self.recompute_inbound_count();
 
         Ok(())
     }
@@ -1108,14 +1135,24 @@ mod tests {
         assert!(index.add(0, vec![1.0; 16]).is_err());
     }
 
-    /// Manual scaling probe for the orphan-protection cost in `insert()`.
+    /// Manual scaling probe for orphan-protection cost in `insert()`.
     ///
-    /// `insert()`'s reverse-edge prune rebuilds an `inbound_count: Vec<u32>`
-    /// over the entire graph each call, costing `O(n * max_degree)` per
-    /// insert. This test prints per-op latency at growing `n` so a
-    /// future change considering an incremental inbound-count
-    /// maintenance can compare against a measured baseline rather than a
-    /// hypothetical one.
+    /// Two costs interact in `insert()`'s reverse-edge phase:
+    ///
+    /// 1. The orphan-protected RNG-prune in `add_reverse_edge_protected`
+    ///    fires once per forward neighbor (up to `max_degree` times),
+    ///    each call doing O(max_degree²) distance work. This dominates
+    ///    at small n once every node is at cap.
+    ///
+    /// 2. `inbound_count` was previously rebuilt from scratch per call at
+    ///    `O(n × max_degree)`. As of v0.7.2 it is maintained as a struct
+    ///    field across calls, so this term drops out.
+    ///
+    /// Together: per-insert cost was `O(max_degree²) + O(n × max_degree)`
+    /// and is now `O(max_degree²)` — flat in n once the at-cap regime is
+    /// reached. The probe walks `n` past the prior 2000-cap so the
+    /// flatness is visible (without incremental tracking the per-op cost
+    /// would grow linearly with n past the cap-saturation point).
     ///
     /// Marked `#[ignore]` because it's a measurement, not a regression
     /// guard. Run with:
@@ -1130,9 +1167,9 @@ mod tests {
         println!("# orphan-protection scaling probe");
         println!("# n, cycles, dim, build_ms, cycle_total_ms, cycle_us_per_op");
 
-        for &n in &[100usize, 500, 1000, 2000] {
+        for &n in &[100usize, 500, 1000, 2000, 5000, 10000] {
             let dim = 32;
-            let cycles = (n / 4).max(50);
+            let cycles = (n / 4).clamp(50, 500);
             let extra_pool = cycles + n;
             let data = make_vectors(extra_pool, dim, 0xC0FFEE);
             let vec_at = |id: u32| -> &[f32] { &data[id as usize * dim..(id as usize + 1) * dim] };
