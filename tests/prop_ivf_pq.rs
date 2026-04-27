@@ -4,7 +4,7 @@
 //! result count bounds.
 
 #![cfg(feature = "ivf_pq")]
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::needless_update)]
 
 #[path = "common/mod.rs"]
 mod common;

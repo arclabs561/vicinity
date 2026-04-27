@@ -854,7 +854,7 @@ fn test_acorn_low_selectivity_returns_valid_results() {
         .collect();
 
     // ~2.5% selectivity (one in forty): ten predicate-passing IDs out of 400.
-    let category_of = |id: u32| -> bool { id % 40 == 0 };
+    let category_of = |id: u32| -> bool { id.is_multiple_of(40) };
 
     let mut graph: Vec<HashSet<u32>> = (0..n).map(|_| HashSet::new()).collect();
     for i in 0..n {
