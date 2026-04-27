@@ -260,9 +260,7 @@ mod tests {
 
     #[test]
     fn test_create_index() {
-        let index = NSWIndex::new(4, 8, 8);
-        assert!(index.is_ok());
-        let index = index.unwrap();
+        let index = NSWIndex::new(4, 8, 8).expect("NSWIndex::new must succeed for valid params");
         assert_eq!(index.dimension, 4);
         assert_eq!(index.num_vectors, 0);
     }

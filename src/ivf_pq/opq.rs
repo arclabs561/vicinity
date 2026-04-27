@@ -312,8 +312,8 @@ mod tests {
 
         let mut opq =
             OptimizedProductQuantizer::new(dimension, num_codebooks, codebook_size).unwrap();
-        let result = opq.fit(&data, num_vectors, 2);
-        assert!(result.is_ok());
+        opq.fit(&data, num_vectors, 2)
+            .expect("opq fit must succeed on valid training data");
 
         // Should have learned a rotation
         assert!(opq.rotation.is_some());

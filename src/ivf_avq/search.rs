@@ -307,9 +307,8 @@ mod tests {
             codebook_size: 256,
             seed: 42,
         };
-        let index = IVFAVQIndex::new(4, params);
-        assert!(index.is_ok());
-        let index = index.unwrap();
+        let index =
+            IVFAVQIndex::new(4, params).expect("IVFAVQIndex::new must succeed for valid params");
         assert_eq!(index.dimension, 4);
         assert_eq!(index.num_vectors, 0);
     }

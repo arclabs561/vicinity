@@ -291,7 +291,9 @@ mod tests {
         let mut index = VamanaIndex::new(128, params).unwrap();
 
         let vector = vec![0.1; 128];
-        assert!(index.add(0, vector).is_ok());
+        index
+            .add(0, vector)
+            .expect("add must succeed on a fresh index");
         assert_eq!(index.num_vectors, 1);
     }
 
