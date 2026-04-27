@@ -290,7 +290,7 @@ proptest! {
             }
         }
 
-        // Should return k results per query (graph stays connected enough)
+        // Structural: graph stays connected enough to return k results per query.
         let expected_min = queries.len() * k;
         let recall_fraction = total_results as f64 / expected_min as f64;
         prop_assert!(
@@ -303,6 +303,44 @@ proptest! {
             total_results,
             expected_min,
         );
+
+        // Quality guard: real recall against a brute-force oracle over the
+        // surviving (non-deleted) vectors. The structural checks above
+        // confirm the index returns k non-deleted ids per query, but a
+        // disconnected graph that returns random non-deleted ids would
+        // pass them. Spot-checking one query is enough to catch a
+        // recall-collapse regression without inflating proptest cost.
+        if let Some(q) = queries.first() {
+            let q_norm = normalize(q);
+            let results = idx.search(&q_norm, k, 100).unwrap();
+            let surviving: Vec<Vec<f32>> = (num_delete..n)
+                .map(|i| _vectors[i].clone())
+                .collect();
+            // Map surviving doc_ids back to their post-deletion ids.
+            let mut by_dist: Vec<(u32, f32)> = (num_delete..n)
+                .map(|i| {
+                    let d = vicinity::distance::cosine_distance(
+                        &q_norm,
+                        &surviving[i - num_delete],
+                    );
+                    (i as u32, d)
+                })
+                .collect();
+            by_dist.sort_by(|a, b| a.1.total_cmp(&b.1));
+            let gt: std::collections::HashSet<u32> =
+                by_dist.iter().take(k).map(|(id, _)| *id).collect();
+            let hits = results.iter().filter(|(id, _)| gt.contains(id)).count();
+            let recall = hits as f64 / k as f64;
+            prop_assert!(
+                recall >= 0.5,
+                "post-delete recall@k = {:.2} on first query (deleted {} of {}, k={}); \
+                 expected >= 0.5",
+                recall,
+                num_delete,
+                n,
+                k,
+            );
+        }
     }
 }
 

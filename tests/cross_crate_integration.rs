@@ -104,10 +104,14 @@ mod dependency_verification {
             "cosine distance should be ~0.293, got {}",
             cos_d
         );
-        // Expected L2: sqrt((1-0.707)^2 + 0.707^2) ≈ 0.586 (squared: ~0.586)
+        // Expected L2: sqrt((1-0.707)^2 + 0.707^2 + 0) = sqrt(0.0859 + 0.4998)
+        //            = sqrt(0.5857) ≈ 0.7653.
+        // Tight bound rules out a wrong-by-a-power-of-two regression
+        // (e.g., returning the squared value ~0.586) that a `> 0.1`
+        // assertion would silently accept.
         assert!(
-            l2_d > 0.1,
-            "l2 distance should be meaningfully positive, got {}",
+            (l2_d - 0.7653).abs() < 0.001,
+            "l2 distance should be ~0.7653, got {}",
             l2_d
         );
     }
