@@ -7,6 +7,34 @@ series is unstable: minor bumps may break the public API.
 
 ## [Unreleased]
 
+### Added
+
+- `tests/edge_cases.rs::search_returns_external_doc_ids_at_high_offset`
+  pins the external-doc_id contract at `u32::MAX - 200` (catches a
+  regression where the search path returns an internal slot index).
+- `tests/edge_cases.rs::zero_query_does_not_panic_with_auto_normalize`
+  pins the documented zero-query path (`src/hnsw/graph.rs:1406`): finite
+  distances or an explicit error, never a panic on the 0/0 normalization
+  step.
+- `src/hnsw/graph.rs::tests::test_delete_with_repair_recall_floor_against_ground_truth`
+  is a recall-floor companion to the existing
+  `test_delete_with_repair_maintains_recall`. The original asserts result
+  count and absence-of-deleted-IDs; this adds a recall-vs-brute-force
+  ground-truth assertion at >=0.7 after deleting 20% of nodes.
+- `tests/hnsw_integration_tests.rs::test_acorn_low_selectivity_returns_valid_results`
+  guards ACORN at ~2.5% predicate selectivity. An earlier draft of this
+  test compared `enable_two_hop` true vs false and asserted a positive
+  recall gap; in measurement the gap flipped sign at sparse selectivity
+  (2-hop adds candidates that displace better ones in a tight beam).
+  Reframed as a sparse-predicate regression guard with a 0.5 recall floor.
+
+### Changed
+
+- `DistanceMetric::InnerProduct` doc comment now states that the caller
+  is responsible for L2-normalization. Un-normalized inner-product
+  ranking is dominated by magnitude, which is rarely the intended
+  retrieval behavior (Milvus discussion #32479).
+
 ## [0.7.0] - 2026-04-26
 
 ### Added

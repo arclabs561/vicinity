@@ -26,6 +26,18 @@ pub enum DistanceMetric {
     /// Angular distance `arccos(cos(a,b)) / pi`, in `[0,1]`.
     Angular,
     /// Inner product distance `-dot(a,b)` (for maximum inner product search).
+    ///
+    /// Caller is responsible for ensuring vectors are L2-normalized when
+    /// they want angular semantics. Inner product on un-normalized vectors
+    /// ranks results by magnitude as much as by direction: a vector with
+    /// twice the norm of another but the same direction looks "closer"
+    /// under IP, which is rarely the intended retrieval behavior. This
+    /// failure mode is silent (no error, just wrong results) — see e.g.
+    /// Milvus discussion #32479.
+    ///
+    /// Use [`DistanceMetric::Cosine`] (or pre-normalize and then use IP
+    /// at the cost of one normalization per query) to get magnitude-
+    /// invariant similarity.
     InnerProduct,
 }
 
