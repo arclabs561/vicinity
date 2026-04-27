@@ -9,7 +9,7 @@
 //! # Feature Flag
 //!
 //! ```toml
-//! vicinity = { version = "0.6", features = ["diskann"] }
+//! vicinity = { version = "0.7", features = ["diskann"] }
 //! ```
 //!
 //! # Status: Experimental

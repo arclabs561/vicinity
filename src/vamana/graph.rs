@@ -41,7 +41,13 @@ impl Default for VamanaParams {
 #[cfg(feature = "vamana")]
 /// Vamana index for approximate nearest neighbor search.
 ///
-/// Uses two-pass construction (RND then RRND) for high-quality graph structure.
+/// Uses two-pass construction (RND then RRND) for high-quality graph
+/// structure.
+///
+/// **Cosine distance only.** Input vectors are L2-normalized in
+/// [`Self::add`]; pre-normalization is optional. The
+/// [`crate::distance::DistanceMetric`] enum is not honored — for L2 or
+/// inner product on a Vamana-style graph, a different index is needed.
 pub struct VamanaIndex {
     /// Vector dimension
     pub(crate) dimension: usize,

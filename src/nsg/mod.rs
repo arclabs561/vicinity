@@ -8,7 +8,7 @@
 //! # Feature Flag
 //!
 //! ```toml
-//! vicinity = { version = "0.6", features = ["nsg"] }
+//! vicinity = { version = "0.7", features = ["nsg"] }
 //! ```
 //!
 //! # Quick Start

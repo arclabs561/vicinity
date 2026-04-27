@@ -7,7 +7,7 @@
 //! # Feature Flag
 //!
 //! ```toml
-//! vicinity = { version = "0.6", features = ["esg"] }
+//! vicinity = { version = "0.7", features = ["esg"] }
 //! ```
 //!
 //! # Quick Start
@@ -43,10 +43,28 @@
 use crate::RetrieveError;
 
 /// ESG parameters.
+///
+/// **Note on the implementation**: this module currently builds a single
+/// HNSW over all points and applies the attribute range as a post-filter
+/// on the search candidate set. The original ESG paper (Yang et al. 2025)
+/// describes a partition-aware structure that constrains edges to nodes
+/// sharing attribute intervals; that structure is not yet implemented
+/// here. For an explicit predicate filter on top of HNSW, see
+/// [`crate::hnsw::filtered`] / ACORN.
 #[derive(Clone, Debug)]
 pub struct EsgParams {
-    /// Number of checkpoints per direction. Retained for API compatibility;
-    /// no longer used internally.
+    /// Number of checkpoints per direction.
+    ///
+    /// Kept on the struct for API compatibility but unused: the partition-
+    /// aware structure that consumed this parameter was never wired up,
+    /// and the post-filter implementation that ships today does not need
+    /// it. Will be removed in a future minor when the partition-aware
+    /// implementation lands or when this module is collapsed into
+    /// [`crate::hnsw::filtered`].
+    #[deprecated(
+        since = "0.7.3",
+        note = "unused; the partition-aware path that consumed it was never implemented"
+    )]
     pub num_checkpoints: usize,
     /// HNSW M parameter for index construction.
     pub hnsw_m: usize,
@@ -58,6 +76,7 @@ pub struct EsgParams {
 
 impl Default for EsgParams {
     fn default() -> Self {
+        #[allow(deprecated)]
         Self {
             num_checkpoints: 16,
             hnsw_m: 16,
@@ -273,7 +292,7 @@ impl EsgIndex {
 
 #[cfg(test)]
 #[cfg(feature = "hnsw")]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, deprecated)]
 mod tests {
     use super::*;
 

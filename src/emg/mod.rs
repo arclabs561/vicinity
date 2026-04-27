@@ -9,7 +9,7 @@
 //! # Feature Flag
 //!
 //! ```toml
-//! vicinity = { version = "0.6", features = ["emg"] }
+//! vicinity = { version = "0.7", features = ["emg"] }
 //! ```
 //!
 //! # Quick Start
@@ -100,6 +100,10 @@ impl Default for EmgParams {
 }
 
 /// delta-EMG index.
+///
+/// **Cosine distance only.** Input vectors are L2-normalized in
+/// [`Self::add_slice`]; pre-normalization is optional. The
+/// [`crate::distance::DistanceMetric`] enum is not honored.
 pub struct EmgIndex {
     dimension: usize,
     params: EmgParams,
