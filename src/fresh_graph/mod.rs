@@ -1135,6 +1135,56 @@ mod tests {
         assert!(index.add(0, vec![1.0; 16]).is_err());
     }
 
+    /// Static post-build connectivity check: every non-entry node has at
+    /// least one inbound edge in the layer-0 graph. This is the static
+    /// analog of I1 -- it doesn't catch the dynamic delete-reinsert bug
+    /// the 200-cycle test guards against, but it does catch build-time
+    /// orphans that would silently degrade recall without manifesting in
+    /// self-search of the queried node.
+    ///
+    /// The qdrant project ships an analogous `test_graph_connectivity` for
+    /// HNSW; this test ports the pattern to FreshGraph using the now-
+    /// maintained `inbound_count` field directly. The entry point itself
+    /// may legitimately have zero inbound edges (search is rooted there;
+    /// no other node needs to point at it for reachability).
+    #[test]
+    fn build_post_state_every_non_entry_node_has_inbound_edge() {
+        let dim = 16;
+        let n = 100;
+        let data = make_vectors(n, dim, 0xABCD);
+
+        let mut index = FreshGraphIndex::new(dim, default_params()).unwrap();
+        for i in 0..n {
+            index
+                .add_slice(i as u32, &data[i * dim..(i + 1) * dim])
+                .unwrap();
+        }
+        index.build().unwrap();
+
+        let entry = index.entry_point;
+        let mut orphans: Vec<u32> = Vec::new();
+        for i in 0..n as u32 {
+            if i == entry {
+                continue;
+            }
+            if index.inbound_count[i as usize] == 0 {
+                orphans.push(i);
+            }
+        }
+
+        assert!(
+            orphans.is_empty(),
+            "{} of {} non-entry nodes have zero inbound edges after build: {:?}. \
+             likely cause: ensure_connectivity failed to bridge an isolated \
+             component, or the RNG-prune evicted the only remaining in-edge \
+             to these nodes (invariant I2 broken at build time, not just \
+             after delete-reinsert cycles).",
+            orphans.len(),
+            n - 1,
+            &orphans[..orphans.len().min(10)],
+        );
+    }
+
     /// Manual scaling probe for orphan-protection cost in `insert()`.
     ///
     /// Two costs interact in `insert()`'s reverse-edge phase:
