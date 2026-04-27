@@ -118,6 +118,26 @@ pub mod emg;
 #[cfg(feature = "esg")]
 pub mod esg;
 
+/// Range-filtered ANN search (HNSW + range post-filter).
+///
+/// Alias for [`crate::esg`], re-exported under the more descriptive
+/// `range_filtered` name. The shipped implementation is HNSW with an
+/// attribute-range post-filter -- *not* the partition-aware structure
+/// described in arXiv:2504.04018 ("ESG: Elastic Graphs for Range-
+/// Filtering Approximate kNN Search"); the original paper builds
+/// subrange-partitioned subgraphs and outperforms the post-filter
+/// baseline at low selectivity. The `esg` name was confusing because
+/// it implied paper-fidelity that the implementation does not deliver.
+///
+/// Both module paths (`esg` and `range_filtered`) are stable in 0.7.x.
+/// New code should import from `range_filtered`; the `esg` name will
+/// be removed in 0.8.0 once a paper-fidelity ESG variant or a clear
+/// deprecation window is ready.
+#[cfg(feature = "esg")]
+pub mod range_filtered {
+    pub use crate::esg::*;
+}
+
 // Shared helpers for clump-backed modules (evoc, kmeans partitioning).
 #[cfg(any(
     feature = "evoc",
