@@ -92,6 +92,30 @@ def test_self_search_returns_self(
         )
 
 
+def test_auto_normalize_symmetric_for_angular() -> None:
+    """auto_normalize=True must apply to BOTH insert AND query for Angular,
+    not just insert. Regression for the asymmetric prep_query branch.
+
+    Setup: a tiny ANN index with one inserted unit vector, and a query that's
+    the same direction but a much larger magnitude. With symmetric
+    normalization, top-1 distance should be ~0.
+    """
+    rng = np.random.default_rng(0)
+    base = rng.standard_normal(8, dtype=np.float32)
+    base /= np.linalg.norm(base)
+
+    idx = HNSWIndex(dim=8, metric=DistanceMetric.Angular, auto_normalize=True, seed=0)
+    idx.add_items(np.stack([base, -base, rng.standard_normal(8).astype(np.float32)]))
+    idx.build()
+
+    scaled_query = (base * 137.5).astype(np.float32)
+    ids, dists = idx.search(scaled_query, k=1)
+    assert ids[0] == 0
+    assert abs(float(dists[0])) < 1e-4, (
+        f"Angular self-distance with scaled query should be ~0, got {dists[0]}"
+    )
+
+
 def test_auto_normalize_rejected_for_l2() -> None:
     """auto_normalize=True with L2/InnerProduct silently distorts distances;
     the binding should reject the combo at construction time."""
