@@ -81,7 +81,9 @@ let results = index.search(&[0.1; 128], 5)?;
 ### Python (pyvicinity)
 
 HNSW is available from Python via [`pyvicinity`](https://pypi.org/project/pyvicinity/)
-(abi3 wheel, CPython 3.9+):
+(abi3 wheel, CPython 3.9+). Useful for semantic search, recommendation,
+deduplication, and any other task where you have N embedding vectors and
+need to find the k closest to a query vector.
 
 ```bash
 pip install pyvicinity
@@ -102,10 +104,17 @@ index = HNSWIndex(
 )
 index.add_items(embeddings)
 index.build()
-ids, dists = index.search(embeddings[0], k=10)  # int64 ids, faiss-compatible
+
+# single query: top-10 neighbors. Distances in [0, 2]; lower means more similar.
+ids, dists = index.search(embeddings[0], k=10)
+
+# batch: same shape, one row per query.
+queries = embeddings[:32]
+batch_ids, batch_dists = index.batch_search(queries, k=10)  # (32, 10) int64
 ```
 
-Runnable examples in [`examples/python/`](examples/python/):
+Runnable examples (in the [source repo](https://github.com/arclabs561/vicinity),
+under [`examples/python/`](examples/python/) — not shipped with the wheel):
 
 - `01_text_similarity.py` — semantic search over text with sentence-transformers
 - `02_batch_and_recall.py` — recall@10 vs `ef_search` sweep
