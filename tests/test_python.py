@@ -221,6 +221,66 @@ def test_distance_metric_equality() -> None:
     assert DistanceMetric.Cosine != DistanceMetric.L2
 
 
+def test_recall_against_brute_force() -> None:
+    """Mean recall@10 must be high at ef=100 on a small Cosine corpus.
+
+    The single test that catches a regression in actual ANN behavior
+    (vs the plumbing tests above which would still pass even if the
+    index returned arbitrary IDs in the right shape).
+
+    Setup: 2000 unit-norm vectors in dim 32. Brute-force top-10 by
+    dot product gives ground truth; pyvicinity's HNSW must recover
+    >=95% of those. Probed at this seed: actual mean is 1.000 with
+    min 1.000, so 0.95 leaves wide slack for HNSW build variance.
+    """
+    rng = np.random.default_rng(42)
+    n, dim, k, nq = 2_000, 32, 10, 50
+
+    corpus = rng.standard_normal((n, dim), dtype=np.float32)
+    corpus /= np.linalg.norm(corpus, axis=1, keepdims=True)
+    queries = rng.standard_normal((nq, dim), dtype=np.float32)
+    queries /= np.linalg.norm(queries, axis=1, keepdims=True)
+
+    sims = queries @ corpus.T
+    truth = np.argpartition(-sims, kth=k, axis=1)[:, :k]
+    truth_sets = [set(row.tolist()) for row in truth]
+
+    idx = HNSWIndex(
+        dim=dim,
+        m=16,
+        ef_construction=100,
+        metric=DistanceMetric.Cosine,
+        seed=1,
+    )
+    idx.add_items(corpus)
+    idx.build()
+    idx.set_ef_search(100)
+
+    ann_ids, _ = idx.batch_search(queries, k=k)
+    recalls = [
+        len(set(ann_ids[i].tolist()) & truth_sets[i]) / k for i in range(nq)
+    ]
+    mean_recall = float(np.mean(recalls))
+    assert mean_recall >= 0.95, f"mean recall@{k} = {mean_recall:.3f} < 0.95"
+
+
+def test_search_before_build_raises() -> None:
+    """search() on an unbuilt index must raise, not return garbage."""
+    rng = np.random.default_rng(0)
+    idx = HNSWIndex(dim=8, metric=DistanceMetric.L2, seed=0)
+    idx.add_items(rng.standard_normal((5, 8), dtype=np.float32))
+    # Note: build() not called.
+    with pytest.raises(ValueError, match="must be built"):
+        idx.search(np.zeros(8, dtype=np.float32), k=3)
+
+
+def test_empty_index_build_raises() -> None:
+    """build() on an index with no add_items() must raise, not silently succeed."""
+    idx = HNSWIndex(dim=8, metric=DistanceMetric.L2, seed=0)
+    with pytest.raises(ValueError, match="empty"):
+        idx.build()
+
+
 def test_seed_reproducibility() -> None:
     """Same seed + same data should give identical search results."""
     rng = np.random.default_rng(0)
