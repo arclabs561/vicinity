@@ -1,7 +1,9 @@
 //! Python bindings for vicinity (PyO3 + NumPy).
 //!
-//! Exposes [`HNSWIndex`] as the primary Python-facing class, accepting and
-//! returning NumPy arrays for zero-copy interop where possible.
+//! Exposes [`PyHNSWIndex`] (renamed `HNSWIndex` on the Python side) as the
+//! primary Python-facing class. Inputs are accepted as zero-copy NumPy
+//! views where possible (`PyReadonlyArray`); outputs are owned arrays
+//! produced via `into_pyarray`.
 
 use std::borrow::Cow;
 
