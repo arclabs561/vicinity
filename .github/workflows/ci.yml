@@ -192,20 +192,24 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6.2.0
         with:
           python-version: "3.13"
+      # GH Actions runners don't have a venv, and maturin develop needs
+      # one. Pin the venv via $VIRTUAL_ENV + $GITHUB_PATH so subsequent
+      # steps inherit it. maturin develop is preferred over `maturin build
+      # + pip install` because it drops `_core.so` directly into the source
+      # tree, which avoids the cwd-shadows-site-packages problem when
+      # stubtest imports `pyvicinity._core`.
+      - name: Set up virtualenv
+        run: |
+          python -m venv .venv
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+          echo "VIRTUAL_ENV=$GITHUB_WORKSPACE/.venv" >> "$GITHUB_ENV"
       - name: Install build + test deps
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install maturin pytest mypy ruff numpy
-      # `maturin develop` requires an active virtualenv that GH Actions
-      # runners don't have. Build a wheel and install it instead -- same
-      # extension module, no venv plumbing.
-      - name: Build wheel and install
-        run: |
-          maturin build --release --features hnsw,python --out target/wheels
-          python -m pip install --force-reinstall target/wheels/pyvicinity-*.whl
+        run: python -m pip install --upgrade pip maturin pytest mypy ruff numpy
+      - name: Build extension (editable)
+        run: maturin develop --release --features hnsw,python
       - name: Ruff
         run: python -m ruff check pyvicinity tests/test_python.py
       - name: mypy --strict
