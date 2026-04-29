@@ -91,15 +91,18 @@ pip install pyvicinity
 import numpy as np
 from pyvicinity import HNSWIndex, DistanceMetric
 
+# embeddings: any (n, 384) float32 array (sentence-transformers, openai, etc.)
+embeddings = np.random.default_rng(0).standard_normal((10_000, 384), dtype=np.float32)
+
 index = HNSWIndex(
     dim=384,
     metric=DistanceMetric.Cosine,
     auto_normalize=True,  # normalizes inserts and queries
     seed=42,
 )
-index.add_items(embeddings)            # (n, 384) float32
+index.add_items(embeddings)
 index.build()
-ids, dists = index.search(query, k=10) # int64 ids, faiss-compatible
+ids, dists = index.search(embeddings[0], k=10)  # int64 ids, faiss-compatible
 ```
 
 Runnable examples in [`examples/python/`](examples/python/):

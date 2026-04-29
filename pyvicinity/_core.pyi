@@ -73,10 +73,11 @@ class HNSWIndex:
         import numpy as np
         from pyvicinity import HNSWIndex, DistanceMetric
 
+        vectors = np.random.randn(10_000, 128).astype(np.float32)
         index = HNSWIndex(dim=128, metric=DistanceMetric.Cosine, auto_normalize=True)
-        index.add_items(np.random.randn(10_000, 128).astype(np.float32))
+        index.add_items(vectors)
         index.build()
-        ids, dists = index.search(query, k=10)
+        ids, dists = index.search(vectors[0], k=10)
     """
 
     def __new__(
@@ -98,9 +99,10 @@ class HNSWIndex:
 
         Args:
             vectors: 2-D ``(n, dim)`` float32 array, C-contiguous.
-            ids: Optional 1-D uint32 array of length n. If omitted,
-                sequential IDs are assigned starting at the current
-                ``len(index)``.
+            ids: Optional 1-D int64 array of length n. Each value must be
+                in ``[0, 2**32)`` (vicinity stores IDs as u32 internally).
+                If omitted, sequential IDs are assigned starting at the
+                current ``len(index)``.
         """
 
     def build(self) -> None:
