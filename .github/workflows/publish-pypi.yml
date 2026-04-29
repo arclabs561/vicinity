@@ -16,13 +16,31 @@ jobs:
   guard:
     runs-on: ubuntu-latest
     steps:
-      - name: Guard
+      - name: Confirm input
         run: |
           if [ "${{ inputs.confirm }}" != "publish" ]; then
             echo "Refusing to publish: set workflow input confirm=publish"
             exit 1
           fi
+      - name: Verify CI passed for this SHA
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          conclusion=$(gh run list \
+            --repo "$GITHUB_REPOSITORY" \
+            --workflow=ci.yml \
+            --commit="$GITHUB_SHA" \
+            --json conclusion \
+            --jq '.[0].conclusion // "missing"')
+          echo "CI conclusion for $GITHUB_SHA: $conclusion"
+          if [ "$conclusion" != "success" ]; then
+            echo "::error::CI for $GITHUB_SHA is '$conclusion', not 'success'. Aborting publish."
+            exit 1
+          fi
 
+  # Wheels are abi3 (cp39-abi3) -- one wheel per platform/arch covers all
+  # CPython 3.9+ versions. Free-threaded Python is not supported by abi3.
   build-wheels:
     needs: guard
     strategy:
@@ -30,35 +48,48 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            platform: manylinux
+            manylinux: "2_28"
+            artifact-suffix: manylinux-x86_64
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
-            platform: manylinux
+            manylinux: "2_28"
+            artifact-suffix: manylinux-aarch64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            manylinux: "musllinux_1_2"
+            artifact-suffix: musllinux-x86_64
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            manylinux: "musllinux_1_2"
+            artifact-suffix: musllinux-aarch64
           - os: macos-14
             target: aarch64-apple-darwin
-            platform: macosx
+            manylinux: "auto"
+            artifact-suffix: macos-arm64
           - os: macos-13
             target: x86_64-apple-darwin
-            platform: macosx
+            manylinux: "auto"
+            artifact-suffix: macos-x86_64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            platform: windows
+            manylinux: "auto"
+            artifact-suffix: windows-x86_64
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6.0.2
+      - uses: actions/setup-python@v6.2.0
         with:
           python-version: "3.11"
       - name: Build wheels
-        uses: PyO3/maturin-action@v1
+        uses: PyO3/maturin-action@v1.51.0
         with:
           target: ${{ matrix.target }}
           args: --release --out dist --features "hnsw,python,parallel"
-          manylinux: ${{ matrix.platform == 'manylinux' && '2_28' || 'auto' }}
+          manylinux: ${{ matrix.manylinux }}
       - name: Upload wheels
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.1
         with:
-          name: wheels-${{ matrix.platform }}-${{ matrix.target }}
+          name: wheels-${{ matrix.artifact-suffix }}
           path: dist/*.whl
           if-no-files-found: error
 
@@ -66,17 +97,17 @@ jobs:
     needs: guard
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6.0.2
+      - uses: actions/setup-python@v6.2.0
         with:
           python-version: "3.11"
       - name: Build sdist
-        uses: PyO3/maturin-action@v1
+        uses: PyO3/maturin-action@v1.51.0
         with:
           command: sdist
           args: --out dist
       - name: Upload sdist
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: sdist
           path: dist/*.tar.gz
@@ -88,11 +119,11 @@ jobs:
     environment: pypi
     steps:
       - name: Gather dist artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8.0.1
         with:
           path: dist
           merge-multiple: true
       - name: Publish to PyPI (trusted publishing)
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@v1.14.0
         with:
           packages-dir: dist
