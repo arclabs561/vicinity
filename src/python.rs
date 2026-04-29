@@ -366,18 +366,23 @@ impl PyHNSWIndex {
     }
 }
 
-/// Normalize the query if the metric needs it and `auto_normalize` is on.
+/// Normalize the query if `auto_normalize` is on and the metric supports it.
 ///
-/// Cosine uses the dot-only fast path internally (`cosine_distance_normalized`),
-/// so a non-unit query produces meaningless distances. Angular and L2 are
-/// scale-aware on the query side already; InnerProduct is intentionally not
-/// normalized (MIPS semantics).
+/// Cosine *requires* query normalization: the index uses the dot-only fast
+/// path (`cosine_distance_normalized`), so a non-unit query produces
+/// meaningless distances. Angular doesn't strictly require it (the underlying
+/// `angular_distance` re-computes norms), but we normalize it too for
+/// symmetric behavior with the `auto_normalize` flag name -- the cost is one
+/// allocation per query, and the alternative (silent asymmetry) ages badly if
+/// the underlying distance function ever changes. L2 and InnerProduct never
+/// reach this branch because the constructor rejects `auto_normalize=True`
+/// for those metrics.
 fn prep_query<'a>(
     query: &'a [f32],
     metric: PyDistanceMetric,
     auto_normalize: bool,
 ) -> Cow<'a, [f32]> {
-    if auto_normalize && matches!(metric, PyDistanceMetric::Cosine) {
+    if auto_normalize && matches!(metric, PyDistanceMetric::Cosine | PyDistanceMetric::Angular) {
         Cow::Owned(distance::normalize(query))
     } else {
         Cow::Borrowed(query)
