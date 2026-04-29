@@ -30,7 +30,12 @@ thiserror = "2.0"
 # Note: do NOT enable `pyo3/extension-module` here. It breaks `cargo test --all-features`
 # by disabling libpython linking for test binaries on macOS.
 # Maturin sets `PYO3_BUILD_EXTENSION_MODULE=1` when building wheels.
-pyo3 = { version = "0.27.2", optional = true }
+#
+# `abi3-py39` builds a stable-ABI wheel that works on CPython 3.9+, so one
+# wheel per platform/arch covers every supported Python version. Caveat:
+# abi3 wheels are not compatible with free-threaded CPython (3.13t+); revisit
+# if/when free-threaded support is requested.
+pyo3 = { version = "0.27.2", optional = true, features = ["abi3-py39"] }
 numpy = { version = "0.27.0", optional = true }
 
 # SIMD primitives (ecosystem crate)

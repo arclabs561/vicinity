@@ -21,6 +21,9 @@ classifiers = [
 [project.urls]
 Homepage = "https://github.com/arclabs561/vicinity"
 Source = "https://github.com/arclabs561/vicinity"
+Documentation = "https://docs.rs/vicinity"
+Issues = "https://github.com/arclabs561/vicinity/issues"
+Changelog = "https://github.com/arclabs561/vicinity/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 ann-benchmarks = ["h5py"]
