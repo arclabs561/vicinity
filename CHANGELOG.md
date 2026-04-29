@@ -7,6 +7,30 @@ series is unstable: minor bumps may break the public API.
 
 ## [Unreleased]
 
+### Added
+
+- `pyvicinity` Python bindings on PyPI (abi3 wheel, CPython 3.9+).
+  Ships hand-written `.pyi` stubs + `py.typed` (PEP 561), exposes
+  `HNSWIndex` + `DistanceMetric`. Verified in CI by `mypy.stubtest`,
+  `mypy --strict`, `ruff`, and 25 pytests.
+- `examples/python/`: text similarity (sentence-transformers),
+  recall@k sweep, and ann-benchmarks/VIBE drop-in wrapper.
+- Sentinels `pyvicinity.MISSING_LABEL` (= -1) and
+  `pyvicinity.MISSING_DISTANCE` (= +inf) for masking short rows in
+  `batch_search` results, matching faiss's convention.
+- `auto_normalize` constructor flag normalizes vectors on **both**
+  insert and query (closes the hnswlib #592 class of correctness
+  bug). Rejected at construction with `L2`/`InnerProduct` since those
+  metrics don't have spherical semantics.
+- CI gate on `publish-pypi` workflow: aborts unless the source SHA's
+  `ci.yml` run is `success`.
+- musllinux x86_64 + aarch64 wheel matrix in publish-pypi.
+
+### Changed
+
+- All GitHub Actions in `publish-pypi.yml` pinned to specific minor
+  versions instead of mutable major tags.
+
 ## [0.8.0] - 2026-04-27
 
 ### Changed (breaking)

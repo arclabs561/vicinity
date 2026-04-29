@@ -25,7 +25,7 @@ __version__: str
 MISSING_LABEL: int
 """Sentinel value padded into ``batch_search`` ID rows shorter than ``k``.
 
-Equal to ``numpy.iinfo(numpy.uint32).max``. Mask with::
+Equal to ``-1``, matching faiss's convention. Mask with::
 
     valid = ids[ids != pyvicinity.MISSING_LABEL]
 """
@@ -92,7 +92,7 @@ class HNSWIndex:
     def add_items(
         self,
         vectors: NDArray[np.float32],
-        ids: NDArray[np.uint32] | None = None,
+        ids: NDArray[np.int64] | None = None,
     ) -> None:
         """Add a batch of vectors.
 
@@ -114,7 +114,7 @@ class HNSWIndex:
         query: NDArray[np.float32],
         k: int,
         ef: int | None = None,
-    ) -> tuple[NDArray[np.uint32], NDArray[np.float32]]:
+    ) -> tuple[NDArray[np.int64], NDArray[np.float32]]:
         """Search for the k nearest neighbors of one query vector.
 
         Args:
@@ -132,7 +132,7 @@ class HNSWIndex:
         queries: NDArray[np.float32],
         k: int,
         ef: int | None = None,
-    ) -> tuple[NDArray[np.uint32], NDArray[np.float32]]:
+    ) -> tuple[NDArray[np.int64], NDArray[np.float32]]:
         """Search for the k nearest neighbors of each query.
 
         Args:

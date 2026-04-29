@@ -2,9 +2,11 @@
 
 [![crates.io](https://img.shields.io/crates/v/vicinity.svg)](https://crates.io/crates/vicinity)
 [![docs.rs](https://docs.rs/vicinity/badge.svg)](https://docs.rs/vicinity)
+[![PyPI](https://img.shields.io/pypi/v/pyvicinity.svg)](https://pypi.org/project/pyvicinity/)
 
 Approximate nearest-neighbor search. Each algorithm is a separate
-feature flag. Depend on only what you use.
+feature flag. Depend on only what you use. Rust crate `vicinity`;
+Python bindings ship as `pyvicinity` on PyPI.
 
 Default distance is cosine; most graph indices L2-normalize on insert
 and operate on the cosine-equivalent unit sphere (so angular and inner
@@ -75,6 +77,39 @@ index.build()?;
 
 let results = index.search(&[0.1; 128], 5)?;
 ```
+
+### Python (pyvicinity)
+
+HNSW is available from Python via [`pyvicinity`](https://pypi.org/project/pyvicinity/)
+(abi3 wheel, CPython 3.9+):
+
+```bash
+pip install pyvicinity
+```
+
+```python
+import numpy as np
+from pyvicinity import HNSWIndex, DistanceMetric
+
+index = HNSWIndex(
+    dim=384,
+    metric=DistanceMetric.Cosine,
+    auto_normalize=True,  # normalizes inserts and queries
+    seed=42,
+)
+index.add_items(embeddings)            # (n, 384) float32
+index.build()
+ids, dists = index.search(query, k=10) # int64 ids, faiss-compatible
+```
+
+Runnable examples in [`examples/python/`](examples/python/):
+
+- `01_text_similarity.py` — semantic search over text with sentence-transformers
+- `02_batch_and_recall.py` — recall@10 vs `ef_search` sweep
+- `03_ann_benchmarks_harness.py` — drop-in `ann-benchmarks` / VIBE wrapper
+
+The bindings ship hand-written `.pyi` stubs (`py.typed`) and are verified
+in CI by `mypy.stubtest`.
 
 ## Persistence
 
