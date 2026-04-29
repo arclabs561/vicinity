@@ -73,10 +73,11 @@ jobs:
             target: aarch64-apple-darwin
             manylinux: "auto"
             artifact-suffix: macos-arm64
-          - os: macos-13
-            target: x86_64-apple-darwin
-            manylinux: "auto"
-            artifact-suffix: macos-x86_64
+          # Intel macOS wheels intentionally omitted: macos-13 runner queue
+          # is severely backlogged (deprecated Dec 2026). Intel Mac users
+          # fall back to sdist (Rust toolchain required). Re-add when
+          # macos-latest defaults back to x86_64 (it won't) or when GH
+          # provides a reliable macos-13 alternative.
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             manylinux: "auto"
