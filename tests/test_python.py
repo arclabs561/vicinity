@@ -128,10 +128,10 @@ def test_auto_normalize_rejected_for_l2() -> None:
 def test_dtypes() -> None:
     idx, X = _build()
     ids, dists = idx.search(X[0], k=5)
-    assert ids.dtype == np.uint32
+    assert ids.dtype == np.int64
     assert dists.dtype == np.float32
     bids, bdists = idx.batch_search(X[:3], k=5)
-    assert bids.dtype == np.uint32
+    assert bids.dtype == np.int64
     assert bdists.dtype == np.float32
 
 
@@ -156,8 +156,8 @@ def test_batch_padding_when_k_exceeds_n() -> None:
 
 
 def test_missing_sentinels_are_canonical() -> None:
-    """MISSING_LABEL is uint32 max and MISSING_DISTANCE is +inf."""
-    assert np.iinfo(np.uint32).max == MISSING_LABEL
+    """MISSING_LABEL is -1 (faiss convention) and MISSING_DISTANCE is +inf."""
+    assert MISSING_LABEL == -1
     assert float("inf") == MISSING_DISTANCE
 
 
@@ -172,7 +172,7 @@ def test_dimension_mismatch_raises_valueerror() -> None:
 def test_explicit_ids_round_trip() -> None:
     rng = np.random.default_rng(0)
     X = rng.standard_normal((10, 4), dtype=np.float32)
-    ids = np.array([100, 101, 102, 103, 104, 105, 106, 107, 108, 109], dtype=np.uint32)
+    ids = np.array([100, 101, 102, 103, 104, 105, 106, 107, 108, 109], dtype=np.int64)
     idx = HNSWIndex(dim=4, metric=DistanceMetric.L2, seed=0)
     idx.add_items(X, ids=ids)
     idx.build()
@@ -183,9 +183,29 @@ def test_explicit_ids_round_trip() -> None:
 def test_id_length_mismatch_raises() -> None:
     rng = np.random.default_rng(0)
     X = rng.standard_normal((5, 4), dtype=np.float32)
-    bad_ids = np.array([1, 2, 3], dtype=np.uint32)
+    bad_ids = np.array([1, 2, 3], dtype=np.int64)
     idx = HNSWIndex(dim=4, metric=DistanceMetric.L2)
     with pytest.raises(ValueError, match="ids length"):
+        idx.add_items(X, ids=bad_ids)
+
+
+def test_negative_id_rejected() -> None:
+    """ids must be in [0, 2**32); negatives raise ValueError."""
+    rng = np.random.default_rng(0)
+    X = rng.standard_normal((3, 4), dtype=np.float32)
+    bad_ids = np.array([0, -1, 2], dtype=np.int64)
+    idx = HNSWIndex(dim=4, metric=DistanceMetric.L2)
+    with pytest.raises(ValueError, match="out of range"):
+        idx.add_items(X, ids=bad_ids)
+
+
+def test_id_too_large_rejected() -> None:
+    """ids > u32::MAX raise ValueError; pyvicinity stores u32 internally."""
+    rng = np.random.default_rng(0)
+    X = rng.standard_normal((2, 4), dtype=np.float32)
+    bad_ids = np.array([0, 1 << 33], dtype=np.int64)
+    idx = HNSWIndex(dim=4, metric=DistanceMetric.L2)
+    with pytest.raises(ValueError, match="out of range"):
         idx.add_items(X, ids=bad_ids)
 
 

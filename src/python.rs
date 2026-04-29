@@ -130,13 +130,14 @@ impl PyHNSWIndex {
     ///
     /// Args:
     ///     vectors: 2-D float32 array of shape ``(n, dim)``.
-    ///     ids: Optional 1-D uint32 array of IDs. If None, assigns
-    ///         sequential IDs starting from the current ``len(index)``.
+    ///     ids: Optional 1-D int64 array of IDs. Each value must be in
+    ///         ``[0, 2**32)``. If None, sequential IDs are assigned
+    ///         starting from the current ``len(index)``.
     #[pyo3(signature = (vectors, ids=None))]
     fn add_items<'py>(
         &mut self,
         vectors: PyReadonlyArray2<'py, f32>,
-        ids: Option<PyReadonlyArray1<'py, u32>>,
+        ids: Option<PyReadonlyArray1<'py, i64>>,
     ) -> PyResult<()> {
         let arr = vectors.as_array();
         let (n, d) = (arr.nrows(), arr.ncols());
@@ -163,8 +164,17 @@ impl PyHNSWIndex {
                         id_slice.len()
                     )));
                 }
+                let mut id_u32 = Vec::with_capacity(id_slice.len());
+                for (i, &id) in id_slice.iter().enumerate() {
+                    if !(0..=u32::MAX as i64).contains(&id) {
+                        return Err(PyValueError::new_err(format!(
+                            "ids[{i}] = {id} out of range [0, 2**32); pyvicinity stores IDs as u32 internally",
+                        )));
+                    }
+                    id_u32.push(id as u32);
+                }
                 self.inner
-                    .add_batch(id_slice, data)
+                    .add_batch(&id_u32, data)
                     .map_err(|e| PyValueError::new_err(e.to_string()))?;
             }
             None => {
@@ -200,7 +210,8 @@ impl PyHNSWIndex {
     ///
     /// Returns:
     ///     Tuple ``(ids, distances)`` of 1-D arrays. Length is at most k;
-    ///     fewer if the index has fewer than k vectors.
+    ///     fewer if the index has fewer than k vectors. ``ids`` are int64
+    ///     (faiss-compatible).
     #[pyo3(signature = (query, k, ef=None))]
     fn search<'py>(
         &self,
@@ -208,7 +219,7 @@ impl PyHNSWIndex {
         query: PyReadonlyArray1<'py, f32>,
         k: usize,
         ef: Option<usize>,
-    ) -> PyResult<(Bound<'py, PyArray1<u32>>, Bound<'py, PyArray1<f32>>)> {
+    ) -> PyResult<(Bound<'py, PyArray1<i64>>, Bound<'py, PyArray1<f32>>)> {
         let q = query
             .as_slice()
             .map_err(|_| PyValueError::new_err("query must be contiguous"))?;
@@ -231,7 +242,7 @@ impl PyHNSWIndex {
         let mut ids = Vec::with_capacity(n);
         let mut dists = Vec::with_capacity(n);
         for (id, dist) in &results {
-            ids.push(*id);
+            ids.push(*id as i64);
             dists.push(*dist);
         }
         Ok((ids.into_pyarray(py), dists.into_pyarray(py)))
@@ -246,8 +257,10 @@ impl PyHNSWIndex {
     ///
     /// Returns:
     ///     Tuple ``(ids, distances)`` of 2-D arrays of shape ``(nq, k)``.
-    ///     Rows with fewer than k results are padded with ``u32::MAX`` /
-    ///     ``inf`` so the array is rectangular.
+    ///     Rows with fewer than k results are padded with ``-1`` (int64)
+    ///     and ``+inf`` so the array is rectangular. The sentinel matches
+    ///     faiss's convention; mask with ``ids != -1`` (or the named
+    ///     ``pyvicinity.MISSING_LABEL``).
     #[pyo3(signature = (queries, k, ef=None))]
     fn batch_search<'py>(
         &self,
@@ -255,7 +268,7 @@ impl PyHNSWIndex {
         queries: PyReadonlyArray2<'py, f32>,
         k: usize,
         ef: Option<usize>,
-    ) -> PyResult<(Bound<'py, PyArray2<u32>>, Bound<'py, PyArray2<f32>>)> {
+    ) -> PyResult<(Bound<'py, PyArray2<i64>>, Bound<'py, PyArray2<f32>>)> {
         let arr = queries.as_array();
         let nq = arr.nrows();
         let dim = arr.ncols();
@@ -272,7 +285,7 @@ impl PyHNSWIndex {
             .as_slice()
             .map_err(|_| PyValueError::new_err("queries must be contiguous (C-order)"))?;
 
-        let mut all_ids = vec![u32::MAX; nq * k];
+        let mut all_ids = vec![-1i64; nq * k];
         let mut all_dists = vec![f32::INFINITY; nq * k];
 
         let metric = self.metric;
@@ -284,7 +297,7 @@ impl PyHNSWIndex {
                 let prepared = prep_query(q, metric, auto_normalize);
                 if let Ok(results) = self.inner.search(prepared.as_ref(), k, ef) {
                     for (j, (id, dist)) in results.iter().enumerate() {
-                        all_ids[i * k + j] = *id;
+                        all_ids[i * k + j] = *id as i64;
                         all_dists[i * k + j] = *dist;
                     }
                 }
@@ -398,8 +411,9 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     // Sentinel values used to pad short rows in `batch_search` results.
     // Exported so callers have a stable name to mask against, e.g.
-    // `labels[labels != pyvicinity.MISSING_LABEL]`.
-    m.add("MISSING_LABEL", u32::MAX)?;
+    // `labels[labels != pyvicinity.MISSING_LABEL]`. Matches faiss's
+    // (-1, +inf) convention.
+    m.add("MISSING_LABEL", -1i64)?;
     m.add("MISSING_DISTANCE", f32::INFINITY)?;
     m.add_class::<PyDistanceMetric>()?;
     m.add_class::<PyHNSWIndex>()?;
