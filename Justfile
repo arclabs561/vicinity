@@ -86,3 +86,28 @@ fmt:
 
 # Full QA: fmt + lint + test
 qa: fmt lint test
+
+# ─── Python bindings (pyvicinity) ────────────────────────────────────────────
+
+# Build + install the Python wheel into the local venv
+py-build:
+    .venv/bin/maturin develop --release
+
+# Run the Python test suite (rebuilds wheel first)
+py-test: py-build
+    .venv/bin/python -m pytest tests/test_python.py -v
+
+# Lint the Python sources with ruff
+py-lint:
+    .venv/bin/python -m ruff check pyvicinity tests/test_python.py
+
+# Type-check a sample caller against the .pyi stubs
+py-typecheck: py-build
+    .venv/bin/python -m mypy --strict pyvicinity
+
+# Verify the hand-written .pyi matches the compiled module (voyager pattern)
+py-stubtest: py-build
+    .venv/bin/python -m mypy.stubtest pyvicinity._core
+
+# Full Python QA: build + lint + typecheck + stubtest + test
+py-qa: py-build py-lint py-typecheck py-stubtest py-test
