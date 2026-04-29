@@ -4,18 +4,15 @@ on:
     branches: [main, master]
   pull_request:
     branches: [main, master]
-
 # Cancel in-flight runs of the same workflow when a new commit is pushed.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
-
 env:
   CARGO_TERM_COLOR: always
-  CARGO_INCREMENTAL: "0"           # CI builds don't benefit from incremental; smaller cache.
-  CARGO_PROFILE_DEV_DEBUG: "0"     # Reduces target/ size, improves cache hit rate.
+  CARGO_INCREMENTAL: "0" # CI builds don't benefit from incremental; smaller cache.
+  CARGO_PROFILE_DEV_DEBUG: "0" # Reduces target/ size, improves cache hit rate.
   RUSTFLAGS: -Dwarnings
-
 # Testing strategy grounded in real-world ANN library issues:
 # - hnswlib #635: M vs Mcurmax bug in neighbor selection
 # - hnswlib #626: Use-after-free in deletion
@@ -24,7 +21,6 @@ env:
 # - faiss #4295: Integer overflow on large datasets
 # - usearch #405: Quantization issues with i8 + inner product
 # See docs/TESTING.md for full details
-
 jobs:
   # Cheap fan-in gate: fmt + clippy + basic check on ubuntu.
   # Failure here aborts every downstream matrix job (saves ~5-10 minutes per
@@ -44,7 +40,6 @@ jobs:
         run: cargo clippy --no-default-features --features hnsw --all-targets -- -D warnings
       - name: Clippy (all features)
         run: cargo clippy --all-features --all-targets -- -D warnings
-
   # Primary test suite (x86) -- nextest for parallel test-binary execution.
   test:
     name: Test (ubuntu)
@@ -76,7 +71,6 @@ jobs:
         run: cargo test --doc --no-default-features --features hnsw
       - name: Property tests
         run: cargo nextest run --no-default-features --features hnsw -E 'test(property_)'
-
   # Semver-checks only on PRs.
   semver:
     name: Semver check
@@ -91,7 +85,6 @@ jobs:
         with:
           tool: cargo-semver-checks
       - run: cargo semver-checks --default-features
-
   # ARM native testing (M1/M2 - tests NEON code paths)
   test-arm:
     name: Test (macos / ARM)
@@ -108,7 +101,6 @@ jobs:
         run: cargo build --no-default-features --features hnsw
       - name: Test (ARM)
         run: cargo nextest run --no-default-features --features hnsw
-
   # MSRV check
   msrv:
     name: MSRV (1.89)
@@ -122,7 +114,6 @@ jobs:
         run: |
           rm -f Cargo.lock  # v4 lock requires Cargo 1.83+
           cargo check --no-default-features --features hnsw
-
   # Feature-matrix compilation (catches cfg + optional-dep drift)
   feature-matrix:
     name: Feature matrix
@@ -137,7 +128,6 @@ jobs:
           tool: cargo-hack
       - name: Compile each feature (no dev-deps)
         run: cargo hack check --each-feature --no-dev-deps --exclude-features persistence
-
   # Cross-compilation check for different targets
   cross-compile:
     name: Cross-compile (${{ matrix.target }})
@@ -156,7 +146,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Check ${{ matrix.target }}
         run: cargo check --target ${{ matrix.target }} --no-default-features --features hnsw
-
   # Recall regression detection -- catches hnswlib #635-class issues.
   recall-regression:
     name: Recall regression
@@ -178,7 +167,6 @@ jobs:
             if ($2 + 0 < 80.0) { print "FAIL: ef=100 recall " $2 "% < 80%"; exit 1 }
           }
           END { if (!found) { print "FAIL: ef=100 row missing from output"; exit 1 } }' recall_output.txt
-
   # Regression tests for known bugs
   regression:
     name: Regression (known bugs)
@@ -193,7 +181,34 @@ jobs:
           tool: cargo-nextest
       - name: Run regression tests
         run: cargo nextest run --test regression_known_bugs --no-default-features --features hnsw
-
+  # Python bindings: build wheel, lint, type-check, stubtest, pytest.
+  # Stubtest catches drift between the hand-written `_core.pyi` and the
+  # compiled module the moment a Rust signature changes (voyager pattern).
+  python:
+    name: Python (pyvicinity)
+    runs-on: ubuntu-latest
+    needs: basics
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install build + test deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install maturin pytest mypy ruff numpy
+      - name: Build extension (editable)
+        run: maturin develop --release
+      - name: Ruff
+        run: python -m ruff check pyvicinity tests/test_python.py
+      - name: mypy --strict
+        run: python -m mypy --strict pyvicinity
+      - name: Stubtest (.pyi vs compiled module)
+        run: python -m mypy.stubtest pyvicinity._core
+      - name: Pytest
+        run: python -m pytest tests/test_python.py -v
   # Documentation build
   docs:
     name: Docs

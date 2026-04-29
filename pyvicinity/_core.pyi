@@ -1,0 +1,178 @@
+"""Type stubs for the native ``pyvicinity._core`` extension module.
+
+Hand-written because PyO3 doesn't generate stubs. Verified against the
+compiled module by ``mypy.stubtest`` in CI -- keep in sync with
+``src/python.rs`` or stubtest will fail.
+"""
+
+from __future__ import annotations
+
+from typing import ClassVar, final
+
+import numpy as np
+from numpy.typing import NDArray
+
+__all__ = [
+    "MISSING_DISTANCE",
+    "MISSING_LABEL",
+    "DistanceMetric",
+    "HNSWIndex",
+    "__version__",
+]
+
+__version__: str
+
+MISSING_LABEL: int
+"""Sentinel value padded into ``batch_search`` ID rows shorter than ``k``.
+
+Equal to ``numpy.iinfo(numpy.uint32).max``. Mask with::
+
+    valid = ids[ids != pyvicinity.MISSING_LABEL]
+"""
+
+MISSING_DISTANCE: float
+"""Sentinel value padded into ``batch_search`` distance rows shorter than ``k``.
+
+Equal to ``math.inf``."""
+
+@final
+class DistanceMetric:
+    """Distance metric for vector comparison.
+
+    Not a true ``enum.Enum`` (PyO3 emits a plain class with ``int``-comparable
+    members), but works the same way for ``==`` and pattern matching.
+    """
+
+    L2: ClassVar[DistanceMetric]
+    """Euclidean (L2) distance."""
+
+    Cosine: ClassVar[DistanceMetric]
+    """Cosine distance: ``1 - cos(a, b)``. Inputs are expected to be
+    L2-normalized; pass ``auto_normalize=True`` to the index to handle
+    raw vectors on both insert and query."""
+
+    Angular: ClassVar[DistanceMetric]
+    """Angular distance: ``arccos(cos(a, b)) / pi``, in ``[0, 1]``.
+    Computes norms internally; raw vectors are fine."""
+
+    InnerProduct: ClassVar[DistanceMetric]
+    """Inner-product distance: ``-dot(a, b)`` (for MIPS).
+    Not normalized; query magnitude affects ranking by design."""
+
+    __hash__: None  # type: ignore[assignment]  # eq_int enums are unhashable
+    def __eq__(self, value: object, /) -> bool: ...
+    def __ne__(self, value: object, /) -> bool: ...
+    def __int__(self) -> int: ...
+
+@final
+class HNSWIndex:
+    """HNSW index for approximate nearest-neighbor search.
+
+    Example::
+
+        import numpy as np
+        from pyvicinity import HNSWIndex, DistanceMetric
+
+        index = HNSWIndex(dim=128, metric=DistanceMetric.Cosine, auto_normalize=True)
+        index.add_items(np.random.randn(10_000, 128).astype(np.float32))
+        index.build()
+        ids, dists = index.search(query, k=10)
+    """
+
+    def __new__(
+        cls,
+        dim: int,
+        m: int = 16,
+        ef_construction: int = 200,
+        ef_search: int = 50,
+        metric: DistanceMetric = ...,
+        auto_normalize: bool = False,
+        seed: int | None = None,
+    ) -> HNSWIndex: ...
+    def add_items(
+        self,
+        vectors: NDArray[np.float32],
+        ids: NDArray[np.uint32] | None = None,
+    ) -> None:
+        """Add a batch of vectors.
+
+        Args:
+            vectors: 2-D ``(n, dim)`` float32 array, C-contiguous.
+            ids: Optional 1-D uint32 array of length n. If omitted,
+                sequential IDs are assigned starting at the current
+                ``len(index)``.
+        """
+
+    def build(self) -> None:
+        """Finalize the index. Must be called before any search."""
+
+    def set_ef_search(self, ef: int) -> None:
+        """Set the default ``ef_search`` parameter for subsequent queries."""
+
+    def search(
+        self,
+        query: NDArray[np.float32],
+        k: int,
+        ef: int | None = None,
+    ) -> tuple[NDArray[np.uint32], NDArray[np.float32]]:
+        """Search for the k nearest neighbors of one query vector.
+
+        Args:
+            query: 1-D ``(dim,)`` float32 array.
+            k: Number of neighbors to return.
+            ef: Search width. Defaults to ``self.ef_search``.
+
+        Returns:
+            ``(ids, distances)``: 1-D arrays of length at most k.
+            Shorter than k only when the index has fewer than k vectors.
+        """
+
+    def batch_search(
+        self,
+        queries: NDArray[np.float32],
+        k: int,
+        ef: int | None = None,
+    ) -> tuple[NDArray[np.uint32], NDArray[np.float32]]:
+        """Search for the k nearest neighbors of each query.
+
+        Args:
+            queries: 2-D ``(nq, dim)`` float32 array, C-contiguous.
+            k: Number of neighbors per query.
+            ef: Search width. Defaults to ``self.ef_search``.
+
+        Returns:
+            ``(ids, distances)``: 2-D arrays of shape ``(nq, k)``. Rows
+            with fewer than k results are padded with :data:`MISSING_LABEL`
+            and :data:`MISSING_DISTANCE` so the result is rectangular.
+        """
+
+    @property
+    def num_vectors(self) -> int:
+        """Number of vectors currently in the index."""
+
+    @property
+    def dimension(self) -> int:
+        """Vector dimension."""
+
+    @property
+    def metric(self) -> DistanceMetric:
+        """Distance metric this index was built with."""
+
+    @property
+    def auto_normalize(self) -> bool:
+        """Whether inserts and queries are L2-normalized internally."""
+
+    @property
+    def m(self) -> int:
+        """Max connections per node (the ``M`` HNSW parameter)."""
+
+    @property
+    def ef_construction(self) -> int:
+        """Search width during construction."""
+
+    @property
+    def ef_search(self) -> int:
+        """Default search width for queries."""
+
+    def __len__(self) -> int: ...
+    def __repr__(self) -> str: ...
