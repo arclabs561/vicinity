@@ -756,8 +756,8 @@ impl HNSWIndex {
     ///
     /// # Persistence caveat
     ///
-    /// Tombstones are *not* serialized by [`Self::save_to_writer`] or
-    /// [`Self::save_to_file`]: a tombstoned doc_id will reappear in search
+    /// Tombstones are *not* serialized by `save_to_writer` or `save_to_file`
+    /// (both `serde`-gated): a tombstoned doc_id will reappear in search
     /// results after a save / load roundtrip. For deletions that must
     /// survive serialization, use [`Self::delete_with_repair`], which
     /// physically removes graph edges and updates the entry point so the
