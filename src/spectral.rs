@@ -19,6 +19,7 @@
 ///
 /// This uses `rmt::marchenko_pastur_support` and returns only \(\lambda_+\).
 #[cfg(feature = "rmt-spectral")]
+#[allow(dead_code)] // dead under `--features rmt-spectral` alone; consumed by adsampling
 pub fn mp_lambda_plus(ratio: f64, sigma_sq: f64) -> f64 {
     let (_lo, hi) = rmt::marchenko_pastur_support(ratio, sigma_sq);
     hi
@@ -28,6 +29,7 @@ pub fn mp_lambda_plus(ratio: f64, sigma_sq: f64) -> f64 {
 ///
 /// Input eigenvalues must be real-valued; order does not matter.
 #[cfg(feature = "rmt-spectral")]
+#[allow(dead_code)] // dead under `--features rmt-spectral` alone; consumed by adsampling
 pub fn count_mp_outliers(eigenvalues: &[f64], ratio: f64, sigma_sq: f64, margin: f64) -> usize {
     let thr = mp_lambda_plus(ratio, sigma_sq) * margin.max(1.0);
     eigenvalues
