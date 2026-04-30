@@ -2070,6 +2070,13 @@ impl HNSWIndex {
     /// (box geometry, quantization codes, etc.).
     ///
     /// Returns `(doc_id, distance)` pairs sorted by distance ascending.
+    ///
+    /// **`auto_normalize` does not apply here.** The caller's `dist_fn`
+    /// receives `query` exactly as passed; if the dist_fn assumes unit-norm
+    /// inputs (e.g. cosine via dot product), the caller must normalize
+    /// `query` before invoking. The plain `search` method auto-normalizes
+    /// when the builder flag is set, but `search_with_distance` is by design
+    /// caller-controlled — the asymmetry is intentional.
     pub fn search_with_distance<F: Fn(&[f32], u32) -> f32>(
         &self,
         query: &[f32],
