@@ -240,19 +240,28 @@ proptest! {
     #[test]
     fn twonn_consistency(
         n in 50usize..200,
+        target_d in 2.0f32..20.0,
         seed in any::<u64>(),
     ) {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-
-        let mut hasher = DefaultHasher::new();
-        seed.hash(&mut hasher);
-        let h = hasher.finish();
-
+        // Generate ratios from the TwoNN-expected distribution: log(μ) ~ Exp(d),
+        // i.e. μ = u^(-1/d) for u uniform in (0, 1). The previous version of this
+        // test sampled μ uniformly on [1, 3), which is not a TwoNN-compatible
+        // distribution -- on certain seeds it produced bimodal data on which
+        // the two estimators legitimately disagree (rel diff > 0.5). The
+        // estimators were correct; the test inputs were out of distribution.
+        // Probed: max rel_diff on realistic input across d ∈ {3, 5, 10, 20}
+        // and 5 seeds is ~0.069. 0.15 leaves ample slack.
         let ratios: Vec<f32> = (0..n)
             .map(|i| {
-                let x = ((h.wrapping_mul(i as u64 + 1)) % 10000) as f32 / 10000.0;
-                1.0 + x * 2.0
+                // SplitMix64-style mixer for deterministic uniform-(0, 1).
+                let mut x = seed
+                    .wrapping_add(i as u64)
+                    .wrapping_mul(0x9E3779B97F4A7C15);
+                x = (x ^ (x >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+                x = (x ^ (x >> 27)).wrapping_mul(0x94D049BB133111EB);
+                x ^= x >> 31;
+                let u = (x as f64 / u64::MAX as f64).clamp(1e-9, 1.0 - 1e-9);
+                (u.powf(-1.0 / target_d as f64) as f32).max(1.0001)
             })
             .collect();
 
@@ -262,9 +271,9 @@ proptest! {
         if dim1.is_finite() && result2.dimension.is_finite() {
             let rel_diff = (dim1 - result2.dimension).abs() / dim1.max(result2.dimension);
             prop_assert!(
-                rel_diff < 0.5,
-                "TwoNN methods disagree too much: {} vs {} (rel diff {})",
-                dim1, result2.dimension, rel_diff
+                rel_diff < 0.15,
+                "TwoNN methods disagree on realistic input: {} vs {} (rel diff {}, target d={})",
+                dim1, result2.dimension, rel_diff, target_d
             );
         }
     }
