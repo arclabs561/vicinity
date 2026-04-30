@@ -442,6 +442,19 @@ impl IVFPQIndex {
             return Err(RetrieveError::EmptyIndex);
         }
 
+        // PQ training fits `codebook_size` k-means centroids per subspace.
+        // With fewer training vectors than `codebook_size`, k-means can only
+        // produce `num_vectors` centroids; downstream LUT generation then
+        // panics on a shape mismatch. Reject early with a clear message.
+        if self.num_vectors < self.params.codebook_size {
+            return Err(RetrieveError::InvalidParameter(format!(
+                "IVF-PQ requires at least codebook_size training vectors \
+                 (got {} vectors, codebook_size = {}). Add more vectors \
+                 before build(), or lower codebook_size in IVFPQParams.",
+                self.num_vectors, self.params.codebook_size
+            )));
+        }
+
         // Stage 1: k-means clustering for IVF
         let mut kmeans =
             crate::partitioning::kmeans::KMeans::new(self.dimension, self.params.num_clusters)?;
