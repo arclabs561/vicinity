@@ -35,7 +35,7 @@ wins; quantization overhead outweighs savings.
 
 ## Install
 
-Each algorithm is a separate feature. Enable what you need:
+Requires Rust 1.89+. Each algorithm is a separate feature; enable what you need:
 
 ```toml
 [dependencies]
@@ -53,13 +53,17 @@ High recall, in-memory. Default index.
 ```rust
 use vicinity::hnsw::HNSWIndex;
 
-let mut index = HNSWIndex::builder(128).m(16).ef_search(50).build()?;
+let mut index = HNSWIndex::builder(128)
+    .m(16)
+    .ef_search(50)
+    .auto_normalize(true) // cosine (default) requires unit-norm vectors
+    .build()?;
 index.add_slice(0, &[0.1; 128])?;
 index.add_slice(1, &[0.2; 128])?;
 index.build()?;
 
 let results = index.search(&[0.1; 128], 5, 50)?;
-// results: Vec<(doc_id, distance)>
+// results: Vec<(doc_id, distance)>; distance in [0, 2], lower is closer.
 ```
 
 ### IVF-PQ
@@ -69,14 +73,19 @@ Compressed index. 32–64× less memory than HNSW, lower recall. Use for dataset
 ```rust
 use vicinity::ivf_pq::{IVFPQIndex, IVFPQParams};
 
-let params = IVFPQParams { num_clusters: 256, num_codebooks: 8, nprobe: 16, ..Default::default() };
+// IVF-PQ trains a quantizer on `build()`; aim for ≳ codebook_size × num_codebooks
+// training vectors (defaults: codebook_size=256, num_codebooks=8 → ≳ 2048).
+let params = IVFPQParams { num_clusters: 1024, num_codebooks: 8, nprobe: 16, ..Default::default() };
 let mut index = IVFPQIndex::new(128, params)?;
-index.add_slice(0, &[0.1; 128])?;
-index.add_slice(1, &[0.2; 128])?;
+for (id, vec) in dataset.iter().enumerate() {
+    index.add_slice(id as u32, vec)?;
+}
 index.build()?;
 
-let results = index.search(&[0.1; 128], 5)?;
+let results = index.search(&query, 5)?;
 ```
+
+See [`examples/ivf_pq_demo.rs`](examples/ivf_pq_demo.rs) for a runnable end-to-end example.
 
 ### Python (pyvicinity)
 
