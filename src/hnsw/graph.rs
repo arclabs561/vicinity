@@ -3305,6 +3305,35 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_auto_normalize_symmetric_for_angular() {
+        // Angular metric: parallel to the Python binding's
+        // test_auto_normalize_symmetric_for_angular. Mirrors the cosine case
+        // above for the second metric the flag covers.
+        let mut index = HNSWIndex::builder(4)
+            .m(8)
+            .ef_search(32)
+            .metric(DistanceMetric::Angular)
+            .auto_normalize(true)
+            .build()
+            .unwrap();
+
+        index.add_slice(0, &[3.0, 4.0, 0.0, 0.0]).unwrap();
+        index.add_slice(1, &[0.0, 0.0, 3.0, 4.0]).unwrap();
+        index.build().unwrap();
+
+        // Un-normalized query (norm = 5); auto_normalize must apply on
+        // search too or angular distance reads as ≫ 0 against itself.
+        let results = index.search(&[3.0, 4.0, 0.0, 0.0], 1, 32).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, 0, "nearest neighbor should be doc 0");
+        assert!(
+            results[0].1 < 0.05,
+            "angular self-distance after normalization should be ~0, got {}",
+            results[0].1
+        );
+    }
+
     #[cfg(feature = "parallel")]
     #[test]
     fn test_search_batch_matches_sequential() {

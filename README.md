@@ -123,11 +123,11 @@ batch_ids, batch_dists = index.batch_search(queries, k=10)  # (32, 10) int64
 ```
 
 Runnable examples (in the [source repo](https://github.com/arclabs561/vicinity),
-under [`examples/python/`](examples/python/) — not shipped with the wheel):
+under [`examples/python/`](examples/python/), not shipped with the wheel):
 
-- `01_text_similarity.py` — semantic search over text with sentence-transformers
-- `02_batch_and_recall.py` — recall@10 vs `ef_search` sweep
-- `03_ann_benchmarks_harness.py` — drop-in `ann-benchmarks` / VIBE wrapper
+- `01_text_similarity.py`: semantic search over text with sentence-transformers
+- `02_batch_and_recall.py`: recall@10 vs `ef_search` sweep
+- `03_ann_benchmarks_harness.py`: drop-in `ann-benchmarks` / VIBE wrapper
 
 The bindings ship hand-written `.pyi` stubs (`py.typed`) and are verified
 in CI by `mypy.stubtest`.
