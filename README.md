@@ -211,6 +211,28 @@ Each algorithm has a named feature flag:
 
 Quantization: RaBitQ, SAQ (`quantization` feature, via `qntz` crate). PQ is part of `ivf_pq`.
 
+### Experimental status
+
+Algorithms tagged `experimental` are reachable from the public API but
+have not yet cleared the bar to be recommended defaults. Each has a
+specific gap that, once closed, would promote it:
+
+- **DiskANN**: file-based save/load works; mmap-backed search is not yet
+  wired (entire index loads into RAM on `load_from_file`). Promote when
+  mmap I/O lands and recall@10 stays competitive on a 1M-vector dataset.
+- **DEG**: in-house density-adaptive variant of HNSW. No published
+  benchmark vs plain HNSW. Promote when a head-to-head shows a recall
+  or QPS win on at least two ann-benchmarks datasets.
+- **KD-Tree, Ball Tree**: exact NN, niche use case (d ≤ 20-50). Stable
+  but not heavily optimized. Promote when a representative workload
+  motivates SIMD'd distance kernels and parallel build.
+- **RP-Forest**: fast build, moderate recall (~58% on GloVe-25 per the
+  benchmark table above). Promote when a seed-selection or projection
+  improvement closes the recall gap to NSW (~99%) at the same QPS.
+- **LEMUR**: late-interaction MIPS; ships an inference-only skeleton
+  that requires externally-provided encoder weights and uses mean-pool
+  in place of the paper's OLS fit. Promote when in-tree training lands.
+
 See [docs.rs](https://docs.rs/vicinity) for the full API.
 
 ## Documentation
