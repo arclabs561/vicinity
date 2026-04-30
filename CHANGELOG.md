@@ -7,6 +7,8 @@ series is unstable: minor bumps may break the public API.
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-04-30
+
 ### Fixed
 
 - `HNSWIndex::search` and `batch_search_mqo` now also normalize the query
@@ -15,6 +17,12 @@ series is unstable: minor bumps may break the public API.
   meaningless distances under cosine (the dot-only fast path assumes both
   sides are unit-norm). The Python binding already did this in `prep_query`;
   the Rust API now matches.
+- README HNSW snippet ran but raised `InvalidParameter` on cosine because
+  the constant `[0.1; 128]` isn't unit-norm. Now uses `auto_normalize(true)`
+  on the builder so the literal copy-paste works.
+- README IVF-PQ snippet trained 256 clusters on 2 vectors and silently
+  returned distance=0 for every result. Reframed as API-shape with a note
+  about training-data scale plus a pointer to `examples/ivf_pq_demo.rs`.
 
 ### Added
 
