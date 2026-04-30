@@ -7,6 +7,15 @@ series is unstable: minor bumps may break the public API.
 
 ## [Unreleased]
 
+### Fixed
+
+- `HNSWIndex::search` and `batch_search_mqo` now also normalize the query
+  when `auto_normalize=true` for cosine and angular metrics. Previously the
+  flag normalized inserts only, so search queries silently produced
+  meaningless distances under cosine (the dot-only fast path assumes both
+  sides are unit-norm). The Python binding already did this in `prep_query`;
+  the Rust API now matches.
+
 ### Added
 
 - `pyvicinity` Python bindings on PyPI (abi3 wheel, CPython 3.9+).
