@@ -34,7 +34,8 @@
 //! | **Label Filtering** (Low selectivity) | `curator::CuratorIndex` | `curator` | No |
 //! | **Complex Predicates** (AND/OR filters) | `filtered_graph::FilteredGraphIndex` | `filtered_graph` | No |
 //! | **Range Filtering** (Numeric attributes) | `range_filtered::RangeFilteredIndex` | `range_filtered` | No |
-//! | **Dynamic Insert/Delete** | `fresh_graph::FreshGraphIndex` | `fresh_graph` | No |
+//! | **Dynamic Insert/Delete** (per-op latency) | `fresh_graph::FreshGraphIndex` | `fresh_graph` | No |
+//! | **Streaming Bulk Writes** (write throughput) | `streaming::lsm::LsmIndex` | `hnsw` (LSM is built-in) | No |
 //! | **Sparse Vectors** (SPLADE/BM25) | `sparse_mips::SparseMipsIndex` | `sparse_mips` | No |
 //! | **High-d Compression** (768d+) | `rp_quant::RpQuantIndex` | `rp_quant` | No |
 //! | **Quantized Graph** (HNSW + RaBitQ, cosine) | `hnsw::SymphonyQGIndex` | `hnsw` + `ivf_rabitq` | No |
