@@ -269,7 +269,10 @@ impl HNSWBuilder {
         self
     }
 
-    /// Whether to L2-normalize vectors on add (default false).
+    /// Whether to L2-normalize vectors on add and search (default false).
+    ///
+    /// Applies to cosine and angular metrics; ignored for L2 and inner product.
+    /// Symmetric with the Python binding's `auto_normalize` flag.
     pub fn auto_normalize(mut self, normalize: bool) -> Self {
         self.auto_normalize = normalize;
         self
@@ -1913,6 +1916,23 @@ impl HNSWIndex {
             return Err(RetrieveError::EmptyIndex);
         }
 
+        // Mirror `add_slice`: under auto_normalize, normalize the query for metrics
+        // that need unit-norm inputs. Cosine uses the dot-only fast path
+        // (`cosine_distance_normalized`); a non-unit query produces meaningless
+        // distances. The Python binding already does this in `prep_query`; the
+        // Rust API was previously asymmetric.
+        let normalized;
+        let query = if self.params.auto_normalize
+            && matches!(
+                self.params.metric,
+                DistanceMetric::Cosine | DistanceMetric::Angular
+            ) {
+            normalized = crate::distance::normalize(query);
+            normalized.as_slice()
+        } else {
+            query
+        };
+
         // ef guard: HNSW beam search returns at most ef candidates, so requesting
         // k > ef is structurally unsound (the result set is smaller than requested).
         // Empirically, recall also degrades sharply well before that boundary.
@@ -2190,6 +2210,25 @@ impl HNSWIndex {
                 });
             }
         }
+
+        // Mirror `add_slice` and `search`: under auto_normalize, normalize each
+        // query for metrics that need unit-norm inputs.
+        let normalized_owned: Vec<Vec<f32>>;
+        let normalized_refs: Vec<&[f32]>;
+        let queries: &[&[f32]] = if self.params.auto_normalize
+            && matches!(
+                self.params.metric,
+                DistanceMetric::Cosine | DistanceMetric::Angular
+            ) {
+            normalized_owned = queries
+                .iter()
+                .map(|q| crate::distance::normalize(q))
+                .collect();
+            normalized_refs = normalized_owned.iter().map(|v| v.as_slice()).collect();
+            &normalized_refs
+        } else {
+            queries
+        };
 
         let n = queries.len();
         if n == 0 {
@@ -3251,16 +3290,19 @@ mod tests {
             .unwrap();
 
         // auto_normalize is on, so raw (un-normalized) vectors should be accepted
+        // for both add and search.
         index.add_slice(0, &[3.0, 4.0, 0.0, 0.0]).unwrap();
         index.add_slice(1, &[0.0, 0.0, 3.0, 4.0]).unwrap();
         index.build().unwrap();
 
-        // Query with un-normalized vector (will be normalized at search time
-        // only if the caller normalizes -- auto_normalize applies to add, not search).
-        let q = crate::distance::normalize(&[3.0, 4.0, 0.0, 0.0]);
-        let results = index.search(&q, 1, 32).unwrap();
+        let results = index.search(&[3.0, 4.0, 0.0, 0.0], 1, 32).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].0, 0, "nearest neighbor should be doc 0");
+        assert!(
+            results[0].1 < 0.01,
+            "self-distance after normalization should be ~0, got {}",
+            results[0].1
+        );
     }
 
     #[cfg(feature = "parallel")]
