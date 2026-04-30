@@ -39,8 +39,14 @@ jobs:
       - name: Tag release
         run: |
           VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
-          git tag "v${VERSION}"
-          git push origin "v${VERSION}"
+          # Idempotent: if the maintainer pre-pushed the tag locally, skip
+          # rather than fail (cargo publish already succeeded above).
+          if git rev-parse --quiet --verify "refs/tags/v${VERSION}" >/dev/null; then
+            echo "Tag v${VERSION} already exists; skipping"
+          else
+            git tag "v${VERSION}"
+            git push origin "v${VERSION}"
+          fi
 
       - name: cargo-semver-checks
         uses: obi1kenobi/cargo-semver-checks-action@v2
