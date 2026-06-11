@@ -32,3 +32,4 @@ _archive/
 cargo-flamegraph.trace/
 *.svg
 Cargo.lock
+/semver-checks/
