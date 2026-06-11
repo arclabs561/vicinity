@@ -5,7 +5,7 @@ All notable changes to this project are documented here. The format follows
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The 0.x
 series is unstable: minor bumps may break the public API.
 
-## [Unreleased]
+## [0.8.2] - 2026-06-11
 
 ### Fixed
 
