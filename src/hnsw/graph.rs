@@ -245,13 +245,18 @@ pub struct HNSWBuilder {
 }
 
 impl HNSWBuilder {
-    /// Set the maximum number of neighbors per node (default 16).
+    /// Set the maximum number of neighbors per node on layers >= 1 (default 16).
+    ///
+    /// The base layer (layer 0) uses [`m_max`](Self::m_max), which defaults
+    /// to `2 * m` per the HNSW paper's `M_max0` recommendation. Higher `m`
+    /// improves recall at the cost of memory and build time.
     pub fn m(mut self, m: usize) -> Self {
         self.m = m;
         self
     }
 
-    /// Set the maximum neighbors on non-zero layers (default: same as `m`).
+    /// Set the maximum neighbors per node on the base layer, the paper's
+    /// `M_max0` (default: `2 * m`).
     pub fn m_max(mut self, m_max: usize) -> Self {
         self.m_max = Some(m_max);
         self
@@ -588,12 +593,14 @@ impl HNSWIndex {
     /// # Arguments
     ///
     /// * `dimension` - Vector dimension
-    /// * `m` - Maximum connections per node
-    /// * `m_max` - Maximum connections for new nodes
+    /// * `m` - Maximum neighbors per node on layers >= 1
+    /// * `m_max` - Maximum neighbors per node on the base layer (the paper's
+    ///   `M_max0`; typically `2 * m`)
     ///
     /// # Errors
     ///
-    /// Returns `RetrieveError` if parameters are invalid.
+    /// Returns [`RetrieveError::InvalidParameter`] if `dimension`, `m`, or
+    /// `m_max` is zero.
     pub fn new(dimension: usize, m: usize, m_max: usize) -> Result<Self, RetrieveError> {
         if dimension == 0 {
             return Err(RetrieveError::InvalidParameter(
@@ -729,6 +736,11 @@ impl HNSWIndex {
     /// Layout: `[v0[0..d], v1[0..d], ..., vn[0..d]]` where d = dimension.
     /// Useful for building external structures (PRT projections, quantization)
     /// that need access to the stored vectors.
+    ///
+    /// After [`Self::build`], vectors are BFS-reordered for cache locality:
+    /// positions in this slice are *internal* node IDs, not insertion order.
+    /// Build any auxiliary structure indexed by internal node ID from this
+    /// slice after `build()`, never from the original input array.
     pub fn raw_vectors(&self) -> &[f32] {
         &self.vectors
     }
@@ -1569,7 +1581,25 @@ impl HNSWIndex {
 
     /// Build the index (required before search).
     ///
-    /// Constructs the multi-layer graph structure.
+    /// Constructs the multi-layer graph structure, then reorders vectors in
+    /// BFS order for cache locality. The reorder changes *internal* node IDs
+    /// only; `search` results are unaffected (they return the `doc_id`s passed
+    /// to `add`). Auxiliary structures indexed by internal node ID
+    /// (quantization codes, ADSampling rotations) must be built from
+    /// [`Self::raw_vectors`] *after* this call, not from the original
+    /// insertion-order input.
+    ///
+    /// Idempotent: calling `build()` on an already-built index returns
+    /// `Ok(())` without rebuilding.
+    ///
+    /// Graph shape is randomized: each `add` draws the node's layer from a
+    /// thread-local RNG unless [`HNSWParams::seed`] is set, so two indexes
+    /// built over the same data are equivalent but not bit-identical by
+    /// default.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RetrieveError::EmptyIndex`] if no vectors have been added.
     pub fn build(&mut self) -> Result<(), RetrieveError> {
         if self.built {
             return Ok(()); // Already built
@@ -1886,13 +1916,26 @@ impl HNSWIndex {
     ///
     /// # Arguments
     ///
-    /// * `query` - Query vector (should be L2-normalized)
+    /// * `query` - Query vector (must be L2-normalized for the cosine metric;
+    ///   with `auto_normalize` set on the builder it is normalized here)
     /// * `k` - Number of neighbors to return
-    /// * `ef` - Search width (higher = better recall, slower)
+    /// * `ef` - Search width (higher = better recall, slower). Values below
+    ///   `k` are silently raised to `k`, since beam search returns at most
+    ///   `ef` candidates.
     ///
     /// # Returns
     ///
-    /// Vector of (doc_id, distance) pairs, sorted by distance ascending.
+    /// Vector of `(doc_id, distance)` pairs, sorted by distance ascending.
+    /// May contain fewer than `k` entries: when `k` exceeds the number of
+    /// indexed vectors, and after [`Self::delete`] (tombstoned entries are
+    /// filtered from the candidate set). `k = 0` returns an empty vec.
+    ///
+    /// # Errors
+    ///
+    /// * [`RetrieveError::InvalidParameter`] if the index has not been built.
+    /// * [`RetrieveError::DimensionMismatch`] if `query.len()` differs from
+    ///   the index dimension.
+    /// * [`RetrieveError::EmptyIndex`] if the index contains no vectors.
     pub fn search(
         &self,
         query: &[f32],
@@ -2064,10 +2107,11 @@ impl HNSWIndex {
     /// for navigability, search with box-to-point, quantized, or any other
     /// distance function.
     ///
-    /// The `internal_id` passed to the closure is the zero-based insertion
-    /// order index (same as the index into flat vector storage). The caller
-    /// must maintain a parallel array mapping these IDs to their custom data
-    /// (box geometry, quantization codes, etc.).
+    /// The `internal_id` passed to the closure indexes the internal flat
+    /// vector storage ([`Self::raw_vectors`]). After [`Self::build`] this is
+    /// the BFS-reordered order, *not* insertion order, so any parallel array
+    /// mapping these IDs to custom data (box geometry, quantization codes,
+    /// etc.) must be built from `raw_vectors()` after `build()`.
     ///
     /// Returns `(doc_id, distance)` pairs sorted by distance ascending.
     ///

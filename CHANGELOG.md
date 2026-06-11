@@ -7,6 +7,32 @@ series is unstable: minor bumps may break the public API.
 
 ## [Unreleased]
 
+### Fixed
+
+- Corrected `HNSWBuilder::m_max` and `HNSWIndex::new` parameter docs: `m_max`
+  caps neighbors on the base layer (the paper's `M_max0`, default `2 * m`).
+  The previous docs claimed it applied to non-zero layers and defaulted to
+  `m`; construction has always used `m_max` for layer 0 and `m` above it.
+- Corrected `HNSWIndex::search_with_distance` docs: the closure's
+  `internal_id` indexes the BFS-reordered vector storage after `build()`,
+  not insertion order. Parallel arrays must be built from `raw_vectors()`
+  after `build()`.
+
+### Added
+
+- Documented contracts on `HNSWIndex::build` (BFS reorder of internal IDs,
+  idempotency, RNG determinism via `HNSWParams::seed`), `search` (error
+  variants, `k > n` returns fewer results, `ef < k` silently clamped to `k`),
+  and `raw_vectors` (post-build reorder warning, previously only on the
+  legacy `vectors_raw` alias).
+- Documented the segment persistence compatibility contract on the
+  `persistence` module and in the README: 0.6.x legacy fallback,
+  future-version rejection, corrupt/truncated input returns errors rather
+  than panicking.
+- Tests pinning future-format-version rejection, garbage-byte JSON load,
+  `k > n` and `k = 0` search results, exact error variants for dimension
+  mismatch / add-after-build / empty build, and `build()` idempotency.
+
 ## [0.8.1] - 2026-04-30
 
 ### Fixed
