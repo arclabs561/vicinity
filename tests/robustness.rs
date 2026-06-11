@@ -12,6 +12,7 @@ use common::normalize;
 
 use vicinity::distance::DistanceMetric;
 use vicinity::hnsw::HNSWIndex;
+use vicinity::RetrieveError;
 
 // ---------------------------------------------------------------------------
 // 1. NaN / Inf rejection
@@ -105,7 +106,10 @@ fn search_empty_index_returns_error() {
 fn build_empty_index_returns_error() {
     let mut index = HNSWIndex::new(4, 16, 32).unwrap();
     let result = index.build();
-    assert!(result.is_err(), "building an empty index should return Err");
+    assert!(
+        matches!(result, Err(RetrieveError::EmptyIndex)),
+        "building an empty index should return EmptyIndex, got {result:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -135,8 +139,14 @@ fn search_dimension_mismatch_returns_error() {
     // Query with wrong dimension (2 instead of 4).
     let result = index.search(&[1.0, 0.0], 1, 10);
     assert!(
-        result.is_err(),
-        "search with mismatched query dimension should return Err"
+        matches!(
+            result,
+            Err(RetrieveError::DimensionMismatch {
+                query_dim: 2,
+                doc_dim: 4
+            })
+        ),
+        "search with mismatched query dimension should return DimensionMismatch, got {result:?}"
     );
 }
 
@@ -145,8 +155,14 @@ fn add_dimension_mismatch_returns_error() {
     let mut index = HNSWIndex::new(4, 16, 32).unwrap();
     let result = index.add_slice(0, &[1.0, 0.0]);
     assert!(
-        result.is_err(),
-        "adding a vector with wrong dimension should return Err"
+        matches!(
+            result,
+            Err(RetrieveError::DimensionMismatch {
+                query_dim: 2,
+                doc_dim: 4
+            })
+        ),
+        "adding a vector with wrong dimension should return DimensionMismatch, got {result:?}"
     );
 }
 
@@ -235,10 +251,8 @@ fn search_k_zero_returns_empty() {
     index.build().unwrap();
 
     let result = index.search(&normalize(&[1.0, 0.0, 0.0, 0.0]), 0, 10);
-    if let Ok(r) = result {
-        assert!(r.is_empty(), "k=0 should return empty results");
-    }
-    // Err is also acceptable
+    let r = result.expect("k=0 search should succeed");
+    assert!(r.is_empty(), "k=0 should return empty results, got {r:?}");
 }
 
 #[test]
@@ -248,16 +262,12 @@ fn search_k_larger_than_index_size() {
     index.add_slice(0, &v).unwrap();
     index.build().unwrap();
 
-    // Ask for 100 neighbors when only 1 vector exists.
+    // Ask for 100 neighbors when only 1 vector exists. The documented
+    // contract: Ok with fewer than k results, never an error.
     let result = index.search(&normalize(&[1.0, 0.0, 0.0, 0.0]), 100, 200);
-    if let Ok(r) = result {
-        assert!(
-            r.len() <= 1,
-            "should return at most 1 result, got {}",
-            r.len()
-        );
-    }
-    // Err is also acceptable
+    let r = result.expect("k > n search should succeed");
+    assert_eq!(r.len(), 1, "should return exactly the 1 indexed vector");
+    assert_eq!(r[0].0, 0, "should return the only doc_id");
 }
 
 #[test]
@@ -269,9 +279,24 @@ fn add_after_build_rejected() {
 
     let result = index.add_slice(1, &normalize(&[0.0, 1.0, 0.0, 0.0]));
     assert!(
-        result.is_err(),
-        "adding vectors after build should return Err"
+        matches!(result, Err(RetrieveError::InvalidParameter(_))),
+        "adding vectors after build should return InvalidParameter, got {result:?}"
     );
+}
+
+#[test]
+fn build_is_idempotent() {
+    // Documented contract: build() on an already-built index returns Ok(())
+    // without rebuilding, and search results are unaffected.
+    let mut index = HNSWIndex::new(4, 16, 32).unwrap();
+    let v = normalize(&[1.0, 0.0, 0.0, 0.0]);
+    index.add_slice(0, &v).unwrap();
+    index.build().unwrap();
+
+    let before = index.search(&v, 1, 10).unwrap();
+    index.build().expect("second build() should be a no-op Ok");
+    let after = index.search(&v, 1, 10).unwrap();
+    assert_eq!(before, after, "rebuild no-op must not change results");
 }
 
 #[test]

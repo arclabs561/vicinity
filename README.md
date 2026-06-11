@@ -151,6 +151,12 @@ let index = HNSWIndex::load_from_file("my_index.json")?;
 
 See [`examples/06_save_and_load.rs`](examples/06_save_and_load.rs) for a full example.
 
+A binary segment format (smaller on disk, with WAL support) is available under the
+`persistence` feature via `HNSWSegmentWriter` / `HNSWSegmentReader`. Segments carry a
+magic header and format version: files written by 0.6.x still load via a legacy
+fallback, files from a newer format version are rejected with an error, and corrupt
+or truncated input returns an error rather than panicking or decoding garbage.
+
 ## Benchmark
 
 GloVe-25 (1.18M vectors, 25-d, angular distance), Apple Silicon, single-threaded:

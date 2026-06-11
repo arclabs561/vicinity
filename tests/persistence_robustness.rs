@@ -204,6 +204,24 @@ fn corrupted_bytes_do_not_panic() {
 }
 
 // ---------------------------------------------------------------------------
+// 3b. Garbage bytes (not JSON at all)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn garbage_bytes_return_serialization_error() {
+    // Binary garbage that is not JSON (deliberately includes the segment
+    // magic to confirm the JSON path doesn't misroute binary input).
+    let garbage: &[u8] = b"VCNHNSW\x01\x00\x00\x00\xff\xfe not json \x80\x81";
+    match HNSWIndex::load_from_reader(garbage) {
+        Ok(_) => panic!("loading garbage bytes must fail"),
+        Err(e) => assert!(
+            matches!(e, vicinity::RetrieveError::Serialization(_)),
+            "expected Serialization error for garbage bytes, got {e:?}"
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Segment-binary persistence tests (require `persistence` feature)
 // ---------------------------------------------------------------------------
 
@@ -282,6 +300,38 @@ mod segment_binary {
             "expected Format error for unreasonable dimension, got: {:?}",
             err.err()
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // 4b. Future format version returns Format error
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn future_format_version_returns_format_error() {
+        use vicinity::persistence::format::{FORMAT_VERSION, HNSW_SEGMENT_MAGIC};
+
+        let (mem, _raw) = write_segment();
+
+        // Craft a metadata.bin claiming a format version this crate doesn't
+        // know about (valid magic, version = FORMAT_VERSION + 1).
+        let mut future: Vec<u8> = HNSW_SEGMENT_MAGIC.to_vec();
+        future.extend_from_slice(&(FORMAT_VERSION + 1).to_le_bytes());
+        future.extend_from_slice(&4u32.to_le_bytes()); // dimension
+        future.extend_from_slice(&2u32.to_le_bytes()); // num_vectors
+        future.push(1); // is_built
+        mem.atomic_write("segments/segment_hnsw_0/metadata.bin", &future)
+            .expect("atomic_write");
+
+        match HNSWSegmentReader::load(Box::new(mem), 0) {
+            Err(PersistenceError::Format(msg)) => assert!(
+                msg.contains("unsupported format version"),
+                "error should name the version mismatch, got: {msg}"
+            ),
+            Err(other) => {
+                panic!("expected Format error for future version, got: {other:?}")
+            }
+            Ok(_) => panic!("expected Format error for future version, got Ok"),
+        }
     }
 
     // -----------------------------------------------------------------------
