@@ -145,7 +145,7 @@ impl LemurIndex {
             .doc_weights
             .iter()
             .enumerate()
-            .map(|(i, w)| (i, dot(&query_vec, w)))
+            .map(|(i, w)| (i, crate::simd::dot(&query_vec, w)))
             .collect();
         scores.sort_unstable_by(|a, b| b.1.total_cmp(&a.1)); // descending (MIPS)
         scores.truncate(pool);
@@ -193,7 +193,7 @@ impl LemurIndex {
         for qt in query_tokens {
             let mut max_sim = f32::NEG_INFINITY;
             for dt in doc_tokens {
-                let sim = dot(qt, dt);
+                let sim = crate::simd::dot(qt, dt);
                 if sim > max_sim {
                     max_sim = sim;
                 }
@@ -202,12 +202,6 @@ impl LemurIndex {
         }
         total
     }
-}
-
-/// Dot product of two slices.
-#[inline]
-fn dot(a: &[f32], b: &[f32]) -> f32 {
-    a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
 }
 
 #[cfg(test)]
