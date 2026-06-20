@@ -11,12 +11,14 @@ Start here. These work immediately with synthetic data.
 | `01_basic_search` | 63 | Minimal HNSW: add vectors, search |
 | `02_measure_recall` | 91 | How to validate an ANN index |
 | `03_quick_benchmark` | 190 | Benchmark with bundled data (no downloads) |
+| `05_normalization_matters` | 137 | Cosine input contract and `auto_normalize(true)` |
 
 ```sh
 cargo run --example 01_basic_search --release
 cargo run --example 02_measure_recall --release
 cargo run --example 03_quick_benchmark --release                       # bench: 10K x 384
 VICINITY_DATASET=quick cargo run --example 03_quick_benchmark --release     # CI: 2K x 128
+cargo run --example 05_normalization_matters --release
 ```
 
 ## Educational (Motivated Toy)
