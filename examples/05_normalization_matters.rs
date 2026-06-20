@@ -3,7 +3,9 @@
 //!
 //! HNSW uses `1 - dot(a, b)` as its distance function, which equals cosine
 //! distance only when vectors are L2-normalized. This example shows the
-//! recall difference between normalized and un-normalized input.
+//! public API contract: raw cosine vectors are rejected by default, manual
+//! normalization works, and `auto_normalize(true)` applies the same transform
+//! on add and search.
 //!
 //! ```bash
 //! cargo run --example 05_normalization_matters --release
@@ -19,76 +21,70 @@ fn main() -> vicinity::Result<()> {
     let ef = 100;
     let n_queries = 100;
 
-    // Generate random vectors with varying magnitudes (NOT normalized)
+    // Generate random vectors with varying magnitudes (not normalized).
     let raw_vectors: Vec<Vec<f32>> = (0..n).map(|i| random_vec(dim, i)).collect();
-    // Normalized versions
     let norm_vectors: Vec<Vec<f32>> = raw_vectors.iter().map(|v| normalize(v)).collect();
 
-    // Build index with UN-NORMALIZED vectors
-    let mut raw_index = HNSWIndex::new(dim, 16, 100)?;
-    for (id, vec) in raw_vectors.iter().enumerate() {
-        raw_index.add(id as u32, vec.clone())?;
-    }
-    raw_index.build()?;
-
-    // Build index with NORMALIZED vectors
-    let mut norm_index = HNSWIndex::new(dim, 16, 100)?;
-    for (id, vec) in norm_vectors.iter().enumerate() {
-        norm_index.add(id as u32, vec.clone())?;
-    }
-    norm_index.build()?;
-
-    // Measure recall against true cosine-distance nearest neighbors
-    let mut recall_raw = 0.0;
-    let mut recall_norm = 0.0;
-
-    for q in 0..n_queries {
-        let query_idx = (q * 19) % n;
-        let raw_query = &raw_vectors[query_idx];
-        let norm_query = &norm_vectors[query_idx];
-
-        // Ground truth: brute-force cosine distance (handles any magnitude)
-        let gt = brute_force_cosine_knn(norm_query, &norm_vectors, k);
-
-        // HNSW with un-normalized input
-        let raw_results = raw_index.search(raw_query, k, ef)?;
-        let raw_ids: HashSet<u32> = raw_results.iter().map(|(id, _)| *id).collect();
-        recall_raw += gt.intersection(&raw_ids).count() as f32 / k as f32;
-
-        // HNSW with normalized input
-        let norm_results = norm_index.search(norm_query, k, ef)?;
-        let norm_ids: HashSet<u32> = norm_results.iter().map(|(id, _)| *id).collect();
-        recall_norm += gt.intersection(&norm_ids).count() as f32 / k as f32;
-    }
-
-    recall_raw /= n_queries as f32;
-    recall_norm /= n_queries as f32;
-
-    println!("L2-normalization impact on HNSW recall");
+    println!("L2-normalization impact on HNSW cosine search");
     println!("  n={}, dim={}, k={}, ef={}", n, dim, k, ef);
     println!();
-    println!(
-        "  Un-normalized vectors: recall@{} = {:.1}%",
+
+    // The default cosine path rejects clearly un-normalized input. This is
+    // better than silently ranking by vector magnitude.
+    let mut invalid_index = HNSWIndex::builder(dim).m(16).m_max(100).build()?;
+    match invalid_index.add_slice(0, &raw_vectors[0]) {
+        Ok(()) => println!("  raw input without normalization: unexpectedly accepted"),
+        Err(err) => println!("  raw input without normalization: rejected ({err})"),
+    }
+    println!();
+
+    let mut manual_index = HNSWIndex::builder(dim)
+        .m(16)
+        .m_max(100)
+        .auto_normalize(false)
+        .build()?;
+    for (id, vec) in norm_vectors.iter().enumerate() {
+        manual_index.add_slice(id as u32, vec)?;
+    }
+    manual_index.build()?;
+
+    let mut auto_index = HNSWIndex::builder(dim)
+        .m(16)
+        .m_max(100)
+        .auto_normalize(true)
+        .build()?;
+    for (id, vec) in raw_vectors.iter().enumerate() {
+        auto_index.add_slice(id as u32, vec)?;
+    }
+    auto_index.build()?;
+
+    let manual_recall = recall_against_cosine_truth(
+        &manual_index,
+        &norm_vectors,
+        &norm_vectors,
         k,
-        recall_raw * 100.0
+        ef,
+        n_queries,
+    )?;
+    let auto_recall =
+        recall_against_cosine_truth(&auto_index, &raw_vectors, &norm_vectors, k, ef, n_queries)?;
+
+    println!("{:>28}  {:>10}", "Path", "Recall@10");
+    println!("{:->28}  {:->10}", "", "");
+    println!(
+        "{:>28}  {:>9.1}%",
+        "manual normalize()",
+        manual_recall * 100.0
     );
     println!(
-        "  L2-normalized vectors: recall@{} = {:.1}%",
-        k,
-        recall_norm * 100.0
+        "{:>28}  {:>9.1}%",
+        "auto_normalize(true)",
+        auto_recall * 100.0
     );
     println!();
-    if recall_norm - recall_raw > 0.05 {
-        println!(
-            "  --> Normalization improved recall by {:.1} percentage points.",
-            (recall_norm - recall_raw) * 100.0
-        );
-        println!("      HNSW's distance function assumes normalized input.");
-        println!("      Always normalize vectors before adding them to the index.");
-    } else {
-        println!("  --> Recall was similar (vectors may have had uniform magnitude).");
-        println!("      Normalization is still recommended for correctness.");
-    }
+    println!("Key insight: HNSW's cosine fast path needs unit-norm vectors.");
+    println!("Use `auto_normalize(true)` when callers may pass raw embeddings.");
+    println!("Manual normalization remains useful when vectors are already prepared upstream.");
 
     Ok(())
 }
@@ -110,6 +106,29 @@ fn normalize(v: &[f32]) -> Vec<f32> {
     } else {
         v.to_vec()
     }
+}
+
+fn recall_against_cosine_truth(
+    index: &HNSWIndex,
+    query_vectors: &[Vec<f32>],
+    truth_vectors: &[Vec<f32>],
+    k: usize,
+    ef: usize,
+    n_queries: usize,
+) -> vicinity::Result<f32> {
+    let mut recall = 0.0;
+
+    for q in 0..n_queries {
+        let query_idx = (q * 19) % query_vectors.len();
+        let truth_query = &truth_vectors[query_idx];
+        let gt = brute_force_cosine_knn(truth_query, truth_vectors, k);
+
+        let results = index.search(&query_vectors[query_idx], k, ef)?;
+        let result_ids: HashSet<u32> = results.iter().map(|(id, _)| *id).collect();
+        recall += gt.intersection(&result_ids).count() as f32 / k as f32;
+    }
+
+    Ok(recall / n_queries as f32)
 }
 
 fn brute_force_cosine_knn(query: &[f32], data: &[Vec<f32>], k: usize) -> HashSet<u32> {
