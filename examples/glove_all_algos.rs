@@ -23,8 +23,8 @@
 //! ```
 
 use std::collections::HashSet;
-use std::fs::{File, OpenOptions};
-use std::io::{BufReader, BufWriter, Read, Write};
+use std::fs::OpenOptions;
+use std::io::{BufWriter, Write};
 use std::time::Instant;
 
 use vicinity::adsampling::{ADSamplingParams, ADSamplingState};
@@ -59,6 +59,9 @@ use vicinity::prt::ProbabilisticRoutingTest;
 #[cfg(feature = "vamana")]
 use vicinity::vamana::{VamanaIndex, VamanaParams};
 
+#[path = "common/mod.rs"]
+mod common;
+
 const DEFAULT_DATA_DIR: &str = "data/ann-benchmarks/glove-25-angular";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -83,9 +86,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let jsonl_out = format!("docs/{dataset_name}.jsonl");
 
     println!("Loading {dataset_name} data...");
-    let (train, dim) = load_vectors(&format!("{data_dir}/train.bin"))?;
-    let (test, _) = load_vectors(&format!("{data_dir}/test.bin"))?;
-    let (gt, k_gt) = load_neighbors(&format!("{data_dir}/neighbors.bin"))?;
+    let (train, dim) = common::load_vectors(&format!("{data_dir}/train.bin"))?;
+    let (test, _) = common::load_vectors(&format!("{data_dir}/test.bin"))?;
+    let (gt, k_gt) = common::load_neighbors(&format!("{data_dir}/neighbors.bin"))?;
     let k = 10;
 
     println!(
@@ -1583,52 +1586,4 @@ fn should_skip(algo_name: &str, cached: &std::collections::HashMap<String, Strin
     } else {
         false
     }
-}
-
-// ─── Data loading (same format as glove_benchmark.rs) ────────────────────────
-
-fn load_vectors(path: &str) -> Result<(Vec<Vec<f32>>, usize), Box<dyn std::error::Error>> {
-    let mut f = BufReader::new(File::open(path)?);
-    let mut magic = [0u8; 4];
-    f.read_exact(&mut magic)?;
-    let mut hdr = [0u8; 8];
-    f.read_exact(&mut hdr)?;
-    let n = u32::from_le_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]) as usize;
-    let d = u32::from_le_bytes([hdr[4], hdr[5], hdr[6], hdr[7]]) as usize;
-    let mut buf = vec![0u8; n * d * 4];
-    f.read_exact(&mut buf)?;
-    let vecs = (0..n)
-        .map(|i| {
-            (0..d)
-                .map(|j| {
-                    let o = (i * d + j) * 4;
-                    f32::from_le_bytes([buf[o], buf[o + 1], buf[o + 2], buf[o + 3]])
-                })
-                .collect()
-        })
-        .collect();
-    Ok((vecs, d))
-}
-
-fn load_neighbors(path: &str) -> Result<(Vec<Vec<i32>>, usize), Box<dyn std::error::Error>> {
-    let mut f = BufReader::new(File::open(path)?);
-    let mut magic = [0u8; 4];
-    f.read_exact(&mut magic)?;
-    let mut hdr = [0u8; 8];
-    f.read_exact(&mut hdr)?;
-    let n = u32::from_le_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]) as usize;
-    let k = u32::from_le_bytes([hdr[4], hdr[5], hdr[6], hdr[7]]) as usize;
-    let mut buf = vec![0u8; n * k * 4];
-    f.read_exact(&mut buf)?;
-    let nbrs = (0..n)
-        .map(|i| {
-            (0..k)
-                .map(|j| {
-                    let o = (i * k + j) * 4;
-                    i32::from_le_bytes([buf[o], buf[o + 1], buf[o + 2], buf[o + 3]])
-                })
-                .collect()
-        })
-        .collect();
-    Ok((nbrs, k))
 }

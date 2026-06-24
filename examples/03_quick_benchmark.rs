@@ -23,6 +23,9 @@ use std::collections::HashMap;
 use vicinity::hnsw::HNSWIndex;
 use vicinity::hnsw::HNSWParams;
 
+#[path = "common/mod.rs"]
+mod common;
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dataset = std::env::var("VICINITY_DATASET").unwrap_or_else(|_| "bench".to_string());
     let variant = std::env::var("VICINITY_TEST_VARIANT").unwrap_or_default();
@@ -44,9 +47,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 format!("{}/{}_neighbors_{}.bin", data_dir, dataset, variant)
             };
 
-            let (train, dim) = load_vectors(&format!("{}/{}_train.bin", data_dir, dataset))?;
-            let (test, _) = load_vectors(&test_file)?;
-            let (neighbors, k_gt) = load_neighbors(&nbr_file)?;
+            let (train, dim) =
+                common::load_vectors(&format!("{}/{}_train.bin", data_dir, dataset))?;
+            let (test, _) = common::load_vectors(&test_file)?;
+            let (neighbors, k_gt) = common::load_neighbors(&nbr_file)?;
             (
                 train,
                 test,
@@ -306,80 +310,6 @@ fn find_data_dir(dataset: &str) -> Result<String, Box<dyn std::error::Error>> {
     }
 
     Err(format!("Sample data not found (looked for {})", train_file).into())
-}
-
-fn load_vectors(path: &str) -> Result<(Vec<Vec<f32>>, usize), Box<dyn std::error::Error>> {
-    let file = File::open(path)?;
-    let mut reader = BufReader::new(file);
-
-    let mut magic = [0u8; 4];
-    reader.read_exact(&mut magic)?;
-    if &magic != b"VEC1" {
-        return Err("Invalid vector file format".into());
-    }
-
-    let mut header = [0u8; 8];
-    reader.read_exact(&mut header)?;
-    let n = u32::from_le_bytes([header[0], header[1], header[2], header[3]]) as usize;
-    let d = u32::from_le_bytes([header[4], header[5], header[6], header[7]]) as usize;
-
-    let mut data = vec![0u8; n * d * 4];
-    reader.read_exact(&mut data)?;
-
-    let vectors: Vec<Vec<f32>> = (0..n)
-        .map(|i| {
-            (0..d)
-                .map(|j| {
-                    let offset = (i * d + j) * 4;
-                    f32::from_le_bytes([
-                        data[offset],
-                        data[offset + 1],
-                        data[offset + 2],
-                        data[offset + 3],
-                    ])
-                })
-                .collect()
-        })
-        .collect();
-
-    Ok((vectors, d))
-}
-
-fn load_neighbors(path: &str) -> Result<(Vec<Vec<i32>>, usize), Box<dyn std::error::Error>> {
-    let file = File::open(path)?;
-    let mut reader = BufReader::new(file);
-
-    let mut magic = [0u8; 4];
-    reader.read_exact(&mut magic)?;
-    if &magic != b"NBR1" {
-        return Err("Invalid neighbors file format".into());
-    }
-
-    let mut header = [0u8; 8];
-    reader.read_exact(&mut header)?;
-    let n = u32::from_le_bytes([header[0], header[1], header[2], header[3]]) as usize;
-    let k = u32::from_le_bytes([header[4], header[5], header[6], header[7]]) as usize;
-
-    let mut data = vec![0u8; n * k * 4];
-    reader.read_exact(&mut data)?;
-
-    let neighbors: Vec<Vec<i32>> = (0..n)
-        .map(|i| {
-            (0..k)
-                .map(|j| {
-                    let offset = (i * k + j) * 4;
-                    i32::from_le_bytes([
-                        data[offset],
-                        data[offset + 1],
-                        data[offset + 2],
-                        data[offset + 3],
-                    ])
-                })
-                .collect()
-        })
-        .collect();
-
-    Ok((neighbors, k))
 }
 
 fn load_labels(path: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> {
