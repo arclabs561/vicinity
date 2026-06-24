@@ -42,8 +42,10 @@ fn main() {
         return;
     }
 
-    // HDF5 loading is not yet supported (no hdf5 dependency).
-    // Run the synthetic demo instead.
+    // NOTE: HDF5 loading is not wired (no hdf5 dependency), so this branch is
+    // effectively unreachable -- even when the dataset file exists, we fall through
+    // to the synthetic demo below. This example is synthetic-only by design; wiring
+    // real HDF5 ingestion is out of scope here.
     let _ = dataset_path;
     println!("HDF5 loading not available. Running synthetic demo instead...\n");
     run_synthetic_demo();
@@ -141,6 +143,16 @@ fn run_synthetic_demo() {
         brute_time.as_secs_f64() / hnsw_time.as_secs_f64()
     );
     println!("Recall@{}:   {:.1}%", k, avg_recall * 100.0);
+
+    // Proof of correctness: HNSW must recover the brute-force L2 ground truth at high
+    // accuracy. A low recall here would mean the index, the L2 metric wiring, or the
+    // vector-reorder bookkeeping is broken rather than approximating correctly.
+    assert!(
+        avg_recall > 0.75,
+        "recall@{} = {:.1}% fell below the 75% floor; HNSW failed to recover the L2 ground truth",
+        k,
+        avg_recall * 100.0
+    );
 }
 
 fn generate_vector(seed: usize, dim: usize) -> Vec<f32> {

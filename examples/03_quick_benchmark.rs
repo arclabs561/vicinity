@@ -144,6 +144,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!("{}", "-".repeat(45));
 
+    let mut best_recall = 0.0_f64;
     for ef in [20, 50, 100, 200] {
         let search_start = Instant::now();
         let mut total_recall = 0.0;
@@ -175,6 +176,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let qps = test.len() as f64 / search_time.as_secs_f64();
         let latency_us = search_time.as_micros() as f64 / test.len() as f64;
         let recall = total_recall / test.len() as f64 * 100.0;
+        best_recall = best_recall.max(recall);
 
         println!(
             "{:>8} {:>9.1}% {:>10.0}us {:>9.0}",
@@ -183,6 +185,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!();
+    println!("Best recall@{} (across ef): {:.1}%", k, best_recall);
+
+    // Proof of correctness: HNSW must recover the brute-force ground truth at high
+    // accuracy on this clustered synthetic data. A collapsed index (build bug, wrong
+    // metric, vector-reorder mismatch) drops recall far below this floor. Filtered
+    // runs restrict the candidate pool by topic, which legitimately lowers recall, so
+    // the floor only applies to the unfiltered path.
+    if !is_filter {
+        assert!(
+            best_recall > 80.0,
+            "recall@{} = {:.1}% fell below the 80% floor; HNSW failed to recover ground truth",
+            k,
+            best_recall
+        );
+    }
 
     Ok(())
 }
