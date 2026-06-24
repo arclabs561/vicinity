@@ -218,11 +218,6 @@ path = "examples/lid_demo.rs"
 required-features = ["hnsw"]
 
 [[example]]
-name = "lid_outlier_detection"
-path = "examples/lid_outlier_detection.rs"
-required-features = ["hnsw"]
-
-[[example]]
 name = "dual_branch_demo"
 path = "examples/dual_branch_demo.rs"
 required-features = ["hnsw"]

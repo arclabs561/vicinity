@@ -214,9 +214,11 @@ fn demo_outlier_detection() {
         "\n   Outliers detected via high LID: {}/{}",
         detected_outliers, n_outliers
     );
-    if detected_outliers > 0 {
-        println!("   [PASS] LID successfully identified outliers");
-    }
+    assert!(
+        detected_outliers > 0,
+        "LID failed to identify any of the {n_outliers} planted outliers via high LID"
+    );
+    println!("   [PASS] LID identified {detected_outliers}/{n_outliers} outliers via high LID");
     println!();
 }
 
