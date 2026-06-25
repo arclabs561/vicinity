@@ -69,6 +69,11 @@ jobs:
       # nextest does not support doctests yet (nextest-rs/nextest#16).
       - name: Doc tests
         run: cargo test --doc --no-default-features --features hnsw
+      - name: Run example assertions
+        run: |
+          for ex in 03_quick_benchmark sift_benchmark lid_demo; do
+            cargo run --no-default-features --features hnsw --release --example "$ex"
+          done
       - name: Property tests
         run: cargo nextest run --no-default-features --features hnsw -E 'test(property_)'
   # Semver-checks only on PRs.
