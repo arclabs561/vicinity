@@ -157,6 +157,14 @@ magic header and format version: files written by 0.6.x still load via a legacy
 fallback, files from a newer format version are rejected with an error, and corrupt
 or truncated input returns an error rather than panicking or decoding garbage.
 
+The `store` feature adds `store::UpdatableIndex`, an updatable, durable
+*multi-segment* ANN index backed by [`segstore`](https://crates.io/crates/segstore):
+incremental add/delete, a write-ahead log, checkpoint, compaction, and crash
+recovery. Each segment is a cached HNSW (rebuilt only on mutation, not per query),
+searched and merged across segments. This is the deliberate alternative to a single
+evolving graph; like any HNSW the merged result is approximate. Opt-in; the default
+build does not depend on segstore.
+
 ## Benchmark
 
 GloVe-25 (1.18M vectors, 25-d, angular distance), Apple Silicon, single-threaded:
