@@ -15,9 +15,10 @@ exclude = ["data/", "benches/", "docs/", "scripts/", ".github/"]
 [workspace]
 
 [lib]
-# Pure rlib for normal Rust usage.
-# PyO3 cdylib is built by maturin (sets PYO3_BUILD_EXTENSION_MODULE=1).
-crate-type = ["rlib"]
+# `rlib` for normal Rust consumers; `cdylib` so maturin can build the PyO3
+# extension module. maturin does not inject the cdylib target itself (it reports
+# "No Cargo targets to build" without it), so the target must be declared here.
+crate-type = ["rlib", "cdylib"]
 
 [dependencies]
 smallvec = "1.11"
