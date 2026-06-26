@@ -5,6 +5,23 @@ All notable changes to this project are documented here. The format follows
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The 0.x
 series is unstable: minor bumps may break the public API.
 
+## [0.9.1] - 2026-06-26
+
+### Fixed
+
+- `store::UpdatableIndex` caches the per-segment HNSW indexes and rebuilds them
+  only on mutation (add/delete/compact), instead of rebuilding every segment's
+  graph on every query.
+- `store::UpdatableIndex::add` now returns an error for a vector whose dimension
+  does not match the index, rather than silently dropping it from every rebuild.
+- Restored the `cdylib` crate-type so maturin builds the `pyvicinity` extension
+  (it reported "No Cargo targets to build" without it).
+
+### Changed
+
+- `store` docs no longer claim an "exact" cross-segment merge. HNSW search is
+  itself approximate, so the merged result is approximate.
+
 ## [0.9.0] - 2026-06-26
 
 ### Added
