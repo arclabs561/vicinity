@@ -5,6 +5,19 @@ All notable changes to this project are documented here. The format follows
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The 0.x
 series is unstable: minor bumps may break the public API.
 
+## [0.9.0] - 2026-06-26
+
+### Added
+
+- Optional `store` feature: `store::UpdatableIndex`, an updatable, durable
+  multi-segment ANN index backed by
+  [`segstore`](https://crates.io/crates/segstore). A per-segment HNSW is searched
+  and merged (exact top-k); vectors are L2-normalized on ingest. Incremental
+  add/delete plus write-ahead log, checkpoint, compaction, and crash recovery.
+  Opt-in; the default build does not depend on segstore.
+- `cli` feature: a `vicinity` binary that builds an HNSW index from a JSONL file
+  of dense vectors and runs k-NN queries.
+
 ## [0.8.2] - 2026-06-11
 
 ### Fixed
