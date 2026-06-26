@@ -74,6 +74,7 @@ postcard = { version = "1.0", optional = true, features = [
   "use-std",
 ] }
 durability = { version = "0.6.1", optional = true }
+segstore = { version = "0.1", optional = true }
 
 
 # RNG backend for wasm32 (rand -> getrandom needs a JS backend on wasm).
@@ -85,6 +86,9 @@ default = ["hnsw", "innr"]
 persistence = ["serde", "dep:postcard", "dep:durability"]
 serde = ["dep:serde", "dep:serde_json", "smallvec/serde"]
 hnsw = ["innr"]
+# `store` adds an updatable, durable multi-segment ANN index (`store::UpdatableIndex`)
+# via segstore.
+store = ["hnsw", "serde", "dep:segstore", "dep:durability"]
 # `cli` builds the `vicinity` binary (build + query an HNSW index from files).
 cli = ["hnsw", "serde", "dep:clap"]
 experimental = []

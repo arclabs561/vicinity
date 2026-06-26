@@ -107,6 +107,10 @@ pub mod classic;
 #[cfg(feature = "fresh_graph")]
 pub mod fresh_graph;
 
+/// Updatable, durable multi-segment ANN index via segstore (the `store` feature).
+#[cfg(feature = "store")]
+pub mod store;
+
 #[cfg(feature = "curator")]
 pub mod curator;
 
