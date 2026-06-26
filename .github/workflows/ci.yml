@@ -74,6 +74,13 @@ jobs:
           for ex in 03_quick_benchmark sift_benchmark lid_demo; do
             cargo run --no-default-features --features hnsw --release --example "$ex"
           done
+      - name: CLI smoke
+        run: |
+          printf '{"id":0,"vec":[1.0,0.0,0.0]}\n{"id":1,"vec":[0.0,1.0,0.0]}\n{"id":2,"vec":[0.7,0.7,0.0]}\n' > /tmp/v.jsonl
+          cargo run --features cli --bin vicinity -- build /tmp/v.jsonl -o /tmp/vi.json
+          out=$(cargo run --features cli --bin vicinity -- search /tmp/vi.json --query '[0.8,0.6,0.0]' -k 2)
+          echo "$out"
+          echo "$out" | head -1 | grep -q '^2' || { echo "FAIL: doc 2 should rank first"; exit 1; }
       - name: Property tests
         run: cargo nextest run --no-default-features --features hnsw -E 'test(property_)'
   # Semver-checks only on PRs.

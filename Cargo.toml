@@ -24,6 +24,7 @@ smallvec = "1.11"
 rand = "0.9"
 serde = { version = "1.0", features = ["derive"], optional = true }
 serde_json = { version = "1.0", optional = true }
+clap = { version = "4", features = ["derive"], optional = true }
 thiserror = "2.0"
 
 # Python bindings (feature-gated; used for ann-benchmarks integration)
@@ -84,6 +85,8 @@ default = ["hnsw", "innr"]
 persistence = ["serde", "dep:postcard", "dep:durability"]
 serde = ["dep:serde", "dep:serde_json", "smallvec/serde"]
 hnsw = ["innr"]
+# `cli` builds the `vicinity` binary (build + query an HNSW index from files).
+cli = ["hnsw", "serde", "dep:clap"]
 experimental = []
 ivf_pq = [
   "dep:clump",
@@ -141,6 +144,11 @@ proptest = "1.5"
 tempfile = "3"
 anyhow = "1.0"
 rankops = "0.1.5"
+
+[[bin]]
+name = "vicinity"
+path = "src/bin/vicinity.rs"
+required-features = ["cli"]
 
 [[example]]
 name = "ivf_pq_demo"
@@ -334,4 +342,3 @@ type_complexity = "allow"
 multiple_crate_versions = "allow"
 wrong_self_convention = "allow"
 module_name_repetitions = "allow"
-
