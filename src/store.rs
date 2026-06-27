@@ -142,6 +142,13 @@ impl UpdatableIndex {
         self.inner.checkpoint()
     }
 
+    /// Run one round of size-tiered compaction, merging similarly-sized segments
+    /// so the segment count stays bounded without a full [`compact`](Self::compact).
+    pub fn compact_tiers(&mut self) -> PersistenceResult<()> {
+        self.inner.compact_tiers()?;
+        Ok(())
+    }
+
     /// Merge only the segments whose live ratio is below `min_live_ratio`,
     /// reclaiming tombstoned vectors -- the cheap alternative to a full
     /// [`compact`](Self::compact) when a few segments are delete-heavy.
