@@ -5,6 +5,14 @@ All notable changes to this project are documented here. The format follows
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The 0.x
 series is unstable: minor bumps may break the public API.
 
+## [0.10.3] - 2026-06-27
+
+### Changed
+
+- A `delete` now invalidates only the cached HNSW of the segment that holds the
+  id, not the whole cache, so one delete no longer forces every segment to
+  rebuild on the next query.
+
 ## [0.10.2] - 2026-06-27
 
 ### Added

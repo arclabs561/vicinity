@@ -125,9 +125,14 @@ impl UpdatableIndex {
     /// Tombstone a vector.
     pub fn delete(&mut self, id: u32) -> PersistenceResult<()> {
         self.inner.delete(id)?;
-        // A tombstone changes the live filter used to build every segment's HNSW,
-        // so invalidate the cache (deletes are far rarer than adds).
-        self.cache.borrow_mut().by_ptr.clear();
+        // A tombstone only changes the live-set of the segment that holds `id`, so
+        // invalidate just that segment's cached HNSW -- not the whole cache.
+        let mut cache = self.cache.borrow_mut();
+        for seg in self.inner.segments() {
+            if seg.iter().any(|(sid, _)| *sid == id) {
+                cache.by_ptr.remove(&(Arc::as_ptr(seg) as usize));
+            }
+        }
         Ok(())
     }
 
