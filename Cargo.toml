@@ -302,6 +302,10 @@ harness = false
 name = "adsampling"
 harness = false
 
+[[bench]]
+name = "store"
+harness = false
+
 [lints.rust]
 rust_2018_idioms = { level = "warn", priority = -1 }
 rust_2021_compatibility = { level = "warn", priority = -1 }
