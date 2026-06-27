@@ -23,6 +23,7 @@
 
 use std::cell::RefCell;
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use durability::{Directory, PersistenceError, PersistenceResult};
@@ -55,12 +56,18 @@ impl Store for VectorBacking {
             .cloned()
             .collect()
     }
+
+    fn segment_len(&self, seg: &Vec<(u32, Vec<f32>)>) -> usize {
+        seg.len()
+    }
 }
 
-/// Cached per-segment HNSW indexes, valid for a given mutation generation.
+/// Per-segment HNSW indexes keyed by the segment's stable `Arc` identity. Because
+/// segstore keeps an unchanged segment's `Arc` across mutations, a sealed add only
+/// builds the one new segment's HNSW (the rest are reused) instead of rebuilding
+/// the whole corpus -- the dominant cost for an interactive add-then-search loop.
 struct Cache {
-    generation: u64,
-    segments: Vec<Option<HNSWIndex>>,
+    by_ptr: HashMap<usize, Option<HNSWIndex>>,
 }
 
 /// An updatable, durable multi-segment HNSW index.
@@ -69,7 +76,6 @@ pub struct UpdatableIndex {
     dim: usize,
     m: usize,
     m_max: usize,
-    generation: u64,
     cache: RefCell<Cache>,
 }
 
@@ -89,10 +95,8 @@ impl UpdatableIndex {
             dim,
             m,
             m_max,
-            generation: 0,
             cache: RefCell::new(Cache {
-                generation: u64::MAX,
-                segments: Vec::new(),
+                by_ptr: HashMap::new(),
             }),
         })
     }
@@ -108,22 +112,24 @@ impl UpdatableIndex {
                 self.dim
             )));
         }
+        // A sealed add introduces a new segment (a new Arc identity); existing
+        // segments keep theirs, so the cache reuses them and builds only the new one.
         self.inner.add(id, distance::normalize(vector))?;
-        self.generation += 1;
         Ok(())
     }
 
     /// Tombstone a vector.
     pub fn delete(&mut self, id: u32) -> PersistenceResult<()> {
         self.inner.delete(id)?;
-        self.generation += 1;
+        // A tombstone changes the live filter used to build every segment's HNSW,
+        // so invalidate the cache (deletes are far rarer than adds).
+        self.cache.borrow_mut().by_ptr.clear();
         Ok(())
     }
 
     /// Merge segments (dropping tombstoned vectors) and persist a checkpoint.
     pub fn compact(&mut self) -> PersistenceResult<()> {
         self.inner.compact()?;
-        self.generation += 1;
         Ok(())
     }
 
@@ -135,15 +141,28 @@ impl UpdatableIndex {
     /// The `k` nearest neighbors of `query` (by cosine distance) over the live
     /// corpus, searched per segment with the given `ef` and merged.
     pub fn search(&self, query: &[f32], k: usize, ef: usize) -> Vec<(u32, f32)> {
-        self.refresh_cache();
         let q = distance::normalize(query);
         let mut cand: Vec<(u32, f32)> = Vec::new();
         {
-            let cache = self.cache.borrow();
-            for idx in cache.segments.iter().flatten() {
+            let segs = self.inner.segments();
+            let mut cache = self.cache.borrow_mut();
+            // Drop cached indexes for segments no longer present (post-compaction).
+            let current: std::collections::HashSet<usize> =
+                segs.iter().map(|a| Arc::as_ptr(a) as usize).collect();
+            cache.by_ptr.retain(|key, _| current.contains(key));
+            // Build only segments not already cached (i.e. new ones).
+            for seg in segs {
+                let key = Arc::as_ptr(seg) as usize;
+                cache
+                    .by_ptr
+                    .entry(key)
+                    .or_insert_with(|| self.build_live_index(&seg[..]));
+            }
+            for idx in cache.by_ptr.values().flatten() {
                 cand.extend(idx.search(&q, k, ef).unwrap_or_default());
             }
         }
+        // The small unflushed buffer is built per query.
         let buffered = self.inner.buffer().to_vec();
         if let Some(idx) = self.build_live_index(&buffered) {
             cand.extend(idx.search(&q, k, ef).unwrap_or_default());
@@ -152,18 +171,6 @@ impl UpdatableIndex {
         cand.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
         cand.truncate(k);
         cand
-    }
-
-    fn refresh_cache(&self) {
-        let mut cache = self.cache.borrow_mut();
-        if cache.generation == self.generation {
-            return;
-        }
-        cache.segments.clear();
-        for seg in self.inner.segments() {
-            cache.segments.push(self.build_live_index(seg));
-        }
-        cache.generation = self.generation;
     }
 
     /// Build a per-segment HNSW over the live vectors of `batch` (None if empty

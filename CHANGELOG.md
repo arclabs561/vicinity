@@ -5,6 +5,17 @@ All notable changes to this project are documented here. The format follows
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The 0.x
 series is unstable: minor bumps may break the public API.
 
+## [0.10.0] - 2026-06-26
+
+### Changed
+
+- `store::UpdatableIndex` now targets segstore 0.2 and caches the per-segment HNSW
+  by the segment's stable `Arc` identity, so a sealed add rebuilds only the one new
+  segment instead of the whole corpus. Measured: a single add after 5k vectors took
+  the next search from a full ~193ms rebuild to ~5ms (40x -> 1x). Deletes still
+  invalidate the cache (a tombstone changes the live filter); they are far rarer
+  than adds.
+
 ## [0.9.1] - 2026-06-26
 
 ### Fixed
