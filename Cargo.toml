@@ -1,6 +1,6 @@
 [package]
 name = "vicinity"
-version = "0.10.3"
+version = "0.10.4"
 authors = ["Arc <attobop@gmail.com>"]
 edition = "2021"
 rust-version = "1.89"
@@ -75,7 +75,7 @@ postcard = { version = "1.0", optional = true, features = [
   "use-std",
 ] }
 durability = { version = "0.6.1", optional = true }
-segstore = { version = "0.2", optional = true }
+segstore = { version = "0.3", optional = true }
 
 
 # RNG backend for wasm32 (rand -> getrandom needs a JS backend on wasm).

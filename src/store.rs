@@ -47,11 +47,11 @@ impl Store for VectorBacking {
 
     fn merge_segments(
         &self,
-        segs: &[Vec<(u32, Vec<f32>)>],
+        segs: &[&Vec<(u32, Vec<f32>)>],
         live: &dyn Fn(&u32) -> bool,
     ) -> Vec<(u32, Vec<f32>)> {
         segs.iter()
-            .flatten()
+            .flat_map(|s| s.iter())
             .filter(|(id, _)| live(id))
             .cloned()
             .collect()
@@ -119,6 +119,35 @@ impl UpdatableIndex {
         // A sealed add introduces a new segment (a new Arc identity); existing
         // segments keep theirs, so the cache reuses them and builds only the new one.
         self.inner.add(id, distance::normalize(vector))?;
+        Ok(())
+    }
+
+    /// Add (or re-add) many vectors, syncing the write-ahead log once for the whole
+    /// batch instead of once per vector. Each vector is dimension-checked and
+    /// L2-normalized before any is ingested (mirrors [`Self::add`]). This is the
+    /// bulk-ingest path (the corpus-load phase): per-item WAL sync is the dominant
+    /// cost on a real disk, so one sync per batch is several times faster than a
+    /// loop of [`Self::add`].
+    pub fn extend(
+        &mut self,
+        vectors: impl IntoIterator<Item = (u32, Vec<f32>)>,
+    ) -> PersistenceResult<()> {
+        let dim = self.dim;
+        let normalized: Result<Vec<(u32, Vec<f32>)>, PersistenceError> = vectors
+            .into_iter()
+            .map(|(id, vector)| {
+                if vector.len() != dim {
+                    Err(PersistenceError::InvalidConfig(format!(
+                        "vector dimension {} does not match index dimension {}",
+                        vector.len(),
+                        dim
+                    )))
+                } else {
+                    Ok((id, distance::normalize(&vector)))
+                }
+            })
+            .collect();
+        self.inner.extend(normalized?)?;
         Ok(())
     }
 

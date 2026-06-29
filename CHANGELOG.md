@@ -5,6 +5,25 @@ All notable changes to this project are documented here. The format follows
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The 0.x
 series is unstable: minor bumps may break the public API.
 
+## [0.10.4] - 2026-06-28
+
+### Added
+
+- `store::UpdatableIndex::extend(vectors)`: bulk ingest that syncs the write-ahead
+  log once per batch instead of once per vector (each vector is dimension-checked
+  and L2-normalized before any is ingested). ~3.4x faster than a loop of `add` on a
+  real filesystem (bench `ingest_fs`: 12.6ms vs 3.7ms / 4000 vectors).
+
+### Changed
+
+- The `store` feature now requires `segstore = "0.3"`; the internal `merge_segments`
+  takes `&[&Segment]` (segstore 0.3's by-reference signature).
+
+### Fixed
+
+- The `store` bench opts out of `clippy::unwrap_used` (benches legitimately unwrap
+  on setup), fixing a pre-existing CI failure.
+
 ## [0.10.3] - 2026-06-27
 
 ### Changed
