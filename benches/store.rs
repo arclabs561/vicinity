@@ -85,10 +85,16 @@ fn benches(c: &mut Criterion) {
 /// persisted), returning the directory and a query vector.
 #[cfg(feature = "store")]
 fn build_dir() -> (Arc<dyn Directory>, Vec<f32>) {
+    build_dir_with_params(16, 32)
+}
+
+#[cfg(feature = "store")]
+fn build_dir_with_params(m: usize, m_max: usize) -> (Arc<dyn Directory>, Vec<f32>) {
     use durability::MemoryDirectory;
     let dir: Arc<dyn Directory> = MemoryDirectory::arc();
     let mut s = 0x1234_5678_9abc_def0u64;
-    let mut store = vicinity::store::UpdatableIndex::open(dir.clone(), FLUSH, DIM, 16, 32).unwrap();
+    let mut store =
+        vicinity::store::UpdatableIndex::open(dir.clone(), FLUSH, DIM, m, m_max).unwrap();
     for i in 0..N {
         store.add(i as u32, &vec(&mut s)).unwrap();
     }
@@ -107,11 +113,23 @@ fn delete_sidecars(dir: &Arc<dyn Directory>) {
     }
 }
 
+/// Replace persisted HNSW sidecars with unreadable bytes so reopen observes a
+/// sidecar file, rejects it, then rebuilds and overwrites it.
+#[cfg(feature = "store")]
+fn corrupt_sidecars(dir: &Arc<dyn Directory>) {
+    for name in dir.list_dir("").unwrap_or_default() {
+        if name.starts_with("segstore.idx.") {
+            dir.atomic_write(&name, b"not-a-vicinity-hnsw-sidecar")
+                .unwrap();
+        }
+    }
+}
+
 /// The headline restart contrast: the first search after reopening a persisted
 /// corpus, loading each per-segment HNSW from its sidecar vs rebuilding it from
 /// the raw vectors. Same corpus, same query; the only difference is whether the
-/// sidecars are present. `load` reopens one fixed directory (loading never
-/// writes); each `rebuild` sample gets a fresh sidecar-free directory so the
+/// sidecars are present and valid. `load` reopens one fixed directory (loading
+/// never writes); each rebuild/stale/corrupt sample gets a fresh directory so
 /// write-through re-persist can't turn later samples into loads.
 #[cfg(feature = "store")]
 fn reopen(c: &mut Criterion) {
@@ -136,6 +154,35 @@ fn reopen(c: &mut Criterion) {
             || {
                 let (d, _) = build_dir();
                 delete_sidecars(&d);
+                d
+            },
+            |d| {
+                let s = vicinity::store::UpdatableIndex::open(d, FLUSH, DIM, 16, 32).unwrap();
+                s.search(&q, 10, 64)
+            },
+            BatchSize::PerIteration,
+        )
+    });
+
+    g.bench_function("first_search_stale_recipe", |b| {
+        b.iter_batched(
+            || {
+                let (d, _) = build_dir_with_params(8, 16);
+                d
+            },
+            |d| {
+                let s = vicinity::store::UpdatableIndex::open(d, FLUSH, DIM, 16, 32).unwrap();
+                s.search(&q, 10, 64)
+            },
+            BatchSize::PerIteration,
+        )
+    });
+
+    g.bench_function("first_search_corrupt_sidecar", |b| {
+        b.iter_batched(
+            || {
+                let (d, _) = build_dir();
+                corrupt_sidecars(&d);
                 d
             },
             |d| {

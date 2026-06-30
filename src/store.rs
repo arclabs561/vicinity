@@ -31,7 +31,7 @@ use durability::{Directory, PersistenceError, PersistenceResult};
 use segstore::{SegmentedStore, Store};
 
 use crate::distance;
-use crate::hnsw::HNSWIndex;
+use crate::hnsw::{HNSWIndex, HNSWParams};
 
 /// segstore payload: items are dense vectors, a segment is a batch of source
 /// vectors (a per-segment HNSW is built + cached from the live ones).
@@ -78,6 +78,8 @@ struct Cache {
 /// The `kind` tag for a persisted per-segment HNSW sidecar; segstore reserves the
 /// file `segstore.idx.<seg_id>.hnsw` and garbage-collects it with its segment.
 const INDEX_KIND: &str = "hnsw";
+const SIDECAR_MAGIC: &[u8; 8] = b"VICHNSW1";
+const SIDECAR_VERSION: u32 = 1;
 
 /// An updatable, durable multi-segment HNSW index.
 pub struct UpdatableIndex {
@@ -85,6 +87,7 @@ pub struct UpdatableIndex {
     dim: usize,
     m: usize,
     m_max: usize,
+    sidecar_recipe: String,
     cache: RefCell<Cache>,
     /// Segment ids whose on-disk HNSW sidecar is current, so a checkpoint this
     /// process re-persists only new segments. Pre-populated on open from the
@@ -119,6 +122,7 @@ impl UpdatableIndex {
             dim,
             m,
             m_max,
+            sidecar_recipe: Self::make_sidecar_recipe(dim, m, m_max),
             cache: RefCell::new(Cache {
                 by_ptr: HashMap::new(),
             }),
@@ -320,7 +324,8 @@ impl UpdatableIndex {
             .ok()?
             .read_to_end(&mut bytes)
             .ok()?;
-        let idx = HNSWIndex::from_postcard(&bytes).ok()?;
+        let graph_bytes = self.decode_sidecar(&bytes)?;
+        let idx = HNSWIndex::from_postcard(graph_bytes).ok()?;
         let live: HashSet<u32> = seg
             .iter()
             .map(|(id, _)| *id)
@@ -337,7 +342,10 @@ impl UpdatableIndex {
     /// Persist a built per-segment HNSW as its sidecar (best-effort: a failed
     /// write leaves the in-memory index usable and simply re-persists next time).
     fn persist_sidecar(&self, idx: &HNSWIndex, seg_id: u64) {
-        if let Ok(bytes) = idx.to_postcard() {
+        if let Ok(graph) = idx.to_postcard() {
+            let Some(bytes) = self.encode_sidecar(&graph) else {
+                return;
+            };
             if self
                 .inner
                 .dir()
@@ -347,6 +355,66 @@ impl UpdatableIndex {
                 self.persisted.borrow_mut().insert(seg_id);
             }
         }
+    }
+
+    fn make_sidecar_recipe(dim: usize, m: usize, m_max: usize) -> String {
+        let params = HNSWParams {
+            m,
+            m_max,
+            ..Default::default()
+        };
+        format!(
+            "vicinity-store-hnsw-v1;\
+             dim={};m={};m_max={};m_l={:.17};ef_construction={};\
+             metric={:?};normalization=store-l2-on-ingest-and-query;\
+             seed_selection={:?};diversification={:?};seed={:?};\
+            codec=postcard-hnsw-v1;id_compression={}",
+            dim,
+            params.m,
+            params.m_max,
+            params.m_l,
+            params.ef_construction,
+            params.metric,
+            params.seed_selection,
+            params.neighborhood_diversification,
+            params.seed,
+            cfg!(feature = "id-compression")
+        )
+    }
+
+    fn encode_sidecar(&self, graph: &[u8]) -> Option<Vec<u8>> {
+        let recipe = self.sidecar_recipe.as_bytes();
+        let recipe_len = u32::try_from(recipe.len()).ok()?;
+        let mut bytes = Vec::with_capacity(16 + recipe.len() + graph.len());
+        bytes.extend_from_slice(SIDECAR_MAGIC);
+        bytes.extend_from_slice(&SIDECAR_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&recipe_len.to_le_bytes());
+        bytes.extend_from_slice(recipe);
+        bytes.extend_from_slice(graph);
+        Some(bytes)
+    }
+
+    fn decode_sidecar<'a>(&self, bytes: &'a [u8]) -> Option<&'a [u8]> {
+        if bytes.len() < 16 {
+            return None;
+        }
+        if &bytes[..8] != SIDECAR_MAGIC {
+            return None;
+        }
+        let version = u32::from_le_bytes(bytes[8..12].try_into().ok()?);
+        if version != SIDECAR_VERSION {
+            return None;
+        }
+        let recipe_len = u32::from_le_bytes(bytes[12..16].try_into().ok()?) as usize;
+        let recipe_start = 16usize;
+        let recipe_end = recipe_start.checked_add(recipe_len)?;
+        if bytes.len() < recipe_end {
+            return None;
+        }
+        if &bytes[recipe_start..recipe_end] != self.sidecar_recipe.as_bytes() {
+            return None;
+        }
+        Some(&bytes[recipe_end..])
     }
 
     /// Build + persist a sidecar for every sealed segment without a current one,
@@ -373,6 +441,29 @@ impl UpdatableIndex {
 mod tests {
     use super::*;
     use durability::MemoryDirectory;
+    use std::io::Read;
+
+    fn read_file(dir: &Arc<dyn Directory>, name: &str) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        dir.open_file(name)
+            .unwrap()
+            .read_to_end(&mut bytes)
+            .unwrap();
+        bytes
+    }
+
+    fn checkpointed_store(dir: Arc<dyn Directory>, m: usize, m_max: usize) -> (String, Vec<u8>) {
+        let mut store = UpdatableIndex::open(dir, 4, 2, m, m_max).unwrap();
+        for i in 0..12u32 {
+            let angle = i as f32 * 0.37;
+            store.add(i, &[angle.cos(), angle.sin()]).unwrap();
+        }
+        store.checkpoint().unwrap();
+        let seg_id = store.inner.segment_ids()[0];
+        let name = store.inner.index_name(seg_id, INDEX_KIND);
+        let bytes = read_file(store.inner.dir(), &name);
+        (name, bytes)
+    }
 
     #[test]
     fn add_delete_compact_recover_through_real_hnsw() {
@@ -453,6 +544,119 @@ mod tests {
         assert!(
             !store.search(&[1.0, 0.0, 1.0], 1, 16).is_empty(),
             "search over loaded sidecars returns results"
+        );
+    }
+
+    #[test]
+    fn hnsw_sidecar_recipe_mismatch_rebuilds() {
+        let dir = MemoryDirectory::arc();
+        let (name, before) = checkpointed_store(dir.clone(), 16, 32);
+        assert_eq!(
+            &before[..SIDECAR_MAGIC.len()],
+            SIDECAR_MAGIC,
+            "new sidecars carry the vicinity HNSW envelope"
+        );
+
+        let store = UpdatableIndex::open(dir.clone(), 4, 2, 8, 16).unwrap();
+        let seg_id = store.inner.segment_ids()[0];
+        assert!(
+            store
+                .load_sidecar(&store.inner.segments()[0][..], seg_id)
+                .is_none(),
+            "sidecar built with m=16/m_max=32 must not load under m=8/m_max=16"
+        );
+        assert!(
+            !store.search(&[1.0, 0.0], 1, 16).is_empty(),
+            "mismatched sidecar falls back to rebuild"
+        );
+
+        let after = read_file(store.inner.dir(), &name);
+        assert_ne!(before, after, "rebuild overwrites the stale-recipe sidecar");
+        assert!(
+            store
+                .load_sidecar(&store.inner.segments()[0][..], seg_id)
+                .is_some(),
+            "rebuilt sidecar now matches the current recipe"
+        );
+    }
+
+    #[test]
+    fn hnsw_sidecar_envelope_rejects_corrupt_headers() {
+        let store = UpdatableIndex::open(MemoryDirectory::arc(), 4, 2, 16, 32).unwrap();
+        let graph = b"graph-bytes";
+        let bytes = store.encode_sidecar(graph).unwrap();
+        assert_eq!(store.decode_sidecar(&bytes), Some(graph.as_slice()));
+
+        assert!(store.decode_sidecar(&bytes[..8]).is_none());
+
+        let mut bad_magic = bytes.clone();
+        bad_magic[0] ^= 0xFF;
+        assert!(store.decode_sidecar(&bad_magic).is_none());
+
+        let mut bad_version = bytes.clone();
+        bad_version[8..12].copy_from_slice(&(SIDECAR_VERSION + 1).to_le_bytes());
+        assert!(store.decode_sidecar(&bad_version).is_none());
+
+        let mut bad_recipe_len = bytes.clone();
+        bad_recipe_len[12..16].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(store.decode_sidecar(&bad_recipe_len).is_none());
+
+        let mut bad_recipe = bytes.clone();
+        bad_recipe[16] ^= 0x01;
+        assert!(store.decode_sidecar(&bad_recipe).is_none());
+    }
+
+    #[test]
+    fn hnsw_sidecar_invalid_graph_payload_rebuilds() {
+        let dir = MemoryDirectory::arc();
+        let (name, _) = checkpointed_store(dir.clone(), 16, 32);
+        {
+            let store = UpdatableIndex::open(dir.clone(), 4, 2, 16, 32).unwrap();
+            let corrupt = store.encode_sidecar(b"not-a-postcard-hnsw-graph").unwrap();
+            store.inner.dir().atomic_write(&name, &corrupt).unwrap();
+        }
+
+        let store = UpdatableIndex::open(dir.clone(), 4, 2, 16, 32).unwrap();
+        let seg_id = store.inner.segment_ids()[0];
+        assert!(
+            store
+                .load_sidecar(&store.inner.segments()[0][..], seg_id)
+                .is_none(),
+            "valid envelope with invalid graph bytes is rejected"
+        );
+        assert!(
+            !store.search(&[1.0, 0.0], 1, 16).is_empty(),
+            "invalid graph payload falls back to rebuild"
+        );
+        assert!(
+            store
+                .load_sidecar(&store.inner.segments()[0][..], seg_id)
+                .is_some(),
+            "rebuilt sidecar loads after the fallback"
+        );
+    }
+
+    #[test]
+    fn hnsw_sidecar_query_ef_does_not_invalidate_recipe() {
+        let dir = MemoryDirectory::arc();
+        let (name, before) = checkpointed_store(dir.clone(), 16, 32);
+
+        let store = UpdatableIndex::open(dir.clone(), 4, 2, 16, 32).unwrap();
+        let seg_id = store.inner.segment_ids()[0];
+        assert!(
+            store
+                .load_sidecar(&store.inner.segments()[0][..], seg_id)
+                .is_some(),
+            "sidecar loads before any query"
+        );
+
+        assert!(!store.search(&[1.0, 0.0], 3, 8).is_empty());
+        assert!(!store.search(&[1.0, 0.0], 3, 64).is_empty());
+
+        assert_eq!(
+            read_file(&dir, &name),
+            before,
+            "query-time ef is not part of the sidecar recipe and must not rewrite it"
         );
     }
 
