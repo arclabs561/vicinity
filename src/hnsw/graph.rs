@@ -1276,6 +1276,41 @@ impl HNSWIndex {
         Ok(index)
     }
 
+    /// Serialize this index to compact postcard bytes (binary).
+    ///
+    /// The binary counterpart to [`Self::save_to_writer`], for the `store`
+    /// sidecar path: a per-segment index is persisted next to its segment so a
+    /// restart loads the built graph instead of reconstructing it. The same fields
+    /// are serialized as the JSON path; the `doc_id_to_internal` reverse map and
+    /// `metadata` are skipped and rebuilt on [`Self::from_postcard`]. JSON parsing a
+    /// large graph (float arrays as text) can cost as much as a rebuild, which would
+    /// defeat the point; postcard keeps load strictly cheaper than reconstruction.
+    ///
+    /// **Tombstones are not serialized** (as with [`Self::save_to_writer`]). The
+    /// `store` layer builds each per-segment index over live ids only, so a
+    /// tombstoned id never enters the persisted graph in the first place.
+    #[cfg(feature = "store")]
+    pub fn to_postcard(&self) -> Result<Vec<u8>, RetrieveError> {
+        postcard::to_allocvec(self).map_err(|e| RetrieveError::Serialization(e.to_string()))
+    }
+
+    /// Deserialize an index from postcard bytes (the binary counterpart to
+    /// [`Self::load_from_reader`]). Validates structural invariants and rebuilds the
+    /// `doc_id_to_internal` reverse map that was skipped during serialization.
+    #[cfg(feature = "store")]
+    pub fn from_postcard(bytes: &[u8]) -> Result<Self, RetrieveError> {
+        let mut index: Self =
+            postcard::from_bytes(bytes).map_err(|e| RetrieveError::Serialization(e.to_string()))?;
+        index.validate_structure()?;
+        index.doc_id_to_internal = index
+            .doc_ids
+            .iter()
+            .enumerate()
+            .map(|(i, &doc_id)| (doc_id, i as u32))
+            .collect();
+        Ok(index)
+    }
+
     /// Validate structural invariants of the index.
     ///
     /// Catches malformed or adversarial data that would cause panics during search.

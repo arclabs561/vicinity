@@ -15,6 +15,10 @@ fn main() {}
 
 #[cfg(feature = "store")]
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughput};
+#[cfg(feature = "store")]
+use durability::Directory;
+#[cfg(feature = "store")]
+use std::sync::Arc;
 
 #[cfg(feature = "store")]
 const N: usize = 8_000;
@@ -74,11 +78,71 @@ fn benches(c: &mut Criterion) {
     let (warm, q) = fresh_store(true);
     g.bench_function("search_warm", |b| b.iter(|| warm.search(&q, 10, 64)));
 
-    g.bench_function("search_cold_rebuild_all", |b| {
+    g.finish();
+}
+
+/// Build a checkpointed corpus into a fresh in-memory directory (sidecars
+/// persisted), returning the directory and a query vector.
+#[cfg(feature = "store")]
+fn build_dir() -> (Arc<dyn Directory>, Vec<f32>) {
+    use durability::MemoryDirectory;
+    let dir: Arc<dyn Directory> = MemoryDirectory::arc();
+    let mut s = 0x1234_5678_9abc_def0u64;
+    let mut store = vicinity::store::UpdatableIndex::open(dir.clone(), FLUSH, DIM, 16, 32).unwrap();
+    for i in 0..N {
+        store.add(i as u32, &vec(&mut s)).unwrap();
+    }
+    store.checkpoint().unwrap();
+    let q = vec(&mut s);
+    (dir, q)
+}
+
+/// Remove the persisted HNSW sidecars so a reopen rebuilds every segment.
+#[cfg(feature = "store")]
+fn delete_sidecars(dir: &Arc<dyn Directory>) {
+    for name in dir.list_dir("").unwrap_or_default() {
+        if name.starts_with("segstore.idx.") {
+            let _ = dir.delete(&name);
+        }
+    }
+}
+
+/// The headline restart contrast: the first search after reopening a persisted
+/// corpus, loading each per-segment HNSW from its sidecar vs rebuilding it from
+/// the raw vectors. Same corpus, same query; the only difference is whether the
+/// sidecars are present. `load` reopens one fixed directory (loading never
+/// writes); each `rebuild` sample gets a fresh sidecar-free directory so the
+/// write-through re-persist can't turn later samples into loads.
+#[cfg(feature = "store")]
+fn reopen(c: &mut Criterion) {
+    let mut g = c.benchmark_group("store_reopen");
+    g.throughput(Throughput::Elements(N as u64));
+    g.sample_size(20); // each sample reopens; rebuild also rebuilds the corpus in setup
+
+    let (dir_load, q) = build_dir();
+    g.bench_function("first_search_load", |b| {
         b.iter_batched(
-            || fresh_store(false),
-            |(store, q)| store.search(&q, 10, 64),
+            || dir_load.clone(),
+            |d| {
+                let s = vicinity::store::UpdatableIndex::open(d, FLUSH, DIM, 16, 32).unwrap();
+                s.search(&q, 10, 64)
+            },
             BatchSize::SmallInput,
+        )
+    });
+
+    g.bench_function("first_search_rebuild", |b| {
+        b.iter_batched(
+            || {
+                let (d, _) = build_dir();
+                delete_sidecars(&d);
+                d
+            },
+            |d| {
+                let s = vicinity::store::UpdatableIndex::open(d, FLUSH, DIM, 16, 32).unwrap();
+                s.search(&q, 10, 64)
+            },
+            BatchSize::PerIteration,
         )
     });
     g.finish();
@@ -145,6 +209,6 @@ fn ingest_fs(c: &mut Criterion) {
 }
 
 #[cfg(feature = "store")]
-criterion_group!(g, benches, ingest_fs);
+criterion_group!(g, benches, ingest_fs, reopen);
 #[cfg(feature = "store")]
 criterion_main!(g);
