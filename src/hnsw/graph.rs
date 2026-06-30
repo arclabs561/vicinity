@@ -1289,7 +1289,7 @@ impl HNSWIndex {
     /// **Tombstones are not serialized** (as with [`Self::save_to_writer`]). The
     /// `store` layer builds each per-segment index over live ids only, so a
     /// tombstoned id never enters the persisted graph in the first place.
-    #[cfg(feature = "store")]
+    #[cfg(any(feature = "persistence", feature = "store"))]
     pub fn to_postcard(&self) -> Result<Vec<u8>, RetrieveError> {
         postcard::to_allocvec(self).map_err(|e| RetrieveError::Serialization(e.to_string()))
     }
@@ -1297,7 +1297,7 @@ impl HNSWIndex {
     /// Deserialize an index from postcard bytes (the binary counterpart to
     /// [`Self::load_from_reader`]). Validates structural invariants and rebuilds the
     /// `doc_id_to_internal` reverse map that was skipped during serialization.
-    #[cfg(feature = "store")]
+    #[cfg(any(feature = "persistence", feature = "store"))]
     pub fn from_postcard(bytes: &[u8]) -> Result<Self, RetrieveError> {
         let mut index: Self =
             postcard::from_bytes(bytes).map_err(|e| RetrieveError::Serialization(e.to_string()))?;
