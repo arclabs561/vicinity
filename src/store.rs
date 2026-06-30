@@ -89,10 +89,8 @@ pub struct UpdatableIndex {
     m_max: usize,
     sidecar_recipe: String,
     cache: RefCell<Cache>,
-    /// Segment ids whose on-disk HNSW sidecar is current, so a checkpoint this
-    /// process re-persists only new segments. Pre-populated on open from the
-    /// sidecars already on disk; the per-segment staleness guard still
-    /// re-validates each before it is trusted.
+    /// Segment ids whose on-disk HNSW sidecar was validated or written in this
+    /// process, so a checkpoint re-persists only genuinely missing/stale segments.
     persisted: RefCell<HashSet<u64>>,
 }
 
@@ -108,15 +106,6 @@ impl UpdatableIndex {
         m_max: usize,
     ) -> PersistenceResult<Self> {
         let inner = SegmentedStore::open(dir, VectorBacking, flush_threshold)?;
-        // A sidecar already on disk means that segment's HNSW need not be rebuilt:
-        // record those ids so a checkpoint this process re-persists only genuinely
-        // new segments. `load_sidecar` re-validates each one before it is trusted.
-        let mut persisted = HashSet::new();
-        for &id in inner.segment_ids() {
-            if inner.dir().exists(&inner.index_name(id, INDEX_KIND)) {
-                persisted.insert(id);
-            }
-        }
         Ok(Self {
             inner,
             dim,
@@ -126,7 +115,7 @@ impl UpdatableIndex {
             cache: RefCell::new(Cache {
                 by_ptr: HashMap::new(),
             }),
-            persisted: RefCell::new(persisted),
+            persisted: RefCell::new(HashSet::new()),
         })
     }
 
@@ -326,13 +315,13 @@ impl UpdatableIndex {
             .ok()?;
         let graph_bytes = self.decode_sidecar(&bytes)?;
         let idx = HNSWIndex::from_postcard(graph_bytes).ok()?;
-        let live: HashSet<u32> = seg
-            .iter()
-            .map(|(id, _)| *id)
-            .filter(|id| self.inner.is_live(id))
-            .collect();
-        let stored: HashSet<u32> = idx.doc_ids.iter().copied().collect();
-        if stored == live {
+        let mut live = HashSet::with_capacity(seg.len());
+        for (id, _) in seg {
+            if self.inner.is_live(id) {
+                live.insert(*id);
+            }
+        }
+        if idx.doc_ids.len() == live.len() && idx.doc_ids.iter().all(|id| live.contains(id)) {
             Some(idx)
         } else {
             None
@@ -428,6 +417,10 @@ impl UpdatableIndex {
         for (i, seg) in self.inner.segments().iter().enumerate() {
             let seg_id = ids[i];
             if self.persisted.borrow().contains(&seg_id) {
+                continue;
+            }
+            if self.load_sidecar(&seg[..], seg_id).is_some() {
+                self.persisted.borrow_mut().insert(seg_id);
                 continue;
             }
             if let Some(idx) = self.build_live_index(&seg[..]) {
@@ -686,6 +679,55 @@ mod tests {
         assert!(
             top.contains(&1),
             "nearest live vector to the x-axis is id 1"
+        );
+    }
+
+    #[test]
+    fn checkpoint_after_replayed_delete_rewrites_stale_sidecar() {
+        let dir = MemoryDirectory::arc();
+        let (name, stale_bytes) = {
+            let mut store = UpdatableIndex::open(dir.clone(), 2, 2, 16, 32).unwrap();
+            store.add(0, &[1.0, 0.0]).unwrap();
+            store.add(1, &[0.95, 0.05]).unwrap();
+            store.add(2, &[0.0, 1.0]).unwrap();
+            store.checkpoint().unwrap();
+
+            let seg_id = store.inner.segment_ids()[0];
+            let name = store.inner.index_name(seg_id, INDEX_KIND);
+            let bytes = read_file(store.inner.dir(), &name);
+
+            // Simulate a crash after the delete is durably logged but before
+            // `UpdatableIndex::delete` removes the now-stale sidecar.
+            store.inner.delete(0).unwrap();
+            (name, bytes)
+        };
+
+        let mut store = UpdatableIndex::open(dir.clone(), 2, 2, 16, 32).unwrap();
+        let seg_id = store.inner.segment_ids()[0];
+        assert!(
+            store
+                .load_sidecar(&store.inner.segments()[0][..], seg_id)
+                .is_none(),
+            "replayed tombstone must make the old sidecar stale"
+        );
+
+        store.checkpoint().unwrap();
+
+        let rewritten = read_file(&dir, &name);
+        assert_ne!(
+            rewritten, stale_bytes,
+            "checkpoint should rewrite stale sidecars even before search"
+        );
+        let idx = store
+            .load_sidecar(&store.inner.segments()[0][..], seg_id)
+            .expect("rewritten sidecar should be valid");
+        assert!(
+            !idx.doc_ids.contains(&0),
+            "rewritten sidecar must exclude the replayed delete"
+        );
+        assert!(
+            idx.doc_ids.contains(&1),
+            "rewritten sidecar should keep live ids from the segment"
         );
     }
 }
