@@ -5,6 +5,26 @@ All notable changes to this project are documented here. The format follows
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The 0.x
 series is unstable: minor bumps may break the public API.
 
+## [0.10.5] - 2026-06-30
+
+### Added
+
+- `HNSWIndex::to_postcard` and `HNSWIndex::from_postcard` are now available
+  with the `persistence` feature, so consumers can persist graph sidecars
+  without enabling the full `store` feature.
+- The `store` feature persists per-segment HNSW sidecars and loads them on
+  restart when the build recipe and live id set still match.
+
+### Changed
+
+- The `store` feature now requires `segstore = "0.4"` for persisted per-segment
+  index sidecars.
+
+### Fixed
+
+- Stale, corrupt, or recipe-mismatched sidecars are rejected and rebuilt instead
+  of being used for search.
+
 ## [0.10.4] - 2026-06-28
 
 ### Added
