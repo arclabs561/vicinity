@@ -82,7 +82,7 @@ fn main() -> vicinity::Result<()> {
         auto_recall * 100.0
     );
     println!();
-    println!("Key insight: HNSW's cosine fast path needs unit-norm vectors.");
+    println!("Contract: HNSW's cosine fast path needs unit-norm vectors.");
     println!("Use `auto_normalize(true)` when callers may pass raw embeddings.");
     println!("Manual normalization remains useful when vectors are already prepared upstream.");
 

@@ -1,9 +1,7 @@
 //! LID-Aware Graph Construction Demo
 //!
-//! Demonstrates how Local Intrinsic Dimensionality (LID) can identify
-//! "hard" points in your data that need special treatment in ANN indices.
-//!
-//! This is a research concept demo, not production-ready code.
+//! Estimates Local Intrinsic Dimensionality (LID) on clustered data with
+//! outliers and reports how the estimates separate point types.
 //!
 //! ```bash
 //! cargo run --example dual_branch_hnsw_demo --release
@@ -15,8 +13,7 @@ fn main() {
     println!("Local Intrinsic Dimensionality for ANN Index Quality");
     println!("=====================================================\n");
 
-    println!("Key insight: Some points are inherently harder to find via ANN.");
-    println!("LID helps identify these points so we can handle them specially.\n");
+    println!("This example reports LID estimates for clustered points and outliers.\n");
 
     demo_lid_detection();
     demo_lid_for_index_quality();
@@ -114,10 +111,10 @@ fn demo_lid_detection() {
 }
 
 fn demo_lid_for_index_quality() {
-    println!("2. Why LID Matters for ANN Quality");
-    println!("   --------------------------------\n");
+    println!("2. LID Categories for ANN Diagnostics");
+    println!("   -----------------------------------\n");
 
-    println!("   High-LID points are problematic because:");
+    println!("   High-LID points are associated with ANN failure modes:");
     println!("     - They have few true near neighbors");
     println!("     - Greedy search can miss them entirely");
     println!("     - Standard graph construction under-connects them\n");

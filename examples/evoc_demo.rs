@@ -7,10 +7,10 @@
 //!
 //! # Ecosystem Context
 //!
-//! | Crate     | Algorithm        | Best For                      |
+//! | Crate     | Algorithm        | Use                           |
 //! |-----------|------------------|-------------------------------|
 //! | vicinity  | EVōC             | Embedding exploration, outliers |
-//! | stratify  | K-means, GMM     | Known k, production speed     |
+//! | stratify  | K-means, GMM     | Known k, repeated runs        |
 //! | stratify  | Leiden           | Graph community detection     |
 //! | stratify  | Hierarchical     | Dendrograms, any-k extraction |
 //! | hop       | RAPTOR           | RAG tree summarization        |
@@ -168,7 +168,7 @@ fn demo_hierarchy_exploration() -> vicinity::Result<()> {
         }
     }
 
-    println!("\n   Key insight: No need to pick k upfront. Explore the hierarchy.");
+    println!("\n   EVōC exposes several granularities from one hierarchy.");
     println!();
     Ok(())
 }
@@ -199,13 +199,13 @@ fn demo_when_to_use() -> vicinity::Result<()> {
         "   | Speed               | O(n^2 log n)     | O(n*k*iter)        | O(n*k^2*iter)      |"
     );
     println!(
-        "   | Best for            | Exploration      | Production         | Soft assignments   |"
+        "   | Use                 | Exploration      | Repeated runs      | Soft assignments   |"
     );
     println!();
 
-    println!("   Pipeline recommendation:");
-    println!("     1. EVōC (vicinity) to EXPLORE and discover natural cluster count");
-    println!("     2. stratify::Kmeans with discovered k for PRODUCTION (10-100x faster)");
+    println!("   Pipeline sketch:");
+    println!("     1. EVōC (vicinity) to estimate a natural cluster count");
+    println!("     2. stratify::Kmeans with discovered k for repeated runs");
     println!("     3. stratify::Gmm if you need probability per cluster");
     println!("     4. stratify::Leiden for graph community structure");
     println!();
@@ -216,7 +216,7 @@ fn demo_when_to_use() -> vicinity::Result<()> {
     println!("     let evoc_labels = evoc.fit_predict(&embeddings, n)?;");
     println!("     let k = evoc_labels.iter().filter_map(|&x| x).max().unwrap_or(0) + 1;");
     println!("     ");
-    println!("     // Production with stratify");
+    println!("     // Reuse discovered k with stratify");
     println!("     use stratify::{{Kmeans, Clustering}};");
     println!("     let kmeans = Kmeans::new(k);");
     println!("     let labels = kmeans.fit_predict(&data)?;");

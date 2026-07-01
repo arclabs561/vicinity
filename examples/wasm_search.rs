@@ -1,53 +1,9 @@
 //! WASM vector search with vicinity.
 //!
-//! vicinity compiles to `wasm32-unknown-unknown` with default features.
-//! This example runs natively but the same code works in the browser.
+//! Runs the same HNSW build/search path used by a browser wrapper.
 //!
-//! ## Build for WASM
-//!
-//! ```sh
-//! # Install wasm-pack (if not already)
-//! cargo install wasm-pack
-//!
-//! # Check that it compiles for WASM
-//! cargo check --target wasm32-unknown-unknown --features hnsw
-//!
-//! # Build a WASM library (requires wasm-bindgen in dependencies)
-//! wasm-pack build --target web --features hnsw
-//! ```
-//!
-//! ## Use from JavaScript
-//!
-//! Wrap the index in a `wasm-bindgen` struct to expose it to JS:
-//!
-//! ```js
-//! import init, { VectorIndex } from './pkg/vicinity.js';
-//!
-//! await init();
-//!
-//! const index = new VectorIndex(128, 16, 32);
-//! index.add(0, new Float32Array([0.1, 0.2, ...]));
-//! index.build();
-//! const results = index.search(query, 5, 50);
-//! ```
-//!
-//! ## What works in WASM
-//!
-//! - HNSW index construction and search
-//! - All distance functions (cosine, euclidean, dot product)
-//! - `innr` crate's portable distance kernels
-//!
-//! ## What does not work in WASM
-//!
-//! - `persistence` feature (file I/O, mmap)
-//! - `simsimd` feature (native SIMD intrinsics via C)
-//! - `parallel` feature (rayon thread pool)
-//!
-//! ## Performance notes
-//!
-//! - For 100K vectors at dim=128, expect sub-10ms search times in WASM
-//! - Memory: ~50MB for 100K f32 vectors at dim=128
-//! - WASM SIMD (128-bit) is available in all major browsers since 2021
+//! Check the target build with:
+//! `cargo check --target wasm32-unknown-unknown --features hnsw`
 //!
 //! ## Run natively
 //!

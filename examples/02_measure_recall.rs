@@ -54,7 +54,7 @@ fn main() -> vicinity::Result<()> {
         println!("{:>8}  {:>9.1}%", ef, avg_recall * 100.0);
     }
 
-    println!("\nKey insight: ef controls the recall/speed tradeoff.");
+    println!("\nIn this run, ef controls the recall/speed tradeoff.");
     println!("Higher ef = better recall, but slower queries.");
 
     Ok(())

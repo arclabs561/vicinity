@@ -1,14 +1,14 @@
 #![allow(clippy::unwrap_used)]
 //! Embedding inference + vector search pipeline.
 //!
-//! Demonstrates the pattern for using vicinity as the retrieval layer in a
-//! RAG (Retrieval-Augmented Generation) pipeline:
+//! Uses a deterministic mock embedder to show vicinity as the retrieval
+//! layer in a RAG-style pipeline:
 //!
-//! 1. Embed documents using a model (mocked here; use candle/burn in production)
+//! 1. Embed documents using a model (mocked here; use candle/burn for a real embedder)
 //! 2. Build a vicinity HNSW index from the embeddings
 //! 3. At query time: embed the query, search the index, return documents
 //!
-//! ## With candle (production)
+//! ## With candle
 //!
 //! ```rust,ignore
 //! use candle_core::{Device, Tensor};
@@ -32,7 +32,7 @@ const DIM: usize = 64;
 ///
 /// Hashes each word and scatters contributions across dimensions, then
 /// normalizes. Texts sharing words produce similar vectors: enough to
-/// demonstrate the retrieval pattern without a real model.
+/// exercise retrieval without a model dependency.
 fn embed(text: &str, dim: usize) -> Vec<f32> {
     let mut v = vec![0.0_f32; dim];
     for word in text.split_whitespace() {

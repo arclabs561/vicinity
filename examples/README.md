@@ -1,12 +1,13 @@
 # Examples
 
-Organized by learning path and use case.
+Run from the repository root. Use `--release` for benchmark and numeric
+examples unless a command says otherwise.
 
-## Quick Start (Toy Examples)
+## Core
 
-Start here. These work immediately with synthetic data.
+Synthetic-data examples that run without downloads.
 
-| Example | Lines | What It Teaches |
+| Example | Lines | Covers |
 |---------|-------|-----------------|
 | `01_basic_search` | 63 | Minimal HNSW: add vectors, search |
 | `02_measure_recall` | 91 | How to validate an ANN index |
@@ -21,14 +22,14 @@ VICINITY_DATASET=quick cargo run --example 03_quick_benchmark --release     # CI
 cargo run --example 05_normalization_matters --release
 ```
 
-## Educational (Motivated Toy)
+## Synthetic Workflows
 
-Realistic scenarios with synthetic data. Demonstrate when/why to use each algorithm.
+Synthetic workloads for algorithm behavior and parameter effects.
 
-| Example | Lines | Algorithm | Teaches |
+| Example | Lines | Algorithm | Covers |
 |---------|-------|-----------|---------|
 | `semantic_search_demo` | 334 | HNSW | Document search with categories |
-| `ivf_pq_demo` | 321 | IVF-PQ | Billion-scale with compression |
+| `ivf_pq_demo` | 321 | IVF-PQ | Compressed inverted-file search |
 | `lid_demo` | 342 | LID | Intrinsic dimensionality estimation |
 | `lid_outlier_detection` | 186 | LID | Anomaly detection via LID |
 | `rabitq_demo` | 294 | RaBitQ | Randomized binary quantization |
@@ -48,12 +49,12 @@ Compare against standard ANN benchmark datasets from [ann-benchmarks.com](http:/
 |---------|---------|------|------|------------|
 | `quick` | 2K | 128 | ~1MB | Easy (CI) |
 | `bench` | 10K | 384 | ~16MB | Medium |
-| `hard` | 10K | 768 | ~31MB | Hard (realistic: topics + duplicates + hard-tail queries) |
+| `hard` | 10K | 768 | ~31MB | Stress case: topics, duplicates, hard-tail queries |
 
 Difficulty progression based on He et al. "On the Difficulty of Nearest Neighbor Search" (ICML 2012):
 - **quick**: Well-separated clusters, standard queries. Reaches 99%+ recall.
 - **bench**: Moderate overlap, adversarial queries. Reaches ~93% at ef=200.
-- **hard**: Anisotropic topic mixture + near-duplicates + a small hard query tail. Expect lower recall at the same ef.
+- **hard**: Anisotropic topic mixture, near-duplicates, and a small hard query tail. Lower recall at the same ef.
 
 ```sh
 cargo run --example 03_quick_benchmark --release                      # bench (default)
@@ -79,23 +80,23 @@ cargo run --example sift_benchmark --release --features hnsw
 
 ### Standard ANN Benchmark Datasets
 
-For serious benchmarking, download from [ann-benchmarks.com](http://ann-benchmarks.com/):
+For benchmark-compatible runs, download from [ann-benchmarks.com](http://ann-benchmarks.com/):
 
-| Dataset | Dims | Best For | Why |
+| Dataset | Dims | Use | Notes |
 |---------|------|----------|-----|
 | **GloVe-25** | 25 | Quick iteration | Smallest, fast downloads |
-| **GloVe-100** | 100 | Realistic text | Common word embedding dim |
+| **GloVe-100** | 100 | Text embeddings | Common word embedding dim |
 | **SIFT-128** | 128 | Euclidean baseline | Standard image features |
-| **NYTimes-256** | 256 | Text embeddings | Closer to modern dims |
+| **NYTimes-256** | 256 | Text embeddings | Higher-dimensional text dataset |
 | **Fashion-MNIST** | 784 | High-dim | Tests curse of dimensionality |
-| **GIST-960** | 960 | Stress test | Near modern embedding dims |
+| **GIST-960** | 960 | High-dim stress test | Larger dense descriptors |
 
-Modern embedding models (OpenAI, Cohere) use 768-3072 dims. The ann-benchmarks
-datasets are smaller but still useful for algorithm comparison.
+Many embedding workloads use 768-3072 dims. The ann-benchmarks datasets
+are smaller, but they remain useful for repeatable comparisons.
 
-## Advanced (Research Implementations)
+## Research Variants
 
-Recent research algorithms. Useful for understanding ongoing work in graph-based ANN.
+Graph-based ANN variants and clustering examples.
 
 | Example | Algorithm | Paper |
 |---------|-----------|-------|
@@ -103,7 +104,7 @@ Recent research algorithms. Useful for understanding ongoing work in graph-based
 | `dual_branch_hnsw_demo` | Dual-Branch variant | Skip bridges |
 | `evoc_demo` | EVōC | Hierarchical clustering |
 
-These are more complex and require reading the accompanying paper.
+Read the linked paper before treating output as a recommendation.
 
 ## Choosing an Algorithm
 

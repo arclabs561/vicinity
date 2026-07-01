@@ -9,9 +9,9 @@
 //! Dimensions: 25
 //! Distance: Angular (cosine) - requires L2-normalized vectors
 //!
-//! # Expected Performance (ann-benchmarks.com reference)
+//! # Reference baseline (ann-benchmarks.com)
 //!
-//! HNSW with M=16, ef_construction=500 should achieve:
+//! HNSW with M=16, ef_construction=500 is commonly reported near:
 //! - Recall@10 ~98-99% at ef_search=200-400
 //! - QPS: 10,000-20,000 queries/second (depending on hardware)
 //!

@@ -1,7 +1,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Dual-Branch HNSW Demo
 //!
-//! Demonstrates LID-driven optimization for handling outliers and varying density.
+//! Measures LID on clustered data with outliers, then compares a
+//! LID-aware HNSW variant with standard HNSW on the same queries.
 //!
 //! Based on "Dual-Branch HNSW with Skip Bridges" (arXiv 2501.13992, Jan 2025).
 //!
@@ -14,18 +15,14 @@ use std::time::Instant;
 use vicinity::hnsw::dual_branch::{DualBranchConfig, DualBranchHNSW};
 use vicinity::hnsw::HNSWIndex;
 use vicinity::lid::{estimate_lid, LidConfig};
+use vicinity::DistanceMetric;
 
 fn main() -> vicinity::Result<()> {
-    println!("Dual-Branch HNSW: LID-Driven Optimization Demo");
-    println!("===============================================\n");
+    println!("Dual-Branch HNSW: LID diagnostics");
+    println!("==================================\n");
 
-    // 1. The problem: outliers degrade HNSW recall
     demo_outlier_problem()?;
-
-    // 2. LID-aware construction
     demo_lid_analysis();
-
-    // 3. Dual-Branch vs Standard HNSW comparison
     demo_comparison()?;
 
     println!("Done!");
@@ -34,8 +31,8 @@ fn main() -> vicinity::Result<()> {
 
 /// Demonstrate how outliers degrade standard HNSW recall.
 fn demo_outlier_problem() -> vicinity::Result<()> {
-    println!("1. The Outlier Problem");
-    println!("   --------------------\n");
+    println!("1. Recall Split by Point Type");
+    println!("   ---------------------------\n");
 
     let dim = 64;
     let n_clusters = 5;
@@ -56,7 +53,11 @@ fn demo_outlier_problem() -> vicinity::Result<()> {
     );
 
     // Build standard HNSW
-    let mut index = HNSWIndex::new(dim, 16, 32)?;
+    let mut index = HNSWIndex::builder(dim)
+        .m(16)
+        .m_max(32)
+        .metric(DistanceMetric::L2)
+        .build()?;
     for i in 0..n_total {
         let vec = data[i * dim..(i + 1) * dim].to_vec();
         index.add(i as u32, vec)?;
@@ -101,10 +102,8 @@ fn demo_outlier_problem() -> vicinity::Result<()> {
         (avg_clustered - avg_outlier) * 100.0
     );
 
-    println!("   Problem: HNSW struggles with outliers because:");
-    println!("   - Outliers have few neighbors in the graph");
-    println!("   - Search paths get \"trapped\" in sparse regions");
-    println!("   - Greedy traversal misses distant true neighbors\n");
+    println!("   This split is diagnostic. In this synthetic run, the L2 baseline");
+    println!("   does not show an outlier recall deficit.\n");
 
     Ok(())
 }
@@ -176,10 +175,10 @@ fn demo_lid_analysis() {
     );
     println!();
 
-    println!("   Key insight: Outliers have HIGHER LID because:");
-    println!("   - They're in sparse regions where distance growth is irregular");
+    println!("   LID interpretation for this synthetic dataset:");
+    println!("   - Outliers sit in sparse regions where distance growth is irregular");
     println!("   - Fewer equidistant neighbors = higher MLE estimate");
-    println!("   - LID can identify these problematic points!\n");
+    println!("   - LID separates most outliers in this dataset\n");
 
     // Show top high-LID points
     let mut sorted = lid_estimates.clone();
@@ -234,7 +233,11 @@ fn demo_comparison() -> vicinity::Result<()> {
 
     // Build Standard HNSW
     let build_start = Instant::now();
-    let mut std_index = HNSWIndex::new(dim, 16, 32)?;
+    let mut std_index = HNSWIndex::builder(dim)
+        .m(16)
+        .m_max(32)
+        .metric(DistanceMetric::L2)
+        .build()?;
     for i in 0..n_total {
         let vec = data[i * dim..(i + 1) * dim].to_vec();
         std_index.add(i as u32, vec)?;
@@ -331,10 +334,10 @@ fn demo_comparison() -> vicinity::Result<()> {
         std_overall, dual_overall
     );
 
-    println!("   How Dual-Branch HNSW helps:");
-    println!("   - High-LID points get more connections (M=24 vs M=16)");
-    println!("   - Skip bridges create shortcuts past sparse regions");
-    println!("   - Dual search explores both local and skip paths");
+    println!("   Dual-Branch mechanisms under test:");
+    println!("   - High-LID points receive more connections (M=24 vs M=16)");
+    println!("   - Skip bridges add long-range edges from selected high-LID nodes");
+    println!("   - Search can explore local neighbors and skip paths");
     println!();
 
     Ok(())

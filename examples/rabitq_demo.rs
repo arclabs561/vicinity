@@ -1,26 +1,7 @@
 //! RaBitQ: Randomized Binary Quantization
 //!
-//! RaBitQ achieves 32x compression with no training data.
-//! The key insight: random orthogonal rotation makes quantization error predictable.
-//!
-//! # Why Random Rotation Works
-//!
-//! In high dimensions, random orthogonal rotations have a remarkable property:
-//! they distribute energy uniformly across dimensions. After rotation:
-//! - Coordinates become nearly independent
-//! - Each follows approximately Gaussian distribution
-//! - Sign bit captures ~63% of variance (proved by concentration inequalities)
-//!
-//! This means we can quantize without seeing the data first!
-//!
-//! # Comparison with Other Methods
-//!
-//! | Method       | Bits/dim | Training | Accuracy | Use Case           |
-//! |--------------|----------|----------|----------|--------------------|
-//! | RaBitQ       | 1-8      | None     | Good     | Streaming, no data |
-//! | Product Quant| 4-8      | Required | Better   | Known distribution |
-//! | Ternary      | 1.58     | None     | Lower    | Extreme compress   |
-//! | SQ (scalar)  | 8        | None     | High     | Simple baseline    |
+//! Quantizes normalized vectors with randomized binary codes and prints
+//! compression/error tables for 1, 2, 4, and 8 bits per coordinate.
 //!
 //! ```bash
 //! cargo run --example rabitq_demo --release --features rabitq
@@ -138,7 +119,7 @@ fn demo_compression_accuracy_tradeoff() -> vicinity::Result<()> {
         );
     }
 
-    println!("\n   Key insight: 4-bit (8x compression) is the sweet spot for most applications.");
+    println!("\n   In this synthetic run, the 4-bit row keeps error low with 8x compression.");
     println!();
 
     Ok(())

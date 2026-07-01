@@ -9,8 +9,8 @@ feature flag. Depend on only what you use. Rust crate `vicinity`;
 Python bindings ship as `pyvicinity` on PyPI.
 
 Default distance is cosine; most graph indices L2-normalize on insert
-and operate on the cosine-equivalent unit sphere (so angular and inner
-product over normalized vectors fall out for free). True L2 distance is
+and operate on the cosine-equivalent unit sphere. Angular distance and
+inner product over normalized vectors map to this path. True L2 distance is
 natively wired only in `ivf_avq` (which targets MIPS). The
 `DistanceMetric` enum in `distance.rs` is consumed by evaluation
 utilities and brute-force comparison; per-index metric selection is
@@ -90,9 +90,8 @@ See [`examples/ivf_pq_demo.rs`](examples/ivf_pq_demo.rs) for a runnable end-to-e
 ### Python (pyvicinity)
 
 HNSW is available from Python via [`pyvicinity`](https://pypi.org/project/pyvicinity/)
-(abi3 wheel, CPython 3.9+). Useful for semantic search, recommendation,
-deduplication, and any other task where you have N embedding vectors and
-need to find the k closest to a query vector.
+(abi3 wheel, CPython 3.9+). The wheel exposes HNSW search over NumPy
+`float32` arrays.
 
 ```bash
 pip install pyvicinity
@@ -187,7 +186,7 @@ Summary at best recall per algorithm:
 
 Full numbers and SIFT-128 results in [`docs/benchmark-results.md`](docs/benchmark-results.md).
 
-## Supported Algorithms
+## Algorithms
 
 Each algorithm has a named feature flag:
 

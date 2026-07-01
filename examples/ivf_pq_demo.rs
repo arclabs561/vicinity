@@ -1,34 +1,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::needless_update)]
 //! IVF-PQ: Inverted File with Product Quantization
 //!
-//! The workhorse of billion-scale search. Combines two ideas:
-//! 1. **IVF** (Inverted File): Partition space into cells, only search nearby cells
-//! 2. **PQ** (Product Quantization): Compress vectors to ~32 bytes
-//!
-//! # How It Works
-//!
-//! ```text
-//! Index time:
-//!   vectors -> k-means clusters (IVF) -> compress residuals (PQ)
-//!
-//! Query time:
-//!   query -> find nprobe nearest clusters -> scan compressed vectors
-//!          -> rerank top candidates with exact distance
-//! ```
-//!
-//! # Trade-offs
-//!
-//! | Parameter    | Higher Value                | Lower Value             |
-//! |--------------|-----------------------------|-----------------------  |
-//! | n_lists      | More clusters, faster scan  | Better recall           |
-//! | n_subvectors | More compression            | Higher accuracy         |
-//! | nprobe       | Better recall               | Faster queries          |
-//!
-//! # When to Use
-//!
-//! - 1M+ vectors where HNSW memory is prohibitive
-//! - GPU-accelerated search (IVF is parallelizable)
-//! - When you have training data to learn codebooks
+//! Builds a compressed IVF-PQ index, reports recall as `nprobe` changes,
+//! and prints the memory arithmetic for several codebook counts.
 //!
 //! ```bash
 //! cargo run --example ivf_pq_demo --release --features ivf_pq
@@ -39,8 +13,8 @@ use std::time::Instant;
 use vicinity::ivf_pq::{IVFPQIndex, IVFPQParams};
 
 fn main() -> vicinity::Result<()> {
-    println!("IVF-PQ: Billion-Scale Vector Search");
-    println!("====================================\n");
+    println!("IVF-PQ vector search");
+    println!("====================\n");
 
     demo_basic_search()?;
     demo_parameter_tuning()?;
@@ -227,8 +201,8 @@ fn demo_memory_analysis() -> vicinity::Result<()> {
         full_bytes as f64 / rabitq_4bit as f64
     );
 
-    println!("\n   Key insight: PQ achieves 48-192x compression by learning");
-    println!("   codebooks that capture the data distribution.");
+    println!("\n   PQ compression in this table comes from storing one code per");
+    println!("   sub-vector instead of full f32 coordinates.");
     println!();
 
     Ok(())

@@ -2,8 +2,8 @@
 //! Reciprocal Rank Fusion (RRF).
 //!
 //! This example shows how to combine vicinity's HNSW vector search with
-//! a simple BM25 text scorer. In production, replace the BM25 implementation
-//! with tantivy or another full-text search library.
+//! a simple BM25 text scorer. For a real text index, replace the BM25
+//! implementation with tantivy or another full-text search library.
 //!
 //! ```bash
 //! cargo run --example hybrid_search --features hnsw

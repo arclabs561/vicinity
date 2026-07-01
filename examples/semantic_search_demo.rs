@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Semantic Search Demo
 //!
-//! End-to-end demonstration of building a semantic search system:
+//! Synthetic document-search workload:
 //! - Synthetic embeddings mimicking real-world distributions
 //! - HNSW index construction and tuning
 //! - Query latency and recall analysis
@@ -219,8 +219,8 @@ fn demo_recall_latency_tradeoff(corpus: &[Vec<f32>]) -> vicinity::Result<()> {
     }
     println!();
 
-    println!("  Key insight: Higher ef increases recall but reduces QPS.");
-    println!("  Sweet spot for this dataset: ef=50-100 gives 90%+ recall.\n");
+    println!("  In this synthetic corpus, higher ef trades QPS for recall.");
+    println!("  Choose ef from the measured table above.\n");
 
     Ok(())
 }
