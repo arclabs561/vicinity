@@ -5,6 +5,20 @@ All notable changes to this project are documented here. The format follows
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The 0.x
 series is unstable: minor bumps may break the public API.
 
+## [Unreleased]
+
+### Changed
+
+- `store::UpdatableIndex` now keys its in-memory per-segment HNSW cache by
+  segstore's stable segment ids instead of `Arc` pointers, and prunes stale cache
+  entries when compaction/reclaim changes the segment set.
+
+### Fixed
+
+- `store::UpdatableIndex::{compact, compact_tiers, reclaim}` now persist sidecars
+  for newly merged segments immediately after segstore checkpoints them, instead
+  of waiting for the next search to rebuild and write the sidecar lazily.
+
 ## [0.10.5] - 2026-06-30
 
 ### Added
