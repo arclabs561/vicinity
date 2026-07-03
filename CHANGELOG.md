@@ -9,6 +9,9 @@ series is unstable: minor bumps may break the public API.
 
 ### Changed
 
+- `examples/dual_branch_demo.rs` now reports standard-HNSW recall against
+  metric-matched brute-force ground truth and labels Dual-Branch recall changes
+  as deltas rather than assumed improvements.
 - `store::UpdatableIndex` now keys its in-memory per-segment HNSW cache by
   segstore's stable segment ids instead of `Arc` pointers, and prunes stale cache
   entries when compaction/reclaim changes the segment set.

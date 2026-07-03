@@ -52,60 +52,100 @@ fn demo_outlier_problem() -> vicinity::Result<()> {
         dim
     );
 
-    // Build standard HNSW
+    let k = 10;
+    let ef = 20;
+
+    // Show standard HNSW under both metrics, each scored against its own
+    // metric's brute-force ground truth (mixing an index metric with a
+    // different ground-truth metric would misreport recall). The outlier
+    // deficit that motivates the LID-aware variant is metric-dependent, so
+    // reporting one metric alone is misleading.
+    println!("   Standard HNSW recall@{k}, by query type and metric:\n");
+    println!(
+        "   {:>8}  {:>11}  {:>11}  {:>7}",
+        "Metric", "Clustered", "Outlier", "Gap"
+    );
+    println!("   {:->8}  {:->11}  {:->11}  {:->7}", "", "", "", "");
+    for metric in [DistanceMetric::Cosine, DistanceMetric::L2] {
+        let (avg_clustered, avg_outlier) =
+            standard_recall_split(&data, &labels, dim, metric, k, ef)?;
+        println!(
+            "   {:>8}  {:>10.1}%  {:>10.1}%  {:>6.1}%",
+            metric_name(metric),
+            avg_clustered * 100.0,
+            avg_outlier * 100.0,
+            (avg_clustered - avg_outlier) * 100.0
+        );
+    }
+    println!();
+
+    println!("   This split is diagnostic, not a guaranteed failure case. In this");
+    println!("   deterministic synthetic run, standard HNSW does not show a large");
+    println!("   outlier recall deficit once each metric is scored against its own");
+    println!("   brute-force ground truth. The LID-aware variant below should be read");
+    println!("   as a mechanism check, not as a recall improvement claim.\n");
+
+    Ok(())
+}
+
+/// Build a standard HNSW under `metric`, then return
+/// `(mean clustered recall, mean outlier recall)` scored against that same
+/// metric's brute-force ground truth.
+fn standard_recall_split(
+    data: &[f32],
+    labels: &[usize],
+    dim: usize,
+    metric: DistanceMetric,
+    k: usize,
+    ef: usize,
+) -> vicinity::Result<(f32, f32)> {
+    let n_total = data.len() / dim;
+    // Cosine/angular HNSW requires L2-normalized vectors; auto_normalize does it
+    // at add and query time. Cosine ground truth is scale-invariant, so it stays
+    // consistent with the raw data.
+    let normalize = matches!(metric, DistanceMetric::Cosine | DistanceMetric::Angular);
     let mut index = HNSWIndex::builder(dim)
         .m(16)
         .m_max(32)
-        .metric(DistanceMetric::L2)
+        .metric(metric)
+        .auto_normalize(normalize)
         .build()?;
     for i in 0..n_total {
-        let vec = data[i * dim..(i + 1) * dim].to_vec();
-        index.add(i as u32, vec)?;
+        index.add(i as u32, data[i * dim..(i + 1) * dim].to_vec())?;
     }
     index.build()?;
 
-    // Test recall on clustered points vs outliers
-    let k = 10;
-    let ef = 50;
-
-    let mut clustered_recalls = Vec::new();
-    let mut outlier_recalls = Vec::new();
-
-    // Sample queries from each type
+    let mut clustered = Vec::new();
+    let mut outlier = Vec::new();
     for i in 0..n_total {
         let query = &data[i * dim..(i + 1) * dim];
-        let results = index.search(query, k, ef)?;
-        let result_ids: HashSet<u32> = results.iter().map(|(id, _)| *id).collect();
-
-        // Ground truth: brute force
-        let gt = brute_force_knn(&data, dim, query, k);
-        let gt_ids: HashSet<u32> = gt.iter().map(|(id, _)| *id).collect();
-
+        let result_ids: HashSet<u32> = index
+            .search(query, k, ef)?
+            .iter()
+            .map(|(id, _)| *id)
+            .collect();
+        let gt_ids: HashSet<u32> = brute_force_knn_metric(data, dim, query, k, metric)
+            .iter()
+            .map(|(id, _)| *id)
+            .collect();
         let recall = result_ids.intersection(&gt_ids).count() as f32 / k as f32;
-
         if labels[i] == 999 {
-            // Outlier
-            outlier_recalls.push(recall);
+            outlier.push(recall);
         } else {
-            clustered_recalls.push(recall);
+            clustered.push(recall);
         }
     }
+    let mean = |v: &[f32]| v.iter().sum::<f32>() / v.len().max(1) as f32;
+    Ok((mean(&clustered), mean(&outlier)))
+}
 
-    let avg_clustered = clustered_recalls.iter().sum::<f32>() / clustered_recalls.len() as f32;
-    let avg_outlier = outlier_recalls.iter().sum::<f32>() / outlier_recalls.len() as f32;
-
-    println!("   Standard HNSW Recall@{}:", k);
-    println!("     Clustered queries: {:.1}%", avg_clustered * 100.0);
-    println!("     Outlier queries:   {:.1}%", avg_outlier * 100.0);
-    println!(
-        "     Gap:               {:.1}%\n",
-        (avg_clustered - avg_outlier) * 100.0
-    );
-
-    println!("   This split is diagnostic. In this synthetic run, the L2 baseline");
-    println!("   does not show an outlier recall deficit.\n");
-
-    Ok(())
+fn metric_name(metric: DistanceMetric) -> &'static str {
+    match metric {
+        DistanceMetric::Cosine => "cosine",
+        DistanceMetric::L2 => "L2",
+        DistanceMetric::Angular => "angular",
+        _ => "other",
+    }
 }
 
 /// Demonstrate LID analysis of the dataset.
@@ -267,7 +307,7 @@ fn demo_comparison() -> vicinity::Result<()> {
 
     // Compare recall on different point types
     let k = 10;
-    let ef = 50;
+    let ef = 20;
 
     let mut std_clustered = Vec::new();
     let mut std_outlier = Vec::new();
@@ -303,7 +343,7 @@ fn demo_comparison() -> vicinity::Result<()> {
     println!("   Recall@{} Comparison:", k);
     println!(
         "   {:>20}  {:>12}  {:>12}  {:>10}",
-        "Query Type", "Standard", "Dual-Branch", "Improvement"
+        "Query Type", "Standard", "Dual-Branch", "Delta"
     );
     println!("   {:->20}  {:->12}  {:->12}  {:->10}", "", "", "", "");
     println!(
@@ -388,17 +428,46 @@ fn generate_clustered_with_outliers(
 }
 
 fn brute_force_knn(data: &[f32], dim: usize, query: &[f32], k: usize) -> Vec<(u32, f32)> {
+    brute_force_knn_metric(data, dim, query, k, DistanceMetric::L2)
+}
+
+/// Brute-force k-NN under a specific metric, so recall is scored against the
+/// same metric the index uses.
+fn brute_force_knn_metric(
+    data: &[f32],
+    dim: usize,
+    query: &[f32],
+    k: usize,
+    metric: DistanceMetric,
+) -> Vec<(u32, f32)> {
     let n = data.len() / dim;
     let mut distances: Vec<(u32, f32)> = (0..n)
         .map(|i| {
             let vec = &data[i * dim..(i + 1) * dim];
-            let dist = l2_distance(query, vec);
-            (i as u32, dist)
+            (i as u32, metric_distance(query, vec, metric))
         })
         .collect();
 
     distances.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
     distances.into_iter().take(k).collect()
+}
+
+fn metric_distance(a: &[f32], b: &[f32], metric: DistanceMetric) -> f32 {
+    match metric {
+        DistanceMetric::Cosine | DistanceMetric::Angular => cosine_distance(a, b),
+        _ => l2_distance(a, b),
+    }
+}
+
+/// Cosine distance `1 - cos(a, b)`; zero-norm vectors are maximally distant.
+fn cosine_distance(a: &[f32], b: &[f32]) -> f32 {
+    let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+    let na = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let nb = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if na == 0.0 || nb == 0.0 {
+        return 1.0;
+    }
+    1.0 - dot / (na * nb)
 }
 
 fn compute_distances_from(query: &[f32], data: &[f32], dim: usize, skip_idx: usize) -> Vec<f32> {
