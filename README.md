@@ -159,10 +159,13 @@ or truncated input returns an error rather than panicking or decoding garbage.
 The `store` feature adds `store::UpdatableIndex`, an updatable, durable
 *multi-segment* ANN index backed by [`segstore`](https://crates.io/crates/segstore):
 incremental add/delete, a write-ahead log, checkpoint, compaction, and crash
-recovery. Each segment is a cached HNSW (rebuilt only on mutation, not per query),
-searched and merged across segments. This is the deliberate alternative to a single
-evolving graph; like any HNSW the merged result is approximate. Opt-in; the default
-build does not depend on segstore.
+recovery. Each segment is a cached HNSW and can be persisted as a sidecar, so a
+restart loads unchanged segment graphs instead of rebuilding them. Segments are
+searched and merged; this is the deliberate alternative to a single evolving
+graph, and like any HNSW the merged result is approximate. The source vectors are
+still loaded by the current `segstore` open path. Fully out-of-core ANN search is
+the DiskANN/page-layout track, not this wrapper. Opt-in; the default build does
+not depend on segstore.
 
 ## Benchmark
 
