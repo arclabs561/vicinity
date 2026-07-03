@@ -18,6 +18,8 @@ series is unstable: minor bumps may break the public API.
 
 ### Fixed
 
+- Corrected the RaBitQ example command and README quantization feature note to
+  match the current feature split.
 - `store::UpdatableIndex::{compact, compact_tiers, reclaim}` now persist sidecars
   for newly merged segments immediately after segstore checkpoints them, instead
   of waiting for the next search to rebuild and write the sidecar lazily.

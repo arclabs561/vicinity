@@ -4,7 +4,7 @@
 //! compression/error tables for 1, 2, 4, and 8 bits per coordinate.
 //!
 //! ```bash
-//! cargo run --example rabitq_demo --release --features rabitq
+//! cargo run --example rabitq_demo --release --features "rabitq,hnsw,quantization"
 //! ```
 
 use vicinity::quantization::rabitq::{RaBitQConfig, RaBitQQuantizer};
