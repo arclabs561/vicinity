@@ -8,13 +8,11 @@ Approximate nearest-neighbor search. Each algorithm is a separate
 feature flag. Depend on only what you use. Rust crate `vicinity`;
 Python bindings ship as `pyvicinity` on PyPI.
 
-Default distance is cosine; most graph indices L2-normalize on insert
-and operate on the cosine-equivalent unit sphere. Angular distance and
-inner product over normalized vectors map to this path. True L2 distance is
-natively wired only in `ivf_avq` (which targets MIPS). The
-`DistanceMetric` enum in `distance.rs` is consumed by evaluation
-utilities and brute-force comparison; per-index metric selection is
-algorithm-specific.
+HNSW defaults to cosine distance and expects unit-norm vectors unless
+`auto_normalize(true)` is set on the builder. It also supports L2, angular, and
+inner-product distance through `DistanceMetric`. Other indexes expose their own
+metric choices; check the specific algorithm before assuming every metric is
+available.
 
 ## Which index?
 
