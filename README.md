@@ -223,9 +223,11 @@ Each algorithm has a named feature flag:
 | Ball Tree | `balltree` | Exact NN; slightly better than KD-Tree for d=20-50 (experimental) |
 | RP-Forest | `rptree` | Approximate; fast build, moderate recall (experimental) |
 
-Quantization features are split by use: index-level IVF/SymphonyQG RaBitQ uses
-`ivf_rabitq`; standalone `vicinity::quantization` re-exports need
-`quantization` plus `rabitq` or `saq`. PQ is part of `ivf_pq`.
+Quantization features are split by use: the public IVF-RaBitQ and
+`hnsw::SymphonyQGIndex` types use `ivf_rabitq`; standalone
+`vicinity::quantization` re-exports need `quantization` plus `rabitq` or `saq`.
+The standalone RaBitQ and SymphonyQG examples use the latter path. PQ is part of
+`ivf_pq`.
 
 ### Experimental status
 

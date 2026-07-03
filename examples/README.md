@@ -31,12 +31,15 @@ Synthetic workloads for algorithm behavior and parameter effects.
 | `semantic_search_demo` | 334 | HNSW | Document search with categories |
 | `ivf_pq_demo` | 321 | IVF-PQ | Compressed inverted-file search |
 | `lid_demo` | 342 | LID | Intrinsic dimensionality estimation |
-| `lid_outlier_detection` | 186 | LID | Anomaly detection via LID |
 | `rabitq_demo` | 294 | RaBitQ | Randomized binary quantization |
+| `symphonyqg_demo` | 202 | HNSW + RaBitQ | Quantized graph traversal pattern |
 
 ```sh
 cargo run --example semantic_search_demo --release
 cargo run --example ivf_pq_demo --release --features ivf_pq
+cargo run --example lid_demo --release
+cargo run --example rabitq_demo --release --features "rabitq,hnsw,quantization"
+cargo run --example symphonyqg_demo --release --features "hnsw,rabitq,quantization"
 ```
 
 ## Benchmarks (Real Data)
