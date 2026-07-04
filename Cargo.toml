@@ -275,6 +275,11 @@ name = "updatable_store"
 path = "examples/updatable_store.rs"
 required-features = ["store"]
 
+[[example]]
+name = "store_reopen_diagnostics"
+path = "examples/store_reopen_diagnostics.rs"
+required-features = ["store"]
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

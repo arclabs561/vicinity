@@ -167,6 +167,9 @@ result is approximate. Fully out-of-core ANN search is the DiskANN/page-layout
 track, not this wrapper. Opt-in; the default build does not depend on segstore. See
 [`examples/updatable_store.rs`](examples/updatable_store.rs) for add, delete,
 checkpoint, reopen, and search through this path.
+For measurement, `cargo run --release --features store --example store_reopen_diagnostics`
+prints the first-search cost with persisted HNSW sidecars present versus after
+deleting those sidecars and forcing rebuilds.
 
 ## Benchmark
 

@@ -11,6 +11,9 @@ series is unstable: minor bumps may break the public API.
 
 - Added an `updatable_store` example covering add, checkpoint, delete, reopen,
   and search through the optional `store` feature.
+- Added a `store_reopen_diagnostics` example that prints first-search cost with
+  persisted HNSW sidecars present versus after deleting sidecars and forcing
+  rebuilds.
 - Added `store::SnapshotIndex`, a read-only checkpoint view that opens the
   segstore manifest and queries persisted HNSW sidecars before falling back to
   one source-vector segment when a sidecar is missing or stale.
