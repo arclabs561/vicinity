@@ -80,7 +80,7 @@ struct Cache {
 /// file `segstore.idx.<seg_id>.hnsw` and garbage-collects it with its segment.
 const INDEX_KIND: &str = "hnsw";
 const SIDECAR_MAGIC: &[u8; 8] = b"VICHNSW1";
-const SIDECAR_VERSION: u32 = 1;
+const SIDECAR_VERSION: u32 = 2;
 
 /// An updatable, durable multi-segment HNSW index.
 pub struct UpdatableIndex {
@@ -358,7 +358,7 @@ impl UpdatableIndex {
             .ok()?
             .read_to_end(&mut bytes)
             .ok()?;
-        let graph_bytes = self.decode_sidecar(&bytes)?;
+        let graph_bytes = self.decode_sidecar(&bytes, seg_id)?;
         let idx = HNSWIndex::from_postcard(graph_bytes).ok()?;
         let mut live = HashSet::with_capacity(seg.len());
         for (id, _) in seg {
@@ -377,7 +377,7 @@ impl UpdatableIndex {
     /// write leaves the in-memory index usable and simply re-persists next time).
     fn persist_sidecar(&self, idx: &HNSWIndex, seg_id: u64) {
         if let Ok(graph) = idx.to_postcard() {
-            let Some(bytes) = self.encode_sidecar(&graph) else {
+            let Some(bytes) = self.encode_sidecar(&graph, seg_id) else {
                 return;
             };
             if self
@@ -416,28 +416,37 @@ impl UpdatableIndex {
         )
     }
 
-    fn encode_sidecar(&self, graph: &[u8]) -> Option<Vec<u8>> {
-        Self::encode_sidecar_for_recipe(&self.sidecar_recipe, graph)
+    fn encode_sidecar(&self, graph: &[u8], seg_id: u64) -> Option<Vec<u8>> {
+        Self::encode_sidecar_for_recipe(&self.sidecar_recipe, seg_id, graph)
     }
 
-    fn encode_sidecar_for_recipe(sidecar_recipe: &str, graph: &[u8]) -> Option<Vec<u8>> {
+    fn encode_sidecar_for_recipe(
+        sidecar_recipe: &str,
+        seg_id: u64,
+        graph: &[u8],
+    ) -> Option<Vec<u8>> {
         let recipe = sidecar_recipe.as_bytes();
         let recipe_len = u32::try_from(recipe.len()).ok()?;
-        let mut bytes = Vec::with_capacity(16 + recipe.len() + graph.len());
+        let mut bytes = Vec::with_capacity(24 + recipe.len() + graph.len());
         bytes.extend_from_slice(SIDECAR_MAGIC);
         bytes.extend_from_slice(&SIDECAR_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&seg_id.to_le_bytes());
         bytes.extend_from_slice(&recipe_len.to_le_bytes());
         bytes.extend_from_slice(recipe);
         bytes.extend_from_slice(graph);
         Some(bytes)
     }
 
-    fn decode_sidecar<'a>(&self, bytes: &'a [u8]) -> Option<&'a [u8]> {
-        Self::decode_sidecar_for_recipe(&self.sidecar_recipe, bytes)
+    fn decode_sidecar<'a>(&self, bytes: &'a [u8], seg_id: u64) -> Option<&'a [u8]> {
+        Self::decode_sidecar_for_recipe(&self.sidecar_recipe, seg_id, bytes)
     }
 
-    fn decode_sidecar_for_recipe<'a>(sidecar_recipe: &str, bytes: &'a [u8]) -> Option<&'a [u8]> {
-        if bytes.len() < 16 {
+    fn decode_sidecar_for_recipe<'a>(
+        sidecar_recipe: &str,
+        seg_id: u64,
+        bytes: &'a [u8],
+    ) -> Option<&'a [u8]> {
+        if bytes.len() < 24 {
             return None;
         }
         if &bytes[..8] != SIDECAR_MAGIC {
@@ -447,8 +456,12 @@ impl UpdatableIndex {
         if version != SIDECAR_VERSION {
             return None;
         }
-        let recipe_len = u32::from_le_bytes(bytes[12..16].try_into().ok()?) as usize;
-        let recipe_start = 16usize;
+        let encoded_seg_id = u64::from_le_bytes(bytes[12..20].try_into().ok()?);
+        if encoded_seg_id != seg_id {
+            return None;
+        }
+        let recipe_len = u32::from_le_bytes(bytes[20..24].try_into().ok()?) as usize;
+        let recipe_start = 24usize;
         let recipe_end = recipe_start.checked_add(recipe_len)?;
         if bytes.len() < recipe_end {
             return None;
@@ -576,7 +589,8 @@ impl SnapshotIndex {
             .ok()?
             .read_to_end(&mut bytes)
             .ok()?;
-        let graph_bytes = UpdatableIndex::decode_sidecar_for_recipe(&self.sidecar_recipe, &bytes)?;
+        let graph_bytes =
+            UpdatableIndex::decode_sidecar_for_recipe(&self.sidecar_recipe, seg_id, &bytes)?;
         let idx = HNSWIndex::from_postcard(graph_bytes).ok()?;
         if idx.doc_ids.iter().all(|id| self.catalog.is_live(id)) {
             Some(idx)
@@ -588,7 +602,7 @@ impl SnapshotIndex {
     fn persist_sidecar(&self, idx: &HNSWIndex, seg_id: u64) {
         if let Ok(graph) = idx.to_postcard() {
             let Some(bytes) =
-                UpdatableIndex::encode_sidecar_for_recipe(&self.sidecar_recipe, &graph)
+                UpdatableIndex::encode_sidecar_for_recipe(&self.sidecar_recipe, seg_id, &graph)
             else {
                 return;
             };
@@ -871,6 +885,45 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_index_rebuilds_sidecar_with_wrong_segment_id() {
+        let dir = MemoryDirectory::arc();
+        {
+            let mut store = UpdatableIndex::open(dir.clone(), 2, 2, 16, 32).unwrap();
+            store.add(0, &[1.0, 0.0]).unwrap();
+            store.add(1, &[0.95, 0.05]).unwrap();
+            store.add(2, &[0.0, 1.0]).unwrap();
+            store.add(3, &[-1.0, 0.0]).unwrap();
+            store.checkpoint().unwrap();
+
+            let ids = store.inner.segment_ids();
+            assert_eq!(ids.len(), 2, "test setup should create two segments");
+            let first = read_file(
+                store.inner.dir(),
+                &store.inner.index_name(ids[0], INDEX_KIND),
+            );
+            store
+                .inner
+                .dir()
+                .atomic_write(&store.inner.index_name(ids[1], INDEX_KIND), &first)
+                .unwrap();
+        }
+
+        let (watched, opened) = RecordingDirectory::wrap(dir);
+        let snapshot = SnapshotIndex::open(watched, 2, 16, 32).unwrap();
+        let hits = snapshot.search(&[0.0, 1.0], 2, 16).unwrap();
+        assert!(
+            hits.iter().any(|(id, _)| *id == 2),
+            "segment 1 should be rebuilt and searched after rejecting the copied sidecar: {hits:?}"
+        );
+
+        let opened = opened.lock().unwrap().clone();
+        assert!(
+            opened.iter().any(|path| path == "segstore.seg.1"),
+            "wrong-segment sidecar should fall back to that source segment: {opened:?}"
+        );
+    }
+
+    #[test]
     fn compact_persists_sidecar_and_prunes_cached_indexes() {
         let dir = MemoryDirectory::arc();
         let mut store = UpdatableIndex::open(dir, 2, 2, 16, 32).unwrap();
@@ -954,26 +1007,32 @@ mod tests {
     fn hnsw_sidecar_envelope_rejects_corrupt_headers() {
         let store = UpdatableIndex::open(MemoryDirectory::arc(), 4, 2, 16, 32).unwrap();
         let graph = b"graph-bytes";
-        let bytes = store.encode_sidecar(graph).unwrap();
-        assert_eq!(store.decode_sidecar(&bytes), Some(graph.as_slice()));
+        let seg_id = 7;
+        let bytes = store.encode_sidecar(graph, seg_id).unwrap();
+        assert_eq!(store.decode_sidecar(&bytes, seg_id), Some(graph.as_slice()));
 
-        assert!(store.decode_sidecar(&bytes[..8]).is_none());
+        assert!(store.decode_sidecar(&bytes[..8], seg_id).is_none());
 
         let mut bad_magic = bytes.clone();
         bad_magic[0] ^= 0xFF;
-        assert!(store.decode_sidecar(&bad_magic).is_none());
+        assert!(store.decode_sidecar(&bad_magic, seg_id).is_none());
 
         let mut bad_version = bytes.clone();
         bad_version[8..12].copy_from_slice(&(SIDECAR_VERSION + 1).to_le_bytes());
-        assert!(store.decode_sidecar(&bad_version).is_none());
+        assert!(store.decode_sidecar(&bad_version, seg_id).is_none());
+
+        assert!(
+            store.decode_sidecar(&bytes, seg_id + 1).is_none(),
+            "sidecar must not load for a different segment id"
+        );
 
         let mut bad_recipe_len = bytes.clone();
-        bad_recipe_len[12..16].copy_from_slice(&u32::MAX.to_le_bytes());
-        assert!(store.decode_sidecar(&bad_recipe_len).is_none());
+        bad_recipe_len[20..24].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(store.decode_sidecar(&bad_recipe_len, seg_id).is_none());
 
         let mut bad_recipe = bytes.clone();
-        bad_recipe[16] ^= 0x01;
-        assert!(store.decode_sidecar(&bad_recipe).is_none());
+        bad_recipe[24] ^= 0x01;
+        assert!(store.decode_sidecar(&bad_recipe, seg_id).is_none());
     }
 
     #[test]
@@ -982,7 +1041,10 @@ mod tests {
         let (name, _) = checkpointed_store(dir.clone(), 16, 32);
         {
             let store = UpdatableIndex::open(dir.clone(), 4, 2, 16, 32).unwrap();
-            let corrupt = store.encode_sidecar(b"not-a-postcard-hnsw-graph").unwrap();
+            let seg_id = store.inner.segment_ids()[0];
+            let corrupt = store
+                .encode_sidecar(b"not-a-postcard-hnsw-graph", seg_id)
+                .unwrap();
             store.inner.dir().atomic_write(&name, &corrupt).unwrap();
         }
 
