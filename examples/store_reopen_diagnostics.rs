@@ -1,4 +1,4 @@
-//! Measure sidecar-first reopen vs rebuild for the segstore-backed HNSW store.
+//! Measure sidecar-first snapshot reopen vs rebuild for the segstore-backed HNSW store.
 //!
 //! Run:
 //! `cargo run --release --features store --example store_reopen_diagnostics`
@@ -7,13 +7,19 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use durability::{Directory, MemoryDirectory};
-use vicinity::store::UpdatableIndex;
+use vicinity::store::{SnapshotIndex, UpdatableIndex};
 
 const N: usize = 1_000;
 const DIM: usize = 16;
 const FLUSH: usize = 200;
+const M: usize = 16;
+const M_MAX: usize = 32;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+type DynError = Box<dyn std::error::Error>;
+type StoreDir = Arc<dyn Directory>;
+type SearchHits = Vec<(u32, f32)>;
+
+fn main() -> Result<(), DynError> {
     let (load_dir, query) = build_checkpointed_dir()?;
     let load_sidecars = sidecar_count(&load_dir)?;
     let (load_elapsed, load_hits) = first_search(load_dir.clone(), &query)?;
@@ -30,9 +36,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("vectors: {N}, dim: {DIM}, flush threshold: {FLUSH}");
     println!("sidecars loaded path: {load_sidecars}");
     println!("sidecars rebuild path before/after delete: {sidecars_before_delete}/{sidecars_after_delete}");
-    println!("first search with sidecars: {}", micros(load_elapsed));
     println!(
-        "first search after deleting sidecars: {}",
+        "first snapshot search with sidecars: {}",
+        micros(load_elapsed)
+    );
+    println!(
+        "first snapshot search after deleting sidecars: {}",
         micros(rebuild_elapsed)
     );
     println!("top hit with sidecars: {:?}", load_hits.first());
@@ -41,10 +50,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn build_checkpointed_dir() -> Result<(Arc<dyn Directory>, Vec<f32>), Box<dyn std::error::Error>> {
-    let dir: Arc<dyn Directory> = MemoryDirectory::arc();
+fn build_checkpointed_dir() -> Result<(StoreDir, Vec<f32>), DynError> {
+    let dir: StoreDir = MemoryDirectory::arc();
     let mut state = 0x1234_5678_9abc_def0u64;
-    let mut index = UpdatableIndex::open(dir.clone(), FLUSH, DIM, 16, 32)?;
+    let mut index = UpdatableIndex::open(dir.clone(), FLUSH, DIM, M, M_MAX)?;
     for id in 0..N {
         index.add(id as u32, &vector(&mut state))?;
     }
@@ -52,17 +61,14 @@ fn build_checkpointed_dir() -> Result<(Arc<dyn Directory>, Vec<f32>), Box<dyn st
     Ok((dir, vector(&mut state)))
 }
 
-fn first_search(
-    dir: Arc<dyn Directory>,
-    query: &[f32],
-) -> Result<(Duration, Vec<(u32, f32)>), Box<dyn std::error::Error>> {
-    let index = UpdatableIndex::open(dir, FLUSH, DIM, 16, 32)?;
+fn first_search(dir: StoreDir, query: &[f32]) -> Result<(Duration, SearchHits), DynError> {
+    let index = SnapshotIndex::open(dir, DIM, M, M_MAX)?;
     let start = Instant::now();
-    let hits = index.search(query, 10, 64);
+    let hits = index.search(query, 10, 64)?;
     Ok((start.elapsed(), hits))
 }
 
-fn delete_sidecars(dir: &Arc<dyn Directory>) -> Result<(), Box<dyn std::error::Error>> {
+fn delete_sidecars(dir: &StoreDir) -> Result<(), DynError> {
     for name in dir.list_dir("")? {
         if name.starts_with("segstore.idx.") {
             dir.delete(&name)?;
@@ -71,7 +77,7 @@ fn delete_sidecars(dir: &Arc<dyn Directory>) -> Result<(), Box<dyn std::error::E
     Ok(())
 }
 
-fn sidecar_count(dir: &Arc<dyn Directory>) -> Result<usize, Box<dyn std::error::Error>> {
+fn sidecar_count(dir: &StoreDir) -> Result<usize, DynError> {
     Ok(dir
         .list_dir("")?
         .into_iter()

@@ -168,8 +168,8 @@ track, not this wrapper. Opt-in; the default build does not depend on segstore. 
 [`examples/updatable_store.rs`](examples/updatable_store.rs) for add, delete,
 checkpoint, reopen, and search through this path.
 For measurement, `cargo run --release --features store --example store_reopen_diagnostics`
-prints the first-search cost with persisted HNSW sidecars present versus after
-deleting those sidecars and forcing rebuilds.
+prints the first snapshot-search cost with persisted HNSW sidecars present
+versus after deleting those sidecars and forcing source-segment rebuilds.
 
 ## Benchmark
 
