@@ -75,7 +75,7 @@ postcard = { version = "1.0", optional = true, features = [
   "use-std",
 ] }
 durability = { version = "0.6.1", optional = true }
-segstore = { version = "0.4", optional = true }
+segstore = { version = "0.4.1", optional = true }
 
 
 # RNG backend for wasm32 (rand -> getrandom needs a JS backend on wasm).

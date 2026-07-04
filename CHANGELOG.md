@@ -11,6 +11,9 @@ series is unstable: minor bumps may break the public API.
 
 - Added an `updatable_store` example covering add, checkpoint, delete, reopen,
   and search through the optional `store` feature.
+- Added `store::SnapshotIndex`, a read-only checkpoint view that opens the
+  segstore manifest and queries persisted HNSW sidecars before falling back to
+  one source-vector segment when a sidecar is missing or stale.
 
 ### Changed
 
@@ -22,6 +25,8 @@ series is unstable: minor bumps may break the public API.
   entries when compaction/reclaim changes the segment set.
 - Store writer searches now build the temporary writer-buffer HNSW from the
   buffer slice instead of cloning buffered vectors first.
+- The `store` feature now requires `segstore = "0.4.1"` for manifest-only
+  snapshot reads.
 
 ### Fixed
 

@@ -158,12 +158,13 @@ The `store` feature adds `store::UpdatableIndex`, an updatable, durable
 *multi-segment* ANN index backed by [`segstore`](https://crates.io/crates/segstore):
 incremental add/delete, a write-ahead log, checkpoint, compaction, and crash
 recovery. Each segment is a cached HNSW and can be persisted as a sidecar, so a
-restart loads unchanged segment graphs instead of rebuilding them. Segments are
-searched and merged; this is the deliberate alternative to a single evolving
-graph, and like any HNSW the merged result is approximate. The source vectors are
-still loaded by the current `segstore` open path. Fully out-of-core ANN search is
-the DiskANN/page-layout track, not this wrapper. Opt-in; the default build does
-not depend on segstore. See
+restart loads unchanged segment graphs instead of rebuilding them. For read-only
+serving, `store::SnapshotIndex` opens the checkpoint manifest and queries
+sidecars first, decoding a source-vector segment only when its sidecar is
+missing or must be rebuilt. Segments are searched and merged; this is the
+deliberate alternative to a single evolving graph, and like any HNSW the merged
+result is approximate. Fully out-of-core ANN search is the DiskANN/page-layout
+track, not this wrapper. Opt-in; the default build does not depend on segstore. See
 [`examples/updatable_store.rs`](examples/updatable_store.rs) for add, delete,
 checkpoint, reopen, and search through this path.
 
