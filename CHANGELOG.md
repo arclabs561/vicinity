@@ -7,6 +7,11 @@ series is unstable: minor bumps may break the public API.
 
 ## [Unreleased]
 
+### Added
+
+- Added an `updatable_store` example covering add, checkpoint, delete, reopen,
+  and search through the optional `store` feature.
+
 ### Changed
 
 - `examples/dual_branch_demo.rs` now reports standard-HNSW recall against

@@ -270,6 +270,11 @@ name = "glove_all_algos"
 path = "examples/glove_all_algos.rs"
 required-features = ["hnsw"]
 
+[[example]]
+name = "updatable_store"
+path = "examples/updatable_store.rs"
+required-features = ["store"]
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
