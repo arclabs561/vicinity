@@ -259,8 +259,8 @@ impl UpdatableIndex {
             }
         }
         // The small unflushed buffer is built per query.
-        let buffered = self.inner.buffer().to_vec();
-        if let Some(idx) = self.build_live_index(&buffered) {
+        let buffered = self.inner.buffer();
+        if let Some(idx) = self.build_live_index(buffered) {
             cand.extend(idx.search(&q, k, ef).unwrap_or_default());
         }
         // Lower cosine distance is nearer.

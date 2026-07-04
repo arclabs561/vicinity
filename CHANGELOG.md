@@ -15,6 +15,8 @@ series is unstable: minor bumps may break the public API.
 - `store::UpdatableIndex` now keys its in-memory per-segment HNSW cache by
   segstore's stable segment ids instead of `Arc` pointers, and prunes stale cache
   entries when compaction/reclaim changes the segment set.
+- Store writer searches now build the temporary writer-buffer HNSW from the
+  buffer slice instead of cloning buffered vectors first.
 
 ### Fixed
 
