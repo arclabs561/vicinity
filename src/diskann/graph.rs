@@ -179,6 +179,30 @@ pub struct DiskANNSearcher {
     vec_buf: Vec<f32>,
 }
 
+/// Per-query I/O diagnostics from [`DiskANNSearcher`].
+///
+/// These are logical bytes requested by the current file-backed implementation,
+/// not operating-system page-cache misses. They are intended for comparing
+/// graph layout, vector layout, and cache changes under the same workload.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DiskANNSearchDiagnostics {
+    /// Search width used after applying the query `k` and index default.
+    pub ef_search: usize,
+    /// Unique internal nodes whose vector distance was evaluated.
+    pub visited_nodes: usize,
+    /// Number of graph adjacency records read from `graph.index`.
+    pub graph_reads: usize,
+    /// Number of vector records read from `vectors.bin`.
+    pub vector_reads: usize,
+    /// Logical bytes read from graph adjacency records.
+    pub graph_bytes: usize,
+    /// Logical bytes read from vector records.
+    pub vector_bytes: usize,
+    /// Number of candidates retained before truncating to `k`.
+    pub retained_candidates: usize,
+}
+
 impl DiskANNSearcher {
     /// Load searcher from index directory.
     pub fn load(index_dir: &Path) -> Result<Self, RetrieveError> {
@@ -263,7 +287,29 @@ impl DiskANNSearcher {
         k: usize,
         ef_search: usize,
     ) -> Result<Vec<(u32, f32)>, RetrieveError> {
+        self.search_with_diagnostics(query, k, ef_search)
+            .map(|(results, _)| results)
+    }
+
+    /// Search and return logical disk-read diagnostics for the query.
+    pub fn search_with_diagnostics(
+        &mut self,
+        query: &[f32],
+        k: usize,
+        ef_search: usize,
+    ) -> Result<(Vec<(u32, f32)>, DiskANNSearchDiagnostics), RetrieveError> {
+        if query.len() != self.dimension {
+            return Err(RetrieveError::DimensionMismatch {
+                query_dim: query.len(),
+                doc_dim: self.dimension,
+            });
+        }
+
         let ef = ef_search.max(k).max(self.params.ef_search);
+        let mut diagnostics = DiskANNSearchDiagnostics {
+            ef_search: ef,
+            ..DiskANNSearchDiagnostics::default()
+        };
 
         // Use greedy search similar to in-memory, but fetching neighbors from disk
         // Note: Performance will be limited by random I/O here without caching/prefetching
@@ -275,6 +321,7 @@ impl DiskANNSearcher {
         // Fetch start node vector
         let start_dist = {
             let v = self.read_vector(self.start_node)?;
+            diagnostics.vector_reads += 1;
             crate::simd::l2_distance_squared(query, v)
         };
 
@@ -294,6 +341,8 @@ impl DiskANNSearcher {
             // Fetch neighbors from disk
             // TODO: Cache hot nodes (top levels of Vamana) in RAM
             let neighbors = self.graph_reader.get_neighbors(current.id)?;
+            diagnostics.graph_reads += 1;
+            diagnostics.graph_bytes += 4 + neighbors.len() * std::mem::size_of::<u32>();
 
             for neighbor in neighbors {
                 if visited.contains(&neighbor) {
@@ -304,6 +353,7 @@ impl DiskANNSearcher {
                 // Fetch neighbor vector from disk (zero-alloc via reusable buffer)
                 let dist = {
                     let v = self.read_vector(neighbor)?;
+                    diagnostics.vector_reads += 1;
                     crate::simd::l2_distance_squared(query, v)
                 };
 
@@ -317,14 +367,21 @@ impl DiskANNSearcher {
             }
         }
 
-        Ok(retset
+        diagnostics.visited_nodes = visited.len();
+        diagnostics.retained_candidates = retset.len();
+        diagnostics.vector_bytes =
+            diagnostics.vector_reads * self.dimension * std::mem::size_of::<f32>();
+
+        let results = retset
             .into_iter()
             .take(k)
             .filter_map(|c| {
                 let doc_id = self.doc_ids.get(c.id as usize).copied()?;
                 Some((doc_id, c.dist))
             })
-            .collect())
+            .collect();
+
+        Ok((results, diagnostics))
     }
 
     /// Read a vector from disk into the reusable buffer, returning a slice.

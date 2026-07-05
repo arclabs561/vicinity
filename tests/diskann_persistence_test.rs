@@ -108,11 +108,39 @@ fn test_diskann_save_load_roundtrip() {
     let queries = generate_vectors(10, d, 123);
     let mut total_recall = 0.0;
 
-    for query in &queries {
+    for (query_idx, query) in queries.iter().enumerate() {
         let ground_truth = brute_force_knn(&vectors, query, k);
-        let results = searcher
-            .search(query, k, params.ef_search)
+        let (results, diagnostics) = searcher
+            .search_with_diagnostics(query, k, params.ef_search)
             .expect("Search failed");
+        let plain_results = searcher
+            .search(query, k, params.ef_search)
+            .expect("plain search failed");
+
+        assert_eq!(
+            results, plain_results,
+            "diagnostic search must preserve result ordering"
+        );
+        assert!(
+            diagnostics.graph_reads > 0,
+            "query {query_idx} should read at least one graph record"
+        );
+        assert!(
+            diagnostics.vector_reads >= results.len(),
+            "query {query_idx} should read vectors for at least the returned hits"
+        );
+        assert_eq!(
+            diagnostics.vector_bytes,
+            diagnostics.vector_reads * d * std::mem::size_of::<f32>()
+        );
+        assert!(
+            diagnostics.graph_bytes >= diagnostics.graph_reads * std::mem::size_of::<u32>(),
+            "query {query_idx} graph bytes should include one degree per read"
+        );
+        assert_eq!(
+            diagnostics.visited_nodes, diagnostics.vector_reads,
+            "file-backed search reads one vector for each first visit"
+        );
 
         let recall = compute_recall(&results, &ground_truth, k);
         total_recall += recall;

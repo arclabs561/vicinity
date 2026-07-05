@@ -11,6 +11,9 @@ series is unstable: minor bumps may break the public API.
 
 - Added an `updatable_store` example covering add, checkpoint, delete, reopen,
   and search through the optional `store` feature.
+- Added `diskann::DiskANNSearcher::search_with_diagnostics`, which reports
+  per-query graph reads, vector reads, logical bytes read, and visited-node
+  counts for the file-backed search path.
 - Added a `store_reopen_diagnostics` example that prints first snapshot-search
   cost with persisted HNSW sidecars present versus after deleting sidecars and
   forcing source-segment rebuilds.

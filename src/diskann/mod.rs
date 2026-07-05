@@ -14,8 +14,9 @@
 //!
 //! # Status: Experimental
 //!
-//! Current implementation stores data in memory during construction.
-//! True disk-based operation is planned.
+//! Current construction stores data in memory. `DiskANNSearcher` can search the
+//! saved graph and vector files directly, and `search_with_diagnostics` reports
+//! logical graph and vector reads for page-layout work.
 //!
 //! # Quick Start
 //!
@@ -106,4 +107,5 @@ pub mod graph;
 
 pub use graph::DiskANNIndex;
 pub use graph::DiskANNParams;
+pub use graph::DiskANNSearchDiagnostics;
 pub use graph::DiskANNSearcher;

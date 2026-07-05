@@ -241,9 +241,11 @@ Algorithms tagged `experimental` are reachable from the public API but
 have not yet cleared the bar to be recommended defaults. Each has a
 specific gap that, once closed, would promote it:
 
-- **DiskANN**: file-based save/load works; mmap-backed search is not yet
-  wired (entire index loads into RAM on `load_from_file`). Promote when
-  mmap I/O lands and recall@10 stays competitive on a 1M-vector dataset.
+- **DiskANN**: file-based save/load and `DiskANNSearcher` work, and
+  `search_with_diagnostics` reports graph reads, vector reads, logical
+  bytes read, and visited-node counts. Promote when the file-backed path
+  has mmap/page-layout measurements and recall@10 stays competitive on a
+  1M-vector dataset.
 - **DEG**: in-house density-adaptive variant of HNSW. No published
   benchmark vs plain HNSW. Promote when a head-to-head shows a recall
   or QPS win on at least two ann-benchmarks datasets.
