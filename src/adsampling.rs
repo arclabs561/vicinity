@@ -846,18 +846,15 @@ mod tests {
         }
 
         let state = ADSamplingState::new_auto(&vectors, dim, ADSamplingParams::default());
-        // delta_d should be in the SIMD-friendly range, influenced by signal structure.
-        assert!(
-            state.params.delta_d >= 16 && state.params.delta_d <= 64,
-            "delta_d={} not in [16, 64]",
-            state.params.delta_d
-        );
-        // Should be a multiple of 16.
+        let signal_dims = estimate_signal_dimensions(&vectors, dim, n);
+
         assert_eq!(
-            state.params.delta_d % 16,
-            0,
-            "delta_d={} not aligned to 16",
-            state.params.delta_d
+            signal_dims, 30,
+            "spectral estimator should recover the planted signal dimensions"
+        );
+        assert_eq!(
+            state.params.delta_d, 32,
+            "auto tuning should round 30 signal dimensions to the nearest SIMD-friendly width"
         );
     }
 }
