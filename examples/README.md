@@ -112,6 +112,10 @@ cargo run --example ann_benchmark --release --features hnsw,ivf_pq,ivf_avq -- \
 cargo run --example ann_benchmark --release --features hnsw,fresh_graph -- \
   data/ann-benchmarks/glove-25-angular --algo fresh_graph_churn --json
 
+# IP-DiskANN-style in-place graph search and delete/insert churn
+cargo run --example ann_benchmark --release --features hnsw -- \
+  data/ann-benchmarks/glove-25-angular --algo inplace --algo inplace_churn --json
+
 # Classic tree baselines for comparison
 cargo run --example ann_benchmark --release --features kdtree,balltree,rptree,kmeans_tree -- \
   data/ann-benchmarks/glove-25-angular \

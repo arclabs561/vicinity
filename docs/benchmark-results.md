@@ -43,6 +43,11 @@ cargo run --example ann_benchmark --release --features kdtree,balltree,rptree,km
 # FreshGraph delete/insert churn, scored against a live active-set oracle.
 cargo run --example ann_benchmark --release --features hnsw,fresh_graph -- \
   data/ann-benchmarks/glove-25-angular --algo fresh_graph_churn --json --fresh
+
+# IP-DiskANN-style in-place graph search and delete/insert churn.
+cargo run --example ann_benchmark --release --features hnsw -- \
+  data/ann-benchmarks/glove-25-angular \
+  --algo inplace --algo inplace_churn --json --fresh
 ```
 
 These commands intentionally separate low-recall, high-throughput operating

@@ -336,6 +336,19 @@ fn required_result_checks(
         "emg" | "nsg" | "fresh_graph" | "filtered_graph" => {
             ef_checks(algo, cfg, |_| vec!["\"max_degree\":32".to_string()])
         }
+        "inplace" => cfg
+            .ef_search_values
+            .iter()
+            .map(|beam_width| {
+                result_check(
+                    "inplace",
+                    &format!(
+                        "{{\"max_degree\":32,\"build_beam_width\":{},\"beam_width\":{}}}",
+                        cfg.ef_construction, beam_width
+                    ),
+                )
+            })
+            .collect(),
         "pipnn" => ef_checks("pipnn", cfg, |_| {
             vec![
                 "\"max_degree\":32".to_string(),
@@ -372,6 +385,28 @@ fn required_result_checks(
                     format!("\"queries\":{}", queries),
                 ]
             })
+        }
+        "inplace_churn" => {
+            let base_size = cfg
+                .churn_base_size
+                .min(train_len.saturating_sub(cfg.churn_cycles.max(1)));
+            let cycles = cfg.churn_cycles.min(train_len.saturating_sub(base_size));
+            let queries = cfg.churn_queries.min(test_len);
+            if base_size == 0 || cycles == 0 || queries == 0 {
+                return Vec::new();
+            }
+            cfg.ef_search_values
+                .iter()
+                .map(|beam_width| {
+                    result_check(
+                        "inplace_churn",
+                        &format!(
+                            "{{\"max_degree\":32,\"build_beam_width\":{},\"beam_width\":{},\"base_size\":{},\"cycles\":{},\"queries\":{}}}",
+                            cfg.ef_construction, beam_width, base_size, cycles, queries
+                        ),
+                    )
+                })
+                .collect()
         }
         "adsampling" => ef_checks("adsampling", cfg, |_| {
             vec![
@@ -819,7 +854,6 @@ pub(crate) fn brute_force_search(
     dists
 }
 
-#[cfg(feature = "fresh_graph")]
 pub(crate) fn brute_force_search_ids(
     train: &[Vec<f32>],
     active_ids: &[u32],
@@ -833,6 +867,18 @@ pub(crate) fn brute_force_search_ids(
         .collect();
     dists.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
     dists.into_iter().take(k).map(|(id, _)| id as i32).collect()
+}
+
+pub(crate) fn brute_force_neighbors_for_ids(
+    train: &[Vec<f32>],
+    active_ids: &[u32],
+    test: &[Vec<f32>],
+    k: usize,
+    metric: vicinity::DistanceMetric,
+) -> Vec<Vec<i32>> {
+    test.iter()
+        .map(|query| brute_force_search_ids(train, active_ids, query, k, metric))
+        .collect()
 }
 
 pub(crate) fn print_header() {

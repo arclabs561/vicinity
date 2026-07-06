@@ -359,6 +359,16 @@ impl InPlaceIndex {
 
     /// Search for k nearest neighbors.
     pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, RetrieveError> {
+        self.search_with_beam(query, k, self.config.beam_width)
+    }
+
+    /// Search for k nearest neighbors using an explicit beam width.
+    pub fn search_with_beam(
+        &self,
+        query: &[f32],
+        k: usize,
+        beam_width: usize,
+    ) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if query.len() != self.dim {
             return Err(RetrieveError::DimensionMismatch {
                 query_dim: query.len(),
@@ -424,7 +434,7 @@ impl InPlaceIndex {
                                 }
                             }
 
-                            if candidates.len() < self.config.beam_width {
+                            if candidates.len() < beam_width {
                                 candidates.push(Candidate {
                                     id: neighbor,
                                     distance: -dist,
@@ -1392,6 +1402,24 @@ impl MappedInPlaceIndex {
     /// Get statistics.
     pub fn stats(&self) -> InPlaceStats {
         self.inner.stats()
+    }
+
+    /// Search with an explicit beam width, returning external IDs.
+    pub fn search_with_beam(
+        &self,
+        query: &[f32],
+        k: usize,
+        beam_width: usize,
+    ) -> Result<Vec<(u32, f32)>, RetrieveError> {
+        let results = self.inner.search_with_beam(query, k, beam_width)?;
+        Ok(results
+            .into_iter()
+            .filter_map(|(internal_id, dist)| {
+                self.reverse_map
+                    .get(&internal_id)
+                    .map(|&external_id| (external_id, dist))
+            })
+            .collect())
     }
 
     /// Save the mapped in-place index to a file.

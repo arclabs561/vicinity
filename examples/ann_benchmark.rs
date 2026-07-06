@@ -23,6 +23,9 @@
 //!
 //! cargo run --example ann_benchmark --release --features hnsw,fresh_graph -- \
 //!   data/ann-benchmarks/glove-25-angular --algo fresh_graph_churn --json
+//!
+//! cargo run --example ann_benchmark --release --features hnsw -- \
+//!   data/ann-benchmarks/glove-25-angular --algo inplace --algo inplace_churn --json
 //! ```
 
 #[path = "common/mod.rs"]
@@ -45,7 +48,16 @@ mod support;
 use std::path::Path;
 use std::time::Instant;
 
-#[cfg(feature = "fresh_graph")]
+#[cfg(any(
+    feature = "filtered_graph",
+    feature = "finger",
+    feature = "fresh_graph",
+    feature = "hnsw",
+    feature = "nsg",
+    feature = "sng"
+))]
+use support::brute_force_neighbors_for_ids;
+#[cfg(any(feature = "fresh_graph", feature = "hnsw"))]
 use support::brute_force_search_ids;
 #[cfg(feature = "parallel")]
 use support::evaluate_parallel;
@@ -69,6 +81,42 @@ use support::{dir_size_bytes, json_line_with_storage, ResultStorage};
 use quant::*;
 
 // ─── Algorithm runners ───────────────────────────────────────────────────────
+
+fn dataset_metric(cfg: &Config) -> vicinity::DistanceMetric {
+    if cfg.is_euclidean {
+        vicinity::DistanceMetric::L2
+    } else {
+        vicinity::DistanceMetric::Cosine
+    }
+}
+
+#[cfg(any(
+    feature = "filtered_graph",
+    feature = "finger",
+    feature = "fresh_graph",
+    feature = "hnsw",
+    feature = "nsg",
+    feature = "sng"
+))]
+fn capped_neighbors_if_needed(
+    cfg: &Config,
+    train: &[Vec<f32>],
+    test: &[Vec<f32>],
+    indexed_len: usize,
+) -> Option<Vec<Vec<i32>>> {
+    if indexed_len == train.len() {
+        return None;
+    }
+    let indexed = &train[..indexed_len];
+    let active_ids: Vec<u32> = (0..indexed_len as u32).collect();
+    Some(brute_force_neighbors_for_ids(
+        indexed,
+        &active_ids,
+        test,
+        10,
+        dataset_metric(cfg),
+    ))
+}
 
 #[cfg(feature = "hnsw")]
 fn run_hnsw(
@@ -291,12 +339,15 @@ fn run_nsg(
     use vicinity::nsg::{NsgIndex, NsgParams};
 
     let n = train.len().min(50_000);
-    if train.len() > 50_000 {
+    let capped = train.len() > n;
+    if capped {
         eprintln!(
             "NSG: capping at 50,000 vectors (got {}); O(n^2) construction",
             train.len()
         );
     }
+    let capped_neighbors = capped_neighbors_if_needed(cfg, train, test, n);
+    let eval_neighbors = capped_neighbors.as_deref().unwrap_or(neighbors);
     let train = &train[..n];
 
     if !cfg.json {
@@ -327,7 +378,7 @@ fn run_nsg(
         let result = evaluate(
             &|q, k| index.search_with_ef(q, k, ef).unwrap(),
             test,
-            neighbors,
+            eval_neighbors,
             10,
         );
         if cfg.json {
@@ -426,12 +477,15 @@ fn run_sng(
     use vicinity::sng::SNGParams;
 
     let n = train.len().min(50_000);
-    if train.len() > 50_000 {
+    let capped = train.len() > n;
+    if capped {
         eprintln!(
             "SNG: capping at 50,000 vectors (got {}); O(n^2) construction",
             train.len()
         );
     }
+    let capped_neighbors = capped_neighbors_if_needed(cfg, train, test, n);
+    let eval_neighbors = capped_neighbors.as_deref().unwrap_or(neighbors);
     let train = &train[..n];
 
     if !cfg.json {
@@ -458,7 +512,12 @@ fn run_sng(
         print_header();
     }
 
-    let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
+    let result = evaluate(
+        &|q, k| index.search(q, k).unwrap(),
+        test,
+        eval_neighbors,
+        10,
+    );
     if cfg.json {
         let params_json = "{}";
         emit_result(
@@ -673,6 +732,8 @@ fn run_finger(
             train.len()
         );
     }
+    let capped_neighbors = capped_neighbors_if_needed(cfg, train, test, n);
+    let eval_neighbors = capped_neighbors.as_deref().unwrap_or(neighbors);
     let train = &train[..n];
 
     let params = FingerParams {
@@ -708,7 +769,7 @@ fn run_finger(
         let result = evaluate(
             &|q, k| index.search_with_ef(q, k, ef).unwrap(),
             test,
-            neighbors,
+            eval_neighbors,
             10,
         );
         if cfg.json {
@@ -743,12 +804,15 @@ fn run_fresh_graph(
     use vicinity::fresh_graph::{FreshGraphIndex, FreshGraphParams};
 
     let n = train.len().min(50_000);
-    if train.len() > 50_000 {
+    let capped = train.len() > n;
+    if capped {
         eprintln!(
             "FreshGraph: capping at 50,000 vectors (got {}); construction is expensive",
             train.len()
         );
     }
+    let capped_neighbors = capped_neighbors_if_needed(cfg, train, test, n);
+    let eval_neighbors = capped_neighbors.as_deref().unwrap_or(neighbors);
     let train = &train[..n];
 
     let params = FreshGraphParams {
@@ -784,7 +848,7 @@ fn run_fresh_graph(
         let result = evaluate(
             &|q, k| index.search_with_ef(q, k, ef).unwrap(),
             test,
-            neighbors,
+            eval_neighbors,
             10,
         );
         if cfg.json {
@@ -918,6 +982,200 @@ fn run_fresh_graph_churn(cfg: &Config, train: &[Vec<f32>], test: &[Vec<f32>], di
     }
 }
 
+#[cfg(feature = "hnsw")]
+fn run_inplace(
+    cfg: &Config,
+    train: &[Vec<f32>],
+    test: &[Vec<f32>],
+    neighbors: &[Vec<i32>],
+    dim: usize,
+) {
+    use vicinity::hnsw::{InPlaceConfig, InPlaceIndex};
+
+    let n = train.len().min(50_000);
+    let capped = train.len() > n;
+    if capped {
+        eprintln!(
+            "InPlace: capping at 50,000 vectors (got {}); construction is expensive",
+            train.len()
+        );
+    }
+    let capped_neighbors = capped_neighbors_if_needed(cfg, train, test, n);
+    let eval_neighbors = capped_neighbors.as_deref().unwrap_or(neighbors);
+    let train = &train[..n];
+
+    let params = InPlaceConfig {
+        max_degree: 32,
+        beam_width: cfg.ef_construction,
+        alpha: 1.2,
+        max_in_neighbors: 64,
+        enable_back_edges: true,
+    };
+
+    if !cfg.json {
+        println!(
+            "--- InPlace (max_degree=32, build_beam_width={}, n={}) ---",
+            cfg.ef_construction, n
+        );
+    }
+
+    let build_start = Instant::now();
+    let mut index = InPlaceIndex::new(dim, params);
+    for vec in train {
+        index.insert(vec.clone()).unwrap();
+    }
+    let build_time_s = build_start.elapsed().as_secs_f64();
+    let rss = current_rss_kb();
+
+    if !cfg.json {
+        println!(
+            "Build: {:.2}s ({:.0} vectors/sec)\n",
+            build_time_s,
+            train.len() as f64 / build_time_s
+        );
+        print_header();
+    }
+
+    for &beam_width in &cfg.ef_search_values {
+        let result = evaluate(
+            &|q, k| index.search_with_beam(q, k, beam_width).unwrap(),
+            test,
+            eval_neighbors,
+            10,
+        );
+        if cfg.json {
+            let params_json = format!(
+                "{{\"max_degree\":32,\"build_beam_width\":{},\"beam_width\":{}}}",
+                cfg.ef_construction, beam_width
+            );
+            emit_result(
+                &cfg.results_path,
+                &json_line("inplace", &params_json, build_time_s, rss, &result),
+            );
+        } else {
+            print_row(&format!("beam={}", beam_width), &result);
+        }
+    }
+
+    if !cfg.json {
+        println!();
+    }
+}
+
+#[cfg(feature = "hnsw")]
+fn run_inplace_churn(cfg: &Config, train: &[Vec<f32>], test: &[Vec<f32>], dim: usize) {
+    use vicinity::hnsw::{InPlaceConfig, MappedInPlaceIndex};
+    use vicinity::streaming::IndexOps;
+
+    let base_n = cfg
+        .churn_base_size
+        .min(train.len().saturating_sub(cfg.churn_cycles.max(1)));
+    if base_n == 0 {
+        eprintln!("inplace_churn: dataset is too small for churn benchmark");
+        return;
+    }
+    let cycles = cfg.churn_cycles.min(train.len().saturating_sub(base_n));
+    let query_count = cfg.churn_queries.min(test.len());
+    if cycles == 0 || query_count == 0 {
+        eprintln!("inplace_churn: need at least one update cycle and one query");
+        return;
+    }
+
+    let params = InPlaceConfig {
+        max_degree: 32,
+        beam_width: cfg.ef_construction,
+        alpha: 1.2,
+        max_in_neighbors: 64,
+        enable_back_edges: true,
+    };
+
+    if !cfg.json {
+        println!(
+            "--- InPlace churn (base={}, cycles={}, queries={}, build_beam_width={}) ---",
+            base_n, cycles, query_count, cfg.ef_construction
+        );
+    }
+
+    let build_start = Instant::now();
+    let mut index = MappedInPlaceIndex::new(dim, params);
+    for (i, vec) in train.iter().take(base_n).enumerate() {
+        index.insert(i as u32, vec.clone()).unwrap();
+    }
+    let build_time_s = build_start.elapsed().as_secs_f64();
+
+    let mut active: Vec<u32> = (0..base_n as u32).collect();
+    let mut rng_state = 0x9E37_79B9_7F4A_7C15_u64;
+    let update_start = Instant::now();
+    for offset in 0..cycles {
+        let new_id = (base_n + offset) as u32;
+        rng_state = rng_state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1);
+        let victim_pos = ((rng_state >> 33) as usize) % active.len();
+        let victim = active.swap_remove(victim_pos);
+        index.delete(victim).unwrap();
+        index
+            .insert(new_id, train[new_id as usize].clone())
+            .unwrap();
+        active.push(new_id);
+    }
+    let update_time_s = update_start.elapsed().as_secs_f64();
+    let update_qps = cycles as f64 / update_time_s;
+    let stats = index.stats();
+    let free_slot_ratio =
+        stats.free_slots as f64 / (stats.active_nodes + stats.free_slots).max(1) as f64;
+    let rss = current_rss_kb();
+
+    let test_subset = &test[..query_count];
+    let live_neighbors: Vec<Vec<i32>> = test_subset
+        .iter()
+        .map(|query| brute_force_search_ids(train, &active, query, 10, dataset_metric(cfg)))
+        .collect();
+
+    if !cfg.json {
+        println!(
+            "Build: {:.2}s; Updates: {:.2}s ({:.0}/s); free slots: {:.1}%\n",
+            build_time_s,
+            update_time_s,
+            update_qps,
+            free_slot_ratio * 100.0
+        );
+        print_header();
+    }
+
+    for &beam_width in &cfg.ef_search_values {
+        let result = evaluate(
+            &|q, k| index.search_with_beam(q, k, beam_width).unwrap(),
+            test_subset,
+            &live_neighbors,
+            10,
+        );
+        if cfg.json {
+            let params_json = format!(
+                "{{\"max_degree\":32,\"build_beam_width\":{},\"beam_width\":{},\"base_size\":{},\"cycles\":{},\"queries\":{},\"update_time_s\":{:.4},\"update_qps\":{:.1},\"free_slot_ratio\":{:.4}}}",
+                cfg.ef_construction,
+                beam_width,
+                base_n,
+                cycles,
+                query_count,
+                update_time_s,
+                update_qps,
+                free_slot_ratio
+            );
+            emit_result(
+                &cfg.results_path,
+                &json_line("inplace_churn", &params_json, build_time_s, rss, &result),
+            );
+        } else {
+            print_row(&format!("beam={}", beam_width), &result);
+        }
+    }
+
+    if !cfg.json {
+        println!();
+    }
+}
+
 #[cfg(feature = "filtered_graph")]
 fn run_filtered_graph(
     cfg: &Config,
@@ -930,12 +1188,15 @@ fn run_filtered_graph(
     use vicinity::filtered_graph::{FilteredGraphIndex, FilteredGraphParams};
 
     let n = train.len().min(50_000);
-    if train.len() > 50_000 {
+    let capped = train.len() > n;
+    if capped {
         eprintln!(
             "FilteredGraph: capping at 50,000 vectors (got {}); construction is expensive",
             train.len()
         );
     }
+    let capped_neighbors = capped_neighbors_if_needed(cfg, train, test, n);
+    let eval_neighbors = capped_neighbors.as_deref().unwrap_or(neighbors);
     let train = &train[..n];
 
     let params = FilteredGraphParams {
@@ -971,7 +1232,7 @@ fn run_filtered_graph(
         let result = evaluate(
             &|q, k| index.search_with_ef(q, k, ef).unwrap(),
             test,
-            neighbors,
+            eval_neighbors,
             10,
         );
         if cfg.json {
@@ -1780,6 +2041,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 eprintln!("FreshGraph churn not available (compile with --features fresh_graph)");
             }
 
+            #[cfg(feature = "hnsw")]
+            "inplace" => run_inplace(&cfg, &train, &test, &neighbors, dim),
+
+            #[cfg(not(feature = "hnsw"))]
+            "inplace" => {
+                eprintln!("InPlace not available (compile with --features hnsw)");
+            }
+
+            #[cfg(feature = "hnsw")]
+            "inplace_churn" => run_inplace_churn(&cfg, &train, &test, dim),
+
+            #[cfg(not(feature = "hnsw"))]
+            "inplace_churn" => {
+                eprintln!("InPlace churn not available (compile with --features hnsw)");
+            }
+
             #[cfg(feature = "filtered_graph")]
             "filtered_graph" => run_filtered_graph(&cfg, &train, &test, &neighbors, dim),
 
@@ -1922,7 +2199,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             other => {
                 eprintln!(
-                    "Unknown algorithm: {}. Options: hnsw, nsw, ivfpq, ivf_avq, emg, nsg, pipnn, sng, vamana, diskann, ivf_rabitq, symphony_qg, symphony_qg_vr, finger, fresh_graph, fresh_graph_churn, filtered_graph, rp_quant, sparse_mips, curator, range_filtered, binary_index, sq4, sq4u, sq8u, adsampling, lsh, hnsw_prt, kdtree, balltree, rptree, rp_forest, kmeans_tree, brute",
+                    "Unknown algorithm: {}. Options: hnsw, nsw, ivfpq, ivf_avq, emg, nsg, pipnn, sng, vamana, diskann, ivf_rabitq, symphony_qg, symphony_qg_vr, finger, fresh_graph, fresh_graph_churn, inplace, inplace_churn, filtered_graph, rp_quant, sparse_mips, curator, range_filtered, binary_index, sq4, sq4u, sq8u, adsampling, lsh, hnsw_prt, kdtree, balltree, rptree, rp_forest, kmeans_tree, brute",
                     other
                 );
             }
