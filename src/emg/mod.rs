@@ -64,11 +64,16 @@
 
 use crate::distance::cosine_distance_normalized;
 use crate::RetrieveError;
+use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 use std::collections::BinaryHeap;
+use std::path::Path;
+
+const EMG_FORMAT_VERSION: u32 = 1;
+const EMG_NEIGHBORS_MAGIC: &[u8; 8] = b"EMGGRPH1";
 
 /// delta-EMG parameters.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct EmgParams {
     /// Maximum out-degree per node.
     pub max_degree: usize,
@@ -126,6 +131,15 @@ pub struct EmgIndex {
     quant_mins: Vec<f32>,
     /// Per-dimension scale factors for dequantization.
     quant_scales: Vec<f32>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct EmgSnapshot {
+    version: u32,
+    dimension: usize,
+    num_vectors: usize,
+    params: EmgParams,
+    medoid: u32,
 }
 
 impl EmgIndex {
@@ -207,6 +221,87 @@ impl EmgIndex {
 
         self.built = true;
         Ok(())
+    }
+
+    /// Save a built delta-EMG index to a directory.
+    ///
+    /// The saved format stores the built in-memory graph. Loading restores the
+    /// graph directly and rebuilds deterministic scalar quantization payloads.
+    pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<(), RetrieveError> {
+        if !self.built {
+            return Err(RetrieveError::InvalidParameter(
+                "cannot save unbuilt EMG index".into(),
+            ));
+        }
+        let output_dir = output_dir.as_ref();
+        std::fs::create_dir_all(output_dir)?;
+        let snapshot = EmgSnapshot {
+            version: EMG_FORMAT_VERSION,
+            dimension: self.dimension,
+            num_vectors: self.num_vectors,
+            params: self.params.clone(),
+            medoid: self.medoid,
+        };
+        crate::graph_snapshot::write_json_atomic(&output_dir.join("manifest.json"), &snapshot)?;
+        crate::graph_snapshot::write_f32_atomic(&output_dir.join("vectors.bin"), &self.vectors)?;
+        crate::graph_snapshot::write_u32_atomic(&output_dir.join("doc_ids.bin"), &self.doc_ids)?;
+        crate::graph_snapshot::write_neighbors_atomic(
+            &output_dir.join("neighbors.bin"),
+            EMG_NEIGHBORS_MAGIC,
+            &self.neighbors,
+        )?;
+        Ok(())
+    }
+
+    /// Load a delta-EMG index saved by [`Self::save_to_dir`].
+    pub fn load_from_dir(input_dir: impl AsRef<Path>) -> Result<Self, RetrieveError> {
+        let input_dir = input_dir.as_ref();
+        let snapshot: EmgSnapshot =
+            crate::graph_snapshot::read_json(&input_dir.join("manifest.json"))?;
+        if snapshot.version != EMG_FORMAT_VERSION {
+            return Err(RetrieveError::FormatError(format!(
+                "unsupported EMG format version {}",
+                snapshot.version
+            )));
+        }
+        let vectors = crate::graph_snapshot::read_f32_exact(
+            &input_dir.join("vectors.bin"),
+            snapshot.num_vectors * snapshot.dimension,
+        )?;
+        let doc_ids = crate::graph_snapshot::read_u32_exact(
+            &input_dir.join("doc_ids.bin"),
+            snapshot.num_vectors,
+        )?;
+        let neighbors = crate::graph_snapshot::read_neighbors(
+            &input_dir.join("neighbors.bin"),
+            EMG_NEIGHBORS_MAGIC,
+            snapshot.num_vectors,
+        )?;
+        crate::graph_snapshot::validate_graph_shape(
+            "EMG",
+            snapshot.dimension,
+            snapshot.num_vectors,
+            &vectors,
+            &doc_ids,
+            &neighbors,
+            Some(snapshot.medoid),
+        )?;
+
+        let mut index = Self {
+            dimension: snapshot.dimension,
+            params: snapshot.params,
+            built: true,
+            vectors,
+            num_vectors: snapshot.num_vectors,
+            doc_ids,
+            neighbors,
+            medoid: snapshot.medoid,
+            quantized_vectors: Vec::new(),
+            quant_mins: Vec::new(),
+            quant_scales: Vec::new(),
+        };
+        index.quantize_vectors();
+        Ok(index)
     }
 
     /// Search for k nearest neighbors.
@@ -864,6 +959,50 @@ mod tests {
             recall > 0.6,
             "self-search recall too low: {recall:.2} ({hits}/{n})"
         );
+    }
+
+    #[test]
+    fn save_load_roundtrip_preserves_exact_and_quantized_search() {
+        let dim = 16;
+        let n = 80;
+        let data = make_vectors(n, dim, 7);
+        let mut index = EmgIndex::new(
+            dim,
+            EmgParams {
+                max_degree: 16,
+                candidate_size: 40,
+                scale_t: 20,
+                iterations: 2,
+                alpha: 1.5,
+                ef_search: 50,
+            },
+        )
+        .unwrap();
+
+        for i in 0..n {
+            let start = i * dim;
+            index
+                .add_slice(20_000 + i as u32, &data[start..start + dim])
+                .unwrap();
+        }
+        index.build().unwrap();
+        let query = &data[0..dim];
+        let exact_before = index.search_with_ef(query, 5, 50).unwrap();
+        let quantized_before = index.search_quantized(query, 5, 4).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        index.save_to_dir(dir.path()).unwrap();
+        let loaded = EmgIndex::load_from_dir(dir.path()).unwrap();
+
+        assert_eq!(loaded.search_with_ef(query, 5, 50).unwrap(), exact_before);
+        assert_eq!(
+            loaded.search_quantized(query, 5, 4).unwrap(),
+            quantized_before
+        );
+        assert_eq!(loaded.len(), index.len());
+        assert_eq!(loaded.quantized_vectors, index.quantized_vectors);
+        assert_eq!(loaded.quant_mins, index.quant_mins);
+        assert_eq!(loaded.quant_scales, index.quant_scales);
     }
 
     #[test]
