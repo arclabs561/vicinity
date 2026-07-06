@@ -437,6 +437,33 @@ def test_ann_benchmarks_ivfpq_zero_rerank_pool_disables_rerank() -> None:
     assert algo._rerank_pool is None
 
 
+def test_ivfpq_default_codebooks_match_runner_default() -> None:
+    index = IVFPQIndex(dim=25)
+
+    assert index.num_codebooks == 5
+
+
+def test_ann_benchmarks_ivfpq_default_codebooks_match_runner_default() -> None:
+    from pyvicinity.ann_benchmarks import VicinityIVFPQ
+
+    rng = np.random.default_rng(1)
+    x = rng.standard_normal((64, 25), dtype=np.float32)
+    algo = VicinityIVFPQ(
+        "cosine",
+        {
+            "num_clusters": 8,
+            "codebook_size": 8,
+            "training_sample_size": 64,
+            "kmeans_max_iter": 3,
+        },
+    )
+
+    algo.fit(x)
+
+    assert algo._index is not None
+    assert algo._index.num_codebooks == 5
+
+
 def _build_ivfpq(
     n: int = 128,
     dim: int = 8,
