@@ -16,10 +16,33 @@ Design based on research into what makes ANN search difficult:
 Run: uvx --with numpy python scripts/generate_sample_data.py
 """
 
-import numpy as np
+import argparse
+import json
+import os
 import struct
 from pathlib import Path
-import os
+
+import numpy as np
+
+MANIFEST_VERSION = 1
+
+EXPECTED_OUTPUTS = {
+    "quick_train.bin": b"VEC1",
+    "quick_test.bin": b"VEC1",
+    "quick_neighbors.bin": b"NBR1",
+    "bench_train.bin": b"VEC1",
+    "bench_test.bin": b"VEC1",
+    "bench_neighbors.bin": b"NBR1",
+    "hard_train.bin": b"VEC1",
+    "hard_test.bin": b"VEC1",
+    "hard_neighbors.bin": b"NBR1",
+    "hard_train_topics.bin": b"LBL1",
+    "hard_test_drift.bin": b"VEC1",
+    "hard_neighbors_drift.bin": b"NBR1",
+    "hard_test_filter.bin": b"VEC1",
+    "hard_neighbors_filter.bin": b"NBR1",
+    "hard_test_filter_topics.bin": b"LBL1",
+}
 
 
 def generate_topic_mixture_unit_with_topics(
@@ -52,9 +75,14 @@ def generate_topic_mixture_unit_with_topics(
         allowed_topics = np.asarray(allowed_topics, dtype=np.int32)
         allowed_probs = probs[allowed_topics]
         allowed_probs = allowed_probs / allowed_probs.sum()
-        topic_ids = rng.choice(allowed_topics, size=n, p=allowed_probs, replace=True).astype(np.int32)
+        topic_ids = rng.choice(
+            allowed_topics, size=n, p=allowed_probs, replace=True
+        ).astype(np.int32)
 
-    latent = centroids[topic_ids] + rng.standard_normal((n, rank)).astype(np.float32) * topic_noise
+    latent = (
+        centroids[topic_ids]
+        + rng.standard_normal((n, rank)).astype(np.float32) * topic_noise
+    )
     x = latent @ Q.T
     x += rng.standard_normal((n, dim)).astype(np.float32) * global_noise
     x /= np.linalg.norm(x, axis=1, keepdims=True)
@@ -92,16 +120,17 @@ def generate_topic_mixture_unit(
     """A more realistic synthetic embedding distribution.
 
     Intuition:
-    - Real text embeddings tend to be *anisotropic* (variance concentrated in a low-rank subspace),
-      and have *topic structure* (mixture components), with a *long tail* of topic frequencies.
+    - Real text embeddings tend to be *anisotropic* (variance concentrated in
+      a low-rank subspace), and have *topic structure* (mixture components),
+      with a *long tail* of topic frequencies.
     - They also contain near-duplicates (reposted docs, boilerplate, templates).
 
     Construction:
     - Sample an orthonormal basis Q ∈ R^{dim×rank}.
     - Sample topic centroids in the rank-dimensional latent space.
     - Sample topic IDs from a Zipf-like distribution (long tail).
-    - Generate points around the chosen topic centroid, project through Q, add small global noise,
-      then L2-normalize for cosine search.
+    - Generate points around the chosen topic centroid, project through Q, add
+      small global noise, then L2-normalize for cosine search.
     """
     rng = np.random.default_rng(seed)
     rank = int(min(rank, dim))
@@ -118,7 +147,10 @@ def generate_topic_mixture_unit(
     probs = freqs / freqs.sum()
     topic_ids = rng.choice(n_topics, size=n, p=probs, replace=True)
 
-    latent = centroids[topic_ids] + rng.standard_normal((n, rank)).astype(np.float32) * topic_noise
+    latent = (
+        centroids[topic_ids]
+        + rng.standard_normal((n, rank)).astype(np.float32) * topic_noise
+    )
     x = latent @ Q.T  # (n, dim)
     x += rng.standard_normal((n, dim)).astype(np.float32) * global_noise
     x /= np.linalg.norm(x, axis=1, keepdims=True)
@@ -199,10 +231,12 @@ def save_labels(path: Path, labels: np.ndarray) -> None:
     """Save labels: LBL1 + n (u32) + labels (u32*n)."""
     labels_u32 = labels.astype(np.uint32, copy=False)
     n = labels_u32.shape[0]
-    with open(path, "wb") as f:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "wb") as f:
         f.write(b"LBL1")
         f.write(struct.pack("<I", n))
         f.write(labels_u32.tobytes())
+    tmp.replace(path)
     kb = path.stat().st_size / 1024
     print(f"    {path.name}: {n:,} labels = {kb:,.1f} KB")
 
@@ -234,6 +268,7 @@ def compute_ground_truth_filtered_by_label(
         topk_local = np.argsort(-sims)[:k]
         neighbors[i] = ids[topk_local].astype(np.int32)
     return neighbors
+
 
 def select_low_margin_queries(
     train: np.ndarray,
@@ -270,7 +305,11 @@ def select_low_margin_queries(
         # Pad (rare) with random remaining candidates.
         remaining = n_select - len(order)
         rest = np.setdiff1d(np.arange(len(candidates)), order)
-        pad = rng.choice(rest, size=remaining, replace=False) if len(rest) >= remaining else rng.choice(rest, size=remaining, replace=True)
+        pad = (
+            rng.choice(rest, size=remaining, replace=False)
+            if len(rest) >= remaining
+            else rng.choice(rest, size=remaining, replace=True)
+        )
         chosen = np.concatenate([order, pad])
 
     return candidates[chosen].astype(np.float32, copy=False)
@@ -350,37 +389,30 @@ def generate_low_margin_queries_streaming(
 
 
 def generate_easy_clustered(
-    n: int, 
-    dim: int, 
-    n_clusters: int, 
-    cluster_std: float = 0.15,
-    seed: int = 42
+    n: int, dim: int, n_clusters: int, cluster_std: float = 0.15, seed: int = 42
 ) -> np.ndarray:
     """Well-separated clusters. Easy for ANN algorithms."""
     rng = np.random.default_rng(seed)
-    
+
     # Spread centroids far apart on unit sphere
     centroids = rng.standard_normal((n_clusters, dim)).astype(np.float32)
     centroids /= np.linalg.norm(centroids, axis=1, keepdims=True)
-    
+
     vectors = np.empty((n, dim), dtype=np.float32)
     for i in range(n):
         cluster_idx = i % n_clusters
         noise = rng.standard_normal(dim).astype(np.float32) * cluster_std
         vec = centroids[cluster_idx] + noise
         vectors[i] = vec / np.linalg.norm(vec)
-    
+
     return vectors
 
 
 def generate_hard_low_contrast(
-    n: int,
-    dim: int,
-    n_clusters: int,
-    seed: int = 42
+    n: int, dim: int, n_clusters: int, seed: int = 42
 ) -> np.ndarray:
     """Generate data with low relative contrast (hard for ANN).
-    
+
     Strategy:
     - Many overlapping clusters (high between-cluster variance)
     - Large within-cluster spread (cluster_std = 0.4-0.5)
@@ -388,54 +420,52 @@ def generate_hard_low_contrast(
     - Non-uniform cluster sizes
     """
     rng = np.random.default_rng(seed)
-    
+
     # Centroids closer together (more overlap)
     centroids = rng.standard_normal((n_clusters, dim)).astype(np.float32)
     centroids /= np.linalg.norm(centroids, axis=1, keepdims=True)
     # Scale down to bring clusters closer
     centroids *= 0.7
-    
+
     # Non-uniform cluster sizes (power law-ish)
     cluster_sizes = rng.pareto(a=1.5, size=n_clusters) + 1
     cluster_sizes = (cluster_sizes / cluster_sizes.sum() * n).astype(int)
     cluster_sizes[-1] = n - cluster_sizes[:-1].sum()  # Ensure exact count
-    
+
     vectors = []
-    
+
     for cluster_idx, size in enumerate(cluster_sizes):
         # Larger within-cluster spread = more overlap = lower contrast
         cluster_std = 0.35 + rng.uniform(0, 0.15)  # 0.35-0.5
-        
+
         for _ in range(size):
             noise = rng.standard_normal(dim).astype(np.float32) * cluster_std
             vec = centroids[cluster_idx] + noise
             vec = vec / np.linalg.norm(vec)
             vectors.append(vec)
-    
+
     vectors = np.array(vectors, dtype=np.float32)
-    
+
     # Add hub points: 5% of points near global centroid
     # These become "hubs" - appearing as neighbors to many queries
     n_hubs = int(n * 0.05)
     global_centroid = vectors.mean(axis=0)
     global_centroid /= np.linalg.norm(global_centroid)
-    
+
     hub_indices = rng.choice(n, n_hubs, replace=False)
     for idx in hub_indices:
         noise = rng.standard_normal(dim).astype(np.float32) * 0.1
         vectors[idx] = global_centroid + noise
         vectors[idx] /= np.linalg.norm(vectors[idx])
-    
+
     return vectors
 
 
 def generate_adversarial_queries(
-    train: np.ndarray,
-    n_queries: int,
-    seed: int = 42
+    train: np.ndarray, n_queries: int, seed: int = 42
 ) -> np.ndarray:
     """Generate queries that are hard for ANN algorithms.
-    
+
     Strategy:
     - 30% between clusters (interpolate between distant points)
     - 30% at cluster boundaries (add large noise to random points)
@@ -445,24 +475,24 @@ def generate_adversarial_queries(
     rng = np.random.default_rng(seed)
     dim = train.shape[1]
     queries = []
-    
+
     n_between = int(n_queries * 0.3)
     n_boundary = int(n_queries * 0.3)
     n_sparse = int(n_queries * 0.2)
     n_normal = n_queries - n_between - n_boundary - n_sparse
-    
+
     # Between clusters: interpolate between distant points
     for _ in range(n_between):
         idx1, idx2 = rng.choice(len(train), 2, replace=False)
         # Find somewhat distant pair
         while np.dot(train[idx1], train[idx2]) > 0.5:
             idx1, idx2 = rng.choice(len(train), 2, replace=False)
-        
+
         alpha = rng.uniform(0.3, 0.7)
         query = alpha * train[idx1] + (1 - alpha) * train[idx2]
         query /= np.linalg.norm(query)
         queries.append(query)
-    
+
     # Boundary queries: large noise added to existing points
     for _ in range(n_boundary):
         idx = rng.choice(len(train))
@@ -470,11 +500,11 @@ def generate_adversarial_queries(
         query = train[idx] + noise
         query /= np.linalg.norm(query)
         queries.append(query)
-    
+
     # Sparse regions: vectors somewhat orthogonal to data
     data_mean = train.mean(axis=0)
     data_mean /= np.linalg.norm(data_mean)
-    
+
     for _ in range(n_sparse):
         # Random vector with component orthogonal to data mean
         rand_vec = rng.standard_normal(dim).astype(np.float32)
@@ -482,7 +512,7 @@ def generate_adversarial_queries(
         rand_vec -= np.dot(rand_vec, data_mean) * data_mean * 0.7
         rand_vec /= np.linalg.norm(rand_vec)
         queries.append(rand_vec)
-    
+
     # Normal queries: same distribution as train
     for _ in range(n_normal):
         idx = rng.choice(len(train))
@@ -490,13 +520,13 @@ def generate_adversarial_queries(
         query = train[idx] + noise
         query /= np.linalg.norm(query)
         queries.append(query)
-    
+
     return np.array(queries, dtype=np.float32)
 
 
 def compute_relative_contrast(train: np.ndarray, test: np.ndarray) -> float:
     """Compute average relative contrast: Cr = D_mean / D_min.
-    
+
     Lower values indicate harder search problems.
     - Easy datasets: Cr > 1.2
     - Medium datasets: 1.05 < Cr < 1.2
@@ -505,10 +535,10 @@ def compute_relative_contrast(train: np.ndarray, test: np.ndarray) -> float:
     # Use cosine distance = 1 - dot_product for normalized vectors
     similarities = test @ train.T
     distances = 1 - similarities
-    
+
     d_min = distances.min(axis=1)
     d_mean = distances.mean(axis=1)
-    
+
     # Avoid division by zero
     cr = np.where(d_min > 0, d_mean / d_min, np.inf)
     return float(cr.mean())
@@ -521,13 +551,138 @@ def compute_ground_truth(train: np.ndarray, test: np.ndarray, k: int) -> np.ndar
     return neighbors.astype(np.int32)
 
 
+def valid_vec_or_neighbors(path: Path, magic: bytes) -> bool:
+    """Return true when a VEC1/NBR1 output has a valid header and byte length."""
+    if not path.exists():
+        return False
+    with path.open("rb") as f:
+        header = f.read(12)
+    if len(header) != 12 or header[:4] != magic:
+        return False
+    rows, width = struct.unpack("<II", header[4:])
+    return path.stat().st_size == 12 + rows * width * 4
+
+
+def valid_labels(path: Path) -> bool:
+    """Return true when an LBL1 label output has a valid header and byte length."""
+    if not path.exists():
+        return False
+    with path.open("rb") as f:
+        header = f.read(8)
+    if len(header) != 8 or header[:4] != b"LBL1":
+        return False
+    (rows,) = struct.unpack("<I", header[4:])
+    return path.stat().st_size == 8 + rows * 4
+
+
+def valid_output(path: Path, magic: bytes) -> bool:
+    if magic == b"LBL1":
+        return valid_labels(path)
+    return valid_vec_or_neighbors(path, magic)
+
+
+def all_expected_outputs_exist(data_dir: Path) -> bool:
+    return all(
+        valid_output(data_dir / filename, magic)
+        for filename, magic in EXPECTED_OUTPUTS.items()
+    )
+
+
+def manifest_path(data_dir: Path) -> Path:
+    return data_dir / "sample_dataset.json"
+
+
+def generation_settings(hard_dup_frac: float) -> dict:
+    return {
+        "version": MANIFEST_VERSION,
+        "hard_dup_frac": hard_dup_frac,
+    }
+
+
+def manifest_matches(data_dir: Path, hard_dup_frac: float) -> bool:
+    path = manifest_path(data_dir)
+    if not path.exists():
+        return False
+    try:
+        manifest = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return False
+    return manifest.get("complete") is True and manifest.get(
+        "settings"
+    ) == generation_settings(hard_dup_frac)
+
+
+def write_manifest(data_dir: Path, manifest: dict) -> None:
+    path = manifest_path(data_dir)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    tmp.replace(path)
+
+
+def write_incomplete_manifest(data_dir: Path, hard_dup_frac: float) -> None:
+    write_manifest(
+        data_dir,
+        {
+            "complete": False,
+            "settings": generation_settings(hard_dup_frac),
+        },
+    )
+
+
+def write_complete_manifest(data_dir: Path, hard_dup_frac: float) -> None:
+    outputs = {
+        filename: {
+            "bytes": (data_dir / filename).stat().st_size,
+        }
+        for filename in EXPECTED_OUTPUTS
+    }
+    write_manifest(
+        data_dir,
+        {
+            "complete": True,
+            "settings": generation_settings(hard_dup_frac),
+            "outputs": outputs,
+        },
+    )
+
+
+def default_data_dir() -> Path:
+    return Path(__file__).parent.parent / "data" / "sample"
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Generate repeatable bundled sample datasets for vicinity.",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=default_data_dir(),
+        help="Output directory for generated sample files.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Regenerate files even when the output manifest is complete.",
+    )
+    parser.add_argument(
+        "--hard-dup-frac",
+        type=float,
+        default=float(os.getenv("VICINITY_HARD_DUP_FRAC", "0.10")),
+        help="Near-duplicate fraction for the hard dataset.",
+    )
+    return parser.parse_args()
+
+
 def save_vectors(path: Path, vectors: np.ndarray):
     """Save vectors: VEC1 (magic) + n (u32) + dim (u32) + data (f32 * n * dim)."""
     n, d = vectors.shape
-    with open(path, 'wb') as f:
-        f.write(b'VEC1')
-        f.write(struct.pack('<II', n, d))
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "wb") as f:
+        f.write(b"VEC1")
+        f.write(struct.pack("<II", n, d))
         f.write(vectors.tobytes())
+    tmp.replace(path)
     kb = path.stat().st_size / 1024
     print(f"    {path.name}: {n:,} x {d} = {kb:,.1f} KB")
 
@@ -535,63 +690,81 @@ def save_vectors(path: Path, vectors: np.ndarray):
 def save_neighbors(path: Path, neighbors: np.ndarray):
     """Save ground truth: NBR1 (magic) + n (u32) + k (u32) + data (i32 * n * k)."""
     n, k = neighbors.shape
-    with open(path, 'wb') as f:
-        f.write(b'NBR1')
-        f.write(struct.pack('<II', n, k))
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "wb") as f:
+        f.write(b"NBR1")
+        f.write(struct.pack("<II", n, k))
         f.write(neighbors.tobytes())
+    tmp.replace(path)
     kb = path.stat().st_size / 1024
     print(f"    {path.name}: {n:,} queries x {k} neighbors = {kb:,.1f} KB")
 
 
 def main():
-    data_dir = Path(__file__).parent.parent / "data" / "sample"
+    args = parse_args()
+    data_dir = args.output
+    hard_dup_frac = args.hard_dup_frac
     data_dir.mkdir(parents=True, exist_ok=True)
-    
+
+    if not args.force and all_expected_outputs_exist(data_dir):
+        if manifest_matches(data_dir, hard_dup_frac):
+            print(f"Sample data already generated at {data_dir}")
+            print("Use --force to regenerate.")
+            return
+        if not manifest_path(data_dir).exists():
+            write_complete_manifest(data_dir, hard_dup_frac)
+            print(f"Sample data already generated at {data_dir}")
+            print(f"Wrote missing manifest to {manifest_path(data_dir)}")
+            print("Use --force to regenerate.")
+            return
+
+    write_incomplete_manifest(data_dir, hard_dup_frac)
+
     print("Generating bundled datasets for vicinity")
     print("=" * 70)
-    
+
     # =========================================================================
     # Dataset 1: "quick" - For CI and fast iteration (easy)
     # =========================================================================
     print("\n1. quick (2K x 128) - CI, fast iteration")
     print("   Easy: well-separated clusters, standard queries")
-    
+
     train = generate_easy_clustered(2_000, 128, n_clusters=20, seed=42)
     test = generate_easy_clustered(200, 128, n_clusters=20, seed=100)
     gt = compute_ground_truth(train, test, k=100)
     cr = compute_relative_contrast(train, test)
     cr_quick = cr
-    
+
     save_vectors(data_dir / "quick_train.bin", train)
     save_vectors(data_dir / "quick_test.bin", test)
     save_neighbors(data_dir / "quick_neighbors.bin", gt)
     print(f"    Relative contrast: {cr:.3f} (>1.1 = easy)")
-    
+
     # =========================================================================
     # Dataset 2: "bench" - Realistic modern embeddings (medium)
     # =========================================================================
     print("\n2. bench (10K x 384) - Realistic embedding dimensions")
     print("   Medium: moderate overlap, mixed queries")
-    
-    train = generate_easy_clustered(10_000, 384, n_clusters=50, cluster_std=0.25, seed=42)
+
+    train = generate_easy_clustered(
+        10_000, 384, n_clusters=50, cluster_std=0.25, seed=42
+    )
     test = generate_adversarial_queries(train, 500, seed=200)
     gt = compute_ground_truth(train, test, k=100)
     cr = compute_relative_contrast(train, test)
     cr_bench = cr
-    
+
     save_vectors(data_dir / "bench_train.bin", train)
     save_vectors(data_dir / "bench_test.bin", test)
     save_neighbors(data_dir / "bench_neighbors.bin", gt)
     print(f"    Relative contrast: {cr:.3f} (1.05-1.1 = medium)")
-    
+
     # =========================================================================
     # Dataset 3: "hard" - Deliberately difficult (hard)
     # =========================================================================
     # Based on: He et al. "On the Difficulty of Nearest Neighbor Search" (ICML 2012)
     print("\n3. hard (10K x 768) - Stress test for ANN algorithms")
-    print("   Hard: realistic embeddings (topic mixture + anisotropy + duplicates) + hard tail queries")
-    
-    hard_dup_frac = float(os.getenv("VICINITY_HARD_DUP_FRAC", "0.10"))
+    print("   Hard: topic mixture + anisotropy + duplicates + hard tail queries")
 
     # Key hardness knob for cosine search:
     # - realistic anisotropy + confusable topics (mixture)
@@ -604,10 +777,10 @@ def main():
         10_000,
         768,
         n_topics=200,
-        rank=48,           # Lower rank = more anisotropy = harder (was 64)
-        topic_scale=0.7,   # Closer topics = more overlap (was 0.9)
+        rank=48,  # Lower rank = more anisotropy = harder (was 64)
+        topic_scale=0.7,  # Closer topics = more overlap (was 0.9)
         topic_noise=0.50,  # More within-topic spread (was 0.40)
-        global_noise=0.08, # Slightly more ambient noise (was 0.05)
+        global_noise=0.08,  # Slightly more ambient noise (was 0.05)
         seed=42,
     )
     train = inject_near_duplicates(train, frac=hard_dup_frac, dup_noise=0.008, seed=43)
@@ -631,10 +804,10 @@ def main():
         n_normal,
         768,
         n_topics=200,
-        rank=48,           # Match train
-        topic_scale=0.7,   # Match train
+        rank=48,  # Match train
+        topic_scale=0.7,  # Match train
         topic_noise=0.50,  # Match train
-        global_noise=0.08, # Match train
+        global_noise=0.08,  # Match train
         allowed_topics=eligible_topics,
         seed=300,
     )
@@ -645,10 +818,10 @@ def main():
         100_000,  # Larger pool for better hard-tail selection
         768,
         n_topics=200,
-        rank=48,           # Match train
-        topic_scale=0.7,   # Match train
+        rank=48,  # Match train
+        topic_scale=0.7,  # Match train
         topic_noise=0.50,  # Match train
-        global_noise=0.08, # Match train
+        global_noise=0.08,  # Match train
         allowed_topics=eligible_topics,
         seed=301,
     )
@@ -671,16 +844,18 @@ def main():
     chosen = hard_order[:n_hard_tail]
     test_hard = candidates[chosen]
     test_hard_topics = candidates_topics[chosen]
-    
+
     median_margin = float(np.median(margin[chosen]))
     print(f"    Hard-tail median margin: {median_margin:.4f}")
 
     test = np.vstack([test_normal, test_hard]).astype(np.float32, copy=False)
-    test_topics = np.concatenate([test_normal_topics, test_hard_topics]).astype(np.int32, copy=False)
+    test_topics = np.concatenate([test_normal_topics, test_hard_topics]).astype(
+        np.int32, copy=False
+    )
     gt = compute_ground_truth(train, test, k=100)
     cr = compute_relative_contrast(train, test)
     cr_hard = cr
-    
+
     save_vectors(data_dir / "hard_train.bin", train)
     save_vectors(data_dir / "hard_test.bin", test)
     save_neighbors(data_dir / "hard_neighbors.bin", gt)
@@ -695,9 +870,9 @@ def main():
     # The transformation should be STRONG enough to create real distribution shift.
     test_drift = apply_embedding_drift(
         test,
-        n_reflections=12,   # Strong transformation (was 8)
-        mean_shift=0.15,    # More aggressive shift (was 0.05)
-        noise=0.10,         # More noise (was 0.05)
+        n_reflections=12,  # Strong transformation (was 8)
+        mean_shift=0.15,  # More aggressive shift (was 0.05)
+        noise=0.10,  # More noise (was 0.05)
         seed=400,
     )
     gt_drift = compute_ground_truth(train, test_drift, k=100)
@@ -708,11 +883,13 @@ def main():
 
     # Scenario B: filtered queries (topic equality filter)
     # Ground truth computed within each topic.
-    gt_filter = compute_ground_truth_filtered_by_label(train, test, train_topics, test_topics, k=100)
+    gt_filter = compute_ground_truth_filtered_by_label(
+        train, test, train_topics, test_topics, k=100
+    )
     save_vectors(data_dir / "hard_test_filter.bin", test)
     save_neighbors(data_dir / "hard_neighbors_filter.bin", gt_filter)
     save_labels(data_dir / "hard_test_filter_topics.bin", test_topics)
-    
+
     # =========================================================================
     # Summary
     # =========================================================================
@@ -720,7 +897,7 @@ def main():
     total_size = sum(f.stat().st_size for f in data_dir.glob("*.bin"))
     print(f"Total: {total_size / 1024 / 1024:.1f} MB")
     print(f"Location: {data_dir}")
-    
+
     # Generate README
     readme_content = f"""# Bundled Sample Datasets
 
@@ -736,7 +913,8 @@ Pre-generated datasets for benchmarking without external downloads.
 
 ## What Makes "hard" Hard (and realistic)?
 
-This dataset aims to resemble *real embedding corpora* rather than being purely adversarial.
+This dataset aims to resemble *real embedding corpora* rather than being
+purely adversarial.
 
 1. **Anisotropy + topic mixture**
    - Vectors live mostly in a low-rank subspace (rank≈64 inside 768d).
@@ -755,16 +933,18 @@ This dataset aims to resemble *real embedding corpora* rather than being purely 
 
 ## Measuring Recall
 
-These datasets are synthetic and we occasionally retune them. Treat any “expected recall”
-numbers as stale unless they come from a fresh run.
+These datasets are synthetic and we occasionally retune them. Treat any
+“expected recall” numbers as stale unless they come from a fresh run.
 
 ```sh
 cargo run --example 03_quick_benchmark --release
 VICINITY_DATASET=hard cargo run --example 03_quick_benchmark --release
 
 # Scenarios
-VICINITY_DATASET=hard VICINITY_TEST_VARIANT=drift cargo run --example 03_quick_benchmark --release
-VICINITY_DATASET=hard VICINITY_TEST_VARIANT=filter cargo run --example 03_quick_benchmark --release
+VICINITY_DATASET=hard VICINITY_TEST_VARIANT=drift \
+  cargo run --example 03_quick_benchmark --release
+VICINITY_DATASET=hard VICINITY_TEST_VARIANT=filter \
+  cargo run --example 03_quick_benchmark --release
 ```
 
 ## Usage
@@ -802,7 +982,11 @@ uvx --with numpy python scripts/generate_sample_data.py
 - Jaiswal et al. "OOD-DiskANN" (arXiv 2211.12850)
 - Iff et al. "Benchmarking Filtered ANN on transformer embeddings" (arXiv 2507.21989)
 """
-    (data_dir / "README.md").write_text(readme_content)
+    readme_path = data_dir / "README.md"
+    readme_tmp = readme_path.with_suffix(readme_path.suffix + ".tmp")
+    readme_tmp.write_text(readme_content)
+    readme_tmp.replace(readme_path)
+    write_complete_manifest(data_dir, hard_dup_frac)
     print(f"\nGenerated {data_dir / 'README.md'}")
 
 
