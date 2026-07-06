@@ -35,6 +35,7 @@ use std::collections::{BinaryHeap, HashSet};
 
 /// Configuration for in-place updates.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct InPlaceConfig {
     /// Maximum out-degree per node
     pub max_degree: usize,
@@ -61,6 +62,8 @@ impl Default for InPlaceConfig {
 }
 
 /// Node state for in-place updates.
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 struct InPlaceNode {
     /// Vector data
     vector: Vec<f32>,
@@ -116,6 +119,35 @@ impl InPlaceIndex {
             entry_point: u32::MAX,
             active_count: 0,
         }
+    }
+
+    /// Save the in-place update graph to a file.
+    #[cfg(feature = "serde")]
+    pub fn save_to_file<P: AsRef<std::path::Path>>(&self, path: P) -> Result<(), RetrieveError> {
+        let file = std::fs::File::create(path.as_ref())?;
+        serde_json::to_writer_pretty(
+            std::io::BufWriter::new(file),
+            &InPlaceSnapshot {
+                magic: *b"VICIPL01",
+                version: 1,
+                config: self.config.clone(),
+                dim: self.dim,
+                nodes: self.nodes.clone(),
+                free_slots: self.free_slots.clone(),
+                entry_point: self.entry_point,
+                active_count: self.active_count,
+            },
+        )
+        .map_err(|e| RetrieveError::FormatError(e.to_string()))
+    }
+
+    /// Load an in-place update graph from a file snapshot.
+    #[cfg(feature = "serde")]
+    pub fn load_from_file<P: AsRef<std::path::Path>>(path: P) -> Result<Self, RetrieveError> {
+        let file = std::fs::File::open(path.as_ref())?;
+        let snapshot: InPlaceSnapshot = serde_json::from_reader(std::io::BufReader::new(file))
+            .map_err(|e| RetrieveError::FormatError(e.to_string()))?;
+        snapshot.into_index()
     }
 
     /// Insert a vector with in-place update.
@@ -838,6 +870,142 @@ impl InPlaceIndex {
     }
 }
 
+#[cfg(feature = "serde")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct InPlaceSnapshot {
+    magic: [u8; 8],
+    version: u32,
+    config: InPlaceConfig,
+    dim: usize,
+    nodes: Vec<Option<InPlaceNode>>,
+    free_slots: Vec<u32>,
+    entry_point: u32,
+    active_count: u32,
+}
+
+#[cfg(feature = "serde")]
+impl InPlaceSnapshot {
+    fn into_index(self) -> Result<InPlaceIndex, RetrieveError> {
+        if self.magic != *b"VICIPL01" {
+            return Err(RetrieveError::FormatError(
+                "invalid InPlaceIndex snapshot magic".into(),
+            ));
+        }
+        if self.version != 1 {
+            return Err(RetrieveError::FormatError(format!(
+                "unsupported InPlaceIndex snapshot version {}",
+                self.version
+            )));
+        }
+        validate_inplace_parts(
+            self.dim,
+            &self.nodes,
+            &self.free_slots,
+            self.entry_point,
+            self.active_count,
+        )?;
+
+        Ok(InPlaceIndex {
+            config: self.config,
+            dim: self.dim,
+            nodes: self.nodes,
+            free_slots: self.free_slots,
+            entry_point: self.entry_point,
+            active_count: self.active_count,
+        })
+    }
+}
+
+#[cfg(feature = "serde")]
+fn validate_inplace_parts(
+    dim: usize,
+    nodes: &[Option<InPlaceNode>],
+    free_slots: &[u32],
+    entry_point: u32,
+    active_count: u32,
+) -> Result<(), RetrieveError> {
+    if dim == 0 {
+        return Err(RetrieveError::FormatError(
+            "InPlaceIndex snapshot has zero dimension".into(),
+        ));
+    }
+    let mut free_seen = std::collections::HashSet::with_capacity(free_slots.len());
+    for &slot in free_slots {
+        if slot as usize >= nodes.len() {
+            return Err(RetrieveError::FormatError(format!(
+                "InPlaceIndex free slot {slot} exceeds node count {}",
+                nodes.len()
+            )));
+        }
+        if !free_seen.insert(slot) {
+            return Err(RetrieveError::FormatError(format!(
+                "InPlaceIndex duplicate free slot {slot}"
+            )));
+        }
+        if matches!(nodes.get(slot as usize), Some(Some(node)) if !node.is_deleted()) {
+            return Err(RetrieveError::FormatError(format!(
+                "InPlaceIndex live node {slot} also appears in free slots"
+            )));
+        }
+    }
+
+    let mut active = 0u32;
+    for (id, slot) in nodes.iter().enumerate() {
+        let Some(node) = slot else {
+            if !free_seen.contains(&(id as u32)) {
+                return Err(RetrieveError::FormatError(format!(
+                    "InPlaceIndex empty slot {id} missing from free slots"
+                )));
+            }
+            continue;
+        };
+        if node.vector.len() != dim {
+            return Err(RetrieveError::FormatError(format!(
+                "InPlaceIndex node {id} has dimension {}, expected {dim}",
+                node.vector.len()
+            )));
+        }
+        if node.is_deleted() {
+            continue;
+        }
+        active += 1;
+        for &neighbor in node.out_neighbors.iter().chain(node.in_neighbors.iter()) {
+            match nodes.get(neighbor as usize) {
+                Some(Some(neighbor_node)) if !neighbor_node.is_deleted() => {}
+                _ => {
+                    return Err(RetrieveError::FormatError(format!(
+                        "InPlaceIndex node {id} references inactive neighbor {neighbor}"
+                    )));
+                }
+            }
+        }
+    }
+
+    if active != active_count {
+        return Err(RetrieveError::FormatError(format!(
+            "InPlaceIndex active_count {active_count} does not match live nodes {active}"
+        )));
+    }
+    if active == 0 {
+        if entry_point != u32::MAX {
+            return Err(RetrieveError::FormatError(
+                "InPlaceIndex empty snapshot has a live entry point".into(),
+            ));
+        }
+    } else {
+        match nodes.get(entry_point as usize) {
+            Some(Some(node)) if !node.is_deleted() => {}
+            _ => {
+                return Err(RetrieveError::FormatError(format!(
+                    "InPlaceIndex entry point {entry_point} is not live"
+                )));
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Statistics for in-place index.
 #[derive(Clone, Debug)]
 pub struct InPlaceStats {
@@ -946,6 +1114,45 @@ mod tests {
         // Insert should reuse slot
         let id3 = index.insert(vec![5.0, 6.0]).unwrap();
         assert_eq!(id3, id1, "Should reuse deleted slot");
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn save_load_roundtrip_preserves_updates_and_free_slots() {
+        let mut index = InPlaceIndex::new(
+            4,
+            InPlaceConfig {
+                max_degree: 8,
+                beam_width: 16,
+                max_in_neighbors: 16,
+                ..Default::default()
+            },
+        );
+
+        for i in 0..20 {
+            index
+                .insert(vec![i as f32, (i % 3) as f32, 0.0, 0.0])
+                .unwrap();
+        }
+        index.delete(4).unwrap();
+        index.delete(9).unwrap();
+
+        let query = [8.0, 2.0, 0.0, 0.0];
+        let before = index.search(&query, 5).unwrap();
+        let stats_before = index.stats();
+        let file = tempfile::NamedTempFile::new().unwrap();
+        index.save_to_file(file.path()).unwrap();
+        let mut loaded = InPlaceIndex::load_from_file(file.path()).unwrap();
+
+        assert_eq!(loaded.search(&query, 5).unwrap(), before);
+        assert_eq!(loaded.stats().active_nodes, stats_before.active_nodes);
+        assert_eq!(loaded.stats().free_slots, stats_before.free_slots);
+
+        let reused = loaded.insert(vec![100.0, 100.0, 0.0, 0.0]).unwrap();
+        assert!(
+            reused == 4 || reused == 9,
+            "loaded index should reuse a persisted free slot, got {reused}"
+        );
     }
 
     #[test]
@@ -1186,6 +1393,114 @@ impl MappedInPlaceIndex {
     pub fn stats(&self) -> InPlaceStats {
         self.inner.stats()
     }
+
+    /// Save the mapped in-place index to a file.
+    #[cfg(feature = "serde")]
+    pub fn save_to_file<P: AsRef<std::path::Path>>(&self, path: P) -> Result<(), RetrieveError> {
+        let file = std::fs::File::create(path.as_ref())?;
+        serde_json::to_writer_pretty(
+            std::io::BufWriter::new(file),
+            &MappedInPlaceSnapshot {
+                magic: *b"VICIPM01",
+                version: 1,
+                inner: InPlaceSnapshot {
+                    magic: *b"VICIPL01",
+                    version: 1,
+                    config: self.inner.config.clone(),
+                    dim: self.inner.dim,
+                    nodes: self.inner.nodes.clone(),
+                    free_slots: self.inner.free_slots.clone(),
+                    entry_point: self.inner.entry_point,
+                    active_count: self.inner.active_count,
+                },
+                id_map: self.id_map.clone(),
+                reverse_map: self.reverse_map.clone(),
+            },
+        )
+        .map_err(|e| RetrieveError::FormatError(e.to_string()))
+    }
+
+    /// Load a mapped in-place index from a file snapshot.
+    #[cfg(feature = "serde")]
+    pub fn load_from_file<P: AsRef<std::path::Path>>(path: P) -> Result<Self, RetrieveError> {
+        let file = std::fs::File::open(path.as_ref())?;
+        let snapshot: MappedInPlaceSnapshot =
+            serde_json::from_reader(std::io::BufReader::new(file))
+                .map_err(|e| RetrieveError::FormatError(e.to_string()))?;
+        snapshot.into_index()
+    }
+}
+
+#[cfg(feature = "serde")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct MappedInPlaceSnapshot {
+    magic: [u8; 8],
+    version: u32,
+    inner: InPlaceSnapshot,
+    id_map: std::collections::HashMap<u32, u32>,
+    reverse_map: std::collections::HashMap<u32, u32>,
+}
+
+#[cfg(feature = "serde")]
+impl MappedInPlaceSnapshot {
+    fn into_index(self) -> Result<MappedInPlaceIndex, RetrieveError> {
+        if self.magic != *b"VICIPM01" {
+            return Err(RetrieveError::FormatError(
+                "invalid MappedInPlaceIndex snapshot magic".into(),
+            ));
+        }
+        if self.version != 1 {
+            return Err(RetrieveError::FormatError(format!(
+                "unsupported MappedInPlaceIndex snapshot version {}",
+                self.version
+            )));
+        }
+        validate_inplace_maps(&self.inner.nodes, &self.id_map, &self.reverse_map)?;
+        Ok(MappedInPlaceIndex {
+            inner: self.inner.into_index()?,
+            id_map: self.id_map,
+            reverse_map: self.reverse_map,
+        })
+    }
+}
+
+#[cfg(feature = "serde")]
+fn validate_inplace_maps(
+    nodes: &[Option<InPlaceNode>],
+    id_map: &std::collections::HashMap<u32, u32>,
+    reverse_map: &std::collections::HashMap<u32, u32>,
+) -> Result<(), RetrieveError> {
+    if id_map.len() != reverse_map.len() {
+        return Err(RetrieveError::FormatError(
+            "MappedInPlaceIndex id maps have different lengths".into(),
+        ));
+    }
+    for (&external_id, &internal_id) in id_map {
+        match reverse_map.get(&internal_id) {
+            Some(&mapped_external) if mapped_external == external_id => {}
+            _ => {
+                return Err(RetrieveError::FormatError(format!(
+                    "MappedInPlaceIndex missing reverse map for external id {external_id}"
+                )));
+            }
+        }
+        match nodes.get(internal_id as usize) {
+            Some(Some(node)) if !node.is_deleted() => {}
+            _ => {
+                return Err(RetrieveError::FormatError(format!(
+                    "MappedInPlaceIndex external id {external_id} maps to inactive node {internal_id}"
+                )));
+            }
+        }
+    }
+    for (&internal_id, &external_id) in reverse_map {
+        if id_map.get(&external_id) != Some(&internal_id) {
+            return Err(RetrieveError::FormatError(format!(
+                "MappedInPlaceIndex reverse id {internal_id} does not map back from {external_id}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 impl IndexOps for MappedInPlaceIndex {
@@ -1294,5 +1609,29 @@ mod streaming_tests {
         let results_after = index.search(&[1.0, 0.0, 0.0, 0.0], 2).unwrap();
         let ids_after: Vec<u32> = results_after.iter().map(|(id, _)| *id).collect();
         assert!(!ids_after.contains(&100));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn mapped_inplace_save_load_preserves_external_ids() {
+        let mut index = MappedInPlaceIndex::new(4, InPlaceConfig::default());
+
+        index.insert(100, vec![1.0, 0.0, 0.0, 0.0]).unwrap();
+        index.insert(200, vec![0.0, 1.0, 0.0, 0.0]).unwrap();
+        index.insert(300, vec![0.0, 0.0, 1.0, 0.0]).unwrap();
+        index.delete(200).unwrap();
+        index.insert(100, vec![2.0, 0.0, 0.0, 0.0]).unwrap();
+
+        let query = [2.0, 0.0, 0.0, 0.0];
+        let before = index.search(&query, 3).unwrap();
+        let file = tempfile::NamedTempFile::new().unwrap();
+        index.save_to_file(file.path()).unwrap();
+        let loaded = MappedInPlaceIndex::load_from_file(file.path()).unwrap();
+        let after = loaded.search(&query, 3).unwrap();
+
+        assert_eq!(after, before);
+        let ids: Vec<u32> = after.iter().map(|(id, _)| *id).collect();
+        assert!(ids.contains(&100));
+        assert!(!ids.contains(&200));
     }
 }
