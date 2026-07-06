@@ -100,7 +100,7 @@ families that accept dense `Vec<f32>` input:
 | --- | --- | --- |
 | Graph search | HNSW, NSW, Vamana, DiskANN, NSG, SNG, EMG, DualBranch, DEG, PiPNN, FINGER, FreshGraph | `ann_benchmark --algo ...`; HNSW, NSW, Vamana, NSG, SNG, EMG, PiPNN, FINGER, and FreshGraph support `--snapshot-load`; DEG caps dense runs at 10,000 indexed vectors because construction is O(n^2) |
 | IVF / quantized search | IVF-PQ, IVF-PQ rerank, IVF-AVQ, IVF-RaBitQ, RP-Quant, BinaryIndex, SQ4 | `ann_benchmark --algo ...`; IVF-PQ supports sampled training; these rows support `--snapshot-load` where the index is saved, reopened, and then searched from memory |
-| Quantized HNSW accelerators | SQ4U, SQ8U, SymphonyQG, SymphonyQG-VR, ADSampling, HNSW-PRT | `ann_benchmark --algo ...`; SQ4U and SQ8U support `--snapshot-load` |
+| Quantized HNSW accelerators | SQ4U, SQ8U, SymphonyQG, SymphonyQG-VR, ADSampling, HNSW-PRT | `ann_benchmark --algo ...`; SQ4U, SQ8U, SymphonyQG, and SymphonyQG-VR support `--snapshot-load` when their persistence features are compiled |
 | Filtering | FilteredGraph, RangeFiltered, Curator, ACORN | dense rows via `ann_benchmark` are labeled `filter_mode=none`; FilteredGraph, RangeFiltered, and Curator support `--snapshot-load`; selectivity curves live in `acorn_selectivity` |
 | Classical baselines | KD-tree, Ball tree, RP-tree, RP-forest, K-means tree, brute force | `ann_benchmark --algo ...`; tree rows can add `--snapshot-load` |
 | Streaming / updates | FreshGraph churn, in-place graph, in-place churn, LSM churn | `ann_benchmark --algo fresh_graph_churn --algo inplace --algo inplace_churn --algo lsm_churn` |

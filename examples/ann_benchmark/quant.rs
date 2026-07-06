@@ -18,7 +18,8 @@ use crate::support::nprobe_values;
     feature = "binary_index",
     feature = "lsh",
     feature = "sq4",
-    feature = "sq8"
+    feature = "sq8",
+    all(feature = "hnsw", feature = "ivf_rabitq", feature = "serde")
 ))]
 use crate::support::{dir_size_bytes, json_line_with_storage, ResultStorage};
 
@@ -30,7 +31,8 @@ use crate::support::{dir_size_bytes, json_line_with_storage, ResultStorage};
     feature = "binary_index",
     feature = "lsh",
     feature = "sq4",
-    feature = "sq8"
+    feature = "sq8",
+    all(feature = "hnsw", feature = "ivf_rabitq", feature = "serde")
 ))]
 fn snapshot_storage(load_time_s: f64, index_bytes: Option<u64>) -> ResultStorage<'static> {
     ResultStorage {
@@ -651,6 +653,19 @@ pub(crate) fn run_symphony_qg(
     index.build().unwrap();
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
+    #[cfg(feature = "serde")]
+    let snapshot_index = if cfg.snapshot_load {
+        let temp_dir =
+            tempfile::tempdir().expect("create temp dir for SymphonyQG snapshot benchmark");
+        index.save_to_dir(temp_dir.path()).unwrap();
+        let index_bytes = dir_size_bytes(temp_dir.path()).ok();
+        let load_start = Instant::now();
+        let loaded = SymphonyQGIndex::load_from_dir(temp_dir.path()).unwrap();
+        let load_time_s = load_start.elapsed().as_secs_f64();
+        Some((temp_dir, loaded, load_time_s, index_bytes))
+    } else {
+        None
+    };
 
     if !cfg.json {
         println!(
@@ -678,8 +693,38 @@ pub(crate) fn run_symphony_qg(
                 &cfg.results_path,
                 &json_line("symphony_qg", &params_json, build_time_s, rss, &result),
             );
+            #[cfg(feature = "serde")]
+            if let Some((_, loaded, load_time_s, index_bytes)) = &snapshot_index {
+                let loaded_result = evaluate(
+                    &|q, k| loaded.search_reranked(q, k, ef, rerank_pool).unwrap(),
+                    test,
+                    neighbors,
+                    10,
+                );
+                emit_result(
+                    &cfg.results_path,
+                    &json_line_with_storage(
+                        "symphony_qg",
+                        &params_json,
+                        build_time_s,
+                        rss,
+                        &loaded_result,
+                        &snapshot_storage(*load_time_s, *index_bytes),
+                    ),
+                );
+            }
         } else {
             print_row(&format!("ef={}", ef), &result);
+            #[cfg(feature = "serde")]
+            if let Some((_, loaded, _, _)) = &snapshot_index {
+                let loaded_result = evaluate(
+                    &|q, k| loaded.search_reranked(q, k, ef, rerank_pool).unwrap(),
+                    test,
+                    neighbors,
+                    10,
+                );
+                print_row(&format!("ef={} snapshot_loaded", ef), &loaded_result);
+            }
         }
     }
 
@@ -1173,6 +1218,19 @@ pub(crate) fn run_symphony_qg_vr(
     index.build().unwrap();
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
+    #[cfg(feature = "serde")]
+    let snapshot_index = if cfg.snapshot_load {
+        let temp_dir =
+            tempfile::tempdir().expect("create temp dir for SymphonyQG-VR snapshot benchmark");
+        index.save_to_dir(temp_dir.path()).unwrap();
+        let index_bytes = dir_size_bytes(temp_dir.path()).ok();
+        let load_start = Instant::now();
+        let loaded = SymphonyQGVRIndex::load_from_dir(temp_dir.path()).unwrap();
+        let load_time_s = load_start.elapsed().as_secs_f64();
+        Some((temp_dir, loaded, load_time_s, index_bytes))
+    } else {
+        None
+    };
 
     if !cfg.json {
         println!(
@@ -1200,8 +1258,38 @@ pub(crate) fn run_symphony_qg_vr(
                 &cfg.results_path,
                 &json_line("symphony_qg_vr", &params_json, build_time_s, rss, &result),
             );
+            #[cfg(feature = "serde")]
+            if let Some((_, loaded, load_time_s, index_bytes)) = &snapshot_index {
+                let loaded_result = evaluate(
+                    &|q, k| loaded.search_reranked(q, k, ef, rerank_pool).unwrap(),
+                    test,
+                    neighbors,
+                    10,
+                );
+                emit_result(
+                    &cfg.results_path,
+                    &json_line_with_storage(
+                        "symphony_qg_vr",
+                        &params_json,
+                        build_time_s,
+                        rss,
+                        &loaded_result,
+                        &snapshot_storage(*load_time_s, *index_bytes),
+                    ),
+                );
+            }
         } else {
             print_row(&format!("ef={}", ef), &result);
+            #[cfg(feature = "serde")]
+            if let Some((_, loaded, _, _)) = &snapshot_index {
+                let loaded_result = evaluate(
+                    &|q, k| loaded.search_reranked(q, k, ef, rerank_pool).unwrap(),
+                    test,
+                    neighbors,
+                    10,
+                );
+                print_row(&format!("ef={} snapshot_loaded", ef), &loaded_result);
+            }
         }
     }
 

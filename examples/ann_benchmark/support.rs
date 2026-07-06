@@ -271,6 +271,7 @@ fn ef_checks(
         .collect()
 }
 
+#[cfg(not(feature = "serde"))]
 fn hnsw_quantized_checks(algorithm: &str, cfg: &Config) -> Vec<ExpectedResult> {
     ef_checks(algorithm, cfg, |ef| {
         vec![
@@ -744,8 +745,32 @@ fn required_result_checks(
             })
         }
         "sq8u" | "sq4u" => hnsw_quantized_snapshot_checks(algo, cfg),
-        "symphony_qg_vr" => hnsw_quantized_checks(algo, cfg),
-        "symphony_qg" => ef_checks("symphony_qg", cfg, |_| Vec::new()),
+        "symphony_qg_vr" => {
+            #[cfg(feature = "serde")]
+            {
+                hnsw_quantized_snapshot_checks(algo, cfg)
+            }
+            #[cfg(not(feature = "serde"))]
+            {
+                hnsw_quantized_checks(algo, cfg)
+            }
+        }
+        "symphony_qg" => {
+            #[cfg(feature = "serde")]
+            {
+                ef_snapshot_checks("symphony_qg", cfg, |ef| {
+                    format!(
+                        "{{\"m\":16,\"ef_search\":{},\"rerank_pool\":{}}}",
+                        ef,
+                        (ef * 2).max(100)
+                    )
+                })
+            }
+            #[cfg(not(feature = "serde"))]
+            {
+                ef_checks("symphony_qg", cfg, |_| Vec::new())
+            }
+        }
         "sq4" => snapshot_check("sq4", "{\"rerank_factor\":10}", cfg),
         "curator" => snapshot_check(
             "curator",
@@ -1293,6 +1318,7 @@ pub(crate) fn current_rss_kb() -> Option<u64> {
     feature = "sng",
     feature = "sq4",
     feature = "sq8",
+    all(feature = "hnsw", feature = "ivf_rabitq", feature = "serde"),
     feature = "vamana"
 ))]
 pub(crate) fn dir_size_bytes(path: &Path) -> std::io::Result<u64> {
@@ -2012,10 +2038,15 @@ mod tests {
         let dual_params = "{\"m\":16,\"m_high_lid\":24,\"ef_construction\":200,\"ef_search\":50}";
         let deg_params =
             "{\"base_edges\":16,\"max_edges\":32,\"min_edges\":8,\"density_k\":10,\"alpha\":1.2,\"ef_search\":50,\"indexed_vectors\":2000,\"capped\":false}";
+        let symphony_params = "{\"m\":16,\"ef_search\":50,\"rerank_pool\":100}";
+        let symphony_vr_params =
+            "{\"m\":16,\"ef_construction\":200,\"ef_search\":50,\"rerank_pool\":100}";
         let missing_snapshot = CompletedResults {
             lines: vec![
                 single_line("dual_branch", dual_params),
                 single_line("deg", deg_params),
+                single_line("symphony_qg", symphony_params),
+                single_line("symphony_qg_vr", symphony_vr_params),
             ],
             ..CompletedResults::default()
         };
@@ -2025,6 +2056,10 @@ mod tests {
                 single_line_with_storage("dual_branch", dual_params, "snapshot_loaded"),
                 single_line("deg", deg_params),
                 single_line_with_storage("deg", deg_params, "snapshot_loaded"),
+                single_line("symphony_qg", symphony_params),
+                single_line_with_storage("symphony_qg", symphony_params, "snapshot_loaded"),
+                single_line("symphony_qg_vr", symphony_vr_params),
+                single_line_with_storage("symphony_qg_vr", symphony_vr_params, "snapshot_loaded"),
             ],
             ..CompletedResults::default()
         };
@@ -2045,6 +2080,22 @@ mod tests {
             2_000,
             200
         ));
+        assert!(!request_completed(
+            &missing_snapshot,
+            "symphony_qg",
+            &cfg,
+            25,
+            2_000,
+            200
+        ));
+        assert!(!request_completed(
+            &missing_snapshot,
+            "symphony_qg_vr",
+            &cfg,
+            25,
+            2_000,
+            200
+        ));
         assert!(request_completed(
             &completed,
             "dual_branch",
@@ -2054,6 +2105,22 @@ mod tests {
             200
         ));
         assert!(request_completed(&completed, "deg", &cfg, 25, 2_000, 200));
+        assert!(request_completed(
+            &completed,
+            "symphony_qg",
+            &cfg,
+            25,
+            2_000,
+            200
+        ));
+        assert!(request_completed(
+            &completed,
+            "symphony_qg_vr",
+            &cfg,
+            25,
+            2_000,
+            200
+        ));
     }
 
     #[cfg(not(feature = "serde"))]
@@ -2067,10 +2134,15 @@ mod tests {
         let dual_params = "{\"m\":16,\"m_high_lid\":24,\"ef_construction\":200,\"ef_search\":50}";
         let deg_params =
             "{\"base_edges\":16,\"max_edges\":32,\"min_edges\":8,\"density_k\":10,\"alpha\":1.2,\"ef_search\":50,\"indexed_vectors\":2000,\"capped\":false}";
+        let symphony_params = "{\"m\":16,\"ef_search\":50,\"rerank_pool\":100}";
+        let symphony_vr_params =
+            "{\"m\":16,\"ef_construction\":200,\"ef_search\":50,\"rerank_pool\":100}";
         let completed = CompletedResults {
             lines: vec![
                 single_line("dual_branch", dual_params),
                 single_line("deg", deg_params),
+                single_line("symphony_qg", symphony_params),
+                single_line("symphony_qg_vr", symphony_vr_params),
             ],
             ..CompletedResults::default()
         };
@@ -2084,6 +2156,22 @@ mod tests {
             200
         ));
         assert!(request_completed(&completed, "deg", &cfg, 25, 2_000, 200));
+        assert!(request_completed(
+            &completed,
+            "symphony_qg",
+            &cfg,
+            25,
+            2_000,
+            200
+        ));
+        assert!(request_completed(
+            &completed,
+            "symphony_qg_vr",
+            &cfg,
+            25,
+            2_000,
+            200
+        ));
     }
 
     #[test]
