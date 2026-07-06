@@ -363,6 +363,43 @@ def test_ann_benchmarks_unknown_metric_raises() -> None:
         VicinityHNSW("hamming", {})
 
 
+def test_ann_benchmarks_ivfpq_wrapper_smoke() -> None:
+    from pyvicinity.ann_benchmarks import VicinityIVFPQ
+
+    rng = np.random.default_rng(0)
+    x = rng.standard_normal((128, 8), dtype=np.float32)
+
+    algo = VicinityIVFPQ(
+        "cosine",
+        {
+            "num_clusters": 8,
+            "num_codebooks": 4,
+            "codebook_size": 8,
+            "training_sample_size": 64,
+            "kmeans_max_iter": 5,
+            "nprobe": 8,
+            "seed": 0,
+        },
+    )
+    algo.fit(x)
+    algo.set_query_arguments(8, rerank_pool=len(x))
+
+    ids = algo.query(x[0], 5)
+    assert ids.shape == (5,)
+    assert ids[0] == 0
+
+    algo.batch_query(x[:4], 3)
+    batch = algo.get_batch_results()
+    assert batch.shape == (4, 3)
+
+
+def test_ann_benchmarks_ivfpq_rejects_non_cosine_metric() -> None:
+    from pyvicinity.ann_benchmarks import VicinityIVFPQ
+
+    with pytest.raises(ValueError, match="angular/cosine"):
+        VicinityIVFPQ("euclidean", {})
+
+
 def _build_ivfpq(
     n: int = 128,
     dim: int = 8,
