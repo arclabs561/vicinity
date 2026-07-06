@@ -298,6 +298,10 @@ name = "hnsw"
 harness = false
 
 [[bench]]
+name = "hnsw_search"
+harness = false
+
+[[bench]]
 name = "distance"
 harness = false
 
