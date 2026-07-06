@@ -258,15 +258,15 @@ jobs:
       - name: Build extension (editable)
         run: maturin develop --release --features hnsw,python
       - name: Ruff
-        run: python -m ruff check pyvicinity tests/test_python.py examples/python scripts/generate_ann_smoke_data.py
+        run: python -m ruff check pyvicinity tests/test_python.py tests/test_download_ann_benchmarks.py examples/python scripts/generate_ann_smoke_data.py scripts/download_ann_benchmarks.py
       - name: Ruff format
-        run: python -m ruff format --check pyvicinity tests/test_python.py examples/python scripts/generate_ann_smoke_data.py
+        run: python -m ruff format --check pyvicinity tests/test_python.py tests/test_download_ann_benchmarks.py examples/python scripts/generate_ann_smoke_data.py scripts/download_ann_benchmarks.py
       - name: mypy --strict
         run: python -m mypy --strict pyvicinity
       - name: Stubtest (.pyi vs compiled module)
         run: python -m mypy.stubtest pyvicinity._core
       - name: Pytest
-        run: python -m pytest tests/test_python.py -v
+        run: python -m pytest tests/test_python.py tests/test_download_ann_benchmarks.py -v
       - name: Python harness example
         run: python examples/python/03_ann_benchmarks_harness.py
   # Documentation build

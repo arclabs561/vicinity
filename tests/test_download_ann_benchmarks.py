@@ -4,6 +4,7 @@ import importlib.util
 import json
 from pathlib import Path
 from types import ModuleType
+from typing import NoReturn
 
 import numpy as np
 import pytest
@@ -81,6 +82,35 @@ def test_adopt_existing_outputs_writes_manifest(tmp_path: Path) -> None:
         "test_shape": [2, 2],
         "neighbors_shape": [2, 2],
     }
+
+
+def test_matching_manifest_reuses_converted_outputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = load_script()
+    output_dir = tmp_path / "tiny-angular"
+    info = write_converted_fixture(script, output_dir)
+    hdf5_path = output_dir / "tiny-angular.hdf5"
+    script.write_complete_manifest_from_shapes(
+        output_dir,
+        "tiny-angular",
+        info,
+        hdf5_path,
+        script.existing_output_shapes(output_dir),
+    )
+
+    def fail_download(*_args: object, **_kwargs: object) -> NoReturn:
+        raise AssertionError("idempotent conversion should not download")
+
+    monkeypatch.setattr(script, "download_file", fail_download)
+
+    script.convert_dataset(
+        "tiny-angular",
+        info,
+        output_dir,
+        force=False,
+        redownload=False,
+    )
 
 
 def test_adopt_existing_outputs_checks_hdf5_size(tmp_path: Path) -> None:
