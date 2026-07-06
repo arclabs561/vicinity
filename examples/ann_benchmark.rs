@@ -88,9 +88,16 @@ use support::brute_force_search_ids;
 #[cfg(any(
     feature = "balltree",
     feature = "diskann",
+    feature = "emg",
+    feature = "finger",
     feature = "kdtree",
     feature = "kmeans_tree",
-    feature = "rptree"
+    feature = "nsg",
+    feature = "nsw",
+    feature = "pipnn",
+    feature = "rptree",
+    feature = "sng",
+    feature = "vamana"
 ))]
 use support::dir_size_bytes;
 #[cfg(feature = "parallel")]
@@ -102,10 +109,17 @@ use support::{
 #[cfg(any(
     feature = "balltree",
     feature = "diskann",
+    feature = "emg",
+    feature = "finger",
     feature = "hnsw",
     feature = "kdtree",
     feature = "kmeans_tree",
-    feature = "rptree"
+    feature = "nsg",
+    feature = "nsw",
+    feature = "pipnn",
+    feature = "rptree",
+    feature = "sng",
+    feature = "vamana"
 ))]
 use support::{json_line_with_storage, ResultStorage};
 #[cfg(any(
@@ -130,10 +144,17 @@ use quant::*;
 
 #[cfg(any(
     feature = "balltree",
+    feature = "emg",
+    feature = "finger",
     feature = "hnsw",
     feature = "kdtree",
     feature = "kmeans_tree",
-    feature = "rptree"
+    feature = "nsg",
+    feature = "nsw",
+    feature = "pipnn",
+    feature = "rptree",
+    feature = "sng",
+    feature = "vamana"
 ))]
 fn snapshot_storage(load_time_s: f64, index_bytes: Option<u64>) -> ResultStorage<'static> {
     ResultStorage {
@@ -601,6 +622,17 @@ fn run_nsw(
     index.build().unwrap();
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
+    let snapshot_index = if cfg.snapshot_load {
+        let temp_dir = tempfile::tempdir().expect("create temp dir for NSW snapshot benchmark");
+        index.save_to_dir(temp_dir.path()).unwrap();
+        let index_bytes = dir_size_bytes(temp_dir.path()).ok();
+        let load_start = Instant::now();
+        let loaded = NSWIndex::load_from_dir(temp_dir.path()).unwrap();
+        let load_time_s = load_start.elapsed().as_secs_f64();
+        Some((temp_dir, loaded, load_time_s, index_bytes))
+    } else {
+        None
+    };
 
     if !cfg.json {
         println!(
@@ -619,8 +651,36 @@ fn run_nsw(
                 &cfg.results_path,
                 &json_line("nsw", &params_json, build_time_s, rss, &result),
             );
+            if let Some((_, loaded, load_time_s, index_bytes)) = &snapshot_index {
+                let loaded_result = evaluate(
+                    &|q, k| loaded.search(q, k, ef).unwrap(),
+                    test,
+                    neighbors,
+                    10,
+                );
+                emit_result(
+                    &cfg.results_path,
+                    &json_line_with_storage(
+                        "nsw",
+                        &params_json,
+                        build_time_s,
+                        rss,
+                        &loaded_result,
+                        &snapshot_storage(*load_time_s, *index_bytes),
+                    ),
+                );
+            }
         } else {
             print_row(&format!("ef={}", ef), &result);
+            if let Some((_, loaded, _, _)) = &snapshot_index {
+                let loaded_result = evaluate(
+                    &|q, k| loaded.search(q, k, ef).unwrap(),
+                    test,
+                    neighbors,
+                    10,
+                );
+                print_row(&format!("ef={} snapshot_loaded", ef), &loaded_result);
+            }
         }
     }
 
@@ -660,6 +720,17 @@ fn run_emg(
     index.build().unwrap();
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
+    let snapshot_index = if cfg.snapshot_load {
+        let temp_dir = tempfile::tempdir().expect("create temp dir for EMG snapshot benchmark");
+        index.save_to_dir(temp_dir.path()).unwrap();
+        let index_bytes = dir_size_bytes(temp_dir.path()).ok();
+        let load_start = Instant::now();
+        let loaded = EmgIndex::load_from_dir(temp_dir.path()).unwrap();
+        let load_time_s = load_start.elapsed().as_secs_f64();
+        Some((temp_dir, loaded, load_time_s, index_bytes))
+    } else {
+        None
+    };
 
     if !cfg.json {
         println!(
@@ -683,8 +754,36 @@ fn run_emg(
                 &cfg.results_path,
                 &json_line("emg", &params_json, build_time_s, rss, &result),
             );
+            if let Some((_, loaded, load_time_s, index_bytes)) = &snapshot_index {
+                let loaded_result = evaluate(
+                    &|q, k| loaded.search_with_ef(q, k, ef).unwrap(),
+                    test,
+                    neighbors,
+                    10,
+                );
+                emit_result(
+                    &cfg.results_path,
+                    &json_line_with_storage(
+                        "emg",
+                        &params_json,
+                        build_time_s,
+                        rss,
+                        &loaded_result,
+                        &snapshot_storage(*load_time_s, *index_bytes),
+                    ),
+                );
+            }
         } else {
             print_row(&format!("ef={}", ef), &result);
+            if let Some((_, loaded, _, _)) = &snapshot_index {
+                let loaded_result = evaluate(
+                    &|q, k| loaded.search_with_ef(q, k, ef).unwrap(),
+                    test,
+                    neighbors,
+                    10,
+                );
+                print_row(&format!("ef={} snapshot_loaded", ef), &loaded_result);
+            }
         }
     }
 
@@ -729,6 +828,17 @@ fn run_nsg(
     index.build().unwrap();
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
+    let snapshot_index = if cfg.snapshot_load {
+        let temp_dir = tempfile::tempdir().expect("create temp dir for NSG snapshot benchmark");
+        index.save_to_dir(temp_dir.path()).unwrap();
+        let index_bytes = dir_size_bytes(temp_dir.path()).ok();
+        let load_start = Instant::now();
+        let loaded = NsgIndex::load_from_dir(temp_dir.path()).unwrap();
+        let load_time_s = load_start.elapsed().as_secs_f64();
+        Some((temp_dir, loaded, load_time_s, index_bytes))
+    } else {
+        None
+    };
 
     if !cfg.json {
         println!(
@@ -752,8 +862,36 @@ fn run_nsg(
                 &cfg.results_path,
                 &json_line("nsg", &params_json, build_time_s, rss, &result),
             );
+            if let Some((_, loaded, load_time_s, index_bytes)) = &snapshot_index {
+                let loaded_result = evaluate(
+                    &|q, k| loaded.search_with_ef(q, k, ef).unwrap(),
+                    test,
+                    eval_neighbors,
+                    10,
+                );
+                emit_result(
+                    &cfg.results_path,
+                    &json_line_with_storage(
+                        "nsg",
+                        &params_json,
+                        build_time_s,
+                        rss,
+                        &loaded_result,
+                        &snapshot_storage(*load_time_s, *index_bytes),
+                    ),
+                );
+            }
         } else {
             print_row(&format!("ef={}", ef), &result);
+            if let Some((_, loaded, _, _)) = &snapshot_index {
+                let loaded_result = evaluate(
+                    &|q, k| loaded.search_with_ef(q, k, ef).unwrap(),
+                    test,
+                    eval_neighbors,
+                    10,
+                );
+                print_row(&format!("ef={} snapshot_loaded", ef), &loaded_result);
+            }
         }
     }
 
@@ -794,6 +932,17 @@ fn run_pipnn(
     index.build().unwrap();
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
+    let snapshot_index = if cfg.snapshot_load {
+        let temp_dir = tempfile::tempdir().expect("create temp dir for PiPNN snapshot benchmark");
+        index.save_to_dir(temp_dir.path()).unwrap();
+        let index_bytes = dir_size_bytes(temp_dir.path()).ok();
+        let load_start = Instant::now();
+        let loaded = PipnnIndex::load_from_dir(temp_dir.path()).unwrap();
+        let load_time_s = load_start.elapsed().as_secs_f64();
+        Some((temp_dir, loaded, load_time_s, index_bytes))
+    } else {
+        None
+    };
 
     if !cfg.json {
         println!(
@@ -820,8 +969,36 @@ fn run_pipnn(
                 &cfg.results_path,
                 &json_line("pipnn", &params_json, build_time_s, rss, &result),
             );
+            if let Some((_, loaded, load_time_s, index_bytes)) = &snapshot_index {
+                let loaded_result = evaluate(
+                    &|q, k| loaded.search_with_ef(q, k, ef).unwrap(),
+                    test,
+                    neighbors,
+                    10,
+                );
+                emit_result(
+                    &cfg.results_path,
+                    &json_line_with_storage(
+                        "pipnn",
+                        &params_json,
+                        build_time_s,
+                        rss,
+                        &loaded_result,
+                        &snapshot_storage(*load_time_s, *index_bytes),
+                    ),
+                );
+            }
         } else {
             print_row(&format!("ef={}", ef), &result);
+            if let Some((_, loaded, _, _)) = &snapshot_index {
+                let loaded_result = evaluate(
+                    &|q, k| loaded.search_with_ef(q, k, ef).unwrap(),
+                    test,
+                    neighbors,
+                    10,
+                );
+                print_row(&format!("ef={} snapshot_loaded", ef), &loaded_result);
+            }
         }
     }
 
@@ -867,6 +1044,17 @@ fn run_sng(
     index.build().unwrap();
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
+    let snapshot_index = if cfg.snapshot_load {
+        let temp_dir = tempfile::tempdir().expect("create temp dir for SNG snapshot benchmark");
+        index.save_to_dir(temp_dir.path()).unwrap();
+        let index_bytes = dir_size_bytes(temp_dir.path()).ok();
+        let load_start = Instant::now();
+        let loaded = SNGIndex::load_from_dir(temp_dir.path()).unwrap();
+        let load_time_s = load_start.elapsed().as_secs_f64();
+        Some((temp_dir, loaded, load_time_s, index_bytes))
+    } else {
+        None
+    };
 
     if !cfg.json {
         println!(
@@ -889,8 +1077,36 @@ fn run_sng(
             &cfg.results_path,
             &json_line("sng", params_json, build_time_s, rss, &result),
         );
+        if let Some((_, loaded, load_time_s, index_bytes)) = &snapshot_index {
+            let loaded_result = evaluate(
+                &|q, k| loaded.search(q, k).unwrap(),
+                test,
+                eval_neighbors,
+                10,
+            );
+            emit_result(
+                &cfg.results_path,
+                &json_line_with_storage(
+                    "sng",
+                    params_json,
+                    build_time_s,
+                    rss,
+                    &loaded_result,
+                    &snapshot_storage(*load_time_s, *index_bytes),
+                ),
+            );
+        }
     } else {
         print_row("--", &result);
+        if let Some((_, loaded, _, _)) = &snapshot_index {
+            let loaded_result = evaluate(
+                &|q, k| loaded.search(q, k).unwrap(),
+                test,
+                eval_neighbors,
+                10,
+            );
+            print_row("snapshot_loaded", &loaded_result);
+        }
         println!();
     }
 }
@@ -920,6 +1136,17 @@ fn run_vamana(
     index.build().unwrap();
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
+    let snapshot_index = if cfg.snapshot_load {
+        let temp_dir = tempfile::tempdir().expect("create temp dir for Vamana snapshot benchmark");
+        index.save_to_dir(temp_dir.path()).unwrap();
+        let index_bytes = dir_size_bytes(temp_dir.path()).ok();
+        let load_start = Instant::now();
+        let loaded = VamanaIndex::load_from_dir(temp_dir.path()).unwrap();
+        let load_time_s = load_start.elapsed().as_secs_f64();
+        Some((temp_dir, loaded, load_time_s, index_bytes))
+    } else {
+        None
+    };
 
     if !cfg.json {
         println!(
@@ -938,8 +1165,36 @@ fn run_vamana(
                 &cfg.results_path,
                 &json_line("vamana", &params_json, build_time_s, rss, &result),
             );
+            if let Some((_, loaded, load_time_s, index_bytes)) = &snapshot_index {
+                let loaded_result = evaluate(
+                    &|q, k| loaded.search(q, k, ef).unwrap(),
+                    test,
+                    neighbors,
+                    10,
+                );
+                emit_result(
+                    &cfg.results_path,
+                    &json_line_with_storage(
+                        "vamana",
+                        &params_json,
+                        build_time_s,
+                        rss,
+                        &loaded_result,
+                        &snapshot_storage(*load_time_s, *index_bytes),
+                    ),
+                );
+            }
         } else {
             print_row(&format!("ef={}", ef), &result);
+            if let Some((_, loaded, _, _)) = &snapshot_index {
+                let loaded_result = evaluate(
+                    &|q, k| loaded.search(q, k, ef).unwrap(),
+                    test,
+                    neighbors,
+                    10,
+                );
+                print_row(&format!("ef={} snapshot_loaded", ef), &loaded_result);
+            }
         }
     }
 
@@ -1120,6 +1375,17 @@ fn run_finger(
     index.build().unwrap();
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
+    let snapshot_index = if cfg.snapshot_load {
+        let temp_dir = tempfile::tempdir().expect("create temp dir for FINGER snapshot benchmark");
+        index.save_to_dir(temp_dir.path()).unwrap();
+        let index_bytes = dir_size_bytes(temp_dir.path()).ok();
+        let load_start = Instant::now();
+        let loaded = FingerIndex::load_from_dir(temp_dir.path()).unwrap();
+        let load_time_s = load_start.elapsed().as_secs_f64();
+        Some((temp_dir, loaded, load_time_s, index_bytes))
+    } else {
+        None
+    };
 
     if !cfg.json {
         println!(
@@ -1148,8 +1414,36 @@ fn run_finger(
                 &cfg.results_path,
                 &json_line("finger", &params_json, build_time_s, rss, &result),
             );
+            if let Some((_, loaded, load_time_s, index_bytes)) = &snapshot_index {
+                let loaded_result = evaluate(
+                    &|q, k| loaded.search_with_ef(q, k, ef).unwrap(),
+                    test,
+                    eval_neighbors,
+                    10,
+                );
+                emit_result(
+                    &cfg.results_path,
+                    &json_line_with_storage(
+                        "finger",
+                        &params_json,
+                        build_time_s,
+                        rss,
+                        &loaded_result,
+                        &snapshot_storage(*load_time_s, *index_bytes),
+                    ),
+                );
+            }
         } else {
             print_row(&format!("ef={}", ef), &result);
+            if let Some((_, loaded, _, _)) = &snapshot_index {
+                let loaded_result = evaluate(
+                    &|q, k| loaded.search_with_ef(q, k, ef).unwrap(),
+                    test,
+                    eval_neighbors,
+                    10,
+                );
+                print_row(&format!("ef={} snapshot_loaded", ef), &loaded_result);
+            }
         }
     }
 

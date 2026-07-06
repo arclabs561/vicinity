@@ -498,7 +498,9 @@ fn required_result_checks(
                 }
             })
             .collect(),
-        "nsw" => ef_checks("nsw", cfg, |_| vec![format!("\"m\":{}", cfg.m)]),
+        "nsw" => ef_snapshot_checks("nsw", cfg, |ef| {
+            format!("{{\"m\":{},\"ef_search\":{}}}", cfg.m, ef)
+        }),
         "ivfpq" => {
             let num_clusters = cfg.pq_num_clusters.unwrap_or(256);
             if num_clusters == 0 {
@@ -616,9 +618,10 @@ fn required_result_checks(
                 })
                 .collect()
         }
-        "emg" | "nsg" | "fresh_graph" => {
-            ef_checks(algo, cfg, |_| vec!["\"max_degree\":32".to_string()])
-        }
+        "emg" | "nsg" => ef_snapshot_checks(algo, cfg, |ef| {
+            format!("{{\"max_degree\":32,\"ef_search\":{}}}", ef)
+        }),
+        "fresh_graph" => ef_checks(algo, cfg, |_| vec!["\"max_degree\":32".to_string()]),
         "dual_branch" => ef_serde_snapshot_checks("dual_branch", cfg, |ef| {
             format!(
                 "{{\"m\":{},\"m_high_lid\":{},\"ef_construction\":{},\"ef_search\":{}}}",
@@ -657,25 +660,25 @@ fn required_result_checks(
                 )
             })
             .collect(),
-        "pipnn" => ef_checks("pipnn", cfg, |_| {
-            vec![
-                "\"max_degree\":32".to_string(),
-                "\"max_leaf_size\":2048".to_string(),
-            ]
+        "pipnn" => ef_snapshot_checks("pipnn", cfg, |ef| {
+            format!(
+                "{{\"max_degree\":32,\"max_leaf_size\":2048,\"ef_search\":{}}}",
+                ef
+            )
         }),
-        "vamana" => ef_checks("vamana", cfg, |_| Vec::new()),
+        "vamana" => ef_snapshot_checks("vamana", cfg, |ef| format!("{{\"ef_search\":{}}}", ef)),
         "diskann" => diskann_checks(cfg),
         "finger" => {
             let indexed_vectors = train_len.min(50_000);
             let capped = train_len > indexed_vectors;
-            ef_checks("finger", cfg, |_| {
-                vec![
-                    "\"max_degree\":32".to_string(),
-                    format!("\"indexed_vectors\":{}", indexed_vectors),
-                    format!("\"capped\":{}", capped),
-                ]
+            ef_snapshot_checks("finger", cfg, |ef| {
+                format!(
+                    "{{\"max_degree\":32,\"ef_search\":{},\"indexed_vectors\":{},\"capped\":{}}}",
+                    ef, indexed_vectors, capped
+                )
             })
         }
+        "sng" => snapshot_check("sng", "{}", cfg),
         "fresh_graph_churn" => {
             let Some((base_size, cycles, queries)) = churn_shape(cfg, train_len, test_len) else {
                 return Vec::new();
@@ -1266,16 +1269,23 @@ pub(crate) fn current_rss_kb() -> Option<u64> {
     feature = "balltree",
     feature = "binary_index",
     feature = "diskann",
+    feature = "emg",
+    feature = "finger",
     feature = "ivf_avq",
     feature = "ivf_pq",
     feature = "ivf_rabitq",
     feature = "kdtree",
     feature = "kmeans_tree",
+    feature = "nsg",
+    feature = "nsw",
+    feature = "pipnn",
     feature = "lsh",
     feature = "rp_quant",
     feature = "rptree",
+    feature = "sng",
     feature = "sq4",
-    feature = "sq8"
+    feature = "sq8",
+    feature = "vamana"
 ))]
 pub(crate) fn dir_size_bytes(path: &Path) -> std::io::Result<u64> {
     let mut total = 0;
@@ -1735,6 +1745,63 @@ mod tests {
             200
         ));
         assert!(request_completed(&completed, "lsh", &cfg, 25, 2_000, 200));
+    }
+
+    #[test]
+    fn graph_snapshot_resume_requires_snapshot_storage_rows() {
+        let cfg = Config {
+            snapshot_load: true,
+            ef_search_values: vec![10],
+            ..Config::default()
+        };
+        let rows = [
+            ("nsw", "{\"m\":16,\"ef_search\":10}"),
+            ("emg", "{\"max_degree\":32,\"ef_search\":10}"),
+            ("nsg", "{\"max_degree\":32,\"ef_search\":10}"),
+            (
+                "pipnn",
+                "{\"max_degree\":32,\"max_leaf_size\":2048,\"ef_search\":10}",
+            ),
+            ("vamana", "{\"ef_search\":10}"),
+            (
+                "finger",
+                "{\"max_degree\":32,\"ef_search\":10,\"indexed_vectors\":2000,\"capped\":false}",
+            ),
+            ("sng", "{}"),
+        ];
+        let missing_snapshot = CompletedResults {
+            lines: rows
+                .iter()
+                .map(|(algorithm, params)| single_line_with_storage(algorithm, params, "in_memory"))
+                .collect(),
+            ..CompletedResults::default()
+        };
+        let completed = CompletedResults {
+            lines: rows
+                .iter()
+                .flat_map(|(algorithm, params)| {
+                    [
+                        single_line_with_storage(algorithm, params, "in_memory"),
+                        single_line_with_storage(algorithm, params, "snapshot_loaded"),
+                    ]
+                })
+                .collect(),
+            ..CompletedResults::default()
+        };
+
+        for (algorithm, _) in rows {
+            assert!(!request_completed(
+                &missing_snapshot,
+                algorithm,
+                &cfg,
+                25,
+                2_000,
+                200
+            ));
+            assert!(request_completed(
+                &completed, algorithm, &cfg, 25, 2_000, 200
+            ));
+        }
     }
 
     #[test]

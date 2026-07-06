@@ -98,7 +98,7 @@ families that accept dense `Vec<f32>` input:
 
 | Area | Algorithms / rows | Eval path |
 | --- | --- | --- |
-| Graph search | HNSW, NSW, Vamana, DiskANN, NSG, SNG, EMG, DualBranch, DEG, PiPNN, FINGER, FreshGraph | `ann_benchmark --algo ...`; DEG caps dense runs at 10,000 indexed vectors because construction is O(n^2) |
+| Graph search | HNSW, NSW, Vamana, DiskANN, NSG, SNG, EMG, DualBranch, DEG, PiPNN, FINGER, FreshGraph | `ann_benchmark --algo ...`; HNSW, NSW, Vamana, NSG, SNG, EMG, PiPNN, and FINGER support `--snapshot-load`; DEG caps dense runs at 10,000 indexed vectors because construction is O(n^2) |
 | IVF / quantized search | IVF-PQ, IVF-PQ rerank, IVF-AVQ, IVF-RaBitQ, RP-Quant, BinaryIndex, SQ4 | `ann_benchmark --algo ...`; IVF-PQ supports sampled training; these rows support `--snapshot-load` where the index is saved, reopened, and then searched from memory |
 | Quantized HNSW accelerators | SQ4U, SQ8U, SymphonyQG, SymphonyQG-VR, ADSampling, HNSW-PRT | `ann_benchmark --algo ...`; SQ4U and SQ8U support `--snapshot-load` |
 | Filtering | FilteredGraph, RangeFiltered, Curator, ACORN | dense rows via `ann_benchmark` are labeled `filter_mode=none`; selectivity curves live in `acorn_selectivity` |

@@ -90,14 +90,14 @@ jobs:
       - name: ann_benchmark smoke
         run: |
           python scripts/generate_ann_smoke_data.py /tmp/vicinity-ann-ci --train 64 --test 12 --dim 8 --k 10
-          cargo run --no-default-features --features hnsw,nsw,lsh,kdtree,balltree,rptree,kmeans_tree --release --example ann_benchmark -- \
+          cargo run --no-default-features --features hnsw,serde,nsw,lsh,kdtree,balltree,rptree,kmeans_tree --release --example ann_benchmark -- \
             /tmp/vicinity-ann-ci \
             --algo hnsw --algo nsw --algo lsh \
             --algo kdtree --algo balltree --algo rptree --algo rp_forest --algo kmeans_tree \
             --ef-search 10 \
             --tree-leaf-sizes 4 --tree-depths 8 --rp-num-trees 3 \
             --kmeans-clusters 4 --kmeans-leaf-sizes 8 --kmeans-depths 4 --kmeans-iters 3 \
-            --json --fresh --results /tmp/vicinity-ann-ci-graph-classic.jsonl
+            --snapshot-load --json --fresh --results /tmp/vicinity-ann-ci-graph-classic.jsonl
           cargo run --no-default-features --features hnsw,ivf_pq,ivf_avq,ivf_rabitq,rp_quant,binary_index,sq4,sq8,lsh --release --example ann_benchmark -- \
             /tmp/vicinity-ann-ci \
             --algo ivfpq --algo ivf_avq --algo ivf_rabitq \
