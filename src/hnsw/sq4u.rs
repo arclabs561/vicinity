@@ -38,6 +38,8 @@
 
 use crate::hnsw::graph::HNSWIndex;
 use crate::RetrieveError;
+use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 /// HNSW index with 4-bit scalar quantized graph traversal.
 ///
@@ -111,6 +113,59 @@ impl HNSWSq4Index {
         self.quantize_vectors()?;
         self.built = true;
         Ok(())
+    }
+
+    /// Save a built SQ4U index to a directory snapshot.
+    ///
+    /// The HNSW graph and full-precision vectors are the source of truth.
+    /// Quantized codes are rebuilt on load from the post-build HNSW vector
+    /// order so the auxiliary arrays cannot drift from graph node IDs.
+    pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<(), RetrieveError> {
+        if !self.built {
+            return Err(RetrieveError::InvalidParameter("index not built".into()));
+        }
+        let output_dir = output_dir.as_ref();
+        std::fs::create_dir_all(output_dir)?;
+        crate::graph_snapshot::write_json_atomic(
+            &output_dir.join("manifest.json"),
+            &Sq4uSnapshotManifest {
+                magic: *b"VICSQ4U1",
+                version: 1,
+            },
+        )?;
+        self.index.save_to_file(output_dir.join("hnsw.json"))?;
+        Ok(())
+    }
+
+    /// Load an SQ4U index from a directory snapshot.
+    pub fn load_from_dir(input_dir: impl AsRef<Path>) -> Result<Self, RetrieveError> {
+        let input_dir = input_dir.as_ref();
+        let manifest: Sq4uSnapshotManifest =
+            crate::graph_snapshot::read_json(&input_dir.join("manifest.json"))?;
+        if manifest.magic != *b"VICSQ4U1" {
+            return Err(RetrieveError::FormatError(
+                "invalid SQ4U snapshot magic".into(),
+            ));
+        }
+        if manifest.version != 1 {
+            return Err(RetrieveError::FormatError(format!(
+                "unsupported SQ4U snapshot version {}",
+                manifest.version
+            )));
+        }
+
+        let index = HNSWIndex::load_from_file(input_dir.join("hnsw.json"))?;
+        let mut loaded = Self {
+            index,
+            codes: Vec::new(),
+            mins: Vec::new(),
+            steps: Vec::new(),
+            inv_scales: Vec::new(),
+            built: false,
+        };
+        loaded.quantize_vectors()?;
+        loaded.built = true;
+        Ok(loaded)
     }
 
     /// Search with quantized graph traversal (no reranking).
@@ -338,6 +393,12 @@ impl HNSWSq4Index {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Sq4uSnapshotManifest {
+    magic: [u8; 8],
+    version: u32,
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -412,5 +473,25 @@ mod tests {
             results.iter().any(|(id, _)| *id == 0),
             "Query vector should be in its own top-5 SQ4U results"
         );
+    }
+
+    #[test]
+    fn save_load_roundtrip_preserves_reranked_search() {
+        let dim = 32;
+        let vecs = random_normalized(120, dim, 123);
+
+        let mut index = HNSWSq4Index::new(dim, 16, 32).unwrap();
+        for (i, v) in vecs.iter().enumerate() {
+            index.add_slice(i as u32, v).unwrap();
+        }
+        index.build().unwrap();
+
+        let before = index.search_reranked(&vecs[0], 8, 64, 50).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        index.save_to_dir(dir.path()).unwrap();
+        let loaded = HNSWSq4Index::load_from_dir(dir.path()).unwrap();
+        let after = loaded.search_reranked(&vecs[0], 8, 64, 50).unwrap();
+
+        assert_eq!(after, before);
     }
 }

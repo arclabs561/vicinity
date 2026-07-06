@@ -224,7 +224,9 @@ pub mod filtering;
     feature = "binary_index",
     feature = "rp_quant",
     feature = "sparse_mips",
-    feature = "lsh"
+    feature = "lsh",
+    all(feature = "hnsw", feature = "sq4"),
+    all(feature = "hnsw", feature = "sq8")
 ))]
 pub(crate) mod graph_snapshot;
 #[cfg(any(

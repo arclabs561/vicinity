@@ -44,6 +44,8 @@
 
 use crate::hnsw::graph::HNSWIndex;
 use crate::RetrieveError;
+use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 /// HNSW index with 8-bit scalar quantized graph traversal.
 ///
@@ -145,6 +147,58 @@ impl HNSWSq8Index {
         self.quantize_vectors()?;
         self.built = true;
         Ok(())
+    }
+
+    /// Save a built SQ8U index to a directory snapshot.
+    ///
+    /// The HNSW graph and full-precision vectors are persisted; 8-bit codes
+    /// and per-dimension scales are rebuilt on load from that graph state.
+    pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<(), RetrieveError> {
+        if !self.built {
+            return Err(RetrieveError::InvalidParameter("index not built".into()));
+        }
+        let output_dir = output_dir.as_ref();
+        std::fs::create_dir_all(output_dir)?;
+        crate::graph_snapshot::write_json_atomic(
+            &output_dir.join("manifest.json"),
+            &Sq8uSnapshotManifest {
+                magic: *b"VICSQ8U1",
+                version: 1,
+            },
+        )?;
+        self.index.save_to_file(output_dir.join("hnsw.json"))?;
+        Ok(())
+    }
+
+    /// Load an SQ8U index from a directory snapshot.
+    pub fn load_from_dir(input_dir: impl AsRef<Path>) -> Result<Self, RetrieveError> {
+        let input_dir = input_dir.as_ref();
+        let manifest: Sq8uSnapshotManifest =
+            crate::graph_snapshot::read_json(&input_dir.join("manifest.json"))?;
+        if manifest.magic != *b"VICSQ8U1" {
+            return Err(RetrieveError::FormatError(
+                "invalid SQ8U snapshot magic".into(),
+            ));
+        }
+        if manifest.version != 1 {
+            return Err(RetrieveError::FormatError(format!(
+                "unsupported SQ8U snapshot version {}",
+                manifest.version
+            )));
+        }
+
+        let index = HNSWIndex::load_from_file(input_dir.join("hnsw.json"))?;
+        let mut loaded = Self {
+            index,
+            codes: Vec::new(),
+            mins: Vec::new(),
+            steps: Vec::new(),
+            inv_scales: Vec::new(),
+            built: false,
+        };
+        loaded.quantize_vectors()?;
+        loaded.built = true;
+        Ok(loaded)
     }
 
     /// Build with parallel HNSW construction (requires `parallel` feature).
@@ -418,6 +472,12 @@ impl HNSWSq8Index {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Sq8uSnapshotManifest {
+    magic: [u8; 8],
+    version: u32,
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -556,6 +616,26 @@ mod tests {
         // Self should be closest (distance ~0).
         assert_eq!(results[0].0, 0);
         assert!(results[0].1 < 1e-3, "self-distance should be near 0");
+    }
+
+    #[test]
+    fn save_load_roundtrip_preserves_reranked_search() {
+        let dim = 32;
+        let vecs = random_vectors(160, dim, 123);
+
+        let mut index = HNSWSq8Index::with_params(dim, l2_params()).unwrap();
+        for (i, v) in vecs.iter().enumerate() {
+            index.add_slice(i as u32, v).unwrap();
+        }
+        index.build().unwrap();
+
+        let before = index.search_reranked(&vecs[0], 8, 64, 50).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        index.save_to_dir(dir.path()).unwrap();
+        let loaded = HNSWSq8Index::load_from_dir(dir.path()).unwrap();
+        let after = loaded.search_reranked(&vecs[0], 8, 64, 50).unwrap();
+
+        assert_eq!(after, before);
     }
 
     #[test]

@@ -38,6 +38,19 @@ pub(crate) fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T, RetrieveE
         .map_err(|e| RetrieveError::FormatError(e.to_string()))
 }
 
+#[cfg(any(
+    feature = "nsw",
+    feature = "sng",
+    feature = "vamana",
+    feature = "nsg",
+    feature = "finger",
+    feature = "pipnn",
+    feature = "emg",
+    feature = "binary_index",
+    feature = "rp_quant",
+    feature = "sparse_mips",
+    feature = "lsh"
+))]
 pub(crate) fn write_f32_atomic(path: &Path, values: &[f32]) -> Result<(), RetrieveError> {
     write_atomic(path, |writer| {
         for value in values {
@@ -121,6 +134,19 @@ fn write_atomic(
     Ok(())
 }
 
+#[cfg(any(
+    feature = "nsw",
+    feature = "sng",
+    feature = "vamana",
+    feature = "nsg",
+    feature = "finger",
+    feature = "pipnn",
+    feature = "emg",
+    feature = "binary_index",
+    feature = "rp_quant",
+    feature = "sparse_mips",
+    feature = "lsh"
+))]
 pub(crate) fn read_f32_exact(path: &Path, expected_len: usize) -> Result<Vec<f32>, RetrieveError> {
     let bytes = std::fs::read(path)?;
     let expected_bytes = expected_len
