@@ -101,6 +101,51 @@ fn json_string_field(line: &str, field: &str) -> Option<String> {
     Some(rest[..end].to_string())
 }
 
+fn json_value_field<'a>(line: &'a str, field: &str) -> Option<&'a str> {
+    let needle = format!("\"{}\":", field);
+    let start = line.find(&needle)? + needle.len();
+    let bytes = line.as_bytes();
+    match bytes.get(start)? {
+        b'{' => {
+            let mut depth = 0usize;
+            let mut in_string = false;
+            let mut escaped = false;
+            for (offset, &byte) in bytes[start..].iter().enumerate() {
+                if in_string {
+                    if escaped {
+                        escaped = false;
+                    } else if byte == b'\\' {
+                        escaped = true;
+                    } else if byte == b'"' {
+                        in_string = false;
+                    }
+                    continue;
+                }
+                match byte {
+                    b'"' => in_string = true,
+                    b'{' => depth += 1,
+                    b'}' => {
+                        depth = depth.saturating_sub(1);
+                        if depth == 0 {
+                            return Some(&line[start..=start + offset]);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            None
+        }
+        _ => {
+            let end = bytes[start..]
+                .iter()
+                .position(|&byte| byte == b',' || byte == b'}')
+                .map(|offset| start + offset)
+                .unwrap_or(line.len());
+            Some(&line[start..end])
+        }
+    }
+}
+
 pub(crate) fn load_completed_results(path: &Path, expected_dataset: &str) -> CompletedResults {
     let mut counts = HashMap::new();
     let mut lines = Vec::new();
@@ -141,6 +186,8 @@ pub(crate) fn load_completed_results(path: &Path, expected_dataset: &str) -> Com
 
 struct ExpectedResult {
     algorithm: String,
+    params_json: Option<String>,
+    storage_mode: Option<String>,
     fragments: Vec<String>,
 }
 
@@ -148,20 +195,51 @@ impl ExpectedResult {
     fn new(algorithm: impl Into<String>, fragments: impl IntoIterator<Item = String>) -> Self {
         Self {
             algorithm: algorithm.into(),
+            params_json: None,
+            storage_mode: None,
             fragments: fragments.into_iter().collect(),
         }
     }
 
     fn with_params(algorithm: impl Into<String>, params_json: &str) -> Self {
-        Self::new(algorithm, [format!("\"params\":{}", params_json)])
+        Self {
+            algorithm: algorithm.into(),
+            params_json: Some(params_json.to_string()),
+            storage_mode: None,
+            fragments: Vec::new(),
+        }
+    }
+
+    fn with_params_and_storage(
+        algorithm: impl Into<String>,
+        params_json: &str,
+        storage_mode: impl Into<String>,
+    ) -> Self {
+        Self {
+            algorithm: algorithm.into(),
+            params_json: Some(params_json.to_string()),
+            storage_mode: Some(storage_mode.into()),
+            fragments: Vec::new(),
+        }
     }
 
     fn matches(&self, line: &str) -> bool {
-        line.contains(&format!("\"algorithm\":\"{}\"", self.algorithm))
-            && self
-                .fragments
-                .iter()
-                .all(|fragment| line.contains(fragment))
+        if json_string_field(line, "algorithm").as_deref() != Some(self.algorithm.as_str()) {
+            return false;
+        }
+        if let Some(expected) = &self.params_json {
+            if json_value_field(line, "params") != Some(expected.as_str()) {
+                return false;
+            }
+        }
+        if let Some(expected) = &self.storage_mode {
+            if json_string_field(line, "storage_mode").as_deref() != Some(expected.as_str()) {
+                return false;
+            }
+        }
+        self.fragments
+            .iter()
+            .all(|fragment| line.contains(fragment))
     }
 }
 
@@ -204,12 +282,10 @@ fn hnsw_quantized_checks(algorithm: &str, cfg: &Config) -> Vec<ExpectedResult> {
 fn snapshot_check(algorithm: &str, params_json: &str, cfg: &Config) -> Vec<ExpectedResult> {
     let mut checks = single_result_check(algorithm, params_json);
     if cfg.snapshot_load {
-        checks.push(result_check_with_fragments(
+        checks.push(ExpectedResult::with_params_and_storage(
             algorithm,
-            [
-                format!("\"params\":{}", params_json),
-                "\"storage_mode\":\"snapshot_loaded\"".to_string(),
-            ],
+            params_json,
+            "snapshot_loaded",
         ));
     }
     checks
@@ -338,12 +414,10 @@ fn required_result_checks(
                 let base_marker = single_result_check("hnsw", &params_json);
                 #[cfg(feature = "serde")]
                 if cfg.snapshot_load {
-                    base_marker.push(result_check_with_fragments(
+                    base_marker.push(ExpectedResult::with_params_and_storage(
                         "hnsw",
-                        [
-                            format!("\"params\":{}", params_json),
-                            "\"storage_mode\":\"snapshot_loaded\"".to_string(),
-                        ],
+                        &params_json,
+                        "snapshot_loaded",
                     ));
                 }
                 #[cfg(not(feature = "parallel"))]
@@ -1188,6 +1262,13 @@ mod tests {
         )
     }
 
+    fn single_line_with_storage(algorithm: &str, params: &str, storage_mode: &str) -> String {
+        format!(
+            "{{\"algorithm\":\"{}\",\"params\":{},\"storage_mode\":\"{}\",\"recall_at_10\":1.0,\"qps\":1.0}}",
+            algorithm, params, storage_mode
+        )
+    }
+
     fn sample_result() -> BenchResult {
         BenchResult {
             recall_at_k: 1.0,
@@ -1307,6 +1388,38 @@ mod tests {
             ..CompletedResults::default()
         };
 
+        assert!(request_completed(
+            &completed, "kdtree", &cfg, 25, 1_000, 100
+        ));
+    }
+
+    #[test]
+    fn classic_tree_snapshot_resume_requires_snapshot_storage_row() {
+        let cfg = Config {
+            snapshot_load: true,
+            ..Config::default()
+        };
+        let params = "{\"max_leaf_size\":10,\"max_depth\":32}";
+        let missing_snapshot = CompletedResults {
+            lines: vec![single_line_with_storage("kdtree", params, "in_memory")],
+            ..CompletedResults::default()
+        };
+        let completed = CompletedResults {
+            lines: vec![
+                single_line_with_storage("kdtree", params, "in_memory"),
+                single_line_with_storage("kdtree", params, "snapshot_loaded"),
+            ],
+            ..CompletedResults::default()
+        };
+
+        assert!(!request_completed(
+            &missing_snapshot,
+            "kdtree",
+            &cfg,
+            25,
+            1_000,
+            100
+        ));
         assert!(request_completed(
             &completed, "kdtree", &cfg, 25, 1_000, 100
         ));
