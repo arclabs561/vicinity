@@ -27,9 +27,7 @@ import struct
 import sys
 from pathlib import Path
 
-import h5py
 import numpy as np
-import requests
 
 # Standard ann-benchmarks datasets
 # Format: (name, url_suffix, distance_metric, normalize)
@@ -142,6 +140,8 @@ def download_file(
     expected_bytes: int | None = None,
 ) -> None:
     """Download with progress indicator, writing atomically on success."""
+    import requests
+
     if dest.exists() and not redownload:
         if expected_bytes is not None:
             verify_expected_size(dest, expected_bytes)
@@ -238,18 +238,40 @@ def recompute_ground_truth(train: np.ndarray, test: np.ndarray, k: int) -> np.nd
     return neighbors
 
 
-def valid_binary_output(path: Path, magic: bytes) -> bool:
-    """Return true when an output has the expected magic and byte length."""
+def binary_output_shape(path: Path, magic: bytes) -> tuple[int, int] | None:
+    """Return the binary output shape when magic and byte length are valid."""
     if not path.exists():
-        return False
+        return None
     with path.open("rb") as f:
         header = f.read(12)
     if len(header) != 12 or header[:4] != magic:
-        return False
+        return None
 
     rows, width = struct.unpack("<II", header[4:])
     expected_size = 12 + rows * width * 4
-    return path.stat().st_size == expected_size
+    if path.stat().st_size != expected_size:
+        return None
+    return rows, width
+
+
+def valid_binary_output(path: Path, magic: bytes) -> bool:
+    """Return true when an output has the expected magic and byte length."""
+    return binary_output_shape(path, magic) is not None
+
+
+def existing_output_shapes(output_dir: Path) -> dict[str, list[int]]:
+    """Return shapes for already-converted binary outputs."""
+    outputs = {
+        "train_shape": binary_output_shape(output_dir / "train.bin", b"VEC1"),
+        "test_shape": binary_output_shape(output_dir / "test.bin", b"VEC1"),
+        "neighbors_shape": binary_output_shape(output_dir / "neighbors.bin", b"NBR1"),
+    }
+    missing = [name for name, shape in outputs.items() if shape is None]
+    if missing:
+        raise SystemExit(
+            "Existing converted outputs are missing or invalid: " + ", ".join(missing)
+        )
+    return {name: list(shape) for name, shape in outputs.items() if shape is not None}
 
 
 def converted_outputs_exist(output_dir: Path) -> bool:
@@ -312,6 +334,27 @@ def write_incomplete_manifest(output_dir: Path, name: str, info: dict) -> None:
     )
 
 
+def write_complete_manifest_from_shapes(
+    output_dir: Path,
+    name: str,
+    info: dict,
+    hdf5_path: Path,
+    output_shapes: dict[str, list[int]],
+) -> None:
+    """Write conversion metadata after binary outputs are in place."""
+    manifest = {
+        "complete": True,
+        "settings": conversion_settings(name, info),
+        "hdf5": {
+            "path": str(hdf5_path.name),
+            "bytes": hdf5_path.stat().st_size,
+            "sha256": sha256_file(hdf5_path),
+        },
+        "outputs": output_shapes,
+    }
+    write_manifest_atomically(output_dir, manifest)
+
+
 def write_complete_manifest(
     output_dir: Path,
     name: str,
@@ -321,22 +364,41 @@ def write_complete_manifest(
     test: np.ndarray,
     neighbors: np.ndarray,
 ) -> None:
-    """Write conversion metadata after all binary outputs are in place."""
-    manifest = {
-        "complete": True,
-        "settings": conversion_settings(name, info),
-        "hdf5": {
-            "path": str(hdf5_path.name),
-            "bytes": hdf5_path.stat().st_size,
-            "sha256": sha256_file(hdf5_path),
-        },
-        "outputs": {
+    """Write conversion metadata after freshly converted outputs are in place."""
+    write_complete_manifest_from_shapes(
+        output_dir,
+        name,
+        info,
+        hdf5_path,
+        {
             "train_shape": list(train.shape),
             "test_shape": list(test.shape),
             "neighbors_shape": list(neighbors.shape),
         },
-    }
-    write_manifest_atomically(output_dir, manifest)
+    )
+
+
+def adopt_existing_outputs(
+    output_dir: Path,
+    name: str,
+    info: dict,
+    hdf5_path: Path,
+) -> None:
+    """Trust already-converted outputs and write a current manifest."""
+    if not hdf5_path.exists():
+        raise SystemExit(
+            f"Cannot adopt existing outputs: cached HDF5 is missing at {hdf5_path}."
+        )
+    if info.get("expected_bytes") is not None:
+        verify_expected_size(hdf5_path, info["expected_bytes"])
+
+    write_complete_manifest_from_shapes(
+        output_dir,
+        name,
+        info,
+        hdf5_path,
+        existing_output_shapes(output_dir),
+    )
 
 
 def validate_hdf5_arrays(
@@ -372,9 +434,11 @@ def convert_dataset(
     *,
     force: bool,
     redownload: bool,
+    adopt_existing: bool = False,
 ) -> None:
     """Download HDF5, convert to VEC1/NBR1."""
     output_dir.mkdir(parents=True, exist_ok=True)
+    hdf5_path = output_dir / f"{name}.hdf5"
 
     if (
         converted_outputs_exist(output_dir)
@@ -386,7 +450,18 @@ def convert_dataset(
         print("Use --force to rebuild train.bin/test.bin/neighbors.bin.")
         return
 
-    hdf5_path = output_dir / f"{name}.hdf5"
+    if converted_outputs_exist(output_dir) and not force and not redownload:
+        if adopt_existing:
+            adopt_existing_outputs(output_dir, name, info, hdf5_path)
+            print(f"Adopted existing converted dataset: {output_dir}/")
+            return
+        raise SystemExit(
+            f"Converted outputs already exist in {output_dir}, but dataset.json "
+            "is missing or does not match the current conversion settings. "
+            "Use --force to rebuild, or --adopt-existing to trust the existing "
+            "train.bin/test.bin/neighbors.bin files and write a manifest."
+        )
+
     write_incomplete_manifest(output_dir, name, info)
     download_file(
         info["url"],
@@ -396,6 +471,8 @@ def convert_dataset(
     )
 
     try:
+        import h5py
+
         with h5py.File(hdf5_path, "r") as f:
             train = np.array(f["train"])
             test = np.array(f["test"])
@@ -456,6 +533,14 @@ def main() -> None:
         action="store_true",
         help="Replace the cached HDF5 file",
     )
+    parser.add_argument(
+        "--adopt-existing",
+        action="store_true",
+        help=(
+            "Write dataset.json for existing converted .bin files after "
+            "validating their headers and cached HDF5 size"
+        ),
+    )
     args = parser.parse_args()
 
     if args.list:
@@ -480,6 +565,7 @@ def main() -> None:
         output_dir,
         force=args.force,
         redownload=args.redownload,
+        adopt_existing=args.adopt_existing,
     )
 
 

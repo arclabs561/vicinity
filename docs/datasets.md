@@ -65,7 +65,10 @@ The script writes `data/ann-benchmarks/<dataset>/{train,test,neighbors}.bin`
 plus `dataset.json`. Re-running it is idempotent: existing converted files are
 reused only when their headers, byte lengths, and manifest match the current
 conversion settings. Use `--force` to rebuild the `.bin` files from the cached
-HDF5, or `--redownload` to replace the cached HDF5 before conversion.
+HDF5, or `--redownload` to replace the cached HDF5 before conversion. If you
+already have converted `.bin` files from an older checkout but no manifest, use
+`--adopt-existing` to write `dataset.json` after validating the cached HDF5 size
+and binary headers.
 
 ## Modern Embedding Dimensions
 
@@ -131,6 +134,9 @@ uv run scripts/download_ann_benchmarks.py glove-25-angular
 
 uv run scripts/download_ann_benchmarks.py glove-25-angular --force
 # rebuilds the converted binary files from the cached HDF5
+
+uv run scripts/download_ann_benchmarks.py glove-25-angular --adopt-existing
+# writes dataset.json for legacy converted files without reconverting
 ```
 
 ## Recommendations by Task
