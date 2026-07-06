@@ -96,13 +96,18 @@ cargo run --example ann_benchmark --release --features ivf_pq,hnsw -- \
 Build: 71.37s, RSS 643,904 KB, `rustc 1.95.0`. These rows are in-memory,
 warm-after-build search on GloVe-25.
 
+Rows marked `*` were re-run after the IVF-PQ candidate finalizer switched from
+full sorting to `select_nth_unstable_by` plus sorting the retained prefix
+(`dfbf176`). That targeted re-run used the same dataset and IVF-PQ shape, with
+build time 72.13s and RSS 644,320 KB.
+
 | nprobe | Rerank pool | Recall@10 | QPS | p95 us |
 |--------|-------------|-----------|-----|--------|
 | 16 | none | 91.60% | 1,034.5 | 1,399.9 |
 | 16 | 500 | 92.43% | 1,016.6 | 1,409.6 |
 | 16 | 5,000 | 92.43% | 826.5 | 1,657.0 |
-| 32 | none | 95.64% | 526.7 | 2,569.8 |
-| 32 | 500 | 96.69% | 517.6 | 2,614.2 |
+| 32 | none* | 95.64% | 706.3 | 1,881.0 |
+| 32 | 500* | 96.69% | 651.1 | 2,023.0 |
 | 32 | 5,000 | 96.69% | 471.7 | 2,797.4 |
 | 64 | none | 97.68% | 266.9 | 4,760.1 |
 | 64 | 500 | 98.91% | 265.2 | 4,783.3 |
@@ -113,7 +118,7 @@ has enough capacity. The earlier `cb=5, codebook_size=16` recipe was a
 memory-stress configuration and saturates at low recall on GloVe-25. With
 `cb=25, codebook_size=256`, recall crosses 95% at `nprobe=32`. The remaining
 gap versus FAISS-style IVF-PQ targets is QPS, so the next optimization target is
-the ADC/FastScan scan path and candidate-selection cost, not larger rerank pools.
+the ADC/FastScan scan path; larger rerank pools are not helping this shape.
 
 ## GloVe-25 (1.18M vectors, 25-d, angular distance)
 
