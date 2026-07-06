@@ -281,6 +281,25 @@ fn hnsw_quantized_checks(algorithm: &str, cfg: &Config) -> Vec<ExpectedResult> {
     })
 }
 
+fn hnsw_quantized_snapshot_checks(algorithm: &str, cfg: &Config) -> Vec<ExpectedResult> {
+    cfg.ef_search_values
+        .iter()
+        .flat_map(|&ef| {
+            snapshot_check(
+                algorithm,
+                &format!(
+                    "{{\"m\":{},\"ef_construction\":{},\"ef_search\":{},\"rerank_pool\":{}}}",
+                    cfg.m,
+                    cfg.ef_construction,
+                    ef,
+                    (ef * 2).max(100)
+                ),
+                cfg,
+            )
+        })
+        .collect()
+}
+
 fn snapshot_check(algorithm: &str, params_json: &str, cfg: &Config) -> Vec<ExpectedResult> {
     let mut checks = single_result_check(algorithm, params_json);
     if cfg.snapshot_load {
@@ -669,8 +688,10 @@ fn required_result_checks(
                 ]
             })
         }
-        "sq8u" | "sq4u" | "symphony_qg_vr" => hnsw_quantized_checks(algo, cfg),
+        "sq8u" | "sq4u" => hnsw_quantized_snapshot_checks(algo, cfg),
+        "symphony_qg_vr" => hnsw_quantized_checks(algo, cfg),
         "symphony_qg" => ef_checks("symphony_qg", cfg, |_| Vec::new()),
+        "sq4" => snapshot_check("sq4", "{\"rerank_factor\":10}", cfg),
         "curator" => single_result_check(
             "curator",
             "{\"branching_factor\":16,\"max_leaf_size\":128,\"filter_mode\":\"none\"}",
@@ -1201,7 +1222,9 @@ pub(crate) fn current_rss_kb() -> Option<u64> {
     feature = "kdtree",
     feature = "kmeans_tree",
     feature = "rp_quant",
-    feature = "rptree"
+    feature = "rptree",
+    feature = "sq4",
+    feature = "sq8"
 ))]
 pub(crate) fn dir_size_bytes(path: &Path) -> std::io::Result<u64> {
     let mut total = 0;
@@ -1597,6 +1620,65 @@ mod tests {
             2_000,
             200
         ));
+    }
+
+    #[test]
+    fn sq_snapshot_resume_requires_snapshot_storage_rows() {
+        let cfg = Config {
+            snapshot_load: true,
+            ef_search_values: vec![10],
+            ..Config::default()
+        };
+        let sq4_params = "{\"rerank_factor\":10}";
+        let sq_graph_params =
+            "{\"m\":16,\"ef_construction\":200,\"ef_search\":10,\"rerank_pool\":100}";
+        let missing_snapshot = CompletedResults {
+            lines: vec![
+                single_line_with_storage("sq4", sq4_params, "in_memory"),
+                single_line_with_storage("sq4u", sq_graph_params, "in_memory"),
+                single_line_with_storage("sq8u", sq_graph_params, "in_memory"),
+            ],
+            ..CompletedResults::default()
+        };
+        let completed = CompletedResults {
+            lines: vec![
+                single_line_with_storage("sq4", sq4_params, "in_memory"),
+                single_line_with_storage("sq4", sq4_params, "snapshot_loaded"),
+                single_line_with_storage("sq4u", sq_graph_params, "in_memory"),
+                single_line_with_storage("sq4u", sq_graph_params, "snapshot_loaded"),
+                single_line_with_storage("sq8u", sq_graph_params, "in_memory"),
+                single_line_with_storage("sq8u", sq_graph_params, "snapshot_loaded"),
+            ],
+            ..CompletedResults::default()
+        };
+
+        assert!(!request_completed(
+            &missing_snapshot,
+            "sq4",
+            &cfg,
+            25,
+            2_000,
+            200
+        ));
+        assert!(!request_completed(
+            &missing_snapshot,
+            "sq4u",
+            &cfg,
+            25,
+            2_000,
+            200
+        ));
+        assert!(!request_completed(
+            &missing_snapshot,
+            "sq8u",
+            &cfg,
+            25,
+            2_000,
+            200
+        ));
+        assert!(request_completed(&completed, "sq4", &cfg, 25, 2_000, 200));
+        assert!(request_completed(&completed, "sq4u", &cfg, 25, 2_000, 200));
+        assert!(request_completed(&completed, "sq8u", &cfg, 25, 2_000, 200));
     }
 
     #[test]

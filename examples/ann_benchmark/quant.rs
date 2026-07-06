@@ -15,7 +15,9 @@ use crate::support::nprobe_values;
     feature = "ivf_avq",
     feature = "ivf_rabitq",
     feature = "rp_quant",
-    feature = "binary_index"
+    feature = "binary_index",
+    feature = "sq4",
+    feature = "sq8"
 ))]
 use crate::support::{dir_size_bytes, json_line_with_storage, ResultStorage};
 
@@ -24,7 +26,9 @@ use crate::support::{dir_size_bytes, json_line_with_storage, ResultStorage};
     feature = "ivf_avq",
     feature = "ivf_rabitq",
     feature = "rp_quant",
-    feature = "binary_index"
+    feature = "binary_index",
+    feature = "sq4",
+    feature = "sq8"
 ))]
 fn snapshot_storage(load_time_s: f64, index_bytes: Option<u64>) -> ResultStorage<'static> {
     ResultStorage {
@@ -569,6 +573,17 @@ pub(crate) fn run_sq4(
     index.build().unwrap();
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
+    let snapshot_index = if cfg.snapshot_load {
+        let temp_dir = tempfile::tempdir().expect("create temp dir for SQ4 snapshot benchmark");
+        index.save_to_dir(temp_dir.path()).unwrap();
+        let index_bytes = dir_size_bytes(temp_dir.path()).ok();
+        let load_start = Instant::now();
+        let loaded = SQ4Index::load_from_dir(temp_dir.path()).unwrap();
+        let load_time_s = load_start.elapsed().as_secs_f64();
+        Some((temp_dir, loaded, load_time_s, index_bytes))
+    } else {
+        None
+    };
 
     if !cfg.json {
         println!(
@@ -580,8 +595,8 @@ pub(crate) fn run_sq4(
     }
 
     let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
+    let params_json = "{\"rerank_factor\":10}";
     if cfg.json {
-        let params_json = "{\"rerank_factor\":10}";
         emit_result(
             &cfg.results_path,
             &json_line("sq4", params_json, build_time_s, rss, &result),
@@ -589,6 +604,26 @@ pub(crate) fn run_sq4(
     } else {
         print_row("--", &result);
         println!();
+    }
+
+    if let Some((_temp_dir, loaded, load_time_s, index_bytes)) = snapshot_index {
+        let loaded_result = evaluate(&|q, k| loaded.search(q, k).unwrap(), test, neighbors, 10);
+        if cfg.json {
+            emit_result(
+                &cfg.results_path,
+                &json_line_with_storage(
+                    "sq4",
+                    params_json,
+                    build_time_s,
+                    rss,
+                    &loaded_result,
+                    &snapshot_storage(load_time_s, index_bytes),
+                ),
+            );
+        } else {
+            print_row("snapshot_loaded", &loaded_result);
+            println!();
+        }
     }
 }
 
@@ -861,6 +896,17 @@ pub(crate) fn run_sq8u(
     index.build().unwrap();
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
+    let snapshot_index = if cfg.snapshot_load {
+        let temp_dir = tempfile::tempdir().expect("create temp dir for SQ8U snapshot benchmark");
+        index.save_to_dir(temp_dir.path()).unwrap();
+        let index_bytes = dir_size_bytes(temp_dir.path()).ok();
+        let load_start = Instant::now();
+        let loaded = HNSWSq8Index::load_from_dir(temp_dir.path()).unwrap();
+        let load_time_s = load_start.elapsed().as_secs_f64();
+        Some((temp_dir, loaded, load_time_s, index_bytes))
+    } else {
+        None
+    };
 
     if !cfg.json {
         println!(
@@ -890,6 +936,34 @@ pub(crate) fn run_sq8u(
             );
         } else {
             print_row(&format!("ef={}", ef), &result);
+        }
+
+        if let Some((_temp_dir, loaded, load_time_s, index_bytes)) = snapshot_index.as_ref() {
+            let loaded_result = evaluate(
+                &|q, k| loaded.search_reranked(q, k, ef, rerank_pool).unwrap(),
+                test,
+                neighbors,
+                10,
+            );
+            if cfg.json {
+                let params_json = format!(
+                    "{{\"m\":{},\"ef_construction\":{},\"ef_search\":{},\"rerank_pool\":{}}}",
+                    m, ef_construction, ef, rerank_pool
+                );
+                emit_result(
+                    &cfg.results_path,
+                    &json_line_with_storage(
+                        "sq8u",
+                        &params_json,
+                        build_time_s,
+                        rss,
+                        &loaded_result,
+                        &snapshot_storage(*load_time_s, *index_bytes),
+                    ),
+                );
+            } else {
+                print_row(&format!("ef={} snapshot_loaded", ef), &loaded_result);
+            }
         }
     }
 
@@ -939,6 +1013,17 @@ pub(crate) fn run_sq4u(
     index.build().unwrap();
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
+    let snapshot_index = if cfg.snapshot_load {
+        let temp_dir = tempfile::tempdir().expect("create temp dir for SQ4U snapshot benchmark");
+        index.save_to_dir(temp_dir.path()).unwrap();
+        let index_bytes = dir_size_bytes(temp_dir.path()).ok();
+        let load_start = Instant::now();
+        let loaded = HNSWSq4Index::load_from_dir(temp_dir.path()).unwrap();
+        let load_time_s = load_start.elapsed().as_secs_f64();
+        Some((temp_dir, loaded, load_time_s, index_bytes))
+    } else {
+        None
+    };
 
     if !cfg.json {
         println!(
@@ -968,6 +1053,34 @@ pub(crate) fn run_sq4u(
             );
         } else {
             print_row(&format!("ef={}", ef), &result);
+        }
+
+        if let Some((_temp_dir, loaded, load_time_s, index_bytes)) = snapshot_index.as_ref() {
+            let loaded_result = evaluate(
+                &|q, k| loaded.search_reranked(q, k, ef, rerank_pool).unwrap(),
+                test,
+                neighbors,
+                10,
+            );
+            if cfg.json {
+                let params_json = format!(
+                    "{{\"m\":{},\"ef_construction\":{},\"ef_search\":{},\"rerank_pool\":{}}}",
+                    m, ef_construction, ef, rerank_pool
+                );
+                emit_result(
+                    &cfg.results_path,
+                    &json_line_with_storage(
+                        "sq4u",
+                        &params_json,
+                        build_time_s,
+                        rss,
+                        &loaded_result,
+                        &snapshot_storage(*load_time_s, *index_bytes),
+                    ),
+                );
+            } else {
+                print_row(&format!("ef={} snapshot_loaded", ef), &loaded_result);
+            }
         }
     }
 
