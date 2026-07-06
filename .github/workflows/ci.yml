@@ -93,6 +93,7 @@ jobs:
           cargo run --no-default-features --features hnsw,serde,nsw,lsh,kdtree,balltree,rptree,kmeans_tree --release --example ann_benchmark -- \
             /tmp/vicinity-ann-ci \
             --algo hnsw --algo nsw --algo lsh \
+            --algo inplace \
             --algo kdtree --algo balltree --algo rptree --algo rp_forest --algo kmeans_tree \
             --ef-search 10 \
             --tree-leaf-sizes 4 --tree-depths 8 --rp-num-trees 3 \

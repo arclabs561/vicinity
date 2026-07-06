@@ -1738,6 +1738,22 @@ fn run_inplace(
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
 
+    #[cfg(feature = "serde")]
+    let snapshot_index = if cfg.snapshot_load {
+        let file = tempfile::NamedTempFile::new()
+            .expect("create temp file for InPlace snapshot benchmark");
+        index.save_to_file(file.path()).unwrap();
+        let index_bytes = std::fs::metadata(file.path())
+            .ok()
+            .map(|metadata| metadata.len());
+        let load_start = Instant::now();
+        let loaded = InPlaceIndex::load_from_file(file.path()).unwrap();
+        let load_time_s = load_start.elapsed().as_secs_f64();
+        Some((file, loaded, load_time_s, index_bytes))
+    } else {
+        None
+    };
+
     if !cfg.json {
         println!(
             "Build: {:.2}s ({:.0} vectors/sec)\n",
@@ -1763,8 +1779,41 @@ fn run_inplace(
                 &cfg.results_path,
                 &json_line("inplace", &params_json, build_time_s, rss, &result),
             );
+            #[cfg(feature = "serde")]
+            if let Some((_, loaded, load_time_s, index_bytes)) = &snapshot_index {
+                let loaded_result = evaluate(
+                    &|q, k| loaded.search_with_beam(q, k, beam_width).unwrap(),
+                    test,
+                    eval_neighbors,
+                    10,
+                );
+                emit_result(
+                    &cfg.results_path,
+                    &json_line_with_storage(
+                        "inplace",
+                        &params_json,
+                        build_time_s,
+                        rss,
+                        &loaded_result,
+                        &snapshot_storage(*load_time_s, *index_bytes),
+                    ),
+                );
+            }
         } else {
             print_row(&format!("beam={}", beam_width), &result);
+            #[cfg(feature = "serde")]
+            if let Some((_, loaded, _, _)) = &snapshot_index {
+                let loaded_result = evaluate(
+                    &|q, k| loaded.search_with_beam(q, k, beam_width).unwrap(),
+                    test,
+                    eval_neighbors,
+                    10,
+                );
+                print_row(
+                    &format!("beam={} snapshot_loaded", beam_width),
+                    &loaded_result,
+                );
+            }
         }
     }
 

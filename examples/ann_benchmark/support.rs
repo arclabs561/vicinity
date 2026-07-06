@@ -653,14 +653,12 @@ fn required_result_checks(
         "inplace" => cfg
             .ef_search_values
             .iter()
-            .map(|beam_width| {
-                ExpectedResult::with_params(
-                    "inplace",
-                    &format!(
-                        "{{\"max_degree\":32,\"build_beam_width\":{},\"beam_width\":{}}}",
-                        cfg.ef_construction, beam_width
-                    ),
-                )
+            .flat_map(|beam_width| {
+                let params_json = format!(
+                    "{{\"max_degree\":32,\"build_beam_width\":{},\"beam_width\":{}}}",
+                    cfg.ef_construction, beam_width
+                );
+                serde_snapshot_check("inplace", &params_json, cfg)
             })
             .collect(),
         "pipnn" => ef_snapshot_checks("pipnn", cfg, |ef| {
@@ -1621,6 +1619,40 @@ mod tests {
         ));
         assert!(request_completed(
             &completed, "kdtree", &cfg, 25, 1_000, 100
+        ));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn inplace_snapshot_resume_requires_snapshot_storage_rows() {
+        let cfg = Config {
+            snapshot_load: true,
+            ef_search_values: vec![10],
+            ..Config::default()
+        };
+        let params = "{\"max_degree\":32,\"build_beam_width\":200,\"beam_width\":10}";
+        let missing_snapshot = CompletedResults {
+            lines: vec![single_line_with_storage("inplace", params, "in_memory")],
+            ..CompletedResults::default()
+        };
+        let completed = CompletedResults {
+            lines: vec![
+                single_line_with_storage("inplace", params, "in_memory"),
+                single_line_with_storage("inplace", params, "snapshot_loaded"),
+            ],
+            ..CompletedResults::default()
+        };
+
+        assert!(!request_completed(
+            &missing_snapshot,
+            "inplace",
+            &cfg,
+            25,
+            1_000,
+            100
+        ));
+        assert!(request_completed(
+            &completed, "inplace", &cfg, 25, 1_000, 100
         ));
     }
 
