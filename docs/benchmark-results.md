@@ -26,6 +26,10 @@ cargo run --example ann_benchmark --release --features hnsw,ivf_pq,ivf_avq -- \
 RAYON_NUM_THREADS=4 cargo run --example ann_benchmark --release --features hnsw,parallel -- \
   data/ann-benchmarks/glove-25-angular --algo hnsw --batch --json --fresh
 
+# HNSW build, save, reload, and post-load search rows.
+cargo run --example ann_benchmark --release --features hnsw,serde -- \
+  data/ann-benchmarks/glove-25-angular --algo hnsw --snapshot-load --json --fresh
+
 # IVF-PQ with exact reranking pools.
 cargo run --example ann_benchmark --release --features ivf_pq,hnsw -- \
   data/ann-benchmarks/glove-25-angular --algo ivfpq \

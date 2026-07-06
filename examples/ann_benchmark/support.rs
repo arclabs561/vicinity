@@ -328,13 +328,24 @@ fn required_result_checks(
             .ef_search_values
             .iter()
             .flat_map(|ef| {
-                let base_marker = vec![ExpectedResult::with_params(
-                    "hnsw",
-                    &format!(
-                        "{{\"m\":{},\"ef_construction\":{},\"ef_search\":{}}}",
-                        cfg.m, cfg.ef_construction, ef
-                    ),
-                )];
+                let params_json = format!(
+                    "{{\"m\":{},\"ef_construction\":{},\"ef_search\":{}}}",
+                    cfg.m, cfg.ef_construction, ef
+                );
+                #[cfg(any(feature = "serde", feature = "parallel"))]
+                let mut base_marker = single_result_check("hnsw", &params_json);
+                #[cfg(not(any(feature = "serde", feature = "parallel")))]
+                let base_marker = single_result_check("hnsw", &params_json);
+                #[cfg(feature = "serde")]
+                if cfg.snapshot_load {
+                    base_marker.push(result_check_with_fragments(
+                        "hnsw",
+                        [
+                            format!("\"params\":{}", params_json),
+                            "\"storage_mode\":\"snapshot_loaded\"".to_string(),
+                        ],
+                    ));
+                }
                 #[cfg(not(feature = "parallel"))]
                 {
                     base_marker

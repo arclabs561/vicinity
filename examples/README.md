@@ -111,6 +111,10 @@ are smaller, but they remain useful for repeatable comparisons.
 cargo run --example ann_benchmark --release --features hnsw,ivf_pq,ivf_avq -- \
   data/ann-benchmarks/glove-25-angular --algo hnsw --algo ivfpq --algo ivf_avq --json
 
+# HNSW persisted snapshot-load rows
+cargo run --example ann_benchmark --release --features hnsw,serde -- \
+  data/ann-benchmarks/glove-25-angular --algo hnsw --snapshot-load --json
+
 # IVF-PQ cluster/codebook/rerank sweep
 cargo run --example ann_benchmark --release --features hnsw,ivf_pq -- \
   data/ann-benchmarks/glove-25-angular --algo ivfpq \

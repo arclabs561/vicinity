@@ -64,13 +64,6 @@ use std::time::Instant;
 use support::brute_force_neighbors_for_ids;
 #[cfg(any(feature = "fresh_graph", feature = "hnsw"))]
 use support::brute_force_search_ids;
-#[cfg(feature = "parallel")]
-use support::evaluate_parallel;
-use support::{
-    brute_force_search, current_rss_kb, emit_result, evaluate, json_line, kmeans_tree_params_json,
-    load_completed_results, parse_args, print_header, print_row, request_completed,
-    rp_forest_params_json, rustc_version, tree_params_json, Config,
-};
 #[cfg(any(
     feature = "balltree",
     feature = "diskann",
@@ -78,7 +71,29 @@ use support::{
     feature = "kmeans_tree",
     feature = "rptree"
 ))]
-use support::{dir_size_bytes, json_line_with_storage, ResultStorage};
+use support::dir_size_bytes;
+#[cfg(feature = "parallel")]
+use support::evaluate_parallel;
+use support::{
+    brute_force_search, current_rss_kb, emit_result, evaluate, json_line, load_completed_results,
+    parse_args, print_header, print_row, request_completed, rustc_version, Config,
+};
+#[cfg(any(
+    feature = "balltree",
+    feature = "diskann",
+    feature = "hnsw",
+    feature = "kdtree",
+    feature = "kmeans_tree",
+    feature = "rptree"
+))]
+use support::{json_line_with_storage, ResultStorage};
+#[cfg(any(
+    feature = "balltree",
+    feature = "kdtree",
+    feature = "kmeans_tree",
+    feature = "rptree"
+))]
+use support::{kmeans_tree_params_json, rp_forest_params_json, tree_params_json};
 
 #[cfg(any(
     feature = "ivf_pq",
@@ -94,6 +109,7 @@ use quant::*;
 
 #[cfg(any(
     feature = "balltree",
+    feature = "hnsw",
     feature = "kdtree",
     feature = "kmeans_tree",
     feature = "rptree"
@@ -184,6 +200,26 @@ fn run_hnsw(
     index.build().unwrap();
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
+    #[cfg(feature = "serde")]
+    let snapshot_index = if cfg.snapshot_load {
+        let temp_dir = tempfile::tempdir().expect("create temp dir for HNSW snapshot benchmark");
+        let path = temp_dir.path().join("hnsw.json");
+        index.save_to_file(&path).unwrap();
+        let index_bytes = std::fs::metadata(&path).ok().map(|metadata| metadata.len());
+        let load_start = Instant::now();
+        let loaded = HNSWIndex::load_from_file(&path).unwrap();
+        let load_time_s = load_start.elapsed().as_secs_f64();
+        Some((temp_dir, loaded, load_time_s, index_bytes))
+    } else {
+        None
+    };
+    #[cfg(not(feature = "serde"))]
+    let snapshot_index: Option<(tempfile::TempDir, HNSWIndex, f64, Option<u64>)> = {
+        if cfg.snapshot_load {
+            eprintln!("hnsw --snapshot-load requested but serde feature is not enabled");
+        }
+        None
+    };
 
     if !cfg.json {
         println!(
@@ -207,6 +243,34 @@ fn run_hnsw(
             );
         } else {
             print_row(&format!("ef={}", ef), &result);
+        }
+
+        if let Some((_temp_dir, loaded, load_time_s, index_bytes)) = &snapshot_index {
+            let loaded_result = evaluate(
+                &|q, k| loaded.search(q, k, ef).unwrap(),
+                test,
+                neighbors,
+                10,
+            );
+            let params_json = format!(
+                "{{\"m\":{},\"ef_construction\":{},\"ef_search\":{}}}",
+                cfg.m, cfg.ef_construction, ef
+            );
+            if cfg.json {
+                emit_result(
+                    &cfg.results_path,
+                    &json_line_with_storage(
+                        "hnsw",
+                        &params_json,
+                        build_time_s,
+                        rss,
+                        &loaded_result,
+                        &snapshot_storage(*load_time_s, *index_bytes),
+                    ),
+                );
+            } else {
+                print_row(&format!("ef={} snapshot_loaded", ef), &loaded_result);
+            }
         }
 
         #[cfg(feature = "parallel")]
