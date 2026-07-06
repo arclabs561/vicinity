@@ -16,6 +16,7 @@ pub(crate) struct Config {
     pub(crate) json: bool,
     pub(crate) results_path: PathBuf,
     pub(crate) is_euclidean: bool,
+    pub(crate) pq_num_clusters: Option<usize>,
     pub(crate) pq_num_codebooks: Option<usize>,
     pub(crate) pq_codebook_size: usize,
     pub(crate) pq_rerank_pools: Vec<usize>,
@@ -37,6 +38,7 @@ impl Default for Config {
             json: false,
             results_path: PathBuf::new(),
             is_euclidean: false,
+            pq_num_clusters: None,
             pq_num_codebooks: None,
             pq_codebook_size: 256,
             pq_rerank_pools: Vec::new(),
@@ -244,7 +246,10 @@ fn required_result_checks(
             .collect(),
         "nsw" => ef_checks("nsw", cfg, |_| vec![format!("\"m\":{}", cfg.m)]),
         "ivfpq" => {
-            let num_clusters = 256;
+            let num_clusters = cfg.pq_num_clusters.unwrap_or(256);
+            if num_clusters == 0 {
+                return Vec::new();
+            }
             let num_codebooks = cfg.pq_num_codebooks.unwrap_or_else(|| {
                 (1..=8.min(dim))
                     .rev()
@@ -560,6 +565,12 @@ pub(crate) fn parse_args() -> Config {
                 i += 1;
                 if i < args.len() {
                     cfg.pq_num_codebooks = args[i].parse().ok();
+                }
+            }
+            "--pq-clusters" => {
+                i += 1;
+                if i < args.len() {
+                    cfg.pq_num_clusters = args[i].parse().ok();
                 }
             }
             "--pq-codebook-size" => {

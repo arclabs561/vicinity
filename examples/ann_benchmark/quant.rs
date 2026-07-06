@@ -17,7 +17,11 @@ pub(crate) fn run_ivfpq(
 ) {
     use vicinity::ivf_pq::{IVFPQIndex, IVFPQParams};
 
-    let num_clusters = 256;
+    let num_clusters = cfg.pq_num_clusters.unwrap_or(256);
+    if num_clusters == 0 {
+        eprintln!("IVF-PQ: skipping invalid --pq-clusters=0");
+        return;
+    }
     // num_codebooks must divide dim evenly. Pick the largest divisor <= 8 unless
     // the caller explicitly requests a PQ shape for benchmarking.
     let num_codebooks = cfg.pq_num_codebooks.unwrap_or_else(|| {

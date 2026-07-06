@@ -111,6 +111,12 @@ are smaller, but they remain useful for repeatable comparisons.
 cargo run --example ann_benchmark --release --features hnsw,ivf_pq,ivf_avq -- \
   data/ann-benchmarks/glove-25-angular --algo hnsw --algo ivfpq --algo ivf_avq --json
 
+# IVF-PQ cluster/codebook/rerank sweep
+cargo run --example ann_benchmark --release --features hnsw,ivf_pq -- \
+  data/ann-benchmarks/glove-25-angular --algo ivfpq \
+  --pq-clusters 1024 --pq-codebooks 5 --pq-codebook-size 16 \
+  --pq-rerank-pools 100,500 --json
+
 # FreshGraph delete/insert churn, scored against a live active-set oracle
 cargo run --example ann_benchmark --release --features hnsw,fresh_graph -- \
   data/ann-benchmarks/glove-25-angular --algo fresh_graph_churn --json
