@@ -621,7 +621,9 @@ fn required_result_checks(
         "emg" | "nsg" => ef_snapshot_checks(algo, cfg, |ef| {
             format!("{{\"max_degree\":32,\"ef_search\":{}}}", ef)
         }),
-        "fresh_graph" => ef_checks(algo, cfg, |_| vec!["\"max_degree\":32".to_string()]),
+        "fresh_graph" => ef_snapshot_checks(algo, cfg, |ef| {
+            format!("{{\"max_degree\":32,\"ef_search\":{}}}", ef)
+        }),
         "dual_branch" => ef_serde_snapshot_checks("dual_branch", cfg, |ef| {
             format!(
                 "{{\"m\":{},\"m_high_lid\":{},\"ef_construction\":{},\"ef_search\":{}}}",
@@ -641,11 +643,11 @@ fn required_result_checks(
                 )
             })
         }
-        "filtered_graph" => ef_checks("filtered_graph", cfg, |_| {
-            vec![
-                "\"max_degree\":32".to_string(),
-                "\"filter_mode\":\"none\"".to_string(),
-            ]
+        "filtered_graph" => ef_snapshot_checks("filtered_graph", cfg, |ef| {
+            format!(
+                "{{\"max_degree\":32,\"ef_search\":{},\"filter_mode\":\"none\"}}",
+                ef
+            )
         }),
         "inplace" => cfg
             .ef_search_values
@@ -745,13 +747,15 @@ fn required_result_checks(
         "symphony_qg_vr" => hnsw_quantized_checks(algo, cfg),
         "symphony_qg" => ef_checks("symphony_qg", cfg, |_| Vec::new()),
         "sq4" => snapshot_check("sq4", "{\"rerank_factor\":10}", cfg),
-        "curator" => single_result_check(
+        "curator" => snapshot_check(
             "curator",
             "{\"branching_factor\":16,\"max_leaf_size\":128,\"filter_mode\":\"none\"}",
+            cfg,
         ),
-        "range_filtered" => single_result_check(
+        "range_filtered" => snapshot_check(
             "range_filtered",
             "{\"hnsw_m\":16,\"ef_search\":100,\"filter_mode\":\"none\"}",
+            cfg,
         ),
         "kdtree" => tree_snapshot_checks(!cfg.is_euclidean && dim <= 50, "kdtree", cfg),
         "balltree" => tree_snapshot_checks(!cfg.is_euclidean, "balltree", cfg),
@@ -1268,9 +1272,12 @@ pub(crate) fn current_rss_kb() -> Option<u64> {
 #[cfg(any(
     feature = "balltree",
     feature = "binary_index",
+    feature = "curator",
     feature = "diskann",
     feature = "emg",
     feature = "finger",
+    feature = "filtered_graph",
+    feature = "fresh_graph",
     feature = "ivf_avq",
     feature = "ivf_pq",
     feature = "ivf_rabitq",
@@ -1279,6 +1286,7 @@ pub(crate) fn current_rss_kb() -> Option<u64> {
     feature = "nsg",
     feature = "nsw",
     feature = "pipnn",
+    all(feature = "range_filtered", feature = "hnsw"),
     feature = "lsh",
     feature = "rp_quant",
     feature = "rptree",
@@ -1768,6 +1776,63 @@ mod tests {
                 "{\"max_degree\":32,\"ef_search\":10,\"indexed_vectors\":2000,\"capped\":false}",
             ),
             ("sng", "{}"),
+        ];
+        let missing_snapshot = CompletedResults {
+            lines: rows
+                .iter()
+                .map(|(algorithm, params)| single_line_with_storage(algorithm, params, "in_memory"))
+                .collect(),
+            ..CompletedResults::default()
+        };
+        let completed = CompletedResults {
+            lines: rows
+                .iter()
+                .flat_map(|(algorithm, params)| {
+                    [
+                        single_line_with_storage(algorithm, params, "in_memory"),
+                        single_line_with_storage(algorithm, params, "snapshot_loaded"),
+                    ]
+                })
+                .collect(),
+            ..CompletedResults::default()
+        };
+
+        for (algorithm, _) in rows {
+            assert!(!request_completed(
+                &missing_snapshot,
+                algorithm,
+                &cfg,
+                25,
+                2_000,
+                200
+            ));
+            assert!(request_completed(
+                &completed, algorithm, &cfg, 25, 2_000, 200
+            ));
+        }
+    }
+
+    #[test]
+    fn filtered_snapshot_resume_requires_snapshot_storage_rows() {
+        let cfg = Config {
+            snapshot_load: true,
+            ef_search_values: vec![10],
+            ..Config::default()
+        };
+        let rows = [
+            ("fresh_graph", "{\"max_degree\":32,\"ef_search\":10}"),
+            (
+                "filtered_graph",
+                "{\"max_degree\":32,\"ef_search\":10,\"filter_mode\":\"none\"}",
+            ),
+            (
+                "curator",
+                "{\"branching_factor\":16,\"max_leaf_size\":128,\"filter_mode\":\"none\"}",
+            ),
+            (
+                "range_filtered",
+                "{\"hnsw_m\":16,\"ef_search\":100,\"filter_mode\":\"none\"}",
+            ),
         ];
         let missing_snapshot = CompletedResults {
             lines: rows

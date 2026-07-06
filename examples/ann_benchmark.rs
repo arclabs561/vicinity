@@ -87,14 +87,18 @@ use support::brute_force_neighbors_for_ids;
 use support::brute_force_search_ids;
 #[cfg(any(
     feature = "balltree",
+    feature = "curator",
     feature = "diskann",
     feature = "emg",
     feature = "finger",
+    feature = "filtered_graph",
+    feature = "fresh_graph",
     feature = "kdtree",
     feature = "kmeans_tree",
     feature = "nsg",
     feature = "nsw",
     feature = "pipnn",
+    all(feature = "range_filtered", feature = "hnsw"),
     feature = "rptree",
     feature = "sng",
     feature = "vamana"
@@ -108,15 +112,19 @@ use support::{
 };
 #[cfg(any(
     feature = "balltree",
+    feature = "curator",
     feature = "diskann",
     feature = "emg",
     feature = "finger",
+    feature = "filtered_graph",
+    feature = "fresh_graph",
     feature = "hnsw",
     feature = "kdtree",
     feature = "kmeans_tree",
     feature = "nsg",
     feature = "nsw",
     feature = "pipnn",
+    all(feature = "range_filtered", feature = "hnsw"),
     feature = "rptree",
     feature = "sng",
     feature = "vamana"
@@ -144,14 +152,18 @@ use quant::*;
 
 #[cfg(any(
     feature = "balltree",
+    feature = "curator",
     feature = "emg",
     feature = "finger",
+    feature = "filtered_graph",
+    feature = "fresh_graph",
     feature = "hnsw",
     feature = "kdtree",
     feature = "kmeans_tree",
     feature = "nsg",
     feature = "nsw",
     feature = "pipnn",
+    all(feature = "range_filtered", feature = "hnsw"),
     feature = "rptree",
     feature = "sng",
     feature = "vamana"
@@ -1493,6 +1505,18 @@ fn run_fresh_graph(
     index.build().unwrap();
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
+    let snapshot_index = if cfg.snapshot_load {
+        let temp_dir =
+            tempfile::tempdir().expect("create temp dir for FreshGraph snapshot benchmark");
+        index.save_to_dir(temp_dir.path()).unwrap();
+        let index_bytes = dir_size_bytes(temp_dir.path()).ok();
+        let load_start = Instant::now();
+        let loaded = FreshGraphIndex::load_from_dir(temp_dir.path()).unwrap();
+        let load_time_s = load_start.elapsed().as_secs_f64();
+        Some((temp_dir, loaded, load_time_s, index_bytes))
+    } else {
+        None
+    };
 
     if !cfg.json {
         println!(
@@ -1516,8 +1540,36 @@ fn run_fresh_graph(
                 &cfg.results_path,
                 &json_line("fresh_graph", &params_json, build_time_s, rss, &result),
             );
+            if let Some((_, loaded, load_time_s, index_bytes)) = &snapshot_index {
+                let loaded_result = evaluate(
+                    &|q, k| loaded.search_with_ef(q, k, ef).unwrap(),
+                    test,
+                    eval_neighbors,
+                    10,
+                );
+                emit_result(
+                    &cfg.results_path,
+                    &json_line_with_storage(
+                        "fresh_graph",
+                        &params_json,
+                        build_time_s,
+                        rss,
+                        &loaded_result,
+                        &snapshot_storage(*load_time_s, *index_bytes),
+                    ),
+                );
+            }
         } else {
             print_row(&format!("ef={}", ef), &result);
+            if let Some((_, loaded, _, _)) = &snapshot_index {
+                let loaded_result = evaluate(
+                    &|q, k| loaded.search_with_ef(q, k, ef).unwrap(),
+                    test,
+                    eval_neighbors,
+                    10,
+                );
+                print_row(&format!("ef={} snapshot_loaded", ef), &loaded_result);
+            }
         }
     }
 
@@ -1997,6 +2049,18 @@ fn run_filtered_graph(
     index.build().unwrap();
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
+    let snapshot_index = if cfg.snapshot_load {
+        let temp_dir =
+            tempfile::tempdir().expect("create temp dir for FilteredGraph snapshot benchmark");
+        index.save_to_dir(temp_dir.path()).unwrap();
+        let index_bytes = dir_size_bytes(temp_dir.path()).ok();
+        let load_start = Instant::now();
+        let loaded = FilteredGraphIndex::load_from_dir(temp_dir.path()).unwrap();
+        let load_time_s = load_start.elapsed().as_secs_f64();
+        Some((temp_dir, loaded, load_time_s, index_bytes))
+    } else {
+        None
+    };
 
     if !cfg.json {
         println!(
@@ -2023,8 +2087,36 @@ fn run_filtered_graph(
                 &cfg.results_path,
                 &json_line("filtered_graph", &params_json, build_time_s, rss, &result),
             );
+            if let Some((_, loaded, load_time_s, index_bytes)) = &snapshot_index {
+                let loaded_result = evaluate(
+                    &|q, k| loaded.search_with_ef(q, k, ef).unwrap(),
+                    test,
+                    eval_neighbors,
+                    10,
+                );
+                emit_result(
+                    &cfg.results_path,
+                    &json_line_with_storage(
+                        "filtered_graph",
+                        &params_json,
+                        build_time_s,
+                        rss,
+                        &loaded_result,
+                        &snapshot_storage(*load_time_s, *index_bytes),
+                    ),
+                );
+            }
         } else {
             print_row(&format!("ef={}", ef), &result);
+            if let Some((_, loaded, _, _)) = &snapshot_index {
+                let loaded_result = evaluate(
+                    &|q, k| loaded.search_with_ef(q, k, ef).unwrap(),
+                    test,
+                    eval_neighbors,
+                    10,
+                );
+                print_row(&format!("ef={} snapshot_loaded", ef), &loaded_result);
+            }
         }
     }
 
@@ -2159,6 +2251,17 @@ fn run_curator(
     index.build().unwrap();
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
+    let snapshot_index = if cfg.snapshot_load {
+        let temp_dir = tempfile::tempdir().expect("create temp dir for Curator snapshot benchmark");
+        index.save_to_dir(temp_dir.path()).unwrap();
+        let index_bytes = dir_size_bytes(temp_dir.path()).ok();
+        let load_start = Instant::now();
+        let loaded = CuratorIndex::load_from_dir(temp_dir.path()).unwrap();
+        let load_time_s = load_start.elapsed().as_secs_f64();
+        Some((temp_dir, loaded, load_time_s, index_bytes))
+    } else {
+        None
+    };
 
     if !cfg.json {
         println!(
@@ -2176,8 +2279,26 @@ fn run_curator(
             &cfg.results_path,
             &json_line("curator", params_json, build_time_s, rss, &result),
         );
+        if let Some((_, loaded, load_time_s, index_bytes)) = &snapshot_index {
+            let loaded_result = evaluate(&|q, k| loaded.search(q, k).unwrap(), test, neighbors, 10);
+            emit_result(
+                &cfg.results_path,
+                &json_line_with_storage(
+                    "curator",
+                    params_json,
+                    build_time_s,
+                    rss,
+                    &loaded_result,
+                    &snapshot_storage(*load_time_s, *index_bytes),
+                ),
+            );
+        }
     } else {
         print_row("--", &result);
+        if let Some((_, loaded, _, _)) = &snapshot_index {
+            let loaded_result = evaluate(&|q, k| loaded.search(q, k).unwrap(), test, neighbors, 10);
+            print_row("snapshot_loaded", &loaded_result);
+        }
         println!();
     }
 }
@@ -2210,6 +2331,18 @@ fn run_range_filtered(
     index.build().unwrap();
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
+    let snapshot_index = if cfg.snapshot_load {
+        let temp_dir =
+            tempfile::tempdir().expect("create temp dir for RangeFiltered snapshot benchmark");
+        index.save_to_dir(temp_dir.path()).unwrap();
+        let index_bytes = dir_size_bytes(temp_dir.path()).ok();
+        let load_start = Instant::now();
+        let loaded = RangeFilteredIndex::load_from_dir(temp_dir.path()).unwrap();
+        let load_time_s = load_start.elapsed().as_secs_f64();
+        Some((temp_dir, loaded, load_time_s, index_bytes))
+    } else {
+        None
+    };
 
     if !cfg.json {
         println!(
@@ -2227,8 +2360,26 @@ fn run_range_filtered(
             &cfg.results_path,
             &json_line("range_filtered", params_json, build_time_s, rss, &result),
         );
+        if let Some((_, loaded, load_time_s, index_bytes)) = &snapshot_index {
+            let loaded_result = evaluate(&|q, k| loaded.search(q, k).unwrap(), test, neighbors, 10);
+            emit_result(
+                &cfg.results_path,
+                &json_line_with_storage(
+                    "range_filtered",
+                    params_json,
+                    build_time_s,
+                    rss,
+                    &loaded_result,
+                    &snapshot_storage(*load_time_s, *index_bytes),
+                ),
+            );
+        }
     } else {
         print_row("--", &result);
+        if let Some((_, loaded, _, _)) = &snapshot_index {
+            let loaded_result = evaluate(&|q, k| loaded.search(q, k).unwrap(), test, neighbors, 10);
+            print_row("snapshot_loaded", &loaded_result);
+        }
         println!();
     }
 }
