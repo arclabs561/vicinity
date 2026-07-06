@@ -218,7 +218,8 @@ pub mod filtering;
     feature = "sng",
     feature = "vamana",
     feature = "nsg",
-    feature = "finger"
+    feature = "finger",
+    feature = "pipnn"
 ))]
 pub(crate) mod graph_snapshot;
 #[cfg(any(

@@ -54,14 +54,19 @@
 use crate::distance::cosine_distance_normalized;
 use crate::distance::FloatOrd;
 use crate::RetrieveError;
+use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 use std::collections::BinaryHeap;
+use std::path::Path;
 
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
+const PIPNN_FORMAT_VERSION: u32 = 1;
+const PIPNN_NEIGHBORS_MAGIC: &[u8; 8] = b"PIPNNG01";
+
 /// PiPNN parameters.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct PipnnParams {
     /// Maximum leaf size for partitioning (C_max). Default: 2048.
     pub max_leaf_size: usize,
@@ -114,6 +119,15 @@ pub struct PipnnIndex {
 
     /// Random hyperplanes for SimHash (dimension x num_hash_bits, flat).
     hyperplanes: Vec<f32>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct PipnnSnapshot {
+    version: u32,
+    dimension: usize,
+    num_vectors: usize,
+    params: PipnnParams,
+    medoid: u32,
 }
 
 impl PipnnIndex {
@@ -229,6 +243,94 @@ impl PipnnIndex {
 
         self.built = true;
         Ok(())
+    }
+
+    /// Save a built PiPNN index to a directory.
+    ///
+    /// The saved format stores the built in-memory graph plus the SimHash
+    /// hyperplanes used during construction.
+    pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<(), RetrieveError> {
+        if !self.built {
+            return Err(RetrieveError::InvalidParameter(
+                "cannot save unbuilt PiPNN index".into(),
+            ));
+        }
+        let output_dir = output_dir.as_ref();
+        std::fs::create_dir_all(output_dir)?;
+        let snapshot = PipnnSnapshot {
+            version: PIPNN_FORMAT_VERSION,
+            dimension: self.dimension,
+            num_vectors: self.num_vectors,
+            params: self.params.clone(),
+            medoid: self.medoid,
+        };
+        crate::graph_snapshot::write_json_atomic(&output_dir.join("manifest.json"), &snapshot)?;
+        crate::graph_snapshot::write_f32_atomic(&output_dir.join("vectors.bin"), &self.vectors)?;
+        crate::graph_snapshot::write_u32_atomic(&output_dir.join("doc_ids.bin"), &self.doc_ids)?;
+        crate::graph_snapshot::write_neighbors_atomic(
+            &output_dir.join("neighbors.bin"),
+            PIPNN_NEIGHBORS_MAGIC,
+            &self.neighbors,
+        )?;
+        crate::graph_snapshot::write_f32_atomic(
+            &output_dir.join("hyperplanes.bin"),
+            &self.hyperplanes,
+        )?;
+        Ok(())
+    }
+
+    /// Load a PiPNN index saved by [`Self::save_to_dir`].
+    pub fn load_from_dir(input_dir: impl AsRef<Path>) -> Result<Self, RetrieveError> {
+        let input_dir = input_dir.as_ref();
+        let snapshot: PipnnSnapshot =
+            crate::graph_snapshot::read_json(&input_dir.join("manifest.json"))?;
+        if snapshot.version != PIPNN_FORMAT_VERSION {
+            return Err(RetrieveError::FormatError(format!(
+                "unsupported PiPNN format version {}",
+                snapshot.version
+            )));
+        }
+        let vectors = crate::graph_snapshot::read_f32_exact(
+            &input_dir.join("vectors.bin"),
+            snapshot.num_vectors * snapshot.dimension,
+        )?;
+        let doc_ids = crate::graph_snapshot::read_u32_exact(
+            &input_dir.join("doc_ids.bin"),
+            snapshot.num_vectors,
+        )?;
+        let neighbors = crate::graph_snapshot::read_neighbors(
+            &input_dir.join("neighbors.bin"),
+            PIPNN_NEIGHBORS_MAGIC,
+            snapshot.num_vectors,
+        )?;
+        let hyperplanes_len = snapshot
+            .dimension
+            .checked_mul(snapshot.params.num_hash_bits)
+            .ok_or_else(|| RetrieveError::FormatError("PiPNN hyperplane length overflow".into()))?;
+        let hyperplanes = crate::graph_snapshot::read_f32_exact(
+            &input_dir.join("hyperplanes.bin"),
+            hyperplanes_len,
+        )?;
+        crate::graph_snapshot::validate_graph_shape(
+            "PiPNN",
+            snapshot.dimension,
+            snapshot.num_vectors,
+            &vectors,
+            &doc_ids,
+            &neighbors,
+            Some(snapshot.medoid),
+        )?;
+        Ok(Self {
+            dimension: snapshot.dimension,
+            params: snapshot.params,
+            built: true,
+            vectors,
+            num_vectors: snapshot.num_vectors,
+            doc_ids,
+            neighbors,
+            medoid: snapshot.medoid,
+            hyperplanes,
+        })
     }
 
     /// Search for k nearest neighbors.
@@ -829,6 +931,43 @@ mod tests {
             recall > 0.5,
             "self-search recall too low: {recall:.2} ({hits}/{n})"
         );
+    }
+
+    #[test]
+    fn save_load_roundtrip_preserves_search() {
+        let dim = 16;
+        let n = 100;
+        let data = make_vectors(n, dim, 7);
+        let mut index = PipnnIndex::new(
+            dim,
+            PipnnParams {
+                max_leaf_size: 50,
+                max_degree: 16,
+                num_hash_bits: 10,
+                final_prune: true,
+                ef_search: 50,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        for i in 0..n {
+            let start = i * dim;
+            index
+                .add_slice(10_000 + i as u32, &data[start..start + dim])
+                .unwrap();
+        }
+        index.build().unwrap();
+        let query = &data[0..dim];
+        let before = index.search_with_ef(query, 5, 50).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        index.save_to_dir(dir.path()).unwrap();
+        let loaded = PipnnIndex::load_from_dir(dir.path()).unwrap();
+
+        assert_eq!(loaded.search_with_ef(query, 5, 50).unwrap(), before);
+        assert_eq!(loaded.len(), index.len());
+        assert_eq!(loaded.hyperplanes, index.hyperplanes);
     }
 
     #[test]
