@@ -119,31 +119,48 @@ pub(crate) fn load_completed_results(path: &Path, expected_dataset: &str) -> Com
     }
 }
 
-fn result_check(algorithm: &str, params_json: &str) -> Vec<String> {
-    vec![format!(
-        "\"algorithm\":\"{}\",\"params\":{}",
-        algorithm, params_json
-    )]
+struct ExpectedResult {
+    algorithm: String,
+    fragments: Vec<String>,
 }
 
-fn single_result_check(algorithm: &str, params_json: &str) -> Vec<Vec<String>> {
-    vec![result_check(algorithm, params_json)]
+impl ExpectedResult {
+    fn new(algorithm: impl Into<String>, fragments: impl IntoIterator<Item = String>) -> Self {
+        Self {
+            algorithm: algorithm.into(),
+            fragments: fragments.into_iter().collect(),
+        }
+    }
+
+    fn with_params(algorithm: impl Into<String>, params_json: &str) -> Self {
+        Self::new(algorithm, [format!("\"params\":{}", params_json)])
+    }
+
+    fn matches(&self, line: &str) -> bool {
+        line.contains(&format!("\"algorithm\":\"{}\"", self.algorithm))
+            && self
+                .fragments
+                .iter()
+                .all(|fragment| line.contains(fragment))
+    }
+}
+
+fn single_result_check(algorithm: &str, params_json: &str) -> Vec<ExpectedResult> {
+    vec![ExpectedResult::with_params(algorithm, params_json)]
 }
 
 fn result_check_with_fragments(
     algorithm: &str,
     fragments: impl IntoIterator<Item = String>,
-) -> Vec<String> {
-    let mut check = vec![format!("\"algorithm\":\"{}\"", algorithm)];
-    check.extend(fragments);
-    check
+) -> ExpectedResult {
+    ExpectedResult::new(algorithm, fragments)
 }
 
 fn ef_checks(
     algorithm: &str,
     cfg: &Config,
     extra_fragments: impl Fn(usize) -> Vec<String>,
-) -> Vec<Vec<String>> {
+) -> Vec<ExpectedResult> {
     cfg.ef_search_values
         .iter()
         .map(|&ef| {
@@ -154,7 +171,7 @@ fn ef_checks(
         .collect()
 }
 
-fn hnsw_quantized_checks(algorithm: &str, cfg: &Config) -> Vec<Vec<String>> {
+fn hnsw_quantized_checks(algorithm: &str, cfg: &Config) -> Vec<ExpectedResult> {
     ef_checks(algorithm, cfg, |ef| {
         vec![
             format!("\"m\":{}", cfg.m),
@@ -164,7 +181,11 @@ fn hnsw_quantized_checks(algorithm: &str, cfg: &Config) -> Vec<Vec<String>> {
     })
 }
 
-fn conditional_single_check(enabled: bool, algorithm: &str, params_json: &str) -> Vec<Vec<String>> {
+fn conditional_single_check(
+    enabled: bool,
+    algorithm: &str,
+    params_json: &str,
+) -> Vec<ExpectedResult> {
     if enabled {
         single_result_check(algorithm, params_json)
     } else {
@@ -178,7 +199,7 @@ pub(crate) fn nprobe_values(max_probe: usize) -> impl Iterator<Item = usize> {
         .filter(move |&nprobe| nprobe <= max_probe)
 }
 
-fn diskann_checks(cfg: &Config) -> Vec<Vec<String>> {
+fn diskann_checks(cfg: &Config) -> Vec<ExpectedResult> {
     const STORAGE_ROWS: [(&str, &str, &str); 3] = [
         ("diskann", "memory", "in_memory"),
         ("diskann_file", "file", "file"),
@@ -200,13 +221,26 @@ fn diskann_checks(cfg: &Config) -> Vec<Vec<String>> {
         .collect()
 }
 
+fn churn_shape(cfg: &Config, train_len: usize, test_len: usize) -> Option<(usize, usize, usize)> {
+    let base_size = cfg
+        .churn_base_size
+        .min(train_len.saturating_sub(cfg.churn_cycles.max(1)));
+    let cycles = cfg.churn_cycles.min(train_len.saturating_sub(base_size));
+    let queries = cfg.churn_queries.min(test_len);
+    if base_size == 0 || cycles == 0 || queries == 0 {
+        None
+    } else {
+        Some((base_size, cycles, queries))
+    }
+}
+
 fn required_result_checks(
     algo: &str,
     cfg: &Config,
     dim: usize,
     train_len: usize,
     test_len: usize,
-) -> Vec<Vec<String>> {
+) -> Vec<ExpectedResult> {
     const LSH_TABLE_SWEEP: usize = 3;
 
     match algo {
@@ -214,7 +248,7 @@ fn required_result_checks(
             .ef_search_values
             .iter()
             .flat_map(|ef| {
-                let base_marker = vec![result_check(
+                let base_marker = vec![ExpectedResult::with_params(
                     "hnsw",
                     &format!(
                         "{{\"m\":{},\"ef_construction\":{},\"ef_search\":{}}}",
@@ -261,7 +295,7 @@ fn required_result_checks(
             }
             nprobe_values(num_clusters)
                 .flat_map(|nprobe| {
-                    let mut markers = vec![result_check(
+                    let mut markers = vec![ExpectedResult::with_params(
                         "ivfpq",
                         &format!(
                             "{{\"num_clusters\":{},\"num_codebooks\":{},\"codebook_size\":{},\"nprobe\":{}}}",
@@ -274,7 +308,7 @@ fn required_result_checks(
                             .copied()
                             .filter(|&rerank_pool| rerank_pool > 0)
                             .map(|rerank_pool| {
-                                result_check(
+                                ExpectedResult::with_params(
                                     "ivfpq_rerank",
                                     &format!(
                                         "{{\"num_clusters\":{},\"num_codebooks\":{},\"codebook_size\":{},\"nprobe\":{},\"rerank_pool\":{}}}",
@@ -295,7 +329,7 @@ fn required_result_checks(
                 .unwrap_or(1);
             nprobe_values(num_partitions)
                 .map(|nprobe| {
-                    result_check(
+                    ExpectedResult::with_params(
                         "ivf_avq",
                         &format!(
                             "{{\"num_partitions\":{},\"num_codebooks\":{},\"codebook_size\":256,\"nprobe\":{},\"num_reorder\":100}}",
@@ -307,7 +341,7 @@ fn required_result_checks(
         }
         "ivf_rabitq" => nprobe_values(256)
             .map(|nprobe| {
-                result_check(
+                ExpectedResult::with_params(
                     "ivf_rabitq",
                     &format!(
                         "{{\"num_clusters\":256,\"total_bits\":4,\"nprobe\":{}}}",
@@ -327,7 +361,7 @@ fn required_result_checks(
                         .into_iter()
                         .filter(move |&num_probes| num_probes <= dim)
                         .map(move |num_probes| {
-                            result_check(
+                            ExpectedResult::with_params(
                                 "lsh",
                                 &format!(
                                     "{{\"num_tables\":{},\"num_probes\":{}}}",
@@ -345,7 +379,7 @@ fn required_result_checks(
             .ef_search_values
             .iter()
             .map(|beam_width| {
-                result_check(
+                ExpectedResult::with_params(
                     "inplace",
                     &format!(
                         "{{\"max_degree\":32,\"build_beam_width\":{},\"beam_width\":{}}}",
@@ -374,14 +408,9 @@ fn required_result_checks(
             })
         }
         "fresh_graph_churn" => {
-            let base_size = cfg
-                .churn_base_size
-                .min(train_len.saturating_sub(cfg.churn_cycles.max(1)));
-            let cycles = cfg.churn_cycles.min(train_len.saturating_sub(base_size));
-            let queries = cfg.churn_queries.min(test_len);
-            if base_size == 0 || cycles == 0 || queries == 0 {
+            let Some((base_size, cycles, queries)) = churn_shape(cfg, train_len, test_len) else {
                 return Vec::new();
-            }
+            };
             ef_checks("fresh_graph_churn", cfg, |_| {
                 vec![
                     "\"max_degree\":32".to_string(),
@@ -392,18 +421,13 @@ fn required_result_checks(
             })
         }
         "inplace_churn" => {
-            let base_size = cfg
-                .churn_base_size
-                .min(train_len.saturating_sub(cfg.churn_cycles.max(1)));
-            let cycles = cfg.churn_cycles.min(train_len.saturating_sub(base_size));
-            let queries = cfg.churn_queries.min(test_len);
-            if base_size == 0 || cycles == 0 || queries == 0 {
+            let Some((base_size, cycles, queries)) = churn_shape(cfg, train_len, test_len) else {
                 return Vec::new();
-            }
+            };
             cfg.ef_search_values
                 .iter()
                 .map(|beam_width| {
-                    result_check(
+                    ExpectedResult::with_params(
                         "inplace_churn",
                         &format!(
                             "{{\"max_degree\":32,\"build_beam_width\":{},\"beam_width\":{},\"base_size\":{},\"cycles\":{},\"queries\":{}}}",
@@ -414,14 +438,9 @@ fn required_result_checks(
                 .collect()
         }
         "lsm_churn" => {
-            let base_size = cfg
-                .churn_base_size
-                .min(train_len.saturating_sub(cfg.churn_cycles.max(1)));
-            let cycles = cfg.churn_cycles.min(train_len.saturating_sub(base_size));
-            let queries = cfg.churn_queries.min(test_len);
-            if base_size == 0 || cycles == 0 || queries == 0 {
+            let Some((base_size, cycles, queries)) = churn_shape(cfg, train_len, test_len) else {
                 return Vec::new();
-            }
+            };
             let buffer_capacity = (base_size / 10).clamp(20, 10_000);
             ef_checks("lsm_churn", cfg, |_| {
                 vec![
@@ -476,7 +495,7 @@ fn required_result_checks(
             "kmeans_tree",
             "{\"num_clusters\":16,\"max_leaf_size\":50,\"max_depth\":10,\"max_iterations\":10}",
         ),
-        _ => vec![vec![format!("\"algorithm\":\"{}\"", algo)]],
+        _ => vec![ExpectedResult::new(algo, std::iter::empty::<String>())],
     }
 }
 
@@ -490,12 +509,9 @@ pub(crate) fn request_completed(
 ) -> bool {
     let checks = required_result_checks(algo, cfg, dim, train_len, test_len);
     !checks.is_empty()
-        && checks.iter().all(|check| {
-            completed
-                .lines
-                .iter()
-                .any(|line| check.iter().all(|fragment| line.contains(fragment)))
-        })
+        && checks
+            .iter()
+            .all(|expected| completed.lines.iter().any(|line| expected.matches(line)))
 }
 
 pub(crate) fn emit_result(results_path: &Path, line: &str) {
