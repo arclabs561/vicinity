@@ -139,6 +139,9 @@ It is intended to backstop claims in module docs and to give you a starting poin
 - Jin, Wu, Hu, Maggs, Yang, Zhang, Zhuo (2026). *Curator: Efficient Vector Search with Low-Selectivity Filters.* (SIGMOD 2026; k-means tree + per-label buffers)
   `https://arxiv.org/abs/2601.01291`
 
+- Kim, Choe (2026). *RACORN-1: Adaptive Recall-Preserving Speedup for Low-Selectivity Filtered Vector Search.* (ACORN-1 extension with adaptive search fallback and exact fallback)
+  `https://arxiv.org/abs/2607.00768`
+
 ## IVF-RaBitQ
 
 - Chen et al. (2026). *IVF-RaBitQ: GPU-native IVF with RaBitQ quantization.*
@@ -258,4 +261,3 @@ It is intended to backstop claims in module docs and to give you a starting poin
 
 - Simhadri et al. (2024). *Results of the Big ANN: NeurIPS'23 Competition.* (billion-scale baselines)
   `https://arxiv.org/abs/2409.17424`
-

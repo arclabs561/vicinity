@@ -198,6 +198,11 @@ $O(1)$ cost. Up to 5x faster than HNSW on 1536-3072d embeddings.
 **ACORN**: Filtered HNSW via subgraph sampling (SIGMOD 2024). Selectivity
 regime matters more than algorithm choice.
 
+**RACORN-1**: ACORN-compatible low-selectivity fallback (arXiv 2026).
+Repurposes filter-failing nodes as transient bridges when ACORN expansion
+stalls, then switches to exact filtered scan at extreme low selectivity.
+Treat this as an extension point after ACORN, not a replacement baseline.
+
 **Curator**: K-means tree with per-label Bloom filters for low-selectivity
 (<5%) filtered search. Complement to graph indexes.
 
