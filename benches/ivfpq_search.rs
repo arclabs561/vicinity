@@ -25,12 +25,12 @@ fn random_vectors(n: usize, dim: usize, seed: u64) -> Vec<Vec<f32>> {
 }
 
 #[cfg(feature = "ivf_pq")]
-fn build_index(n_vectors: usize, dim: usize) -> (IVFPQIndex, Vec<Vec<f32>>) {
+fn build_index(n_vectors: usize, dim: usize, num_codebooks: usize) -> (IVFPQIndex, Vec<Vec<f32>>) {
     let vectors = random_vectors(n_vectors, dim, 42);
     let params = IVFPQParams {
         num_clusters: 256,
         nprobe: 32,
-        num_codebooks: dim,
+        num_codebooks,
         codebook_size: 256,
         seed: 42,
         ..IVFPQParams::default()
@@ -109,32 +109,36 @@ fn bench_ivfpq_search_only(c: &mut Criterion) {
     let n_vectors = 20_000;
     let n_queries = 100;
     let queries = random_vectors(n_queries, dim, 123);
-    let (index, _vectors) = build_index(n_vectors, dim);
+    let configs = [("m25_one_dim", dim), ("m5_runner_default", 5)];
 
-    #[cfg(feature = "benchmark")]
-    {
-        print_profile_summary("nprobe32_k10", &index, &queries, 10);
-        print_profile_summary("nprobe32_pool500", &index, &queries, 500);
+    for (label, num_codebooks) in configs {
+        let (index, _vectors) = build_index(n_vectors, dim, num_codebooks);
+
+        #[cfg(feature = "benchmark")]
+        {
+            print_profile_summary(&format!("{label}_nprobe32_k10"), &index, &queries, 10);
+            print_profile_summary(&format!("{label}_nprobe32_pool500"), &index, &queries, 500);
+        }
+
+        group.throughput(Throughput::Elements(n_queries as u64));
+        group.bench_function(format!("{label}_nprobe32_k10"), |bench| {
+            bench.iter(|| {
+                queries
+                    .iter()
+                    .map(|q| index.search(black_box(q), 10).unwrap().len())
+                    .sum::<usize>()
+            });
+        });
+
+        group.bench_function(format!("{label}_nprobe32_rerank500_k10"), |bench| {
+            bench.iter(|| {
+                queries
+                    .iter()
+                    .map(|q| index.search_reranked(black_box(q), 10, 500).unwrap().len())
+                    .sum::<usize>()
+            });
+        });
     }
-
-    group.throughput(Throughput::Elements(n_queries as u64));
-    group.bench_function("nprobe32_k10", |bench| {
-        bench.iter(|| {
-            queries
-                .iter()
-                .map(|q| index.search(black_box(q), 10).unwrap().len())
-                .sum::<usize>()
-        });
-    });
-
-    group.bench_function("nprobe32_rerank500_k10", |bench| {
-        bench.iter(|| {
-            queries
-                .iter()
-                .map(|q| index.search_reranked(black_box(q), 10, 500).unwrap().len())
-                .sum::<usize>()
-        });
-    });
 
     group.finish();
 }
