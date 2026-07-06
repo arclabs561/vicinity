@@ -116,6 +116,7 @@ cargo run --example ann_benchmark --release --features hnsw,serde -- \
   data/ann-benchmarks/glove-25-angular --algo hnsw --snapshot-load --json
 
 # IVF-PQ cluster/codebook/rerank sweep
+# Add --snapshot-load to also measure saved-and-reopened raw and reranked rows.
 cargo run --example ann_benchmark --release --features hnsw,ivf_pq -- \
   data/ann-benchmarks/glove-25-angular --algo ivfpq \
   --pq-clusters 1024 --pq-codebooks 5 --pq-codebook-size 16 \

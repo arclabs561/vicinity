@@ -386,7 +386,7 @@ fn required_result_checks(
             }
             nprobe_values(num_clusters)
                 .flat_map(|nprobe| {
-                    let mut markers = vec![ExpectedResult::with_params(
+                    let mut markers = snapshot_check(
                         "ivfpq",
                         &ivfpq_params_json(
                             num_clusters,
@@ -397,14 +397,15 @@ fn required_result_checks(
                             cfg.pq_training_sample_size,
                             cfg.pq_kmeans_max_iter,
                         ),
-                    )];
+                        cfg,
+                    );
                     markers.extend(
                         cfg.pq_rerank_pools
                             .iter()
                             .copied()
                             .filter(|&rerank_pool| rerank_pool > 0)
-                            .map(|rerank_pool| {
-                                ExpectedResult::with_params(
+                            .flat_map(|rerank_pool| {
+                                snapshot_check(
                                     "ivfpq_rerank",
                                     &ivfpq_params_json(
                                         num_clusters,
@@ -415,6 +416,7 @@ fn required_result_checks(
                                         cfg.pq_training_sample_size,
                                         cfg.pq_kmeans_max_iter,
                                     ),
+                                    cfg,
                                 )
                             }),
                     );
@@ -1074,6 +1076,7 @@ pub(crate) fn current_rss_kb() -> Option<u64> {
 #[cfg(any(
     feature = "balltree",
     feature = "diskann",
+    feature = "ivf_pq",
     feature = "kdtree",
     feature = "kmeans_tree",
     feature = "rptree"

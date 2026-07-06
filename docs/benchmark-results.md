@@ -31,6 +31,8 @@ cargo run --example ann_benchmark --release --features hnsw,serde -- \
   data/ann-benchmarks/glove-25-angular --algo hnsw --snapshot-load --json --fresh
 
 # IVF-PQ with exact reranking pools.
+# Add `--snapshot-load` when validating save/load equivalence and rerank
+# persistence; it doubles the emitted IVF-PQ rows.
 cargo run --example ann_benchmark --release --features ivf_pq,hnsw -- \
   data/ann-benchmarks/glove-25-angular --algo ivfpq \
   --pq-clusters 1024 --pq-codebooks 5 --pq-codebook-size 16 \
