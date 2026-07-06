@@ -323,19 +323,32 @@ impl PyHNSWIndex {
         let metric = self.metric;
         let auto_normalize = self.auto_normalize;
 
-        py.detach(|| -> Result<(), crate::RetrieveError> {
-            for i in 0..nq {
-                let q = &data[i * dim..(i + 1) * dim];
-                let prepared = prep_query(q, metric, auto_normalize);
-                let results = self.inner.search(prepared.as_ref(), k, ef)?;
-                for (j, (id, dist)) in results.iter().enumerate() {
-                    all_ids[i * k + j] = *id as i64;
-                    all_dists[i * k + j] = *dist;
+        let batch_results = py
+            .detach(|| -> Result<Vec<Vec<(u32, f32)>>, crate::RetrieveError> {
+                #[cfg(feature = "parallel")]
+                {
+                    let prepared = prep_batch_queries(data, nq, dim, metric, auto_normalize);
+                    self.inner.search_batch_flat(prepared.as_ref(), nq, k, ef)
                 }
+                #[cfg(not(feature = "parallel"))]
+                {
+                    let mut results = Vec::with_capacity(nq);
+                    for i in 0..nq {
+                        let q = &data[i * dim..(i + 1) * dim];
+                        let prepared = prep_query(q, metric, auto_normalize);
+                        results.push(self.inner.search(prepared.as_ref(), k, ef)?);
+                    }
+                    Ok(results)
+                }
+            })
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+
+        for (i, results) in batch_results.iter().enumerate() {
+            for (j, (id, dist)) in results.iter().enumerate() {
+                all_ids[i * k + j] = *id as i64;
+                all_dists[i * k + j] = *dist;
             }
-            Ok(())
-        })
-        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        }
 
         let ids_arr = numpy::ndarray::Array2::from_shape_vec((nq, k), all_ids)
             .map_err(|e| PyValueError::new_err(format!("failed to reshape ids: {e}")))?;
@@ -438,6 +451,25 @@ fn prep_query<'a>(
         Cow::Owned(distance::normalize(query))
     } else {
         Cow::Borrowed(query)
+    }
+}
+
+#[cfg(feature = "parallel")]
+fn prep_batch_queries<'a>(
+    queries: &'a [f32],
+    num_queries: usize,
+    dim: usize,
+    metric: PyDistanceMetric,
+    auto_normalize: bool,
+) -> Cow<'a, [f32]> {
+    if auto_normalize && matches!(metric, PyDistanceMetric::Cosine | PyDistanceMetric::Angular) {
+        let mut normalized = Vec::with_capacity(queries.len());
+        for i in 0..num_queries {
+            normalized.extend(distance::normalize(&queries[i * dim..(i + 1) * dim]));
+        }
+        Cow::Owned(normalized)
+    } else {
+        Cow::Borrowed(queries)
     }
 }
 
