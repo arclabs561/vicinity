@@ -310,6 +310,10 @@ name = "pq_simd"
 harness = false
 
 [[bench]]
+name = "ivfpq_search"
+harness = false
+
+[[bench]]
 name = "recall"
 harness = false
 
