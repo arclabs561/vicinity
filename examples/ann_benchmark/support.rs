@@ -21,6 +21,7 @@ pub(crate) struct Config {
     pub(crate) pq_codebook_size: usize,
     pub(crate) pq_training_sample_size: Option<usize>,
     pub(crate) pq_kmeans_max_iter: usize,
+    pub(crate) pq_nprobe_values: Option<Vec<usize>>,
     pub(crate) pq_rerank_pools: Vec<usize>,
     pub(crate) tree_leaf_sizes: Vec<usize>,
     pub(crate) tree_depths: Vec<usize>,
@@ -53,6 +54,7 @@ impl Default for Config {
             pq_codebook_size: 256,
             pq_training_sample_size: None,
             pq_kmeans_max_iter: 100,
+            pq_nprobe_values: None,
             pq_rerank_pools: Vec::new(),
             tree_leaf_sizes: vec![10],
             tree_depths: vec![32],
@@ -349,10 +351,15 @@ fn kmeans_tree_snapshot_checks(cfg: &Config) -> Vec<ExpectedResult> {
         .collect()
 }
 
-pub(crate) fn nprobe_values(max_probe: usize) -> impl Iterator<Item = usize> {
-    [1, 2, 5, 10, 20, 50, 100]
+pub(crate) fn nprobe_values(cfg: &Config, max_probe: usize) -> Vec<usize> {
+    let values = cfg
+        .pq_nprobe_values
+        .clone()
+        .unwrap_or_else(|| vec![1, 2, 5, 10, 20, 50, 100]);
+    values
         .into_iter()
-        .filter(move |&nprobe| nprobe <= max_probe)
+        .filter(|&nprobe| nprobe > 0 && nprobe <= max_probe)
+        .collect()
 }
 
 fn diskann_checks(cfg: &Config) -> Vec<ExpectedResult> {
@@ -458,7 +465,8 @@ fn required_result_checks(
             if !dim.is_multiple_of(num_codebooks) {
                 return Vec::new();
             }
-            nprobe_values(num_clusters)
+            nprobe_values(cfg, num_clusters)
+                .into_iter()
                 .flat_map(|nprobe| {
                     let mut markers = snapshot_check(
                         "ivfpq",
@@ -504,7 +512,8 @@ fn required_result_checks(
                 .rev()
                 .find(|&c| dim.is_multiple_of(c))
                 .unwrap_or(1);
-            nprobe_values(num_partitions)
+            nprobe_values(cfg, num_partitions)
+                .into_iter()
                 .map(|nprobe| {
                     ExpectedResult::with_params(
                         "ivf_avq",
@@ -516,7 +525,8 @@ fn required_result_checks(
                 })
                 .collect()
         }
-        "ivf_rabitq" => nprobe_values(256)
+        "ivf_rabitq" => nprobe_values(cfg, 256)
+            .into_iter()
             .map(|nprobe| {
                 ExpectedResult::with_params(
                     "ivf_rabitq",
@@ -802,6 +812,12 @@ pub(crate) fn parse_args() -> Config {
                 i += 1;
                 if i < args.len() {
                     cfg.pq_kmeans_max_iter = args[i].parse().unwrap_or(100);
+                }
+            }
+            "--pq-nprobes" => {
+                i += 1;
+                if i < args.len() {
+                    cfg.pq_nprobe_values = Some(parse_usize_list(&args[i], &[]));
                 }
             }
             "--pq-rerank-pools" => {
@@ -1316,6 +1332,23 @@ mod tests {
         assert!(line.contains("\"cache_state\":\"warm_after_open\""));
         assert!(line.contains("\"load_time_s\":0.1250"));
         assert!(line.contains("\"index_bytes\":4096"));
+    }
+
+    #[test]
+    fn nprobe_values_use_default_sweep_bounded_by_partition_count() {
+        let cfg = Config::default();
+
+        assert_eq!(nprobe_values(&cfg, 12), vec![1, 2, 5, 10]);
+    }
+
+    #[test]
+    fn nprobe_values_use_explicit_positive_bounded_values() {
+        let cfg = Config {
+            pq_nprobe_values: Some(vec![0, 3, 7, 20]),
+            ..Config::default()
+        };
+
+        assert_eq!(nprobe_values(&cfg, 10), vec![3, 7]);
     }
 
     #[test]

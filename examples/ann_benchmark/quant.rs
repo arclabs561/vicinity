@@ -107,7 +107,7 @@ pub(crate) fn run_ivfpq(
     }
 
     // Sweep nprobe values (analogous to ef_search for graph methods)
-    for nprobe in nprobe_values(num_clusters) {
+    for nprobe in nprobe_values(cfg, num_clusters) {
         index.set_nprobe(nprobe);
         let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
         if cfg.json {
@@ -281,7 +281,7 @@ pub(crate) fn run_ivf_avq(
         print_header();
     }
 
-    for nprobe in nprobe_values(num_partitions) {
+    for nprobe in nprobe_values(cfg, num_partitions) {
         index.set_nprobe(nprobe);
         let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
         if cfg.json {
@@ -347,7 +347,7 @@ pub(crate) fn run_ivf_rabitq(
         print_header();
     }
 
-    for nprobe in nprobe_values(num_clusters) {
+    for nprobe in nprobe_values(cfg, num_clusters) {
         index.set_nprobe(nprobe);
         let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
         if cfg.json {

@@ -21,7 +21,7 @@
 //! cargo run --example ann_benchmark --release --features ivf_pq,hnsw -- \
 //!   data/ann-benchmarks/glove-25-angular --algo ivfpq \
 //!   --pq-clusters 1024 --pq-codebooks 5 --pq-training-sample-size 100000 \
-//!   --pq-kmeans-max-iter 20 --pq-rerank-pools 100,500
+//!   --pq-kmeans-max-iter 20 --pq-nprobes 5,10,20 --pq-rerank-pools 100,500
 //!
 //! cargo run --example ann_benchmark --release --features hnsw,fresh_graph -- \
 //!   data/ann-benchmarks/glove-25-angular --algo fresh_graph_churn --json
