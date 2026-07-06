@@ -87,6 +87,25 @@ jobs:
             --n 500 --queries 50 --k 10 --neighbors 16 --json
           cargo run --no-default-features --features hnsw,filtered_graph,range_filtered,curator --release --example acorn_selectivity -- \
             --n 200 --queries 10 --k 5 --neighbors 12 --json
+      - name: ann_benchmark smoke
+        run: |
+          python scripts/generate_ann_smoke_data.py /tmp/vicinity-ann-ci --train 64 --test 12 --dim 8 --k 10
+          cargo run --no-default-features --features hnsw,nsw,lsh,kdtree,balltree,rptree,kmeans_tree --release --example ann_benchmark -- \
+            /tmp/vicinity-ann-ci \
+            --algo hnsw --algo nsw --algo lsh \
+            --algo kdtree --algo balltree --algo rptree --algo rp_forest --algo kmeans_tree \
+            --ef-search 10 \
+            --tree-leaf-sizes 4 --tree-depths 8 --rp-num-trees 3 \
+            --kmeans-clusters 4 --kmeans-leaf-sizes 8 --kmeans-depths 4 --kmeans-iters 3 \
+            --json --fresh --results /tmp/vicinity-ann-ci-graph-classic.jsonl
+          cargo run --no-default-features --features hnsw,ivf_pq,ivf_avq,ivf_rabitq,rp_quant,binary_index,sq4,sq8,lsh --release --example ann_benchmark -- \
+            /tmp/vicinity-ann-ci \
+            --algo ivfpq --algo ivf_avq --algo ivf_rabitq \
+            --algo rp_quant --algo binary_index --algo sq4 --algo sq4u --algo sq8u --algo lsh \
+            --ef-search 10 \
+            --pq-clusters 8 --pq-codebooks 2 --pq-codebook-size 8 \
+            --pq-training-sample-size 64 --pq-kmeans-max-iter 3 --pq-nprobes 1 \
+            --snapshot-load --json --fresh --results /tmp/vicinity-ann-ci-quant.jsonl
       - name: CLI smoke
         run: |
           printf '{"id":0,"vec":[1.0,0.0,0.0]}\n{"id":1,"vec":[0.0,1.0,0.0]}\n{"id":2,"vec":[0.7,0.7,0.0]}\n' > /tmp/v.jsonl
@@ -239,9 +258,9 @@ jobs:
       - name: Build extension (editable)
         run: maturin develop --release --features hnsw,python
       - name: Ruff
-        run: python -m ruff check pyvicinity tests/test_python.py examples/python
+        run: python -m ruff check pyvicinity tests/test_python.py examples/python scripts/generate_ann_smoke_data.py
       - name: Ruff format
-        run: python -m ruff format --check pyvicinity tests/test_python.py examples/python
+        run: python -m ruff format --check pyvicinity tests/test_python.py examples/python scripts/generate_ann_smoke_data.py
       - name: mypy --strict
         run: python -m mypy --strict pyvicinity
       - name: Stubtest (.pyi vs compiled module)
