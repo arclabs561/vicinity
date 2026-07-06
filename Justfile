@@ -1,5 +1,8 @@
 # vicinity -- task runner
 
+ann_broad_features := "hnsw,nsw,vamana,diskann,ivf_pq,ivf_avq,ivf_rabitq,emg,nsg,pipnn,sng,finger,fresh_graph,filtered_graph,curator,range_filtered,rp_quant,binary_index,sq4,sq8,lsh,rptree,kdtree,balltree,kmeans_tree"
+ann_broad_algos := "--algo hnsw --algo nsw --algo vamana --algo diskann --algo ivfpq --algo ivf_avq --algo ivf_rabitq --algo emg --algo nsg --algo dual_branch --algo deg --algo pipnn --algo sng --algo finger --algo fresh_graph --algo filtered_graph --algo curator --algo range_filtered --algo rp_quant --algo binary_index --algo sq4 --algo sq4u --algo sq8u --algo symphony_qg --algo symphony_qg_vr --algo adsampling --algo lsh --algo hnsw_prt --algo brute --algo kdtree --algo balltree --algo rptree --algo rp_forest --algo kmeans_tree"
+
 default:
     @just --list
 
@@ -20,6 +23,14 @@ ann dataset="data/ann-benchmarks/glove-25-angular":
 # Run ann-benchmark with JSON output (for plotting)
 ann-json dataset="data/ann-benchmarks/glove-25-angular":
     cargo run --example ann_benchmark --release --features hnsw,nsw -- {{dataset}} --json
+
+# Run the broad dense-vector sweep documented in docs/benchmark-results.md
+ann-broad dataset="data/ann-benchmarks/glove-25-angular":
+    cargo run --example ann_benchmark --release --features "{{ann_broad_features}}" -- {{dataset}} {{ann_broad_algos}} --pq-training-sample-size 100000 --pq-kmeans-max-iter 20
+
+# Run the broad dense-vector sweep with JSONL output
+ann-broad-json dataset="data/ann-benchmarks/glove-25-angular":
+    cargo run --example ann_benchmark --release --features "{{ann_broad_features}}" -- {{dataset}} {{ann_broad_algos}} --pq-training-sample-size 100000 --pq-kmeans-max-iter 20 --json
 
 # Full standard benchmark pipeline: download + run + plot
 bench-standard:
