@@ -257,9 +257,7 @@ def test_recall_against_brute_force() -> None:
     idx.set_ef_search(100)
 
     ann_ids, _ = idx.batch_search(queries, k=k)
-    recalls = [
-        len(set(ann_ids[i].tolist()) & truth_sets[i]) / k for i in range(nq)
-    ]
+    recalls = [len(set(ann_ids[i].tolist()) & truth_sets[i]) / k for i in range(nq)]
     mean_recall = float(np.mean(recalls))
     assert mean_recall >= 0.95, f"mean recall@{k} = {mean_recall:.3f} < 0.95"
 

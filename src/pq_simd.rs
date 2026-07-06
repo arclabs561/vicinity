@@ -568,6 +568,47 @@ pub fn quantize_lut(lut: &[Vec<f32>]) -> (Vec<u8>, f32, f32) {
     (quantized, scale, offset)
 }
 
+/// Quantize a flat 4-bit FastScan LUT without building nested vectors.
+///
+/// `lut` must contain `num_codebooks * 16` entries laid out as
+/// `[codebook_0_values..., codebook_1_values..., ...]`.
+pub fn quantize_lut_flat(lut: &[f32], num_codebooks: usize) -> (Vec<u8>, f32, f32) {
+    debug_assert_eq!(lut.len(), num_codebooks * 16);
+    if lut.is_empty() {
+        return (Vec::new(), 1.0, 0.0);
+    }
+
+    let mut global_min = f32::INFINITY;
+    let mut global_max = f32::NEG_INFINITY;
+    for &value in lut {
+        if value < global_min {
+            global_min = value;
+        }
+        if value > global_max {
+            global_max = value;
+        }
+    }
+
+    let range = global_max - global_min;
+    let (scale, offset) = if range < f32::EPSILON {
+        (1.0, global_min)
+    } else {
+        (range / 255.0, global_min)
+    };
+    let inv_scale = if range < f32::EPSILON {
+        0.0
+    } else {
+        255.0 / range
+    };
+
+    let quantized = lut
+        .iter()
+        .map(|&value| ((value - offset) * inv_scale).round().clamp(0.0, 255.0) as u8)
+        .collect();
+
+    (quantized, scale, offset)
+}
+
 /// Portable FastScan kernel: process one 32-vector block.
 ///
 /// Simulates what vpshufb does in hardware: for each of 32 vectors, look up
@@ -626,6 +667,21 @@ pub fn fastscan_batch(packed: &PackedCodes4bit, lut: &[Vec<f32>]) -> Vec<f32> {
     assert_eq!(lut.len(), packed.num_codebooks);
 
     let (lut_q, scale, offset) = quantize_lut(lut);
+    fastscan_batch_quantized(packed, &lut_q, scale, offset)
+}
+
+/// End-to-end FastScan batch using a flat `[num_codebooks * 16]` LUT.
+pub fn fastscan_batch_flat(packed: &PackedCodes4bit, lut: &[f32]) -> Vec<f32> {
+    let (lut_q, scale, offset) = quantize_lut_flat(lut, packed.num_codebooks);
+    fastscan_batch_quantized(packed, &lut_q, scale, offset)
+}
+
+fn fastscan_batch_quantized(
+    packed: &PackedCodes4bit,
+    lut_q: &[u8],
+    scale: f32,
+    offset: f32,
+) -> Vec<f32> {
     let num_codebooks = packed.num_codebooks;
     let num_blocks = packed.num_blocks();
     let bpb = packed.bytes_per_block();
@@ -640,7 +696,7 @@ pub fn fastscan_batch(packed: &PackedCodes4bit, lut: &[Vec<f32>]) -> Vec<f32> {
         let block_end = (block_start + bpb).min(packed.data.len());
         let block_data = &packed.data[block_start..block_end];
 
-        let accum = fastscan_block_portable(block_data, &lut_q, num_codebooks);
+        let accum = fastscan_block_portable(block_data, lut_q, num_codebooks);
 
         let vecs_in_block = if block_idx == num_blocks - 1 {
             let remaining = packed.num_vectors - block_idx * 32;
@@ -876,6 +932,23 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_flat_fastscan_matches_nested() {
+        let num_vectors = 64;
+        let num_codebooks = 5;
+        let lut = create_4bit_lut(num_codebooks);
+        let flat_lut: Vec<f32> = lut.iter().flat_map(|table| table.iter().copied()).collect();
+        let codes: Vec<u8> = (0..num_vectors * num_codebooks)
+            .map(|i| (i % 16) as u8)
+            .collect();
+        let packed = PackedCodes4bit::pack(&codes, num_vectors, num_codebooks);
+
+        let nested = fastscan_batch(&packed, &lut);
+        let flat = fastscan_batch_flat(&packed, &flat_lut);
+
+        assert_eq!(nested, flat);
     }
 
     #[test]

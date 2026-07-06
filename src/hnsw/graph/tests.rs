@@ -96,6 +96,70 @@ fn test_search_adaptive_aggressive_fewer_evaluations() {
     );
 }
 
+#[test]
+fn test_search_acorn_filters_by_metadata() {
+    let dim = 8;
+    let mut index = HNSWIndex::with_filtering(dim, 8, 16, "group").unwrap();
+    let mut doc_ids = Vec::new();
+    let mut vectors = Vec::new();
+
+    for i in 0..40_u32 {
+        let doc_id = 10_000 + i * 7;
+        let mut v = vec![0.0; dim];
+        v[(i as usize) % dim] = 1.0;
+        v[((i as usize) * 3 + 1) % dim] += 0.1;
+        let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        for x in &mut v {
+            *x /= norm;
+        }
+        index.add(doc_id, v.clone()).unwrap();
+        doc_ids.push(doc_id);
+        vectors.push(v);
+    }
+
+    // ACORN uses the metadata store directly, so metadata can be attached
+    // after graph construction. `search_with_filter` uses build-time
+    // category assignments and remains a separate API.
+    index.build().unwrap();
+    for (i, &doc_id) in doc_ids.iter().enumerate() {
+        let mut metadata = crate::filtering::DocumentMetadata::new();
+        metadata.insert(
+            "group".to_string(),
+            crate::filtering::MetadataValue::from((i as u32) % 2),
+        );
+        index.add_metadata(doc_id, metadata).unwrap();
+    }
+
+    let filter = crate::filtering::MetadataFilter::equals("group", 0_u32);
+    let config = crate::hnsw::AcornConfig {
+        ef_search: 32,
+        ..Default::default()
+    };
+    let (results, _stats) = index
+        .search_acorn_with_stats(&vectors[2], 5, &config, &filter)
+        .unwrap();
+
+    assert!(!results.is_empty());
+    assert!(results.iter().all(|(doc_id, _)| doc_ids.contains(doc_id)));
+    assert!(
+        results
+            .iter()
+            .all(|(doc_id, _)| ((doc_id - 10_000) / 7) % 2 == 0),
+        "all ACORN results should satisfy the metadata filter: {results:?}"
+    );
+}
+
+#[test]
+fn test_search_acorn_requires_filtering_metadata() {
+    let (index, q) = build_test_index();
+    let filter = crate::filtering::MetadataFilter::equals("group", 0_u32);
+    let err = index
+        .search_acorn(&q, 5, &crate::hnsw::AcornConfig::default(), &filter)
+        .unwrap_err();
+
+    assert!(matches!(err, RetrieveError::InvalidParameter(_)));
+}
+
 #[cfg(feature = "serde")]
 #[test]
 fn test_hnsw_save_load_roundtrip() {

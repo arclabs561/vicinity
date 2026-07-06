@@ -7,7 +7,7 @@
 //! # Feature Flag
 //!
 //! ```toml
-//! vicinity = { version = "0.8", features = ["ivf_rabitq"] }
+//! vicinity = { version = "0.10.5", features = ["ivf_rabitq"] }
 //! ```
 //!
 //! # Quick Start
@@ -51,6 +51,10 @@
 //! 3. **RaBitQ quantization**: random rotation + sign/extended bits + correction factors
 //! 4. **Search**: probe nearest centroids, scan clusters with RaBitQ approximate distances
 //!
+//! Built non-compacted indexes can be saved with `IVFRaBitQIndex::save_to_dir()`
+//! and restored with `IVFRaBitQIndex::load_from_dir()`. The current format
+//! reloads into memory and rebuilds edge codes from raw vectors.
+//!
 //! Distance is computed asymmetrically: query is exact f32, database vectors are
 //! quantized. The correction factors (`f_add`, `f_rescale`) provide theoretical
 //! error bounds on the distance estimate.
@@ -64,6 +68,12 @@
 use crate::distance::FloatOrd;
 use crate::RetrieveError;
 use qntz::rabitq::{RaBitQConfig, RaBitQQuantizer};
+use serde::{Deserialize, Serialize};
+use std::io::{BufReader, BufWriter, Read, Write};
+use std::path::Path;
+
+const IVFRABITQ_FORMAT_VERSION: u32 = 1;
+const IVFRABITQ_CLUSTERS_MAGIC: &[u8; 8] = b"IVFRBQCL";
 
 /// IVF-RaBitQ parameters.
 #[derive(Clone, Debug)]
@@ -87,6 +97,44 @@ impl Default for IVFRaBitQParams {
             seed: 42,
         }
     }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct PersistedIVFRaBitQParams {
+    num_clusters: usize,
+    nprobe: usize,
+    total_bits: usize,
+    seed: u64,
+}
+
+impl From<&IVFRaBitQParams> for PersistedIVFRaBitQParams {
+    fn from(params: &IVFRaBitQParams) -> Self {
+        Self {
+            num_clusters: params.num_clusters,
+            nprobe: params.nprobe,
+            total_bits: params.total_bits,
+            seed: params.seed,
+        }
+    }
+}
+
+impl PersistedIVFRaBitQParams {
+    fn into_params(self) -> IVFRaBitQParams {
+        IVFRaBitQParams {
+            num_clusters: self.num_clusters,
+            nprobe: self.nprobe,
+            total_bits: self.total_bits,
+            seed: self.seed,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct IVFRaBitQManifest {
+    version: u32,
+    dimension: usize,
+    num_vectors: usize,
+    params: PersistedIVFRaBitQParams,
 }
 
 /// A cluster (inverted list) storing RaBitQ-quantized residual vectors.
@@ -237,22 +285,7 @@ impl IVFRaBitQIndex {
             .flat_map(|c: &Vec<f32>| c.iter().copied())
             .collect();
 
-        // Build HNSW coarse quantizer over centroids
-        #[cfg(feature = "hnsw")]
-        {
-            let nc = self.centroids.len() / self.dimension;
-            let mut hnsw = crate::hnsw::HNSWIndex::builder(self.dimension)
-                .m(16)
-                .ef_construction(200)
-                .auto_normalize(true)
-                .build()?;
-            for i in 0..nc {
-                let centroid = self.get_centroid(i);
-                hnsw.add_slice(i as u32, centroid)?;
-            }
-            hnsw.build()?;
-            self.coarse_quantizer = Some(hnsw);
-        }
+        self.rebuild_coarse_quantizer()?;
 
         // Stage 2: assign vectors to clusters
         let assignments = kmeans.assign_clusters(&self.vectors, self.num_vectors);
@@ -263,11 +296,42 @@ impl IVFRaBitQIndex {
             cluster_indices[cluster_idx].push(vector_idx as u32);
         }
 
-        // Stage 3: quantize residuals per cluster via qntz's typed edge API.
+        self.rebuild_quantized_clusters(cluster_indices)?;
+
+        self.built = true;
+        Ok(())
+    }
+
+    #[cfg(feature = "hnsw")]
+    fn rebuild_coarse_quantizer(&mut self) -> Result<(), RetrieveError> {
+        let nc = self.centroids.len() / self.dimension;
+        let mut hnsw = crate::hnsw::HNSWIndex::builder(self.dimension)
+            .m(16)
+            .ef_construction(200)
+            .auto_normalize(true)
+            .build()?;
+        for i in 0..nc {
+            let centroid = self.get_centroid(i);
+            hnsw.add_slice(i as u32, centroid)?;
+        }
+        hnsw.build()?;
+        self.coarse_quantizer = Some(hnsw);
+        Ok(())
+    }
+
+    #[cfg(not(feature = "hnsw"))]
+    fn rebuild_coarse_quantizer(&mut self) -> Result<(), RetrieveError> {
+        Ok(())
+    }
+
+    fn rebuild_quantized_clusters(
+        &mut self,
+        cluster_indices: Vec<Vec<u32>>,
+    ) -> Result<(), RetrieveError> {
         // Each cluster centroid plays the role of `parent` in VR; baking
         // `<R*cluster_c, xu_cb>` into the edge lets search form an absolute
         // `||q - v||^2` that is comparable across probed clusters.
-        self.clusters = Vec::with_capacity(num_clusters);
+        self.clusters = Vec::with_capacity(cluster_indices.len());
         for (cluster_idx, indices) in cluster_indices.into_iter().enumerate() {
             let centroid = self.get_centroid(cluster_idx).to_vec();
             let centroid_rot = self.quantizer.rotate_query(&centroid).map_err(|e| {
@@ -301,8 +365,6 @@ impl IVFRaBitQIndex {
                 quantized,
             });
         }
-
-        self.built = true;
         Ok(())
     }
 
@@ -319,6 +381,88 @@ impl IVFRaBitQIndex {
         assert!(self.built, "compact() called before build()");
         self.vectors = Vec::new();
         self.compacted = true;
+    }
+
+    /// Save a built IVF-RaBitQ index to a directory.
+    ///
+    /// The current format stores normalized raw vectors and cluster membership,
+    /// then rebuilds RaBitQ edge codes on load. Saving after [`Self::compact`]
+    /// is rejected because `qntz::rabitq::EdgeQuantizedVector` intentionally
+    /// cannot be reconstructed from fields outside `qntz`.
+    pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<(), RetrieveError> {
+        if !self.built {
+            return Err(RetrieveError::InvalidParameter(
+                "cannot save unbuilt IVF-RaBitQ index".into(),
+            ));
+        }
+        if self.compacted || self.vectors.len() != self.num_vectors * self.dimension {
+            return Err(RetrieveError::InvalidParameter(
+                "cannot save compacted IVF-RaBitQ index".into(),
+            ));
+        }
+
+        let output_dir = output_dir.as_ref();
+        std::fs::create_dir_all(output_dir)?;
+        let mut params = self.params.clone();
+        params.num_clusters = self.clusters.len();
+        let manifest = IVFRaBitQManifest {
+            version: IVFRABITQ_FORMAT_VERSION,
+            dimension: self.dimension,
+            num_vectors: self.num_vectors,
+            params: PersistedIVFRaBitQParams::from(&params),
+        };
+
+        write_json_atomic(&output_dir.join("manifest.json"), &manifest)?;
+        write_f32_atomic(&output_dir.join("raw_vectors.bin"), &self.vectors)?;
+        write_u32_atomic(&output_dir.join("doc_ids.bin"), &self.doc_ids)?;
+        write_f32_atomic(&output_dir.join("centroids.bin"), &self.centroids)?;
+        write_cluster_ids_atomic(&output_dir.join("clusters.bin"), &self.clusters)?;
+
+        Ok(())
+    }
+
+    /// Load an IVF-RaBitQ index saved by [`Self::save_to_dir`].
+    pub fn load_from_dir(input_dir: impl AsRef<Path>) -> Result<Self, RetrieveError> {
+        let input_dir = input_dir.as_ref();
+        let manifest: IVFRaBitQManifest = read_json(&input_dir.join("manifest.json"))?;
+        if manifest.version != IVFRABITQ_FORMAT_VERSION {
+            return Err(RetrieveError::FormatError(format!(
+                "unsupported IVF-RaBitQ format version {}",
+                manifest.version
+            )));
+        }
+        if manifest.dimension == 0 {
+            return Err(RetrieveError::FormatError(
+                "IVF-RaBitQ manifest has zero dimension".into(),
+            ));
+        }
+        if manifest.num_vectors == 0 {
+            return Err(RetrieveError::FormatError(
+                "IVF-RaBitQ manifest has zero vectors".into(),
+            ));
+        }
+
+        let params = manifest.params.into_params();
+        let mut index = Self::new(manifest.dimension, params)?;
+        index.num_vectors = manifest.num_vectors;
+        index.vectors = read_f32_exact(
+            &input_dir.join("raw_vectors.bin"),
+            manifest.num_vectors * manifest.dimension,
+        )?;
+        index.doc_ids = read_u32_exact(&input_dir.join("doc_ids.bin"), manifest.num_vectors)?;
+        index.centroids = read_f32_exact(
+            &input_dir.join("centroids.bin"),
+            index.params.num_clusters * manifest.dimension,
+        )?;
+        let cluster_indices = read_cluster_ids(
+            &input_dir.join("clusters.bin"),
+            index.params.num_clusters,
+            manifest.num_vectors,
+        )?;
+        index.rebuild_coarse_quantizer()?;
+        index.rebuild_quantized_clusters(cluster_indices)?;
+        index.built = true;
+        Ok(index)
     }
 
     /// Search for the k nearest neighbors.
@@ -513,6 +657,187 @@ impl IVFRaBitQIndex {
     }
 }
 
+fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), RetrieveError> {
+    write_atomic(path, |writer| {
+        serde_json::to_writer_pretty(writer, value)
+            .map_err(|e| std::io::Error::other(e.to_string()))
+    })
+}
+
+fn write_f32_atomic(path: &Path, values: &[f32]) -> Result<(), RetrieveError> {
+    write_atomic(path, |writer| {
+        for value in values {
+            writer.write_all(&value.to_le_bytes())?;
+        }
+        Ok(())
+    })
+}
+
+fn write_u32_atomic(path: &Path, values: &[u32]) -> Result<(), RetrieveError> {
+    write_atomic(path, |writer| {
+        for value in values {
+            writer.write_all(&value.to_le_bytes())?;
+        }
+        Ok(())
+    })
+}
+
+fn write_cluster_ids_atomic(path: &Path, clusters: &[Cluster]) -> Result<(), RetrieveError> {
+    write_atomic(path, |writer| {
+        writer.write_all(IVFRABITQ_CLUSTERS_MAGIC)?;
+        writer.write_all(&(clusters.len() as u64).to_le_bytes())?;
+        for cluster in clusters {
+            writer.write_all(&(cluster.vector_indices.len() as u64).to_le_bytes())?;
+            for id in &cluster.vector_indices {
+                writer.write_all(&id.to_le_bytes())?;
+            }
+        }
+        Ok(())
+    })
+}
+
+fn write_atomic(
+    path: &Path,
+    write: impl FnOnce(&mut BufWriter<std::fs::File>) -> std::io::Result<()>,
+) -> Result<(), RetrieveError> {
+    let tmp_path = path.with_extension("tmp");
+    {
+        let file = std::fs::File::create(&tmp_path)?;
+        let mut writer = BufWriter::new(file);
+        write(&mut writer)?;
+        writer.flush()?;
+    }
+    std::fs::rename(&tmp_path, path)?;
+    Ok(())
+}
+
+fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, RetrieveError> {
+    let file = std::fs::File::open(path)?;
+    serde_json::from_reader(BufReader::new(file))
+        .map_err(|e| RetrieveError::FormatError(e.to_string()))
+}
+
+fn read_f32_exact(path: &Path, expected_len: usize) -> Result<Vec<f32>, RetrieveError> {
+    let bytes = std::fs::read(path)?;
+    let expected_bytes = expected_len
+        .checked_mul(std::mem::size_of::<f32>())
+        .ok_or_else(|| RetrieveError::FormatError("f32 byte length overflow".into()))?;
+    if bytes.len() != expected_bytes {
+        return Err(RetrieveError::FormatError(format!(
+            "{} size mismatch: expected {} bytes, got {}",
+            path.display(),
+            expected_bytes,
+            bytes.len()
+        )));
+    }
+    let mut values = Vec::with_capacity(expected_len);
+    for chunk in bytes.chunks_exact(4) {
+        values.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+    }
+    Ok(values)
+}
+
+fn read_u32_exact(path: &Path, expected_len: usize) -> Result<Vec<u32>, RetrieveError> {
+    let bytes = std::fs::read(path)?;
+    let expected_bytes = expected_len
+        .checked_mul(std::mem::size_of::<u32>())
+        .ok_or_else(|| RetrieveError::FormatError("u32 byte length overflow".into()))?;
+    if bytes.len() != expected_bytes {
+        return Err(RetrieveError::FormatError(format!(
+            "{} size mismatch: expected {} bytes, got {}",
+            path.display(),
+            expected_bytes,
+            bytes.len()
+        )));
+    }
+    let mut values = Vec::with_capacity(expected_len);
+    for chunk in bytes.chunks_exact(4) {
+        values.push(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+    }
+    Ok(values)
+}
+
+fn read_cluster_ids(
+    path: &Path,
+    expected_clusters: usize,
+    num_vectors: usize,
+) -> Result<Vec<Vec<u32>>, RetrieveError> {
+    let mut reader = BufReader::new(std::fs::File::open(path)?);
+    let mut magic = [0u8; 8];
+    reader.read_exact(&mut magic)?;
+    if &magic != IVFRABITQ_CLUSTERS_MAGIC {
+        return Err(RetrieveError::FormatError(
+            "invalid IVF-RaBitQ cluster file magic".into(),
+        ));
+    }
+    let cluster_count = read_u64(&mut reader)? as usize;
+    if cluster_count != expected_clusters {
+        return Err(RetrieveError::FormatError(format!(
+            "cluster count mismatch: expected {}, got {}",
+            expected_clusters, cluster_count
+        )));
+    }
+
+    let mut seen = vec![false; num_vectors];
+    let mut clusters = Vec::with_capacity(cluster_count);
+    for _ in 0..cluster_count {
+        let len = read_u64(&mut reader)? as usize;
+        if len > num_vectors {
+            return Err(RetrieveError::FormatError(format!(
+                "cluster length {} exceeds vector count {}",
+                len, num_vectors
+            )));
+        }
+        let mut ids = Vec::with_capacity(len);
+        for _ in 0..len {
+            let id = read_u32(&mut reader)?;
+            let idx = id as usize;
+            if idx >= num_vectors {
+                return Err(RetrieveError::FormatError(format!(
+                    "cluster id {} exceeds vector count {}",
+                    id, num_vectors
+                )));
+            }
+            if seen[idx] {
+                return Err(RetrieveError::FormatError(format!(
+                    "duplicate cluster id {}",
+                    id
+                )));
+            }
+            seen[idx] = true;
+            ids.push(id);
+        }
+        clusters.push(ids);
+    }
+
+    if seen.iter().any(|present| !present) {
+        return Err(RetrieveError::FormatError(
+            "cluster memberships do not cover every vector".into(),
+        ));
+    }
+
+    let mut trailing = [0u8; 1];
+    if reader.read(&mut trailing)? != 0 {
+        return Err(RetrieveError::FormatError(
+            "trailing bytes in IVF-RaBitQ cluster file".into(),
+        ));
+    }
+
+    Ok(clusters)
+}
+
+fn read_u64(reader: &mut impl Read) -> Result<u64, RetrieveError> {
+    let mut buf = [0u8; 8];
+    reader.read_exact(&mut buf)?;
+    Ok(u64::from_le_bytes(buf))
+}
+
+fn read_u32(reader: &mut impl Read) -> Result<u32, RetrieveError> {
+    let mut buf = [0u8; 4];
+    reader.read_exact(&mut buf)?;
+    Ok(u32::from_le_bytes(buf))
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -656,6 +981,131 @@ mod tests {
         assert!(
             recall > 0.7,
             "self-search recall too low: {recall:.2} ({hits}/{n})"
+        );
+    }
+
+    #[test]
+    fn save_load_roundtrip_preserves_search() {
+        let dim = 32;
+        let n = 160;
+        let data = make_vectors(n, dim, 101);
+        let doc_ids: Vec<u32> = (0..n as u32).map(|i| 50_000 + i).collect();
+
+        let params = IVFRaBitQParams {
+            num_clusters: 8,
+            nprobe: 4,
+            total_bits: 4,
+            seed: 101,
+        };
+        let mut index = IVFRaBitQIndex::new(dim, params).unwrap();
+        index.add_batch(&doc_ids, &data).unwrap();
+        index.build().unwrap();
+
+        let query = &data[3 * dim..4 * dim];
+        let before = index.search(query, 10).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        index.save_to_dir(dir.path()).unwrap();
+        let loaded = IVFRaBitQIndex::load_from_dir(dir.path()).unwrap();
+
+        assert_eq!(loaded.search(query, 10).unwrap(), before);
+    }
+
+    #[test]
+    fn save_rejects_compacted_index() {
+        let dim = 32;
+        let n = 100;
+        let data = make_vectors(n, dim, 102);
+        let doc_ids: Vec<u32> = (0..n as u32).collect();
+
+        let params = IVFRaBitQParams {
+            num_clusters: 4,
+            nprobe: 4,
+            total_bits: 4,
+            seed: 102,
+        };
+        let mut index = IVFRaBitQIndex::new(dim, params).unwrap();
+        index.add_batch(&doc_ids, &data).unwrap();
+        index.build().unwrap();
+        index.compact();
+
+        let dir = tempfile::tempdir().unwrap();
+        let err = index.save_to_dir(dir.path()).unwrap_err();
+        assert!(
+            err.to_string().contains("compacted IVF-RaBitQ"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_rejects_corrupt_cluster_magic() {
+        let dim = 32;
+        let n = 100;
+        let data = make_vectors(n, dim, 103);
+        let doc_ids: Vec<u32> = (0..n as u32).collect();
+
+        let params = IVFRaBitQParams {
+            num_clusters: 4,
+            nprobe: 4,
+            total_bits: 4,
+            seed: 103,
+        };
+        let mut index = IVFRaBitQIndex::new(dim, params).unwrap();
+        index.add_batch(&doc_ids, &data).unwrap();
+        index.build().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        index.save_to_dir(dir.path()).unwrap();
+        std::fs::write(dir.path().join("clusters.bin"), b"not-rbq!").unwrap();
+
+        let err = match IVFRaBitQIndex::load_from_dir(dir.path()) {
+            Ok(_) => panic!("corrupt cluster magic should fail"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string()
+                .contains("invalid IVF-RaBitQ cluster file magic"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_rejects_future_manifest_version() {
+        let dim = 32;
+        let n = 100;
+        let data = make_vectors(n, dim, 104);
+        let doc_ids: Vec<u32> = (0..n as u32).collect();
+
+        let params = IVFRaBitQParams {
+            num_clusters: 4,
+            nprobe: 4,
+            total_bits: 4,
+            seed: 104,
+        };
+        let mut index = IVFRaBitQIndex::new(dim, params).unwrap();
+        index.add_batch(&doc_ids, &data).unwrap();
+        index.build().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        index.save_to_dir(dir.path()).unwrap();
+        let manifest_path = dir.path().join("manifest.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+        manifest["version"] = serde_json::json!(IVFRABITQ_FORMAT_VERSION + 1);
+        std::fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let err = match IVFRaBitQIndex::load_from_dir(dir.path()) {
+            Ok(_) => panic!("future manifest version should fail"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string()
+                .contains("unsupported IVF-RaBitQ format version"),
+            "unexpected error: {err}"
         );
     }
 }

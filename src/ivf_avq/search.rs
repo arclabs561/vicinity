@@ -4,6 +4,12 @@ use crate::ivf_avq::partitioning::KMeans;
 use crate::ivf_avq::quantization::AnisotropicQuantizer;
 use crate::ivf_avq::reranking;
 use crate::RetrieveError;
+use serde::{Deserialize, Serialize};
+use std::io::{BufReader, BufWriter, Read, Write};
+use std::path::Path;
+
+const IVFAVQ_FORMAT_VERSION: u32 = 1;
+const IVFAVQ_PARTITION_MAGIC: &[u8; 8] = b"IVFAVQPT";
 
 /// Anisotropic Vector Quantization with k-means Partitioning index.
 #[derive(Debug)]
@@ -40,6 +46,48 @@ pub struct IVFAVQParams {
     pub codebook_size: usize,
     /// Random seed for deterministic training (k-means + PQ codebooks).
     pub seed: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct PersistedIVFAVQParams {
+    num_partitions: usize,
+    nprobe: usize,
+    num_reorder: usize,
+    num_codebooks: usize,
+    codebook_size: usize,
+    seed: u64,
+}
+
+impl PersistedIVFAVQParams {
+    fn from_runtime(params: &IVFAVQParams, actual_codebook_size: usize) -> Self {
+        Self {
+            num_partitions: params.num_partitions,
+            nprobe: params.nprobe,
+            num_reorder: params.num_reorder,
+            num_codebooks: params.num_codebooks,
+            codebook_size: actual_codebook_size,
+            seed: params.seed,
+        }
+    }
+
+    fn into_params(self) -> IVFAVQParams {
+        IVFAVQParams {
+            num_partitions: self.num_partitions,
+            nprobe: self.nprobe,
+            num_reorder: self.num_reorder,
+            num_codebooks: self.num_codebooks,
+            codebook_size: self.codebook_size,
+            seed: self.seed,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct IVFAVQManifest {
+    version: u32,
+    dimension: usize,
+    num_vectors: usize,
+    params: PersistedIVFAVQParams,
 }
 
 impl Default for IVFAVQParams {
@@ -196,6 +244,95 @@ impl IVFAVQIndex {
         Ok(())
     }
 
+    /// Save a built IVF-AVQ index to a directory.
+    pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<(), RetrieveError> {
+        if !self.built {
+            return Err(RetrieveError::InvalidParameter(
+                "cannot save unbuilt IVF-AVQ index".into(),
+            ));
+        }
+        let quantizer = self
+            .quantizer
+            .as_ref()
+            .ok_or_else(|| RetrieveError::InvalidParameter("missing IVF-AVQ quantizer".into()))?;
+        let output_dir = output_dir.as_ref();
+        std::fs::create_dir_all(output_dir)?;
+
+        let manifest = IVFAVQManifest {
+            version: IVFAVQ_FORMAT_VERSION,
+            dimension: self.dimension,
+            num_vectors: self.num_vectors,
+            params: PersistedIVFAVQParams::from_runtime(&self.params, quantizer.codebook_size()),
+        };
+
+        write_json_atomic(&output_dir.join("manifest.json"), &manifest)?;
+        write_f32_atomic(&output_dir.join("raw_vectors.bin"), &self.vectors)?;
+        write_u32_atomic(&output_dir.join("doc_ids.bin"), &self.doc_ids)?;
+        write_centroids_atomic(&output_dir.join("centroids.bin"), &self.partition_centroids)?;
+        write_f32_atomic(&output_dir.join("codebooks.bin"), quantizer.codebooks())?;
+        write_partitions_atomic(&output_dir.join("partitions.bin"), &self.partitions)?;
+
+        Ok(())
+    }
+
+    /// Load an IVF-AVQ index saved by [`Self::save_to_dir`].
+    pub fn load_from_dir(input_dir: impl AsRef<Path>) -> Result<Self, RetrieveError> {
+        let input_dir = input_dir.as_ref();
+        let manifest: IVFAVQManifest = read_json(&input_dir.join("manifest.json"))?;
+        if manifest.version != IVFAVQ_FORMAT_VERSION {
+            return Err(RetrieveError::FormatError(format!(
+                "unsupported IVF-AVQ format version {}",
+                manifest.version
+            )));
+        }
+        if manifest.dimension == 0 {
+            return Err(RetrieveError::FormatError(
+                "IVF-AVQ manifest has zero dimension".into(),
+            ));
+        }
+        if manifest.num_vectors == 0 {
+            return Err(RetrieveError::FormatError(
+                "IVF-AVQ manifest has zero vectors".into(),
+            ));
+        }
+
+        let params = manifest.params.into_params();
+        let mut index = Self::new(manifest.dimension, params)?;
+        index.num_vectors = manifest.num_vectors;
+        index.vectors = read_f32_exact(
+            &input_dir.join("raw_vectors.bin"),
+            manifest.num_vectors * manifest.dimension,
+        )?;
+        index.doc_ids = read_u32_exact(&input_dir.join("doc_ids.bin"), manifest.num_vectors)?;
+        index.partition_centroids = read_centroids(
+            &input_dir.join("centroids.bin"),
+            index.params.num_partitions,
+            manifest.dimension,
+        )?;
+        let codebooks_len = index
+            .params
+            .num_codebooks
+            .checked_mul(index.params.codebook_size)
+            .and_then(|len| len.checked_mul(manifest.dimension / index.params.num_codebooks))
+            .ok_or_else(|| RetrieveError::FormatError("AVQ codebook length overflow".into()))?;
+        let codebooks = read_f32_exact(&input_dir.join("codebooks.bin"), codebooks_len)?;
+        index.quantizer = Some(AnisotropicQuantizer::from_codebooks(
+            manifest.dimension,
+            index.params.num_codebooks,
+            index.params.codebook_size,
+            index.params.seed,
+            codebooks,
+        )?);
+        index.partitions = read_partitions(
+            &input_dir.join("partitions.bin"),
+            index.params.num_partitions,
+            manifest.num_vectors,
+            index.params.num_codebooks,
+        )?;
+        index.built = true;
+        Ok(index)
+    }
+
     /// Search for the k nearest neighbors of the query vector.
     pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
@@ -292,6 +429,214 @@ impl IVFAVQIndex {
     }
 }
 
+fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), RetrieveError> {
+    write_atomic(path, |writer| {
+        serde_json::to_writer_pretty(writer, value)
+            .map_err(|e| std::io::Error::other(e.to_string()))
+    })
+}
+
+fn write_f32_atomic(path: &Path, values: &[f32]) -> Result<(), RetrieveError> {
+    write_atomic(path, |writer| {
+        for value in values {
+            writer.write_all(&value.to_le_bytes())?;
+        }
+        Ok(())
+    })
+}
+
+fn write_u32_atomic(path: &Path, values: &[u32]) -> Result<(), RetrieveError> {
+    write_atomic(path, |writer| {
+        for value in values {
+            writer.write_all(&value.to_le_bytes())?;
+        }
+        Ok(())
+    })
+}
+
+fn write_centroids_atomic(path: &Path, centroids: &[Vec<f32>]) -> Result<(), RetrieveError> {
+    write_atomic(path, |writer| {
+        for centroid in centroids {
+            for value in centroid {
+                writer.write_all(&value.to_le_bytes())?;
+            }
+        }
+        Ok(())
+    })
+}
+
+fn write_partitions_atomic(path: &Path, partitions: &[Partition]) -> Result<(), RetrieveError> {
+    write_atomic(path, |writer| {
+        writer.write_all(IVFAVQ_PARTITION_MAGIC)?;
+        writer.write_all(&(partitions.len() as u64).to_le_bytes())?;
+        for partition in partitions {
+            writer.write_all(&(partition.vector_indices.len() as u64).to_le_bytes())?;
+            for id in &partition.vector_indices {
+                writer.write_all(&id.to_le_bytes())?;
+            }
+            writer.write_all(&(partition.codes.len() as u64).to_le_bytes())?;
+            writer.write_all(&partition.codes)?;
+        }
+        Ok(())
+    })
+}
+
+fn write_atomic(
+    path: &Path,
+    write: impl FnOnce(&mut BufWriter<std::fs::File>) -> std::io::Result<()>,
+) -> Result<(), RetrieveError> {
+    let tmp_path = path.with_extension("tmp");
+    {
+        let file = std::fs::File::create(&tmp_path)?;
+        let mut writer = BufWriter::new(file);
+        write(&mut writer)?;
+        writer.flush()?;
+    }
+    std::fs::rename(&tmp_path, path)?;
+    Ok(())
+}
+
+fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, RetrieveError> {
+    let file = std::fs::File::open(path)?;
+    serde_json::from_reader(BufReader::new(file))
+        .map_err(|e| RetrieveError::FormatError(e.to_string()))
+}
+
+fn read_f32_exact(path: &Path, expected_len: usize) -> Result<Vec<f32>, RetrieveError> {
+    let bytes = std::fs::read(path)?;
+    let expected_bytes = expected_len
+        .checked_mul(std::mem::size_of::<f32>())
+        .ok_or_else(|| RetrieveError::FormatError("f32 byte length overflow".into()))?;
+    if bytes.len() != expected_bytes {
+        return Err(RetrieveError::FormatError(format!(
+            "{} size mismatch: expected {} bytes, got {}",
+            path.display(),
+            expected_bytes,
+            bytes.len()
+        )));
+    }
+    let mut values = Vec::with_capacity(expected_len);
+    for chunk in bytes.chunks_exact(4) {
+        values.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+    }
+    Ok(values)
+}
+
+fn read_u32_exact(path: &Path, expected_len: usize) -> Result<Vec<u32>, RetrieveError> {
+    let bytes = std::fs::read(path)?;
+    let expected_bytes = expected_len
+        .checked_mul(std::mem::size_of::<u32>())
+        .ok_or_else(|| RetrieveError::FormatError("u32 byte length overflow".into()))?;
+    if bytes.len() != expected_bytes {
+        return Err(RetrieveError::FormatError(format!(
+            "{} size mismatch: expected {} bytes, got {}",
+            path.display(),
+            expected_bytes,
+            bytes.len()
+        )));
+    }
+    let mut values = Vec::with_capacity(expected_len);
+    for chunk in bytes.chunks_exact(4) {
+        values.push(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+    }
+    Ok(values)
+}
+
+fn read_centroids(
+    path: &Path,
+    num_partitions: usize,
+    dimension: usize,
+) -> Result<Vec<Vec<f32>>, RetrieveError> {
+    let flat = read_f32_exact(path, num_partitions * dimension)?;
+    Ok(flat
+        .chunks_exact(dimension)
+        .map(|chunk| chunk.to_vec())
+        .collect())
+}
+
+fn read_partitions(
+    path: &Path,
+    expected_partitions: usize,
+    num_vectors: usize,
+    num_codebooks: usize,
+) -> Result<Vec<Partition>, RetrieveError> {
+    let mut reader = BufReader::new(std::fs::File::open(path)?);
+    let mut magic = [0u8; 8];
+    reader.read_exact(&mut magic)?;
+    if &magic != IVFAVQ_PARTITION_MAGIC {
+        return Err(RetrieveError::FormatError(
+            "invalid IVF-AVQ partition file magic".into(),
+        ));
+    }
+    let partition_count = read_u64(&mut reader)? as usize;
+    if partition_count != expected_partitions {
+        return Err(RetrieveError::FormatError(format!(
+            "partition count mismatch: expected {}, got {}",
+            expected_partitions, partition_count
+        )));
+    }
+
+    let mut partitions = Vec::with_capacity(partition_count);
+    for _ in 0..partition_count {
+        let ids_len = read_u64(&mut reader)? as usize;
+        if ids_len > num_vectors {
+            return Err(RetrieveError::FormatError(format!(
+                "partition length {} exceeds vector count {}",
+                ids_len, num_vectors
+            )));
+        }
+        let mut vector_indices = Vec::with_capacity(ids_len);
+        for _ in 0..ids_len {
+            let id = read_u32(&mut reader)?;
+            if id as usize >= num_vectors {
+                return Err(RetrieveError::FormatError(format!(
+                    "partition id {} exceeds vector count {}",
+                    id, num_vectors
+                )));
+            }
+            vector_indices.push(id);
+        }
+
+        let codes_len = read_u64(&mut reader)? as usize;
+        let expected_codes = ids_len
+            .checked_mul(num_codebooks)
+            .ok_or_else(|| RetrieveError::FormatError("partition code length overflow".into()))?;
+        if codes_len != expected_codes {
+            return Err(RetrieveError::FormatError(format!(
+                "partition code length mismatch: expected {}, got {}",
+                expected_codes, codes_len
+            )));
+        }
+        let mut codes = vec![0u8; codes_len];
+        reader.read_exact(&mut codes)?;
+        partitions.push(Partition {
+            vector_indices,
+            codes,
+        });
+    }
+
+    let mut trailing = [0u8; 1];
+    if reader.read(&mut trailing)? != 0 {
+        return Err(RetrieveError::FormatError(
+            "trailing bytes in IVF-AVQ partition file".into(),
+        ));
+    }
+
+    Ok(partitions)
+}
+
+fn read_u64(reader: &mut impl Read) -> Result<u64, RetrieveError> {
+    let mut buf = [0u8; 8];
+    reader.read_exact(&mut buf)?;
+    Ok(u64::from_le_bytes(buf))
+}
+
+fn read_u32(reader: &mut impl Read) -> Result<u32, RetrieveError> {
+    let mut buf = [0u8; 4];
+    reader.read_exact(&mut buf)?;
+    Ok(u32::from_le_bytes(buf))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -348,5 +693,114 @@ mod tests {
             RetrieveError::InvalidParameter(_) => {}
             other => panic!("Expected InvalidParameter, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn save_load_roundtrip_preserves_search() {
+        use rand::{Rng, SeedableRng};
+
+        let dim = 8;
+        let n = 96;
+        let params = IVFAVQParams {
+            num_partitions: 4,
+            nprobe: 4,
+            num_reorder: 32,
+            num_codebooks: 4,
+            codebook_size: 16,
+            seed: 77,
+        };
+        let mut rng = rand::rngs::StdRng::seed_from_u64(77);
+        let mut index = IVFAVQIndex::new(dim, params).unwrap();
+        for i in 0..n {
+            let doc_id = 10_000 + i as u32;
+            let vector: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
+            index.add(doc_id, vector).unwrap();
+        }
+        index.build().unwrap();
+
+        let query: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
+        let before = index.search(&query, 10).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        index.save_to_dir(dir.path()).unwrap();
+        let loaded = IVFAVQIndex::load_from_dir(dir.path()).unwrap();
+
+        assert_eq!(loaded.search(&query, 10).unwrap(), before);
+    }
+
+    #[test]
+    fn load_rejects_future_manifest_version() {
+        use rand::{Rng, SeedableRng};
+
+        let dim = 8;
+        let n = 96;
+        let params = IVFAVQParams {
+            num_partitions: 4,
+            nprobe: 4,
+            num_reorder: 32,
+            num_codebooks: 4,
+            codebook_size: 16,
+            seed: 78,
+        };
+        let mut rng = rand::rngs::StdRng::seed_from_u64(78);
+        let mut index = IVFAVQIndex::new(dim, params).unwrap();
+        for i in 0..n {
+            let vector: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
+            index.add(i as u32, vector).unwrap();
+        }
+        index.build().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        index.save_to_dir(dir.path()).unwrap();
+        let manifest_path = dir.path().join("manifest.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+        manifest["version"] = serde_json::json!(IVFAVQ_FORMAT_VERSION + 1);
+        std::fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let err = IVFAVQIndex::load_from_dir(dir.path()).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("unsupported IVF-AVQ format version"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_rejects_corrupt_partition_magic() {
+        use rand::{Rng, SeedableRng};
+
+        let dim = 8;
+        let n = 96;
+        let params = IVFAVQParams {
+            num_partitions: 4,
+            nprobe: 4,
+            num_reorder: 32,
+            num_codebooks: 4,
+            codebook_size: 16,
+            seed: 79,
+        };
+        let mut rng = rand::rngs::StdRng::seed_from_u64(79);
+        let mut index = IVFAVQIndex::new(dim, params).unwrap();
+        for i in 0..n {
+            let vector: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
+            index.add(i as u32, vector).unwrap();
+        }
+        index.build().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        index.save_to_dir(dir.path()).unwrap();
+        std::fs::write(dir.path().join("partitions.bin"), b"not-avq!").unwrap();
+
+        let err = IVFAVQIndex::load_from_dir(dir.path()).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("invalid IVF-AVQ partition file magic"),
+            "unexpected error: {err}"
+        );
     }
 }

@@ -160,6 +160,35 @@ impl AnisotropicQuantizer {
     pub fn codebook_size(&self) -> usize {
         self.codebook_size
     }
+
+    pub(crate) fn codebooks(&self) -> &[f32] {
+        &self.codebooks
+    }
+
+    pub(crate) fn from_codebooks(
+        dimension: usize,
+        num_codebooks: usize,
+        codebook_size: usize,
+        seed: u64,
+        codebooks: Vec<f32>,
+    ) -> Result<Self, RetrieveError> {
+        let quantizer = Self::new(dimension, num_codebooks, codebook_size, seed)?;
+        let expected_len = num_codebooks
+            .checked_mul(codebook_size)
+            .and_then(|len| len.checked_mul(quantizer.subvector_dim))
+            .ok_or_else(|| RetrieveError::FormatError("AVQ codebook length overflow".into()))?;
+        if codebooks.len() != expected_len {
+            return Err(RetrieveError::FormatError(format!(
+                "AVQ codebook length mismatch: expected {}, got {}",
+                expected_len,
+                codebooks.len()
+            )));
+        }
+        Ok(Self {
+            codebooks,
+            ..quantizer
+        })
+    }
 }
 
 fn squared_euclidean(a: &[f32], b: &[f32]) -> f32 {

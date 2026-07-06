@@ -21,23 +21,29 @@
 //! - Survey: Section III-B2
 //! - Ponomarenko et al. (2021): "K-means tree: an optimal clustering tree for unsupervised learning"
 
+use crate::classic::trees::persistence::{read_json, validate_vector_shape, write_json_atomic};
 use crate::RetrieveError;
+use serde::{Deserialize, Serialize};
+use std::path::Path;
+
+const KMEANS_TREE_FORMAT_VERSION: u32 = 1;
 
 /// K-Means Tree index.
 ///
 /// Hierarchical clustering tree for approximate nearest neighbor search.
-#[derive(Debug)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct KMeansTreeIndex {
     pub(crate) vectors: Vec<f32>,
     pub(crate) dimension: usize,
     pub(crate) num_vectors: usize,
+    doc_ids: Vec<u32>,
     params: KMeansTreeParams,
     built: bool,
     root: Option<KMeansNode>,
 }
 
 /// K-Means Tree parameters.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct KMeansTreeParams {
     /// Number of clusters per node (k in k-means)
     pub num_clusters: usize,
@@ -64,7 +70,7 @@ impl Default for KMeansTreeParams {
 }
 
 /// K-Means Tree node.
-#[derive(Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 enum KMeansNode {
     /// Internal node: has cluster centers and children
     Internal {
@@ -79,6 +85,12 @@ enum KMeansNode {
         #[allow(dead_code)]
         center: Vec<f32>, // Cluster center (reserved for re-clustering)
     },
+}
+
+#[derive(Deserialize, Serialize)]
+struct KMeansTreeSnapshot {
+    version: u32,
+    index: KMeansTreeIndex,
 }
 
 impl KMeansTreeIndex {
@@ -100,6 +112,7 @@ impl KMeansTreeIndex {
             vectors: Vec::new(),
             dimension,
             num_vectors: 0,
+            doc_ids: Vec::new(),
             params,
             built: false,
             root: None,
@@ -107,7 +120,7 @@ impl KMeansTreeIndex {
     }
 
     /// Add a vector to the index.
-    pub fn add(&mut self, _doc_id: u32, embedding: Vec<f32>) -> Result<(), RetrieveError> {
+    pub fn add(&mut self, doc_id: u32, embedding: Vec<f32>) -> Result<(), RetrieveError> {
         if embedding.len() != self.dimension {
             return Err(RetrieveError::InvalidParameter(format!(
                 "Embedding dimension {} != {}",
@@ -123,6 +136,7 @@ impl KMeansTreeIndex {
         }
 
         self.vectors.extend_from_slice(&embedding);
+        self.doc_ids.push(doc_id);
         self.num_vectors += 1;
         Ok(())
     }
@@ -142,6 +156,61 @@ impl KMeansTreeIndex {
 
         self.built = true;
         Ok(())
+    }
+
+    /// Save a built K-means tree index to a directory.
+    pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<(), RetrieveError> {
+        if !self.built {
+            return Err(RetrieveError::InvalidParameter(
+                "cannot save unbuilt K-means tree index".into(),
+            ));
+        }
+        let output_dir = output_dir.as_ref();
+        std::fs::create_dir_all(output_dir)?;
+        write_json_atomic(
+            &output_dir.join("index.json"),
+            &KMeansTreeSnapshot {
+                version: KMEANS_TREE_FORMAT_VERSION,
+                index: self.clone_for_snapshot(),
+            },
+        )
+    }
+
+    /// Load a K-means tree index saved by [`Self::save_to_dir`].
+    pub fn load_from_dir(input_dir: impl AsRef<Path>) -> Result<Self, RetrieveError> {
+        let snapshot: KMeansTreeSnapshot = read_json(&input_dir.as_ref().join("index.json"))?;
+        if snapshot.version != KMEANS_TREE_FORMAT_VERSION {
+            return Err(RetrieveError::FormatError(format!(
+                "unsupported K-means tree format version {}",
+                snapshot.version
+            )));
+        }
+        let index = snapshot.index;
+        validate_vector_shape(
+            "K-means tree",
+            index.dimension,
+            index.num_vectors,
+            &index.vectors,
+            &index.doc_ids,
+        )?;
+        if !index.built || index.root.is_none() {
+            return Err(RetrieveError::FormatError(
+                "K-means tree snapshot is not built".into(),
+            ));
+        }
+        Ok(index)
+    }
+
+    fn clone_for_snapshot(&self) -> Self {
+        Self {
+            vectors: self.vectors.clone(),
+            dimension: self.dimension,
+            num_vectors: self.num_vectors,
+            doc_ids: self.doc_ids.clone(),
+            params: self.params.clone(),
+            built: self.built,
+            root: self.root.clone(),
+        }
     }
 
     /// Build tree recursively using k-means clustering.
@@ -357,11 +426,11 @@ impl KMeansTreeIndex {
             .map(|&idx| {
                 let vec = get_vector(&self.vectors, self.dimension, idx as usize);
                 let dist = euclidean_distance(query, vec);
-                (idx, dist)
+                (self.doc_ids[idx as usize], dist)
             })
             .collect();
 
-        results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+        results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
         results.truncate(k);
 
         Ok(results)
@@ -411,23 +480,38 @@ fn get_vector(vectors: &[f32], dimension: usize, idx: usize) -> &[f32] {
 mod tests {
     use super::*;
 
+    fn build_index() -> KMeansTreeIndex {
+        let mut tree = KMeansTreeIndex::new(3, KMeansTreeParams::default()).unwrap();
+        for i in 0..100u32 {
+            let vec = vec![i as f32, (i * 2) as f32, (i * 3) as f32];
+            tree.add(3000 + i, vec).unwrap();
+        }
+        tree.build().unwrap();
+        tree
+    }
+
     #[test]
     fn test_kmeans_tree_basic() {
-        let mut tree = KMeansTreeIndex::new(3, KMeansTreeParams::default()).unwrap();
-
-        // Add test vectors
-        for i in 0..100 {
-            let vec = vec![i as f32, (i * 2) as f32, (i * 3) as f32];
-            tree.add(i, vec).unwrap();
-        }
-
-        tree.build().unwrap();
+        let tree = build_index();
 
         // Search
         let query = vec![50.0, 100.0, 150.0];
         let results = tree.search(&query, 5).unwrap();
 
         assert_eq!(results.len(), 5);
-        assert!(results[0].0 < 100);
+        assert!((3000..3100).contains(&results[0].0));
+    }
+
+    #[test]
+    fn save_load_roundtrip_preserves_search() {
+        let tree = build_index();
+        let dir = tempfile::tempdir().unwrap();
+        tree.save_to_dir(dir.path()).unwrap();
+        let loaded = KMeansTreeIndex::load_from_dir(dir.path()).unwrap();
+        let query = vec![50.0, 100.0, 150.0];
+        assert_eq!(
+            tree.search(&query, 8).unwrap(),
+            loaded.search(&query, 8).unwrap()
+        );
     }
 }

@@ -25,7 +25,7 @@
 //! # Feature Flag
 //!
 //! ```toml
-//! vicinity = { version = "0.8", features = ["rp_quant"] }
+//! vicinity = { version = "0.10.5", features = ["rp_quant"] }
 //! ```
 //!
 //! # Quick Start

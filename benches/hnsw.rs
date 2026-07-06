@@ -71,8 +71,8 @@ fn bench_hnsw_search(c: &mut Criterion) {
             bench.iter(|| {
                 queries
                     .iter()
-                    .map(|q| index.search(black_box(q), 10, ef).unwrap())
-                    .collect::<Vec<_>>()
+                    .map(|q| index.search(black_box(q), 10, ef).unwrap().len())
+                    .sum::<usize>()
             });
         });
     }
@@ -104,8 +104,8 @@ fn bench_hnsw_search_k(c: &mut Criterion) {
             bench.iter(|| {
                 queries
                     .iter()
-                    .map(|q| index.search(black_box(q), k, 100).unwrap())
-                    .collect::<Vec<_>>()
+                    .map(|q| index.search(black_box(q), k, 100).unwrap().len())
+                    .sum::<usize>()
             });
         });
     }

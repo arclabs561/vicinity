@@ -1,5 +1,5 @@
 # /// script
-# requires-python = ">=3.9"
+# requires-python = ">=3.10"
 # dependencies = ["pyvicinity", "numpy"]
 # ///
 """How do I tune ef_search? Sweep it and measure recall@10.

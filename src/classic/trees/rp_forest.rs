@@ -27,18 +27,25 @@
 //! - Dasgupta & Freund (2008): "Random projection trees and low dimensional manifolds"
 //! - Spotify Engineering Blog: "Annoy: Approximate Nearest Neighbors in C++/Python" (historical name)
 
+use crate::classic::trees::persistence::{read_json, validate_vector_shape, write_json_atomic};
 use crate::simd;
 use crate::RetrieveError;
+use serde::{Deserialize, Serialize};
+use std::path::Path;
+
+const RP_FOREST_FORMAT_VERSION: u32 = 1;
 
 /// Random Projection Tree Forest index.
 ///
 /// Uses a forest of independent random projection trees for approximate
 /// nearest neighbor search. Each tree partitions space using random hyperplanes.
 ///
+#[derive(Deserialize, Serialize)]
 pub struct RpForestIndex {
     pub(crate) vectors: Vec<f32>,
     pub(crate) dimension: usize,
     pub(crate) num_vectors: usize,
+    doc_ids: Vec<u32>,
     params: RpForestParams,
     built: bool,
 
@@ -47,7 +54,7 @@ pub struct RpForestIndex {
 }
 
 /// Random Projection Tree Forest parameters.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RpForestParams {
     /// Number of trees in forest
     pub num_trees: usize,
@@ -66,11 +73,13 @@ impl Default for RpForestParams {
 }
 
 /// Random projection tree.
+#[derive(Clone, Deserialize, Serialize)]
 pub(crate) struct RPTree {
     root: Option<TreeNode>,
 }
 
 /// Tree node.
+#[derive(Clone, Deserialize, Serialize)]
 enum TreeNode {
     Leaf {
         indices: Vec<u32>,
@@ -85,10 +94,16 @@ enum TreeNode {
 }
 
 /// Random projection tree parameters.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RPTreeParams {
     /// Maximum points per leaf
     pub max_leaf_size: usize,
+}
+
+#[derive(Deserialize, Serialize)]
+struct RpForestSnapshot {
+    version: u32,
+    index: RpForestIndex,
 }
 
 impl Default for RPTreeParams {
@@ -110,6 +125,7 @@ impl RpForestIndex {
             vectors: Vec::new(),
             dimension,
             num_vectors: 0,
+            doc_ids: Vec::new(),
             params,
             built: false,
             trees: Vec::new(),
@@ -117,7 +133,7 @@ impl RpForestIndex {
     }
 
     /// Add a vector to the index.
-    pub fn add(&mut self, _doc_id: u32, vector: Vec<f32>) -> Result<(), RetrieveError> {
+    pub fn add(&mut self, doc_id: u32, vector: Vec<f32>) -> Result<(), RetrieveError> {
         if self.built {
             return Err(RetrieveError::InvalidParameter(
                 "Cannot add vectors after index is built".to_string(),
@@ -132,6 +148,7 @@ impl RpForestIndex {
         }
 
         self.vectors.extend_from_slice(&vector);
+        self.doc_ids.push(doc_id);
         self.num_vectors += 1;
         Ok(())
     }
@@ -155,6 +172,61 @@ impl RpForestIndex {
 
         self.built = true;
         Ok(())
+    }
+
+    /// Save a built RP-forest index to a directory.
+    pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<(), RetrieveError> {
+        if !self.built {
+            return Err(RetrieveError::InvalidParameter(
+                "cannot save unbuilt RP-forest index".into(),
+            ));
+        }
+        let output_dir = output_dir.as_ref();
+        std::fs::create_dir_all(output_dir)?;
+        write_json_atomic(
+            &output_dir.join("index.json"),
+            &RpForestSnapshot {
+                version: RP_FOREST_FORMAT_VERSION,
+                index: self.clone_for_snapshot(),
+            },
+        )
+    }
+
+    /// Load an RP-forest index saved by [`Self::save_to_dir`].
+    pub fn load_from_dir(input_dir: impl AsRef<Path>) -> Result<Self, RetrieveError> {
+        let snapshot: RpForestSnapshot = read_json(&input_dir.as_ref().join("index.json"))?;
+        if snapshot.version != RP_FOREST_FORMAT_VERSION {
+            return Err(RetrieveError::FormatError(format!(
+                "unsupported RP-forest format version {}",
+                snapshot.version
+            )));
+        }
+        let index = snapshot.index;
+        validate_vector_shape(
+            "RP-forest",
+            index.dimension,
+            index.num_vectors,
+            &index.vectors,
+            &index.doc_ids,
+        )?;
+        if !index.built || index.trees.is_empty() {
+            return Err(RetrieveError::FormatError(
+                "RP-forest snapshot is not built".into(),
+            ));
+        }
+        Ok(index)
+    }
+
+    fn clone_for_snapshot(&self) -> Self {
+        Self {
+            vectors: self.vectors.clone(),
+            dimension: self.dimension,
+            num_vectors: self.num_vectors,
+            doc_ids: self.doc_ids.clone(),
+            params: self.params.clone(),
+            built: self.built,
+            trees: self.trees.clone(),
+        }
     }
 
     /// Build a single random projection tree.
@@ -265,12 +337,12 @@ impl RpForestIndex {
             .map(|&idx| {
                 let vec = self.get_vector(idx as usize);
                 let dist = 1.0 - simd::dot(query, vec);
-                (idx, dist)
+                (self.doc_ids[idx as usize], dist)
             })
             .collect();
 
         // Sort and return top k
-        results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1)); // Unstable for better performance
+        results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
         Ok(results.into_iter().take(k).collect())
     }
 
@@ -315,7 +387,7 @@ mod tests {
         for i in 0..n {
             let mut v = vec![0.0f32; dim];
             v[i % dim] = 1.0;
-            index.add(i as u32, v).unwrap();
+            index.add(5000 + i as u32, v).unwrap();
         }
         index.build().unwrap();
         index
@@ -357,7 +429,12 @@ mod tests {
         let query = vec![1.0, 0.0, 0.0, 0.0];
         let results = index.search(&query, 10).unwrap();
         for (id, _) in results {
-            assert!((id as usize) < n, "id {} out of bounds (n={})", id, n);
+            assert!(
+                (5000..5000 + n as u32).contains(&id),
+                "id {} out of shifted doc-id bounds (n={})",
+                id,
+                n
+            );
         }
     }
 
@@ -388,7 +465,7 @@ mod tests {
             for x in &mut v {
                 *x /= norm;
             }
-            index.add(i as u32, v).unwrap();
+            index.add(6000 + i as u32, v).unwrap();
         }
         index.build().unwrap();
 
@@ -397,7 +474,7 @@ mod tests {
         // All top-10 should come from the [1,0,...] cluster (ids 0..50)
         let correct = results
             .iter()
-            .filter(|(id, _)| *id < (n / 2) as u32)
+            .filter(|(id, _)| (6000..6000 + (n / 2) as u32).contains(id))
             .count();
         assert!(
             correct >= 5,
@@ -423,6 +500,19 @@ mod tests {
     fn test_dimension_mismatch_errors() {
         let mut index = RpForestIndex::new(4, RpForestParams::default()).unwrap();
         assert!(index.add(0, vec![1.0, 0.0]).is_err());
+    }
+
+    #[test]
+    fn save_load_roundtrip_preserves_sampled_forest() {
+        let index = build_index(50, 4);
+        let dir = tempfile::tempdir().unwrap();
+        index.save_to_dir(dir.path()).unwrap();
+        let loaded = RpForestIndex::load_from_dir(dir.path()).unwrap();
+        let query = [1.0, 0.0, 0.0, 0.0];
+        assert_eq!(
+            index.search(&query, 8).unwrap(),
+            loaded.search(&query, 8).unwrap()
+        );
     }
 
     #[test]

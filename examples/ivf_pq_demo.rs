@@ -69,6 +69,9 @@ fn demo_basic_search() -> vicinity::Result<()> {
     let start = Instant::now();
     let results = index.search(query, k)?;
     let search_time = start.elapsed();
+    let start = Instant::now();
+    let reranked = index.search_reranked(query, k, 200)?;
+    let rerank_time = start.elapsed();
 
     println!("\n   Query time: {:?}", search_time);
     println!("   Top {} results:", k);
@@ -80,9 +83,17 @@ fn demo_basic_search() -> vicinity::Result<()> {
     let gt = brute_force_knn(query, &vectors, k);
     let gt_set: HashSet<u32> = gt.into_iter().collect();
     let result_set: HashSet<u32> = results.iter().map(|(id, _)| *id).collect();
+    let reranked_set: HashSet<u32> = reranked.iter().map(|(id, _)| *id).collect();
     let recall = gt_set.intersection(&result_set).count() as f32 / k as f32;
+    let reranked_recall = gt_set.intersection(&reranked_set).count() as f32 / k as f32;
 
     println!("\n   Recall@{}: {:.1}%", k, recall * 100.0);
+    println!(
+        "   Reranked Recall@{}: {:.1}% ({:?})",
+        k,
+        reranked_recall * 100.0,
+        rerank_time
+    );
     println!();
 
     Ok(())

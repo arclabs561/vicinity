@@ -9,7 +9,7 @@
 //! # Feature Flag
 //!
 //! ```toml
-//! vicinity = { version = "0.8", features = ["emg"] }
+//! vicinity = { version = "0.10.5", features = ["emg"] }
 //! ```
 //!
 //! # Quick Start

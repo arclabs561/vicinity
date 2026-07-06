@@ -21,22 +21,29 @@
 //! - Omohundro (1989): "Five balltree construction algorithms"
 //! - Liu et al. (2006): "An investigation of practical approximate nearest neighbor algorithms"
 
+use crate::classic::trees::persistence::{read_json, validate_vector_shape, write_json_atomic};
 use crate::RetrieveError;
+use serde::{Deserialize, Serialize};
+use std::path::Path;
+
+const BALLTREE_FORMAT_VERSION: u32 = 1;
 
 /// Ball Tree index.
 ///
 /// Space-partitioning tree using hyperspheres for medium-dimensional data.
+#[derive(Deserialize, Serialize)]
 pub struct BallTreeIndex {
     pub(crate) vectors: Vec<f32>,
     pub(crate) dimension: usize,
     pub(crate) num_vectors: usize,
+    doc_ids: Vec<u32>,
     params: BallTreeParams,
     built: bool,
     root: Option<BallNode>,
 }
 
 /// Ball Tree parameters.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct BallTreeParams {
     /// Maximum leaf size
     pub max_leaf_size: usize,
@@ -55,6 +62,7 @@ impl Default for BallTreeParams {
 }
 
 /// Ball Tree node.
+#[derive(Clone, Deserialize, Serialize)]
 enum BallNode {
     /// Internal node: has center, radius, and children
     Internal {
@@ -71,6 +79,12 @@ enum BallNode {
     },
 }
 
+#[derive(Deserialize, Serialize)]
+struct BallTreeSnapshot {
+    version: u32,
+    index: BallTreeIndex,
+}
+
 impl BallTreeIndex {
     /// Create new Ball Tree index.
     pub fn new(dimension: usize, params: BallTreeParams) -> Result<Self, RetrieveError> {
@@ -84,6 +98,7 @@ impl BallTreeIndex {
             vectors: Vec::new(),
             dimension,
             num_vectors: 0,
+            doc_ids: Vec::new(),
             params,
             built: false,
             root: None,
@@ -91,7 +106,7 @@ impl BallTreeIndex {
     }
 
     /// Add a vector to the index.
-    pub fn add(&mut self, _doc_id: u32, embedding: Vec<f32>) -> Result<(), RetrieveError> {
+    pub fn add(&mut self, doc_id: u32, embedding: Vec<f32>) -> Result<(), RetrieveError> {
         if embedding.len() != self.dimension {
             return Err(RetrieveError::InvalidParameter(format!(
                 "Embedding dimension {} != {}",
@@ -107,6 +122,7 @@ impl BallTreeIndex {
         }
 
         self.vectors.extend_from_slice(&embedding);
+        self.doc_ids.push(doc_id);
         self.num_vectors += 1;
         Ok(())
     }
@@ -126,6 +142,61 @@ impl BallTreeIndex {
 
         self.built = true;
         Ok(())
+    }
+
+    /// Save a built Ball tree index to a directory.
+    pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<(), RetrieveError> {
+        if !self.built {
+            return Err(RetrieveError::InvalidParameter(
+                "cannot save unbuilt Ball tree index".into(),
+            ));
+        }
+        let output_dir = output_dir.as_ref();
+        std::fs::create_dir_all(output_dir)?;
+        write_json_atomic(
+            &output_dir.join("index.json"),
+            &BallTreeSnapshot {
+                version: BALLTREE_FORMAT_VERSION,
+                index: self.clone_for_snapshot(),
+            },
+        )
+    }
+
+    /// Load a Ball tree index saved by [`Self::save_to_dir`].
+    pub fn load_from_dir(input_dir: impl AsRef<Path>) -> Result<Self, RetrieveError> {
+        let snapshot: BallTreeSnapshot = read_json(&input_dir.as_ref().join("index.json"))?;
+        if snapshot.version != BALLTREE_FORMAT_VERSION {
+            return Err(RetrieveError::FormatError(format!(
+                "unsupported Ball tree format version {}",
+                snapshot.version
+            )));
+        }
+        let index = snapshot.index;
+        validate_vector_shape(
+            "Ball tree",
+            index.dimension,
+            index.num_vectors,
+            &index.vectors,
+            &index.doc_ids,
+        )?;
+        if !index.built || index.root.is_none() {
+            return Err(RetrieveError::FormatError(
+                "Ball tree snapshot is not built".into(),
+            ));
+        }
+        Ok(index)
+    }
+
+    fn clone_for_snapshot(&self) -> Self {
+        Self {
+            vectors: self.vectors.clone(),
+            dimension: self.dimension,
+            num_vectors: self.num_vectors,
+            doc_ids: self.doc_ids.clone(),
+            params: self.params.clone(),
+            built: self.built,
+            root: self.root.clone(),
+        }
     }
 
     /// Build tree recursively.
@@ -276,8 +347,11 @@ impl BallTreeIndex {
         self.search_recursive_pruned(root, query, k, &mut best_k, &mut best_dist)?;
 
         // Convert to output format: (index, distance)
-        let mut results: Vec<(u32, f32)> = best_k.iter().map(|&(d, idx)| (idx, d)).collect();
-        results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+        let mut results: Vec<(u32, f32)> = best_k
+            .iter()
+            .map(|&(d, idx)| (self.doc_ids[idx as usize], d))
+            .collect();
+        results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
 
         Ok(results)
     }
@@ -394,5 +468,43 @@ impl BallTreeIndex {
         let start = idx * self.dimension;
         let end = start + self.dimension;
         &self.vectors[start..end]
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    fn build_index() -> BallTreeIndex {
+        let mut index = BallTreeIndex::new(3, BallTreeParams::default()).unwrap();
+        for i in 0..16u32 {
+            index
+                .add(2000 + i, vec![i as f32, (i * 2) as f32, 1.0])
+                .unwrap();
+        }
+        index.build().unwrap();
+        index
+    }
+
+    #[test]
+    fn search_returns_external_doc_ids() {
+        let index = build_index();
+        let results = index.search(&[4.0, 8.0, 1.0], 3).unwrap();
+        assert!(!results.is_empty());
+        assert!(results.iter().all(|(id, _)| *id >= 2000));
+    }
+
+    #[test]
+    fn save_load_roundtrip_preserves_search() {
+        let index = build_index();
+        let dir = tempfile::tempdir().unwrap();
+        index.save_to_dir(dir.path()).unwrap();
+        let loaded = BallTreeIndex::load_from_dir(dir.path()).unwrap();
+        let query = [4.0, 8.0, 1.0];
+        assert_eq!(
+            index.search(&query, 5).unwrap(),
+            loaded.search(&query, 5).unwrap()
+        );
     }
 }

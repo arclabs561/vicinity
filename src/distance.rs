@@ -68,6 +68,20 @@ pub fn l2_distance(a: &[f32], b: &[f32]) -> f32 {
     simd::l2_distance(a, b)
 }
 
+/// Squared L2 distance.
+///
+/// This preserves nearest-neighbor ordering under L2 while avoiding the final
+/// square root. Use it for internal ranking or pruning when callers do not need
+/// the reported distance to be Euclidean distance.
+#[inline]
+#[must_use]
+pub fn l2_distance_squared(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() {
+        return f32::INFINITY;
+    }
+    simd::l2_distance_squared(a, b)
+}
+
 /// Cosine distance `1 - cos(a,b)`.
 ///
 /// This computes cosine similarity (including norms), so it does **not** require pre-normalized

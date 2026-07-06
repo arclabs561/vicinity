@@ -2587,6 +2587,107 @@ impl HNSWIndex {
         Ok(results.into_iter().take(k).collect())
     }
 
+    /// Search with ACORN-style filtered traversal over the HNSW base graph.
+    ///
+    /// This is separate from [`search_with_filter`](Self::search_with_filter):
+    /// that method uses category-local edges added at build time, while ACORN
+    /// examines second-hop neighbors during traversal to recover connectivity
+    /// when the predicate removes many first-hop neighbors.
+    ///
+    /// The returned IDs are the external `doc_id`s passed to [`add`](Self::add),
+    /// not internal graph node IDs.
+    pub fn search_acorn(
+        &self,
+        query: &[f32],
+        k: usize,
+        config: &crate::hnsw::AcornConfig,
+        filter: &crate::filtering::MetadataFilter,
+    ) -> Result<Vec<(u32, f32)>, RetrieveError> {
+        self.search_acorn_with_stats(query, k, config, filter)
+            .map(|(results, _)| results)
+    }
+
+    /// Same as [`search_acorn`](Self::search_acorn), but also returns ACORN
+    /// branch counters for benchmarking and tests.
+    pub fn search_acorn_with_stats(
+        &self,
+        query: &[f32],
+        k: usize,
+        config: &crate::hnsw::AcornConfig,
+        filter: &crate::filtering::MetadataFilter,
+    ) -> Result<(Vec<(u32, f32)>, crate::hnsw::AcornStats), RetrieveError> {
+        if !self.built {
+            return Err(RetrieveError::InvalidParameter(
+                "index must be built before search".into(),
+            ));
+        }
+
+        if query.len() != self.dimension {
+            return Err(RetrieveError::DimensionMismatch {
+                query_dim: query.len(),
+                doc_dim: self.dimension,
+            });
+        }
+
+        if self.num_vectors == 0 {
+            return Err(RetrieveError::EmptyIndex);
+        }
+
+        let Some(metadata) = self.metadata.as_ref() else {
+            return Err(RetrieveError::InvalidParameter(
+                "filtering not enabled; use HNSWIndex::with_filtering()".into(),
+            ));
+        };
+
+        let normalized;
+        let query = if self.params.auto_normalize
+            && matches!(
+                self.params.metric,
+                DistanceMetric::Cosine | DistanceMetric::Angular
+            ) {
+            normalized = crate::distance::normalize(query);
+            normalized.as_slice()
+        } else {
+            query
+        };
+
+        let entry_point = self.get_entry_point().ok_or(RetrieveError::EmptyIndex)?;
+        let entry_layer = self.layer_assignments[entry_point as usize] as usize;
+        let base_entry =
+            self.descend_upper_layers(query, entry_point, entry_layer, config.ef_search);
+        let dist_fn = self.dist_fn();
+
+        let node_filter = crate::hnsw::FnFilter(|internal_id: u32| {
+            if self.tombstones.is_deleted(internal_id as usize) {
+                return false;
+            }
+            self.doc_ids
+                .get(internal_id as usize)
+                .is_some_and(|&doc_id| metadata.matches(doc_id, filter))
+        });
+
+        let (internal_results, stats) = crate::hnsw::acorn_search_with_stats(
+            k,
+            config,
+            &node_filter,
+            |node| self.layers[0].get_neighbors(node).to_vec(),
+            |node| dist_fn(query, self.get_vector(node as usize)),
+            base_entry,
+        )?;
+
+        let results = internal_results
+            .into_iter()
+            .filter_map(|(internal_id, dist)| {
+                self.doc_ids
+                    .get(internal_id as usize)
+                    .copied()
+                    .map(|doc_id| (doc_id, dist))
+            })
+            .collect();
+
+        Ok((results, stats))
+    }
+
     /// Search with adaptive early termination.
     ///
     /// Behaves like [`HNSWIndex::search`] but uses an `EarlyTerminationOracle` on the

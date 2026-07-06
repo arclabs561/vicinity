@@ -13,7 +13,7 @@
 //! # Feature Flag
 //!
 //! ```toml
-//! vicinity = { version = "0.8", features = ["binary_index"] }
+//! vicinity = { version = "0.10.5", features = ["binary_index"] }
 //! ```
 //!
 //! # Quick Start

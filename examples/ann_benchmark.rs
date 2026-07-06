@@ -5,342 +5,68 @@
 //! benchmarks multiple algorithms at various search parameters.
 //!
 //! ```bash
-//! # Download dataset first
 //! uv run scripts/download_ann_benchmarks.py glove-25-angular
 //!
-//! # Run benchmark (HNSW default)
 //! cargo run --example ann_benchmark --release --features hnsw -- data/ann-benchmarks/glove-25-angular
 //!
-//! # Multiple algorithms (results auto-saved to data/ann-benchmarks/results/<dataset>-all-algos.jsonl)
-//! cargo run --example ann_benchmark --release --features hnsw,nsw,ivf_pq -- \
-//!   data/ann-benchmarks/glove-25-angular --algo hnsw --algo nsw --algo ivfpq --algo brute
+//! cargo run --example ann_benchmark --release --features hnsw,nsw,ivf_pq,ivf_avq -- \
+//!   data/ann-benchmarks/glove-25-angular --algo hnsw --algo nsw --algo ivfpq --algo ivf_avq --algo brute
 //!
-//! # Resume after interruption (completed algorithms are skipped automatically)
 //! cargo run --example ann_benchmark --release --all-features -- \
-//!   data/ann-benchmarks/glove-25-angular --algo hnsw --algo nsw --json
+//!   data/ann-benchmarks/glove-25-angular --algo hnsw --algo nsw --resume --json
 //!
-//! # Force re-run (delete existing results)
-//! cargo run --example ann_benchmark --release --all-features -- \
-//!   data/ann-benchmarks/glove-25-angular --fresh --json
+//! RAYON_NUM_THREADS=4 cargo run --example ann_benchmark --release --features hnsw,parallel -- \
+//!   data/ann-benchmarks/glove-25-angular --algo hnsw --batch --json
 //!
-//! # Custom results file
-//! cargo run --example ann_benchmark --release --features hnsw -- \
-//!   data/ann-benchmarks/glove-25-angular --results /tmp/my-results.jsonl --json
+//! cargo run --example ann_benchmark --release --features ivf_pq,hnsw -- \
+//!   data/ann-benchmarks/glove-25-angular --algo ivfpq --pq-rerank-pools 100,500
 //!
-//! # Custom parameters
-//! cargo run --example ann_benchmark --release --features hnsw -- \
-//!   data/ann-benchmarks/glove-25-angular --m 32 --ef-construction 400 --ef-search 10,50,200
+//! cargo run --example ann_benchmark --release --features hnsw,fresh_graph -- \
+//!   data/ann-benchmarks/glove-25-angular --algo fresh_graph_churn --json
 //! ```
 
 #[path = "common/mod.rs"]
 mod common;
+#[cfg(any(
+    feature = "ivf_pq",
+    feature = "ivf_avq",
+    feature = "ivf_rabitq",
+    feature = "rp_quant",
+    feature = "binary_index",
+    feature = "sq4",
+    feature = "sq8",
+    feature = "lsh"
+))]
+#[path = "ann_benchmark/quant.rs"]
+mod quant;
+#[path = "ann_benchmark/support.rs"]
+mod support;
 
-use std::collections::HashSet;
-use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Instant;
 
-// ─── CLI config ──────────────────────────────────────────────────────────────
+#[cfg(feature = "fresh_graph")]
+use support::brute_force_search_ids;
+#[cfg(feature = "parallel")]
+use support::evaluate_parallel;
+use support::{
+    brute_force_search, current_rss_kb, emit_result, evaluate, json_line, load_completed_results,
+    parse_args, print_header, print_row, request_completed, rustc_version, Config,
+};
+#[cfg(feature = "diskann")]
+use support::{dir_size_bytes, json_line_with_storage, ResultStorage};
 
-struct Config {
-    data_dir: String,
-    algos: Vec<String>,
-    m: usize,
-    ef_construction: usize,
-    ef_search_values: Vec<usize>,
-    json: bool,
-    results_path: PathBuf,
-    is_euclidean: bool,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            data_dir: "data/ann-benchmarks/glove-25-angular".into(),
-            algos: vec!["hnsw".into()],
-            m: 16,
-            ef_construction: 200,
-            ef_search_values: vec![10, 20, 50, 100, 200, 400],
-            json: false,
-            results_path: PathBuf::new(), // derived from data_dir after parsing
-            is_euclidean: false,          // derived from data_dir after parsing
-        }
-    }
-}
-
-/// Derive results file path from dataset directory name.
-fn default_results_path(data_dir: &str) -> PathBuf {
-    let dataset = Path::new(data_dir)
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .to_string();
-    let results_dir = Path::new(data_dir)
-        .parent()
-        .unwrap_or(Path::new("."))
-        .join("results");
-    std::fs::create_dir_all(&results_dir).ok();
-    results_dir.join(format!("{}-all-algos.jsonl", dataset))
-}
-
-/// Load set of algorithm names that already have results.
-fn load_completed_algos(path: &Path) -> HashSet<String> {
-    let mut completed = HashSet::new();
-    let Ok(file) = File::open(path) else {
-        return completed;
-    };
-    for line in BufReader::new(file).lines() {
-        let Ok(line) = line else { continue };
-        // Extract "algorithm":"<name>" from JSON without pulling in serde
-        if let Some(start) = line.find("\"algorithm\":\"") {
-            let rest = &line[start + 13..];
-            if let Some(end) = rest.find('"') {
-                completed.insert(rest[..end].to_string());
-            }
-        }
-    }
-    completed
-}
-
-/// Append a JSON result line to the results file (and print to stdout).
-fn emit_result(results_path: &Path, line: &str) {
-    println!("{}", line);
-    if let Ok(mut f) = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(results_path)
-    {
-        let _ = writeln!(f, "{}", line);
-    }
-}
-
-fn parse_args() -> Config {
-    let args: Vec<String> = std::env::args().collect();
-    let mut cfg = Config::default();
-    let mut algos_set = false;
-    let mut results_override = false;
-    let mut i = 1;
-
-    while i < args.len() {
-        match args[i].as_str() {
-            "--algo" => {
-                i += 1;
-                if !algos_set {
-                    cfg.algos.clear();
-                    algos_set = true;
-                }
-                if i < args.len() {
-                    cfg.algos.push(args[i].to_lowercase());
-                }
-            }
-            "--m" => {
-                i += 1;
-                if i < args.len() {
-                    cfg.m = args[i].parse().unwrap_or(16);
-                }
-            }
-            "--ef-construction" => {
-                i += 1;
-                if i < args.len() {
-                    cfg.ef_construction = args[i].parse().unwrap_or(200);
-                }
-            }
-            "--ef-search" => {
-                i += 1;
-                if i < args.len() {
-                    cfg.ef_search_values = args[i]
-                        .split(',')
-                        .filter_map(|s| s.trim().parse().ok())
-                        .collect();
-                }
-            }
-            "--json" => {
-                cfg.json = true;
-            }
-            "--results" => {
-                i += 1;
-                if i < args.len() {
-                    cfg.results_path = PathBuf::from(&args[i]);
-                    results_override = true;
-                }
-            }
-            "--fresh" => {
-                // Delete existing results to force full re-run
-                // (handled after results_path is finalized)
-                cfg.results_path = PathBuf::from("__fresh__");
-            }
-            arg if !arg.starts_with("--") => {
-                cfg.data_dir = arg.to_string();
-            }
-            _ => {
-                eprintln!("Unknown flag: {}", args[i]);
-            }
-        }
-        i += 1;
-    }
-
-    let fresh_sentinel: PathBuf = PathBuf::from("__fresh__");
-    let is_fresh = cfg.results_path == fresh_sentinel;
-    if !results_override && !is_fresh {
-        cfg.results_path = default_results_path(&cfg.data_dir);
-    } else if is_fresh {
-        cfg.results_path = default_results_path(&cfg.data_dir);
-        std::fs::remove_file(&cfg.results_path).ok();
-    }
-
-    // Auto-detect metric from dataset name.
-    cfg.is_euclidean = cfg.data_dir.contains("euclidean");
-
-    cfg
-}
-
-// ─── Benchmark result ────────────────────────────────────────────────────────
-
-struct BenchResult {
-    recall_at_k: f64,
-    qps: f64,
-    latency_us: f64,
-    p50_us: f64,
-    p95_us: f64,
-    p99_us: f64,
-}
-
-/// Format a single result as a JSON line.
-fn json_line(
-    algorithm: &str,
-    params: &str,
-    build_time_s: f64,
-    rss_kb: Option<u64>,
-    result: &BenchResult,
-) -> String {
-    let mut s = format!(
-        "{{\"algorithm\":\"{}\",\"params\":{},\"recall_at_10\":{:.4},\"qps\":{:.1},\"build_time_s\":{:.2},\"latency_us\":{:.1},\"p50_us\":{:.1},\"p95_us\":{:.1},\"p99_us\":{:.1}",
-        algorithm, params, result.recall_at_k, result.qps, build_time_s, result.latency_us,
-        result.p50_us, result.p95_us, result.p99_us
-    );
-    if let Some(kb) = rss_kb {
-        s.push_str(&format!(",\"rss_kb\":{}", kb));
-    }
-    s.push('}');
-    s
-}
-
-// ─── Generic evaluate ────────────────────────────────────────────────────────
-
-const WARMUP_QUERIES: usize = 50;
-
-fn evaluate(
-    search_fn: &dyn Fn(&[f32], usize) -> Vec<(u32, f32)>,
-    test: &[Vec<f32>],
-    neighbors: &[Vec<i32>],
-    k: usize,
-) -> BenchResult {
-    // Warmup
-    let warmup_count = WARMUP_QUERIES.min(test.len());
-    for query in test.iter().take(warmup_count) {
-        let _ = search_fn(query, k);
-    }
-
-    // Timed run -- per-query latency for percentiles
-    let mut total_recall = 0.0;
-    let mut latencies_us: Vec<f64> = Vec::with_capacity(test.len());
-
-    for (i, query) in test.iter().enumerate() {
-        let q_start = Instant::now();
-        let results = search_fn(query, k);
-        let q_elapsed = q_start.elapsed();
-        latencies_us.push(q_elapsed.as_nanos() as f64 / 1000.0);
-
-        let gt_set: HashSet<u32> = neighbors[i].iter().take(k).map(|&n| n as u32).collect();
-        let found: HashSet<u32> = results.iter().map(|r| r.0).collect();
-        total_recall += gt_set.intersection(&found).count() as f64 / k as f64;
-    }
-
-    latencies_us.sort_unstable_by(|a, b| a.total_cmp(b));
-    let n = latencies_us.len();
-    let total_us: f64 = latencies_us.iter().sum();
-
-    BenchResult {
-        recall_at_k: total_recall / n as f64,
-        qps: n as f64 / (total_us / 1_000_000.0),
-        latency_us: total_us / n as f64,
-        p50_us: latencies_us[n / 2],
-        p95_us: latencies_us[(n as f64 * 0.95) as usize],
-        p99_us: latencies_us[(n as f64 * 0.99) as usize],
-    }
-}
-
-// ─── Peak RSS ────────────────────────────────────────────────────────────────
-
-fn current_rss_kb() -> Option<u64> {
-    #[cfg(target_os = "macos")]
-    {
-        // mach_task_basic_info via libc-style syscall is complex; use ps instead.
-        let output = std::process::Command::new("ps")
-            .args(["-o", "rss=", "-p", &std::process::id().to_string()])
-            .output()
-            .ok()?;
-        let s = String::from_utf8_lossy(&output.stdout);
-        s.trim().parse::<u64>().ok()
-    }
-    #[cfg(target_os = "linux")]
-    {
-        // /proc/self/status -> VmRSS
-        let status = std::fs::read_to_string("/proc/self/status").ok()?;
-        for line in status.lines() {
-            if let Some(rest) = line.strip_prefix("VmRSS:") {
-                let kb_str = rest.trim().trim_end_matches(" kB").trim();
-                return kb_str.parse::<u64>().ok();
-            }
-        }
-        None
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    {
-        None
-    }
-}
-
-// ─── Brute force ─────────────────────────────────────────────────────────────
-
-fn brute_force_search(
-    train: &[Vec<f32>],
-    query: &[f32],
-    k: usize,
-    metric: vicinity::DistanceMetric,
-) -> Vec<(u32, f32)> {
-    let mut dists: Vec<(u32, f32)> = train
-        .iter()
-        .enumerate()
-        .map(|(i, v)| (i as u32, metric.distance(query, v)))
-        .collect();
-    dists.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
-    dists.truncate(k);
-    dists
-}
-
-// ─── Table printing ──────────────────────────────────────────────────────────
-
-fn print_header() {
-    println!(
-        "{:>10} {:>10} {:>10} {:>10} {:>10} {:>10}",
-        "param", "Recall@10", "QPS", "p50(us)", "p95(us)", "p99(us)"
-    );
-    println!("{}", "-".repeat(65));
-}
-
-fn print_row(param_label: &str, result: &BenchResult) {
-    println!(
-        "{:>10} {:>9.1}% {:>9.0} {:>9.0} {:>9.0} {:>9.0}",
-        param_label,
-        result.recall_at_k * 100.0,
-        result.qps,
-        result.p50_us,
-        result.p95_us,
-        result.p99_us
-    );
-}
+#[cfg(any(
+    feature = "ivf_pq",
+    feature = "ivf_avq",
+    feature = "ivf_rabitq",
+    feature = "rp_quant",
+    feature = "binary_index",
+    feature = "sq4",
+    feature = "sq8",
+    feature = "lsh"
+))]
+use quant::*;
 
 // ─── Algorithm runners ───────────────────────────────────────────────────────
 
@@ -407,6 +133,32 @@ fn run_hnsw(
         } else {
             print_row(&format!("ef={}", ef), &result);
         }
+
+        #[cfg(feature = "parallel")]
+        if cfg.batch {
+            let result =
+                evaluate_parallel(|q, k| index.search(q, k, ef).unwrap(), test, neighbors, 10);
+            if cfg.json {
+                let params_json = format!(
+                    "{{\"m\":{},\"ef_construction\":{},\"ef_search\":{},\"threads\":{}}}",
+                    cfg.m,
+                    cfg.ef_construction,
+                    ef,
+                    rayon::current_num_threads()
+                );
+                emit_result(
+                    &cfg.results_path,
+                    &json_line("hnsw_parallel", &params_json, build_time_s, rss, &result),
+                );
+            } else {
+                print_row(&format!("ef={} par", ef), &result);
+            }
+        }
+    }
+
+    #[cfg(not(feature = "parallel"))]
+    if cfg.batch {
+        eprintln!("hnsw --batch requested but parallel feature is not enabled");
     }
 
     if !cfg.json {
@@ -456,83 +208,6 @@ fn run_nsw(
             );
         } else {
             print_row(&format!("ef={}", ef), &result);
-        }
-    }
-
-    if !cfg.json {
-        println!();
-    }
-}
-
-#[cfg(feature = "ivf_pq")]
-fn run_ivfpq(
-    cfg: &Config,
-    train: &[Vec<f32>],
-    test: &[Vec<f32>],
-    neighbors: &[Vec<i32>],
-    dim: usize,
-) {
-    use vicinity::ivf_pq::{IVFPQIndex, IVFPQParams};
-
-    let num_clusters = 256;
-    // num_codebooks must divide dim evenly. Pick the largest divisor <= 8.
-    let num_codebooks = (1..=8.min(dim))
-        .rev()
-        .find(|&c| dim.is_multiple_of(c))
-        .unwrap_or(1);
-
-    if !cfg.json {
-        println!(
-            "--- IVF-PQ (clusters={}, codebooks={}) ---",
-            num_clusters, num_codebooks
-        );
-    }
-
-    let params = IVFPQParams {
-        num_clusters,
-        num_codebooks,
-        codebook_size: 256,
-        nprobe: 1, // will be swept
-        ..Default::default()
-    };
-
-    let build_start = Instant::now();
-    let mut index = IVFPQIndex::new(dim, params).unwrap();
-    for (i, vec) in train.iter().enumerate() {
-        index.add_slice(i as u32, vec).unwrap();
-    }
-    index.build().unwrap();
-    let build_time_s = build_start.elapsed().as_secs_f64();
-    let rss = current_rss_kb();
-
-    if !cfg.json {
-        println!(
-            "Build: {:.2}s ({:.0} vectors/sec)\n",
-            build_time_s,
-            train.len() as f64 / build_time_s
-        );
-        print_header();
-    }
-
-    // Sweep nprobe values (analogous to ef_search for graph methods)
-    let nprobe_values = [1, 2, 5, 10, 20, 50, 100];
-    for &nprobe in &nprobe_values {
-        if nprobe > num_clusters {
-            continue;
-        }
-        index.set_nprobe(nprobe);
-        let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
-        if cfg.json {
-            let params_json = format!(
-                "{{\"num_clusters\":{},\"num_codebooks\":{},\"nprobe\":{}}}",
-                num_clusters, num_codebooks, nprobe
-            );
-            emit_result(
-                &cfg.results_path,
-                &json_line("ivfpq", &params_json, build_time_s, rss, &result),
-            );
-        } else {
-            print_row(&format!("np={}", nprobe), &result);
         }
     }
 
@@ -849,40 +524,52 @@ fn run_vamana(
     }
 }
 
-#[cfg(feature = "ivf_rabitq")]
-fn run_ivf_rabitq(
+#[cfg(feature = "diskann")]
+fn run_diskann(
     cfg: &Config,
     train: &[Vec<f32>],
     test: &[Vec<f32>],
     neighbors: &[Vec<i32>],
     dim: usize,
 ) {
-    use vicinity::ivf_rabitq::{IVFRaBitQIndex, IVFRaBitQParams};
+    use std::cell::RefCell;
 
-    let num_clusters = 256;
+    use vicinity::diskann::{DiskANNIndex, DiskANNParams, DiskANNSearcher};
+
+    let params = DiskANNParams {
+        m: cfg.m,
+        ef_construction: cfg.ef_construction,
+        alpha: 1.2,
+        ef_search: 100,
+        seed: Some(42),
+    };
 
     if !cfg.json {
         println!(
-            "--- IVF-RaBitQ (clusters={}, total_bits=4) ---",
-            num_clusters
+            "--- DiskANN (M={}, ef_construction={}, alpha=1.2) ---",
+            cfg.m, cfg.ef_construction
         );
     }
 
-    let params = IVFRaBitQParams {
-        num_clusters,
-        nprobe: 10,
-        total_bits: 4,
-        seed: 42,
-    };
-
     let build_start = Instant::now();
-    let mut index = IVFRaBitQIndex::new(dim, params).unwrap();
+    let mut index = DiskANNIndex::new(dim, params).unwrap();
     for (i, vec) in train.iter().enumerate() {
         index.add_slice(i as u32, vec).unwrap();
     }
     index.build().unwrap();
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
+
+    let temp_dir = tempfile::tempdir().expect("create temp dir for DiskANN file-backed benchmark");
+    let index_dir = temp_dir.path().join("diskann");
+    index.save(&index_dir).unwrap();
+    let index_bytes = dir_size_bytes(&index_dir).ok();
+    let file_load_start = Instant::now();
+    let searcher = RefCell::new(DiskANNSearcher::load(&index_dir).unwrap());
+    let file_load_time_s = file_load_start.elapsed().as_secs_f64();
+    let mmap_load_start = Instant::now();
+    let mmap_searcher = RefCell::new(DiskANNSearcher::load_mmap(&index_dir).unwrap());
+    let mmap_load_time_s = mmap_load_start.elapsed().as_secs_f64();
 
     if !cfg.json {
         println!(
@@ -893,24 +580,73 @@ fn run_ivf_rabitq(
         print_header();
     }
 
-    let nprobe_values = [1, 2, 5, 10, 20, 50, 100];
-    for &nprobe in &nprobe_values {
-        if nprobe > num_clusters {
-            continue;
-        }
-        index.set_nprobe(nprobe);
-        let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
+    for &ef in &cfg.ef_search_values {
+        let result = evaluate(&|q, k| index.search(q, k, ef).unwrap(), test, neighbors, 10);
+        let file_result = evaluate(
+            &|q, k| searcher.borrow_mut().search(q, k, ef).unwrap(),
+            test,
+            neighbors,
+            10,
+        );
+        let mmap_result = evaluate(
+            &|q, k| mmap_searcher.borrow_mut().search(q, k, ef).unwrap(),
+            test,
+            neighbors,
+            10,
+        );
         if cfg.json {
             let params_json = format!(
-                "{{\"num_clusters\":{},\"total_bits\":4,\"nprobe\":{}}}",
-                num_clusters, nprobe
+                "{{\"m\":{},\"ef_construction\":{},\"alpha\":1.2,\"ef_search\":{},\"storage\":\"memory\"}}",
+                cfg.m, cfg.ef_construction, ef
             );
             emit_result(
                 &cfg.results_path,
-                &json_line("ivf_rabitq", &params_json, build_time_s, rss, &result),
+                &json_line("diskann", &params_json, build_time_s, rss, &result),
+            );
+            let params_json = format!(
+                "{{\"m\":{},\"ef_construction\":{},\"alpha\":1.2,\"ef_search\":{},\"storage\":\"file\"}}",
+                cfg.m, cfg.ef_construction, ef
+            );
+            emit_result(
+                &cfg.results_path,
+                &json_line_with_storage(
+                    "diskann_file",
+                    &params_json,
+                    build_time_s,
+                    rss,
+                    &file_result,
+                    &ResultStorage {
+                        storage_mode: "file",
+                        cache_state: "warm_after_open",
+                        load_time_s: Some(file_load_time_s),
+                        index_bytes,
+                    },
+                ),
+            );
+            let params_json = format!(
+                "{{\"m\":{},\"ef_construction\":{},\"alpha\":1.2,\"ef_search\":{},\"storage\":\"mmap\"}}",
+                cfg.m, cfg.ef_construction, ef
+            );
+            emit_result(
+                &cfg.results_path,
+                &json_line_with_storage(
+                    "diskann_mmap",
+                    &params_json,
+                    build_time_s,
+                    rss,
+                    &mmap_result,
+                    &ResultStorage {
+                        storage_mode: "mmap",
+                        cache_state: "warm_after_open",
+                        load_time_s: Some(mmap_load_time_s),
+                        index_bytes,
+                    },
+                ),
             );
         } else {
-            print_row(&format!("np={}", nprobe), &result);
+            print_row(&format!("ef={} memory", ef), &result);
+            print_row(&format!("ef={} file", ef), &file_result);
+            print_row(&format!("ef={} mmap", ef), &mmap_result);
         }
     }
 
@@ -930,7 +666,8 @@ fn run_finger(
     use vicinity::finger::{FingerIndex, FingerParams};
 
     let n = train.len().min(50_000);
-    if train.len() > 50_000 {
+    let capped = train.len() > n;
+    if capped {
         eprintln!(
             "FINGER: capping at 50,000 vectors (got {}); construction is expensive",
             train.len()
@@ -975,7 +712,12 @@ fn run_finger(
             10,
         );
         if cfg.json {
-            let params_json = format!("{{\"max_degree\":32,\"ef_search\":{}}}", ef);
+            let params_json = format!(
+                "{{\"max_degree\":32,\"ef_search\":{},\"indexed_vectors\":{},\"capped\":{}}}",
+                ef,
+                train.len(),
+                capped
+            );
             emit_result(
                 &cfg.results_path,
                 &json_line("finger", &params_json, build_time_s, rss, &result),
@@ -1050,6 +792,121 @@ fn run_fresh_graph(
             emit_result(
                 &cfg.results_path,
                 &json_line("fresh_graph", &params_json, build_time_s, rss, &result),
+            );
+        } else {
+            print_row(&format!("ef={}", ef), &result);
+        }
+    }
+
+    if !cfg.json {
+        println!();
+    }
+}
+
+#[cfg(feature = "fresh_graph")]
+fn run_fresh_graph_churn(cfg: &Config, train: &[Vec<f32>], test: &[Vec<f32>], dim: usize) {
+    use vicinity::fresh_graph::{FreshGraphIndex, FreshGraphParams};
+
+    if cfg.is_euclidean {
+        eprintln!("fresh_graph_churn: skipping (cosine-only, dataset is euclidean)");
+        return;
+    }
+
+    let base_n = cfg
+        .churn_base_size
+        .min(train.len().saturating_sub(cfg.churn_cycles.max(1)));
+    if base_n == 0 {
+        eprintln!("fresh_graph_churn: dataset is too small for churn benchmark");
+        return;
+    }
+    let cycles = cfg.churn_cycles.min(train.len().saturating_sub(base_n));
+    let query_count = cfg.churn_queries.min(test.len());
+    if cycles == 0 || query_count == 0 {
+        eprintln!("fresh_graph_churn: need at least one update cycle and one query");
+        return;
+    }
+
+    let params = FreshGraphParams {
+        max_degree: 32,
+        ef_construction: 200,
+        ef_search: 100,
+        alpha: 1.2,
+    };
+
+    if !cfg.json {
+        println!(
+            "--- FreshGraph churn (base={}, cycles={}, queries={}) ---",
+            base_n, cycles, query_count
+        );
+    }
+
+    let build_start = Instant::now();
+    let mut index = FreshGraphIndex::new(dim, params).unwrap();
+    for (i, vec) in train.iter().take(base_n).enumerate() {
+        index.add_slice(i as u32, vec).unwrap();
+    }
+    index.build().unwrap();
+    let build_time_s = build_start.elapsed().as_secs_f64();
+
+    let mut active: Vec<u32> = (0..base_n as u32).collect();
+    let mut rng_state = 0x9E37_79B9_7F4A_7C15_u64;
+    let update_start = Instant::now();
+    for offset in 0..cycles {
+        let new_id = (base_n + offset) as u32;
+        rng_state = rng_state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1);
+        let victim_pos = ((rng_state >> 33) as usize) % active.len();
+        let victim = active.swap_remove(victim_pos);
+        index.delete(victim).unwrap();
+        index.insert(new_id, &train[new_id as usize]).unwrap();
+        active.push(new_id);
+    }
+    let update_time_s = update_start.elapsed().as_secs_f64();
+    let update_qps = cycles as f64 / update_time_s;
+    let tombstone_ratio = index.num_deleted() as f64 / index.len().max(1) as f64;
+    let rss = current_rss_kb();
+
+    let test_subset = &test[..query_count];
+    let live_neighbors: Vec<Vec<i32>> = test_subset
+        .iter()
+        .map(|query| {
+            brute_force_search_ids(train, &active, query, 10, vicinity::DistanceMetric::Cosine)
+        })
+        .collect();
+
+    if !cfg.json {
+        println!(
+            "Build: {:.2}s; Updates: {:.2}s ({:.0}/s); tombstones: {:.1}%\n",
+            build_time_s,
+            update_time_s,
+            update_qps,
+            tombstone_ratio * 100.0
+        );
+        print_header();
+    }
+
+    for &ef in &cfg.ef_search_values {
+        let result = evaluate(
+            &|q, k| index.search_with_ef(q, k, ef).unwrap(),
+            test_subset,
+            &live_neighbors,
+            10,
+        );
+        if cfg.json {
+            let params_json = format!(
+                "{{\"max_degree\":32,\"ef_search\":{},\"base_size\":{},\"cycles\":{},\"queries\":{},\"update_time_s\":{:.4},\"update_qps\":{:.1},\"tombstone_ratio\":{:.4}}}",
+                ef, base_n, cycles, query_count, update_time_s, update_qps, tombstone_ratio
+            );
+            emit_result(
+                &cfg.results_path,
+                &json_line(
+                    "fresh_graph_churn",
+                    &params_json,
+                    build_time_s,
+                    rss,
+                    &result,
+                ),
             );
         } else {
             print_row(&format!("ef={}", ef), &result);
@@ -1147,112 +1004,6 @@ fn run_sparse_mips(
     );
 }
 
-#[cfg(feature = "rp_quant")]
-fn run_rp_quant(
-    cfg: &Config,
-    train: &[Vec<f32>],
-    test: &[Vec<f32>],
-    neighbors: &[Vec<i32>],
-    dim: usize,
-) {
-    use vicinity::rp_quant::{RpQuantIndex, RpQuantParams};
-
-    let projected_dim = 64.min(dim);
-
-    if !cfg.json {
-        println!(
-            "--- RpQuant (projected_dim={}, rerank=10) ---",
-            projected_dim
-        );
-    }
-
-    let params = RpQuantParams {
-        projected_dim,
-        rerank_factor: 10,
-        seed: 42,
-    };
-
-    let build_start = Instant::now();
-    let mut index = RpQuantIndex::new(dim, params).unwrap();
-    for (i, vec) in train.iter().enumerate() {
-        index.add_slice(i as u32, vec).unwrap();
-    }
-    index.build().unwrap();
-    let build_time_s = build_start.elapsed().as_secs_f64();
-    let rss = current_rss_kb();
-
-    if !cfg.json {
-        println!(
-            "Build: {:.2}s ({:.0} vectors/sec)\n",
-            build_time_s,
-            train.len() as f64 / build_time_s
-        );
-        print_header();
-    }
-
-    let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
-    if cfg.json {
-        let params_json = format!(
-            "{{\"projected_dim\":{},\"rerank_factor\":10}}",
-            projected_dim
-        );
-        emit_result(
-            &cfg.results_path,
-            &json_line("rp_quant", &params_json, build_time_s, rss, &result),
-        );
-    } else {
-        print_row("--", &result);
-        println!();
-    }
-}
-
-#[cfg(feature = "sq4")]
-fn run_sq4(
-    cfg: &Config,
-    train: &[Vec<f32>],
-    test: &[Vec<f32>],
-    neighbors: &[Vec<i32>],
-    dim: usize,
-) {
-    use vicinity::sq4::{SQ4Index, SQ4Params};
-
-    if !cfg.json {
-        println!("--- SQ4 (4-bit scalar quantization, rerank=10) ---");
-    }
-
-    let params = SQ4Params { rerank_factor: 10 };
-
-    let build_start = Instant::now();
-    let mut index = SQ4Index::new(dim, params).unwrap();
-    for (i, vec) in train.iter().enumerate() {
-        index.add_slice(i as u32, vec).unwrap();
-    }
-    index.build().unwrap();
-    let build_time_s = build_start.elapsed().as_secs_f64();
-    let rss = current_rss_kb();
-
-    if !cfg.json {
-        println!(
-            "Build: {:.2}s ({:.0} vectors/sec)\n",
-            build_time_s,
-            train.len() as f64 / build_time_s
-        );
-        print_header();
-    }
-
-    let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
-    if cfg.json {
-        let params_json = "{\"rerank_factor\":10}";
-        emit_result(
-            &cfg.results_path,
-            &json_line("sq4", params_json, build_time_s, rss, &result),
-        );
-    } else {
-        print_row("--", &result);
-        println!();
-    }
-}
-
 #[cfg(feature = "hnsw")]
 fn run_adsampling(
     cfg: &Config,
@@ -1331,65 +1082,6 @@ fn run_adsampling(
             print_row(&format!("ef={}", ef), &result);
         }
     }
-    if !cfg.json {
-        println!();
-    }
-}
-
-#[cfg(all(feature = "hnsw", feature = "ivf_rabitq"))]
-fn run_symphony_qg(
-    cfg: &Config,
-    train: &[Vec<f32>],
-    test: &[Vec<f32>],
-    neighbors: &[Vec<i32>],
-    dim: usize,
-) {
-    use vicinity::hnsw::SymphonyQGIndex;
-
-    if !cfg.json {
-        println!("--- SymphonyQG (m=16, 4-bit RaBitQ) ---");
-    }
-
-    let build_start = Instant::now();
-    let mut index = SymphonyQGIndex::new(dim, 16, 16).unwrap();
-    for (i, vec) in train.iter().enumerate() {
-        index.add_slice(i as u32, vec).unwrap();
-    }
-    index.build().unwrap();
-    let build_time_s = build_start.elapsed().as_secs_f64();
-    let rss = current_rss_kb();
-
-    if !cfg.json {
-        println!(
-            "Build: {:.2}s ({:.0} vectors/sec)\n",
-            build_time_s,
-            train.len() as f64 / build_time_s
-        );
-        print_header();
-    }
-
-    for &ef in &cfg.ef_search_values {
-        let rerank_pool = (ef * 2).max(100);
-        let result = evaluate(
-            &|q, k| index.search_reranked(q, k, ef, rerank_pool).unwrap(),
-            test,
-            neighbors,
-            10,
-        );
-        if cfg.json {
-            let params_json = format!(
-                "{{\"m\":16,\"ef_search\":{},\"rerank_pool\":{}}}",
-                ef, rerank_pool
-            );
-            emit_result(
-                &cfg.results_path,
-                &json_line("symphony_qg", &params_json, build_time_s, rss, &result),
-            );
-        } else {
-            print_row(&format!("ef={}", ef), &result);
-        }
-    }
-
     if !cfg.json {
         println!();
     }
@@ -1498,143 +1190,6 @@ fn run_range_filtered(
     }
 }
 
-#[cfg(feature = "binary_index")]
-fn run_binary_index(
-    cfg: &Config,
-    train: &[Vec<f32>],
-    test: &[Vec<f32>],
-    neighbors: &[Vec<i32>],
-    dim: usize,
-) {
-    use vicinity::binary_index::{BinaryFlatIndex, BinaryFlatParams};
-
-    let params = BinaryFlatParams {
-        rerank_factor: 10,
-        seed: 42,
-        ..Default::default()
-    };
-
-    if !cfg.json {
-        println!("--- BinaryFlat (rerank=10) ---");
-    }
-
-    let build_start = Instant::now();
-    let mut index = BinaryFlatIndex::new(dim, params).unwrap();
-    for (i, vec) in train.iter().enumerate() {
-        index.add_slice(i as u32, vec).unwrap();
-    }
-    index.build().unwrap();
-    let build_time_s = build_start.elapsed().as_secs_f64();
-    let rss = current_rss_kb();
-
-    if !cfg.json {
-        println!(
-            "Build: {:.2}s ({:.0} vectors/sec)\n",
-            build_time_s,
-            train.len() as f64 / build_time_s
-        );
-        print_header();
-    }
-
-    let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
-    if cfg.json {
-        let params_json = r#"{"rerank_factor":10}"#;
-        emit_result(
-            &cfg.results_path,
-            &json_line("binary_index", params_json, build_time_s, rss, &result),
-        );
-    } else {
-        print_row("--", &result);
-        println!();
-    }
-}
-
-#[cfg(feature = "lsh")]
-fn run_lsh(
-    cfg: &Config,
-    train: &[Vec<f32>],
-    test: &[Vec<f32>],
-    neighbors: &[Vec<i32>],
-    dim: usize,
-) {
-    use vicinity::lsh::{CrossPolytopeLSHIndex, LSHParams};
-
-    // Sweep over (num_tables, num_probes) combinations.
-    let table_counts = [8, 16, 32];
-    let probe_counts = [2, 4, 8, 16];
-
-    for &num_tables in &table_counts {
-        let params = LSHParams {
-            num_tables,
-            num_probes: 1, // build once per table count
-            seed: Some(42),
-        };
-
-        if !cfg.json {
-            println!("--- LSH (tables={}) ---", num_tables);
-        }
-
-        let build_start = Instant::now();
-        let mut index = CrossPolytopeLSHIndex::new(dim, params).unwrap();
-
-        // Flatten train vectors for add_vectors.
-        let flat: Vec<f32> = train.iter().flat_map(|v| v.iter().copied()).collect();
-        index.add_vectors(&flat).unwrap();
-        index.build().unwrap();
-        let build_time_s = build_start.elapsed().as_secs_f64();
-        let rss = current_rss_kb();
-
-        if !cfg.json {
-            println!(
-                "Build: {:.2}s ({:.0} vectors/sec)\n",
-                build_time_s,
-                train.len() as f64 / build_time_s
-            );
-            print_header();
-        }
-
-        for &num_probes in &probe_counts {
-            if num_probes > dim {
-                continue; // probes > dimension is wasteful
-            }
-
-            // Rebuild with different probe count (same rotation matrices via same seed).
-            let search_params = LSHParams {
-                num_tables,
-                num_probes,
-                seed: Some(42),
-            };
-            let mut search_index = CrossPolytopeLSHIndex::new(dim, search_params).unwrap();
-            search_index.add_vectors(&flat).unwrap();
-            search_index.build().unwrap();
-
-            let result = evaluate(
-                &|q, k| search_index.search(q, k).unwrap_or_default(),
-                test,
-                neighbors,
-                10,
-            );
-
-            if cfg.json {
-                let params_json = format!(
-                    "{{\"num_tables\":{},\"num_probes\":{}}}",
-                    num_tables, num_probes
-                );
-                emit_result(
-                    &cfg.results_path,
-                    &json_line("lsh", &params_json, build_time_s, rss, &result),
-                );
-            } else {
-                print_row(&format!("probes={}", num_probes), &result);
-            }
-        }
-
-        if !cfg.json {
-            println!();
-        }
-    }
-}
-
 #[cfg(feature = "hnsw")]
 fn run_hnsw_prt(
     cfg: &Config,
@@ -1724,166 +1279,6 @@ fn run_hnsw_prt(
     }
 }
 
-#[cfg(all(feature = "hnsw", feature = "sq8"))]
-fn run_sq8u(
-    cfg: &Config,
-    train: &[Vec<f32>],
-    test: &[Vec<f32>],
-    neighbors: &[Vec<i32>],
-    dim: usize,
-) {
-    use vicinity::hnsw::{HNSWParams, HNSWSq8Index};
-    use vicinity::DistanceMetric;
-
-    let m = cfg.m;
-    let ef_construction = cfg.ef_construction;
-
-    if !cfg.json {
-        println!("--- SQ8U (M={}, ef_c={}) ---", m, ef_construction);
-    }
-
-    let metric = if cfg.is_euclidean {
-        DistanceMetric::L2
-    } else {
-        DistanceMetric::Cosine
-    };
-
-    let build_start = Instant::now();
-    let params = HNSWParams {
-        m,
-        m_max: m * 2,
-        ef_construction,
-        metric,
-        auto_normalize: !cfg.is_euclidean,
-        seed: Some(42),
-        ..Default::default()
-    };
-    let mut index = HNSWSq8Index::with_params(dim, params).unwrap();
-    let ids: Vec<u32> = (0..train.len() as u32).collect();
-    let flat: Vec<f32> = train.iter().flatten().copied().collect();
-    index.add_batch(&ids, &flat).unwrap();
-    index.build().unwrap();
-    let build_time_s = build_start.elapsed().as_secs_f64();
-    let rss = current_rss_kb();
-
-    if !cfg.json {
-        println!(
-            "Build: {:.2}s ({:.0} vectors/sec)\n",
-            build_time_s,
-            train.len() as f64 / build_time_s
-        );
-        print_header();
-    }
-
-    for &ef in &cfg.ef_search_values {
-        let rerank_pool = (ef * 2).max(100);
-        let result = evaluate(
-            &|q, k| index.search_reranked(q, k, ef, rerank_pool).unwrap(),
-            test,
-            neighbors,
-            10,
-        );
-        if cfg.json {
-            let params_json = format!(
-                "{{\"m\":{},\"ef_construction\":{},\"ef_search\":{},\"rerank_pool\":{}}}",
-                m, ef_construction, ef, rerank_pool
-            );
-            emit_result(
-                &cfg.results_path,
-                &json_line("sq8u", &params_json, build_time_s, rss, &result),
-            );
-        } else {
-            print_row(&format!("ef={}", ef), &result);
-        }
-    }
-
-    if !cfg.json {
-        println!();
-    }
-}
-
-#[cfg(all(feature = "hnsw", feature = "ivf_rabitq"))]
-fn run_symphony_qg_vr(
-    cfg: &Config,
-    train: &[Vec<f32>],
-    test: &[Vec<f32>],
-    neighbors: &[Vec<i32>],
-    dim: usize,
-) {
-    use qntz::rabitq::RaBitQConfig;
-    use vicinity::hnsw::{HNSWParams, SymphonyQGVRIndex};
-    use vicinity::DistanceMetric;
-
-    let m = cfg.m;
-    let ef_construction = cfg.ef_construction;
-
-    if !cfg.json {
-        println!(
-            "--- SymphonyQG-VR (M={}, ef_c={}, L2-capable) ---",
-            m, ef_construction
-        );
-    }
-
-    let metric = if cfg.is_euclidean {
-        DistanceMetric::L2
-    } else {
-        DistanceMetric::Cosine
-    };
-
-    let build_start = Instant::now();
-    let params = HNSWParams {
-        m,
-        m_max: m * 2,
-        ef_construction,
-        metric,
-        auto_normalize: !cfg.is_euclidean,
-        seed: Some(42),
-        ..Default::default()
-    };
-    let mut index = SymphonyQGVRIndex::new(dim, params, RaBitQConfig::bits4(), 42).unwrap();
-    for (i, vec) in train.iter().enumerate() {
-        index.add_slice(i as u32, vec).unwrap();
-    }
-    index.build().unwrap();
-    let build_time_s = build_start.elapsed().as_secs_f64();
-    let rss = current_rss_kb();
-
-    if !cfg.json {
-        println!(
-            "Build: {:.2}s ({:.0} vectors/sec)\n",
-            build_time_s,
-            train.len() as f64 / build_time_s
-        );
-        print_header();
-    }
-
-    for &ef in &cfg.ef_search_values {
-        let rerank_pool = (ef * 2).max(100);
-        let result = evaluate(
-            &|q, k| index.search_reranked(q, k, ef, rerank_pool).unwrap(),
-            test,
-            neighbors,
-            10,
-        );
-        if cfg.json {
-            let params_json = format!(
-                "{{\"m\":{},\"ef_construction\":{},\"ef_search\":{},\"rerank_pool\":{}}}",
-                m, ef_construction, ef, rerank_pool
-            );
-            emit_result(
-                &cfg.results_path,
-                &json_line("symphony_qg_vr", &params_json, build_time_s, rss, &result),
-            );
-        } else {
-            print_row(&format!("ef={}", ef), &result);
-        }
-    }
-
-    if !cfg.json {
-        println!();
-    }
-}
-
 fn run_brute(cfg: &Config, train: &[Vec<f32>], test: &[Vec<f32>], neighbors: &[Vec<i32>]) {
     if !cfg.json {
         println!("--- Brute Force (linear scan) ---");
@@ -1921,6 +1316,275 @@ fn run_brute(cfg: &Config, train: &[Vec<f32>], test: &[Vec<f32>], neighbors: &[V
     }
 }
 
+#[cfg(feature = "kdtree")]
+fn run_kdtree(
+    cfg: &Config,
+    train: &[Vec<f32>],
+    test: &[Vec<f32>],
+    neighbors: &[Vec<i32>],
+    dim: usize,
+) {
+    use vicinity::classic::trees::kdtree::{KDTreeIndex, KDTreeParams};
+
+    if dim > 50 {
+        eprintln!("kdtree: skipping (implementation rejects dimensions > 50)");
+        return;
+    }
+    if cfg.is_euclidean {
+        eprintln!("kdtree: skipping (cosine-only search, dataset is euclidean)");
+        return;
+    }
+
+    if !cfg.json {
+        println!("--- KD-Tree ---");
+    }
+
+    let params = KDTreeParams::default();
+    let build_start = Instant::now();
+    let mut index = KDTreeIndex::new(dim, params.clone()).unwrap();
+    for (i, vec) in train.iter().enumerate() {
+        index.add(i as u32, vec.clone()).unwrap();
+    }
+    index.build().unwrap();
+    let build_time_s = build_start.elapsed().as_secs_f64();
+    let rss = current_rss_kb();
+
+    if !cfg.json {
+        println!(
+            "Build: {:.2}s ({:.0} vectors/sec)\n",
+            build_time_s,
+            train.len() as f64 / build_time_s
+        );
+        print_header();
+    }
+
+    let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
+    if cfg.json {
+        let params_json = format!(
+            "{{\"max_leaf_size\":{},\"max_depth\":{}}}",
+            params.max_leaf_size, params.max_depth
+        );
+        emit_result(
+            &cfg.results_path,
+            &json_line("kdtree", &params_json, build_time_s, rss, &result),
+        );
+    } else {
+        print_row("--", &result);
+        println!();
+    }
+}
+
+#[cfg(feature = "balltree")]
+fn run_balltree(
+    cfg: &Config,
+    train: &[Vec<f32>],
+    test: &[Vec<f32>],
+    neighbors: &[Vec<i32>],
+    dim: usize,
+) {
+    use vicinity::classic::trees::balltree::{BallTreeIndex, BallTreeParams};
+
+    if cfg.is_euclidean {
+        eprintln!("balltree: skipping (search uses cosine leaf distances, dataset is euclidean)");
+        return;
+    }
+
+    if !cfg.json {
+        println!("--- Ball Tree ---");
+    }
+
+    let params = BallTreeParams::default();
+    let build_start = Instant::now();
+    let mut index = BallTreeIndex::new(dim, params.clone()).unwrap();
+    for (i, vec) in train.iter().enumerate() {
+        index.add(i as u32, vec.clone()).unwrap();
+    }
+    index.build().unwrap();
+    let build_time_s = build_start.elapsed().as_secs_f64();
+    let rss = current_rss_kb();
+
+    if !cfg.json {
+        println!(
+            "Build: {:.2}s ({:.0} vectors/sec)\n",
+            build_time_s,
+            train.len() as f64 / build_time_s
+        );
+        print_header();
+    }
+
+    let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
+    if cfg.json {
+        let params_json = format!(
+            "{{\"max_leaf_size\":{},\"max_depth\":{}}}",
+            params.max_leaf_size, params.max_depth
+        );
+        emit_result(
+            &cfg.results_path,
+            &json_line("balltree", &params_json, build_time_s, rss, &result),
+        );
+    } else {
+        print_row("--", &result);
+        println!();
+    }
+}
+
+#[cfg(feature = "rptree")]
+fn run_rptree(
+    cfg: &Config,
+    train: &[Vec<f32>],
+    test: &[Vec<f32>],
+    neighbors: &[Vec<i32>],
+    dim: usize,
+) {
+    use vicinity::classic::trees::random_projection::{RPTreeIndex, RPTreeParams};
+
+    if cfg.is_euclidean {
+        eprintln!("rptree: skipping (cosine-only search, dataset is euclidean)");
+        return;
+    }
+
+    if !cfg.json {
+        println!("--- Random Projection Tree ---");
+    }
+
+    let params = RPTreeParams::default();
+    let build_start = Instant::now();
+    let mut index = RPTreeIndex::new(dim, params.clone()).unwrap();
+    for (i, vec) in train.iter().enumerate() {
+        index.add(i as u32, vec.clone()).unwrap();
+    }
+    index.build().unwrap();
+    let build_time_s = build_start.elapsed().as_secs_f64();
+    let rss = current_rss_kb();
+
+    if !cfg.json {
+        println!(
+            "Build: {:.2}s ({:.0} vectors/sec)\n",
+            build_time_s,
+            train.len() as f64 / build_time_s
+        );
+        print_header();
+    }
+
+    let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
+    if cfg.json {
+        let params_json = format!(
+            "{{\"max_leaf_size\":{},\"max_depth\":{}}}",
+            params.max_leaf_size, params.max_depth
+        );
+        emit_result(
+            &cfg.results_path,
+            &json_line("rptree", &params_json, build_time_s, rss, &result),
+        );
+    } else {
+        print_row("--", &result);
+        println!();
+    }
+}
+
+#[cfg(feature = "rptree")]
+fn run_rp_forest(
+    cfg: &Config,
+    train: &[Vec<f32>],
+    test: &[Vec<f32>],
+    neighbors: &[Vec<i32>],
+    dim: usize,
+) {
+    use vicinity::classic::trees::rp_forest::{RpForestIndex, RpForestParams};
+
+    if cfg.is_euclidean {
+        eprintln!("rp_forest: skipping (cosine-only search, dataset is euclidean)");
+        return;
+    }
+
+    if !cfg.json {
+        println!("--- Random Projection Forest ---");
+    }
+
+    let params = RpForestParams::default();
+    let build_start = Instant::now();
+    let mut index = RpForestIndex::new(dim, params.clone()).unwrap();
+    for (i, vec) in train.iter().enumerate() {
+        index.add(i as u32, vec.clone()).unwrap();
+    }
+    index.build().unwrap();
+    let build_time_s = build_start.elapsed().as_secs_f64();
+    let rss = current_rss_kb();
+
+    if !cfg.json {
+        println!(
+            "Build: {:.2}s ({:.0} vectors/sec)\n",
+            build_time_s,
+            train.len() as f64 / build_time_s
+        );
+        print_header();
+    }
+
+    let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
+    if cfg.json {
+        let params_json = format!(
+            "{{\"num_trees\":{},\"max_leaf_size\":{}}}",
+            params.num_trees, params.tree_params.max_leaf_size
+        );
+        emit_result(
+            &cfg.results_path,
+            &json_line("rp_forest", &params_json, build_time_s, rss, &result),
+        );
+    } else {
+        print_row("--", &result);
+        println!();
+    }
+}
+
+#[cfg(feature = "kmeans_tree")]
+fn run_kmeans_tree(
+    cfg: &Config,
+    train: &[Vec<f32>],
+    test: &[Vec<f32>],
+    neighbors: &[Vec<i32>],
+    dim: usize,
+) {
+    use vicinity::classic::trees::kmeans_tree::{KMeansTreeIndex, KMeansTreeParams};
+
+    if !cfg.json {
+        println!("--- K-Means Tree ---");
+    }
+
+    let params = KMeansTreeParams::default();
+    let build_start = Instant::now();
+    let mut index = KMeansTreeIndex::new(dim, params.clone()).unwrap();
+    for (i, vec) in train.iter().enumerate() {
+        index.add(i as u32, vec.clone()).unwrap();
+    }
+    index.build().unwrap();
+    let build_time_s = build_start.elapsed().as_secs_f64();
+    let rss = current_rss_kb();
+
+    if !cfg.json {
+        println!(
+            "Build: {:.2}s ({:.0} vectors/sec)\n",
+            build_time_s,
+            train.len() as f64 / build_time_s
+        );
+        print_header();
+    }
+
+    let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
+    if cfg.json {
+        let params_json = format!(
+            "{{\"num_clusters\":{},\"max_leaf_size\":{},\"max_depth\":{},\"max_iterations\":{}}}",
+            params.num_clusters, params.max_leaf_size, params.max_depth, params.max_iterations
+        );
+        emit_result(
+            &cfg.results_path,
+            &json_line("kmeans_tree", &params_json, build_time_s, rss, &result),
+        );
+    } else {
+        print_row("--", &result);
+        println!();
+    }
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -1938,16 +1602,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Data: {}\n", cfg.data_dir);
     }
 
-    // Emit hardware metadata as first line of results file (for reproducibility).
-    if cfg.json && !cfg.results_path.exists() {
-        let meta = format!(
-            "{{\"_meta\":{{\"dataset\":\"{}\",\"metric\":\"{}\",\"rustc\":\"{}\",\"vicinity\":\"{}\"}}}}",
+    let meta = || {
+        format!(
+            "{{\"_meta\":{{\"dataset\":\"{}\",\"metric\":\"{}\",\"result_schema\":2,\"rustc\":\"{}\",\"rust_msrv\":\"{}\",\"vicinity\":\"{}\"}}}}",
             cfg.data_dir,
             if cfg.is_euclidean { "l2" } else { "cosine" },
+            rustc_version(),
             env!("CARGO_PKG_RUST_VERSION"),
             env!("CARGO_PKG_VERSION"),
-        );
-        emit_result(&cfg.results_path, &meta);
+        )
+    };
+
+    // Emit hardware metadata as first line of new result files.
+    if cfg.json && !cfg.results_path.exists() {
+        emit_result(&cfg.results_path, &meta());
     }
 
     let (train, dim) = common::load_vectors(&format!("{}/train.bin", cfg.data_dir))?;
@@ -1960,12 +1628,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Ground truth: {} neighbors per query\n", k_gt);
     }
 
-    let completed = load_completed_algos(&cfg.results_path);
-    if !completed.is_empty() {
+    let completed = if cfg.resume {
+        load_completed_results(&cfg.results_path, &cfg.data_dir)
+    } else {
+        Default::default()
+    };
+    if cfg.json && cfg.resume && completed.has_mismatched_meta && !completed.has_matching_meta {
+        let message = format!(
+            "Ignoring existing resume rows in {}: no _meta entry matches dataset {}",
+            cfg.results_path.display(),
+            cfg.data_dir
+        );
+        eprintln!("{}", message);
+        emit_result(&cfg.results_path, &meta());
+    }
+    if !completed.counts.is_empty() {
         eprintln!(
-            "Resuming: skipping {} completed algorithm(s): {}",
-            completed.len(),
-            completed.iter().cloned().collect::<Vec<_>>().join(", ")
+            "Resuming: found result rows for {} algorithm(s): {}",
+            completed.counts.len(),
+            completed
+                .counts
+                .iter()
+                .map(|(algo, count)| format!("{algo}={count}"))
+                .collect::<Vec<_>>()
+                .join(", ")
         );
         eprintln!("Results file: {}\n", cfg.results_path.display());
     } else {
@@ -1973,7 +1659,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     for algo in &cfg.algos {
-        if completed.contains(algo.as_str()) {
+        if request_completed(&completed, algo, &cfg, dim, train.len(), test.len()) {
             continue;
         }
         match algo.as_str() {
@@ -2004,6 +1690,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             #[cfg(not(feature = "ivf_pq"))]
             "ivfpq" => {
                 eprintln!("IVF-PQ not available (compile with --features ivf_pq)");
+            }
+
+            #[cfg(feature = "ivf_avq")]
+            "ivf_avq" if !cfg.is_euclidean => run_ivf_avq(&cfg, &train, &test, &neighbors, dim),
+
+            #[cfg(feature = "ivf_avq")]
+            "ivf_avq" => {
+                eprintln!("ivf_avq: skipping (MIPS/angular-oriented, dataset is euclidean)");
+            }
+
+            #[cfg(not(feature = "ivf_avq"))]
+            "ivf_avq" => {
+                eprintln!("IVF-AVQ not available (compile with --features ivf_avq)");
             }
 
             #[cfg(feature = "emg")]
@@ -2042,6 +1741,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 eprintln!("Vamana not available (compile with --features vamana)");
             }
 
+            #[cfg(feature = "diskann")]
+            "diskann" => run_diskann(&cfg, &train, &test, &neighbors, dim),
+
+            #[cfg(not(feature = "diskann"))]
+            "diskann" => {
+                eprintln!("DiskANN not available (compile with --features diskann)");
+            }
+
             #[cfg(feature = "ivf_rabitq")]
             "ivf_rabitq" => run_ivf_rabitq(&cfg, &train, &test, &neighbors, dim),
 
@@ -2063,6 +1770,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             #[cfg(not(feature = "fresh_graph"))]
             "fresh_graph" => {
                 eprintln!("FreshGraph not available (compile with --features fresh_graph)");
+            }
+
+            #[cfg(feature = "fresh_graph")]
+            "fresh_graph_churn" => run_fresh_graph_churn(&cfg, &train, &test, dim),
+
+            #[cfg(not(feature = "fresh_graph"))]
+            "fresh_graph_churn" => {
+                eprintln!("FreshGraph churn not available (compile with --features fresh_graph)");
             }
 
             #[cfg(feature = "filtered_graph")]
@@ -2138,6 +1853,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 eprintln!("SQ4 not available (compile with --features sq4)");
             }
 
+            #[cfg(all(feature = "hnsw", feature = "sq4"))]
+            "sq4u" => run_sq4u(&cfg, &train, &test, &neighbors, dim),
+
+            #[cfg(not(all(feature = "hnsw", feature = "sq4")))]
+            "sq4u" => {
+                eprintln!("SQ4U not available (compile with --features hnsw,sq4)");
+            }
+
             #[cfg(all(feature = "hnsw", feature = "sq8"))]
             "sq8u" => run_sq8u(&cfg, &train, &test, &neighbors, dim),
 
@@ -2170,9 +1893,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             "brute" => run_brute(&cfg, &train, &test, &neighbors),
 
+            #[cfg(feature = "kdtree")]
+            "kdtree" => run_kdtree(&cfg, &train, &test, &neighbors, dim),
+            #[cfg(not(feature = "kdtree"))]
+            "kdtree" => eprintln!("KD-Tree not available (compile with --features kdtree)"),
+
+            #[cfg(feature = "balltree")]
+            "balltree" => run_balltree(&cfg, &train, &test, &neighbors, dim),
+            #[cfg(not(feature = "balltree"))]
+            "balltree" => eprintln!("Ball Tree not available (compile with --features balltree)"),
+
+            #[cfg(feature = "rptree")]
+            "rptree" => run_rptree(&cfg, &train, &test, &neighbors, dim),
+            #[cfg(not(feature = "rptree"))]
+            "rptree" => eprintln!("RP-Tree not available (compile with --features rptree)"),
+
+            #[cfg(feature = "rptree")]
+            "rp_forest" => run_rp_forest(&cfg, &train, &test, &neighbors, dim),
+            #[cfg(not(feature = "rptree"))]
+            "rp_forest" => eprintln!("RP-Forest not available (compile with --features rptree)"),
+
+            #[cfg(feature = "kmeans_tree")]
+            "kmeans_tree" => run_kmeans_tree(&cfg, &train, &test, &neighbors, dim),
+            #[cfg(not(feature = "kmeans_tree"))]
+            "kmeans_tree" => {
+                eprintln!("K-Means Tree not available (compile with --features kmeans_tree)");
+            }
+
             other => {
                 eprintln!(
-                    "Unknown algorithm: {}. Options: hnsw, nsw, ivfpq, emg, nsg, pipnn, sng, vamana, ivf_rabitq, symphony_qg, symphony_qg_vr, finger, fresh_graph, filtered_graph, rp_quant, sparse_mips, curator, range_filtered, binary_index, sq4, sq8u, adsampling, lsh, hnsw_prt, brute",
+                    "Unknown algorithm: {}. Options: hnsw, nsw, ivfpq, ivf_avq, emg, nsg, pipnn, sng, vamana, diskann, ivf_rabitq, symphony_qg, symphony_qg_vr, finger, fresh_graph, fresh_graph_churn, filtered_graph, rp_quant, sparse_mips, curator, range_filtered, binary_index, sq4, sq4u, sq8u, adsampling, lsh, hnsw_prt, kdtree, balltree, rptree, rp_forest, kmeans_tree, brute",
                     other
                 );
             }

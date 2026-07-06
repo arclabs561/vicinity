@@ -1,0 +1,1009 @@
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
+use std::collections::{HashMap, HashSet};
+use std::fs::{File, OpenOptions};
+use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::Instant;
+
+pub(crate) struct Config {
+    pub(crate) data_dir: String,
+    pub(crate) algos: Vec<String>,
+    pub(crate) m: usize,
+    pub(crate) ef_construction: usize,
+    pub(crate) ef_search_values: Vec<usize>,
+    pub(crate) json: bool,
+    pub(crate) results_path: PathBuf,
+    pub(crate) is_euclidean: bool,
+    pub(crate) pq_num_codebooks: Option<usize>,
+    pub(crate) pq_codebook_size: usize,
+    pub(crate) pq_rerank_pools: Vec<usize>,
+    pub(crate) batch: bool,
+    pub(crate) resume: bool,
+    pub(crate) churn_base_size: usize,
+    pub(crate) churn_cycles: usize,
+    pub(crate) churn_queries: usize,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            data_dir: "data/ann-benchmarks/glove-25-angular".into(),
+            algos: vec!["hnsw".into()],
+            m: 16,
+            ef_construction: 200,
+            ef_search_values: vec![10, 20, 50, 100, 200, 400],
+            json: false,
+            results_path: PathBuf::new(),
+            is_euclidean: false,
+            pq_num_codebooks: None,
+            pq_codebook_size: 256,
+            pq_rerank_pools: Vec::new(),
+            batch: false,
+            resume: false,
+            churn_base_size: 50_000,
+            churn_cycles: 5_000,
+            churn_queries: 1_000,
+        }
+    }
+}
+
+fn default_results_path(data_dir: &str) -> PathBuf {
+    let dataset = Path::new(data_dir)
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    let results_dir = Path::new(data_dir)
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join("results");
+    std::fs::create_dir_all(&results_dir).ok();
+    results_dir.join(format!("{}-all-algos.jsonl", dataset))
+}
+
+#[derive(Default)]
+pub(crate) struct CompletedResults {
+    pub(crate) counts: HashMap<String, usize>,
+    lines: Vec<String>,
+    pub(crate) has_matching_meta: bool,
+    pub(crate) has_mismatched_meta: bool,
+}
+
+fn json_string_field(line: &str, field: &str) -> Option<String> {
+    let needle = format!("\"{}\":\"", field);
+    let start = line.find(&needle)? + needle.len();
+    let rest = &line[start..];
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
+}
+
+pub(crate) fn load_completed_results(path: &Path, expected_dataset: &str) -> CompletedResults {
+    let mut counts = HashMap::new();
+    let mut lines = Vec::new();
+    let mut seen_meta = false;
+    let mut active_dataset_matches = false;
+    let mut has_matching_meta = false;
+    let mut has_mismatched_meta = false;
+    let Ok(file) = File::open(path) else {
+        return CompletedResults::default();
+    };
+    for line in BufReader::new(file).lines() {
+        let Ok(line) = line else { continue };
+        if line.contains("\"_meta\":") {
+            if let Some(dataset) = json_string_field(&line, "dataset") {
+                seen_meta = true;
+                if dataset != expected_dataset {
+                    has_mismatched_meta = true;
+                    active_dataset_matches = false;
+                } else {
+                    has_matching_meta = true;
+                    active_dataset_matches = true;
+                }
+            }
+        } else if active_dataset_matches || !seen_meta {
+            if let Some(algorithm) = json_string_field(&line, "algorithm") {
+                *counts.entry(algorithm).or_insert(0) += 1;
+            }
+        }
+        lines.push(line);
+    }
+    CompletedResults {
+        counts,
+        lines,
+        has_matching_meta,
+        has_mismatched_meta,
+    }
+}
+
+fn result_check(algorithm: &str, params_json: &str) -> Vec<String> {
+    vec![format!(
+        "\"algorithm\":\"{}\",\"params\":{}",
+        algorithm, params_json
+    )]
+}
+
+fn single_result_check(algorithm: &str, params_json: &str) -> Vec<Vec<String>> {
+    vec![result_check(algorithm, params_json)]
+}
+
+fn result_check_with_fragments(
+    algorithm: &str,
+    fragments: impl IntoIterator<Item = String>,
+) -> Vec<String> {
+    let mut check = vec![format!("\"algorithm\":\"{}\"", algorithm)];
+    check.extend(fragments);
+    check
+}
+
+fn ef_checks(
+    algorithm: &str,
+    cfg: &Config,
+    extra_fragments: impl Fn(usize) -> Vec<String>,
+) -> Vec<Vec<String>> {
+    cfg.ef_search_values
+        .iter()
+        .map(|&ef| {
+            let mut fragments = extra_fragments(ef);
+            fragments.push(format!("\"ef_search\":{}", ef));
+            result_check_with_fragments(algorithm, fragments)
+        })
+        .collect()
+}
+
+fn hnsw_quantized_checks(algorithm: &str, cfg: &Config) -> Vec<Vec<String>> {
+    ef_checks(algorithm, cfg, |ef| {
+        vec![
+            format!("\"m\":{}", cfg.m),
+            format!("\"ef_construction\":{}", cfg.ef_construction),
+            format!("\"rerank_pool\":{}", (ef * 2).max(100)),
+        ]
+    })
+}
+
+fn conditional_single_check(enabled: bool, algorithm: &str, params_json: &str) -> Vec<Vec<String>> {
+    if enabled {
+        single_result_check(algorithm, params_json)
+    } else {
+        Vec::new()
+    }
+}
+
+pub(crate) fn nprobe_values(max_probe: usize) -> impl Iterator<Item = usize> {
+    [1, 2, 5, 10, 20, 50, 100]
+        .into_iter()
+        .filter(move |&nprobe| nprobe <= max_probe)
+}
+
+fn required_result_checks(
+    algo: &str,
+    cfg: &Config,
+    dim: usize,
+    train_len: usize,
+    test_len: usize,
+) -> Vec<Vec<String>> {
+    const LSH_TABLE_SWEEP: usize = 3;
+
+    match algo {
+        "hnsw" => cfg
+            .ef_search_values
+            .iter()
+            .flat_map(|ef| {
+                let base_marker = vec![result_check(
+                    "hnsw",
+                    &format!(
+                        "{{\"m\":{},\"ef_construction\":{},\"ef_search\":{}}}",
+                        cfg.m, cfg.ef_construction, ef
+                    ),
+                )];
+                #[cfg(not(feature = "parallel"))]
+                {
+                    base_marker
+                }
+
+                #[cfg(feature = "parallel")]
+                {
+                    let mut markers = base_marker;
+                    if cfg.batch {
+                        markers.push(result_check_with_fragments(
+                            "hnsw_parallel",
+                            [
+                                format!("\"m\":{}", cfg.m),
+                                format!("\"ef_construction\":{}", cfg.ef_construction),
+                                format!("\"ef_search\":{}", ef),
+                                "\"threads\":".to_string(),
+                            ],
+                        ));
+                    }
+                    markers
+                }
+            })
+            .collect(),
+        "nsw" => ef_checks("nsw", cfg, |_| vec![format!("\"m\":{}", cfg.m)]),
+        "ivfpq" => {
+            let num_clusters = 256;
+            let num_codebooks = cfg.pq_num_codebooks.unwrap_or_else(|| {
+                (1..=8.min(dim))
+                    .rev()
+                    .find(|&c| dim.is_multiple_of(c))
+                    .unwrap_or(1)
+            });
+            if !dim.is_multiple_of(num_codebooks) {
+                return Vec::new();
+            }
+            nprobe_values(num_clusters)
+                .flat_map(|nprobe| {
+                    let mut markers = vec![result_check(
+                        "ivfpq",
+                        &format!(
+                            "{{\"num_clusters\":{},\"num_codebooks\":{},\"codebook_size\":{},\"nprobe\":{}}}",
+                            num_clusters, num_codebooks, cfg.pq_codebook_size, nprobe
+                        ),
+                    )];
+                    markers.extend(
+                        cfg.pq_rerank_pools
+                            .iter()
+                            .copied()
+                            .filter(|&rerank_pool| rerank_pool > 0)
+                            .map(|rerank_pool| {
+                                result_check(
+                                    "ivfpq_rerank",
+                                    &format!(
+                                        "{{\"num_clusters\":{},\"num_codebooks\":{},\"codebook_size\":{},\"nprobe\":{},\"rerank_pool\":{}}}",
+                                        num_clusters, num_codebooks, cfg.pq_codebook_size, nprobe, rerank_pool
+                                    ),
+                                )
+                            }),
+                    );
+                    markers
+                })
+                .collect()
+        }
+        "ivf_avq" => {
+            let num_partitions = 256.min(train_len).max(1);
+            let num_codebooks = (1..=16.min(dim))
+                .rev()
+                .find(|&c| dim.is_multiple_of(c))
+                .unwrap_or(1);
+            nprobe_values(num_partitions)
+                .map(|nprobe| {
+                    result_check(
+                        "ivf_avq",
+                        &format!(
+                            "{{\"num_partitions\":{},\"num_codebooks\":{},\"codebook_size\":256,\"nprobe\":{},\"num_reorder\":100}}",
+                            num_partitions, num_codebooks, nprobe
+                        ),
+                    )
+                })
+                .collect()
+        }
+        "ivf_rabitq" => nprobe_values(256)
+            .map(|nprobe| {
+                result_check(
+                    "ivf_rabitq",
+                    &format!(
+                        "{{\"num_clusters\":256,\"total_bits\":4,\"nprobe\":{}}}",
+                        nprobe
+                    ),
+                )
+            })
+            .collect(),
+        "lsh" => {
+            let num_tables_values = [8, 16, 32];
+            let num_probes_values = [2, 4, 8, 16];
+            num_tables_values
+                .into_iter()
+                .take(LSH_TABLE_SWEEP)
+                .flat_map(|num_tables| {
+                    num_probes_values
+                        .into_iter()
+                        .filter(move |&num_probes| num_probes <= dim)
+                        .map(move |num_probes| {
+                            result_check(
+                                "lsh",
+                                &format!(
+                                    "{{\"num_tables\":{},\"num_probes\":{}}}",
+                                    num_tables, num_probes
+                                ),
+                            )
+                        })
+                })
+                .collect()
+        }
+        "emg" | "nsg" | "fresh_graph" | "filtered_graph" => {
+            ef_checks(algo, cfg, |_| vec!["\"max_degree\":32".to_string()])
+        }
+        "pipnn" => ef_checks("pipnn", cfg, |_| {
+            vec![
+                "\"max_degree\":32".to_string(),
+                "\"max_leaf_size\":2048".to_string(),
+            ]
+        }),
+        "vamana" => ef_checks("vamana", cfg, |_| Vec::new()),
+        "diskann" => ef_checks("diskann", cfg, |ef| {
+            vec![
+                format!("\"m\":{}", cfg.m),
+                format!("\"ef_construction\":{}", cfg.ef_construction),
+                format!("\"ef_search\":{}", ef),
+                "\"storage_mode\":\"in_memory\"".to_string(),
+                "\"storage\":\"memory\"".to_string(),
+            ]
+        })
+        .into_iter()
+        .chain(ef_checks("diskann_file", cfg, |ef| {
+            vec![
+                format!("\"m\":{}", cfg.m),
+                format!("\"ef_construction\":{}", cfg.ef_construction),
+                format!("\"ef_search\":{}", ef),
+                "\"storage_mode\":\"file\"".to_string(),
+                "\"storage\":\"file\"".to_string(),
+            ]
+        }))
+        .chain(ef_checks("diskann_mmap", cfg, |ef| {
+            vec![
+                format!("\"m\":{}", cfg.m),
+                format!("\"ef_construction\":{}", cfg.ef_construction),
+                format!("\"ef_search\":{}", ef),
+                "\"storage_mode\":\"mmap\"".to_string(),
+                "\"storage\":\"mmap\"".to_string(),
+            ]
+        }))
+        .collect(),
+        "finger" => {
+            let indexed_vectors = train_len.min(50_000);
+            let capped = train_len > indexed_vectors;
+            ef_checks("finger", cfg, |_| {
+                vec![
+                    "\"max_degree\":32".to_string(),
+                    format!("\"indexed_vectors\":{}", indexed_vectors),
+                    format!("\"capped\":{}", capped),
+                ]
+            })
+        }
+        "fresh_graph_churn" => {
+            let base_size = cfg
+                .churn_base_size
+                .min(train_len.saturating_sub(cfg.churn_cycles.max(1)));
+            let cycles = cfg.churn_cycles.min(train_len.saturating_sub(base_size));
+            let queries = cfg.churn_queries.min(test_len);
+            if base_size == 0 || cycles == 0 || queries == 0 {
+                return Vec::new();
+            }
+            ef_checks("fresh_graph_churn", cfg, |_| {
+                vec![
+                    "\"max_degree\":32".to_string(),
+                    format!("\"base_size\":{}", base_size),
+                    format!("\"cycles\":{}", cycles),
+                    format!("\"queries\":{}", queries),
+                ]
+            })
+        }
+        "adsampling" => ef_checks("adsampling", cfg, |_| {
+            vec![
+                format!("\"m\":{}", cfg.m),
+                format!("\"ef_construction\":{}", cfg.ef_construction),
+                "\"epsilon0\":2.1".to_string(),
+            ]
+        }),
+        "hnsw_prt" => {
+            let num_projections = (dim / 4).clamp(8, 64);
+            ef_checks("hnsw_prt", cfg, |_| {
+                vec![
+                    format!("\"m\":{}", cfg.m),
+                    format!("\"ef_construction\":{}", cfg.ef_construction),
+                    format!("\"num_projections\":{}", num_projections),
+                ]
+            })
+        }
+        "sq8u" | "sq4u" | "symphony_qg_vr" => hnsw_quantized_checks(algo, cfg),
+        "symphony_qg" => ef_checks("symphony_qg", cfg, |_| Vec::new()),
+        "kdtree" => conditional_single_check(
+            !cfg.is_euclidean && dim <= 50,
+            "kdtree",
+            "{\"max_leaf_size\":10,\"max_depth\":32}",
+        ),
+        "balltree" => conditional_single_check(
+            !cfg.is_euclidean,
+            "balltree",
+            "{\"max_leaf_size\":10,\"max_depth\":32}",
+        ),
+        "rptree" => conditional_single_check(
+            !cfg.is_euclidean,
+            "rptree",
+            "{\"max_leaf_size\":10,\"max_depth\":32}",
+        ),
+        "rp_forest" => conditional_single_check(
+            !cfg.is_euclidean,
+            "rp_forest",
+            "{\"num_trees\":10,\"max_leaf_size\":10}",
+        ),
+        "kmeans_tree" => single_result_check(
+            "kmeans_tree",
+            "{\"num_clusters\":16,\"max_leaf_size\":50,\"max_depth\":10,\"max_iterations\":10}",
+        ),
+        _ => vec![vec![format!("\"algorithm\":\"{}\"", algo)]],
+    }
+}
+
+pub(crate) fn request_completed(
+    completed: &CompletedResults,
+    algo: &str,
+    cfg: &Config,
+    dim: usize,
+    train_len: usize,
+    test_len: usize,
+) -> bool {
+    let checks = required_result_checks(algo, cfg, dim, train_len, test_len);
+    !checks.is_empty()
+        && checks.iter().all(|check| {
+            completed
+                .lines
+                .iter()
+                .any(|line| check.iter().all(|fragment| line.contains(fragment)))
+        })
+}
+
+pub(crate) fn emit_result(results_path: &Path, line: &str) {
+    println!("{}", line);
+    if let Ok(mut f) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(results_path)
+    {
+        let _ = writeln!(f, "{}", line);
+    }
+}
+
+pub(crate) fn rustc_version() -> String {
+    Command::new("rustc")
+        .arg("--version")
+        .output()
+        .ok()
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|version| version.trim().to_string())
+        .filter(|version| !version.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+pub(crate) fn parse_args() -> Config {
+    let args: Vec<String> = std::env::args().collect();
+    let mut cfg = Config::default();
+    let mut algos_set = false;
+    let mut results_override = false;
+    let mut fresh = false;
+    let mut i = 1;
+
+    while i < args.len() {
+        match args[i].as_str() {
+            "--algo" => {
+                i += 1;
+                if !algos_set {
+                    cfg.algos.clear();
+                    algos_set = true;
+                }
+                if i < args.len() {
+                    cfg.algos.push(args[i].to_lowercase());
+                }
+            }
+            "--m" => {
+                i += 1;
+                if i < args.len() {
+                    cfg.m = args[i].parse().unwrap_or(16);
+                }
+            }
+            "--ef-construction" => {
+                i += 1;
+                if i < args.len() {
+                    cfg.ef_construction = args[i].parse().unwrap_or(200);
+                }
+            }
+            "--ef-search" => {
+                i += 1;
+                if i < args.len() {
+                    cfg.ef_search_values = args[i]
+                        .split(',')
+                        .filter_map(|s| s.trim().parse().ok())
+                        .collect();
+                }
+            }
+            "--pq-codebooks" => {
+                i += 1;
+                if i < args.len() {
+                    cfg.pq_num_codebooks = args[i].parse().ok();
+                }
+            }
+            "--pq-codebook-size" => {
+                i += 1;
+                if i < args.len() {
+                    cfg.pq_codebook_size = args[i].parse().unwrap_or(256);
+                }
+            }
+            "--pq-rerank-pools" => {
+                i += 1;
+                if i < args.len() {
+                    cfg.pq_rerank_pools = args[i]
+                        .split(',')
+                        .filter_map(|s| s.trim().parse().ok())
+                        .collect();
+                }
+            }
+            "--batch" => {
+                cfg.batch = true;
+            }
+            "--resume" => {
+                cfg.resume = true;
+            }
+            "--churn-base-size" => {
+                i += 1;
+                if i < args.len() {
+                    cfg.churn_base_size = args[i].parse().unwrap_or(50_000);
+                }
+            }
+            "--churn-cycles" => {
+                i += 1;
+                if i < args.len() {
+                    cfg.churn_cycles = args[i].parse().unwrap_or(5_000);
+                }
+            }
+            "--churn-queries" => {
+                i += 1;
+                if i < args.len() {
+                    cfg.churn_queries = args[i].parse().unwrap_or(1_000);
+                }
+            }
+            "--json" => {
+                cfg.json = true;
+            }
+            "--results" => {
+                i += 1;
+                if i < args.len() {
+                    cfg.results_path = PathBuf::from(&args[i]);
+                    results_override = true;
+                }
+            }
+            "--fresh" => {
+                fresh = true;
+            }
+            arg if !arg.starts_with("--") => {
+                cfg.data_dir = arg.to_string();
+            }
+            _ => {
+                eprintln!("Unknown flag: {}", args[i]);
+            }
+        }
+        i += 1;
+    }
+
+    if !results_override {
+        cfg.results_path = default_results_path(&cfg.data_dir);
+    }
+    if fresh {
+        std::fs::remove_file(&cfg.results_path).ok();
+    }
+
+    cfg.is_euclidean = cfg.data_dir.contains("euclidean");
+    cfg
+}
+
+pub(crate) struct BenchResult {
+    pub(crate) recall_at_k: f64,
+    pub(crate) qps: f64,
+    pub(crate) latency_us: f64,
+    pub(crate) p50_us: f64,
+    pub(crate) p95_us: f64,
+    pub(crate) p99_us: f64,
+}
+
+pub(crate) struct ResultStorage<'a> {
+    pub(crate) storage_mode: &'a str,
+    pub(crate) cache_state: &'a str,
+    pub(crate) load_time_s: Option<f64>,
+    pub(crate) index_bytes: Option<u64>,
+}
+
+impl Default for ResultStorage<'_> {
+    fn default() -> Self {
+        Self {
+            storage_mode: "in_memory",
+            cache_state: "warm_after_build",
+            load_time_s: None,
+            index_bytes: None,
+        }
+    }
+}
+
+fn storage_context_from_params(params: &str) -> ResultStorage<'static> {
+    if params.contains("\"storage\":\"mmap\"") {
+        ResultStorage {
+            storage_mode: "mmap",
+            cache_state: "warm_after_open",
+            ..ResultStorage::default()
+        }
+    } else if params.contains("\"storage\":\"file\"") {
+        ResultStorage {
+            storage_mode: "file",
+            cache_state: "warm_after_open",
+            ..ResultStorage::default()
+        }
+    } else {
+        ResultStorage::default()
+    }
+}
+
+pub(crate) fn json_line(
+    algorithm: &str,
+    params: &str,
+    build_time_s: f64,
+    rss_kb: Option<u64>,
+    result: &BenchResult,
+) -> String {
+    let storage = storage_context_from_params(params);
+    json_line_with_storage(algorithm, params, build_time_s, rss_kb, result, &storage)
+}
+
+pub(crate) fn json_line_with_storage(
+    algorithm: &str,
+    params: &str,
+    build_time_s: f64,
+    rss_kb: Option<u64>,
+    result: &BenchResult,
+    storage: &ResultStorage<'_>,
+) -> String {
+    let mut s = format!(
+        "{{\"algorithm\":\"{}\",\"params\":{},\"storage_mode\":\"{}\",\"cache_state\":\"{}\",\"recall_at_10\":{:.4},\"qps\":{:.1},\"build_time_s\":{:.2},\"latency_us\":{:.1},\"p50_us\":{:.1},\"p95_us\":{:.1},\"p99_us\":{:.1}",
+        algorithm,
+        params,
+        storage.storage_mode,
+        storage.cache_state,
+        result.recall_at_k,
+        result.qps,
+        build_time_s,
+        result.latency_us,
+        result.p50_us,
+        result.p95_us,
+        result.p99_us
+    );
+    if let Some(load_time_s) = storage.load_time_s {
+        s.push_str(&format!(",\"load_time_s\":{:.4}", load_time_s));
+    }
+    if let Some(bytes) = storage.index_bytes {
+        s.push_str(&format!(",\"index_bytes\":{}", bytes));
+    }
+    if let Some(kb) = rss_kb {
+        s.push_str(&format!(",\"rss_kb\":{}", kb));
+    }
+    s.push('}');
+    s
+}
+
+const WARMUP_QUERIES: usize = 50;
+
+pub(crate) fn evaluate(
+    search_fn: &dyn Fn(&[f32], usize) -> Vec<(u32, f32)>,
+    test: &[Vec<f32>],
+    neighbors: &[Vec<i32>],
+    k: usize,
+) -> BenchResult {
+    let warmup_count = WARMUP_QUERIES.min(test.len());
+    for query in test.iter().take(warmup_count) {
+        let _ = search_fn(query, k);
+    }
+
+    let mut total_recall = 0.0;
+    let mut latencies_us: Vec<f64> = Vec::with_capacity(test.len());
+
+    for (i, query) in test.iter().enumerate() {
+        let q_start = Instant::now();
+        let results = search_fn(query, k);
+        let q_elapsed = q_start.elapsed();
+        latencies_us.push(q_elapsed.as_nanos() as f64 / 1000.0);
+
+        let gt_set: HashSet<u32> = neighbors[i].iter().take(k).map(|&n| n as u32).collect();
+        let found: HashSet<u32> = results.iter().map(|r| r.0).collect();
+        total_recall += gt_set.intersection(&found).count() as f64 / k as f64;
+    }
+
+    latencies_us.sort_unstable_by(|a, b| a.total_cmp(b));
+    let n = latencies_us.len();
+    let total_us: f64 = latencies_us.iter().sum();
+
+    BenchResult {
+        recall_at_k: total_recall / n as f64,
+        qps: n as f64 / (total_us / 1_000_000.0),
+        latency_us: total_us / n as f64,
+        p50_us: latencies_us[n / 2],
+        p95_us: latencies_us[(n as f64 * 0.95) as usize],
+        p99_us: latencies_us[(n as f64 * 0.99) as usize],
+    }
+}
+
+#[cfg(feature = "parallel")]
+pub(crate) fn evaluate_parallel<F>(
+    search_fn: F,
+    test: &[Vec<f32>],
+    neighbors: &[Vec<i32>],
+    k: usize,
+) -> BenchResult
+where
+    F: Fn(&[f32], usize) -> Vec<(u32, f32)> + Sync,
+{
+    use rayon::prelude::*;
+
+    let warmup_count = WARMUP_QUERIES.min(test.len());
+    for query in test.iter().take(warmup_count) {
+        let _ = search_fn(query, k);
+    }
+
+    let batch_start = Instant::now();
+    let mut per_query: Vec<(f64, f64)> = test
+        .par_iter()
+        .enumerate()
+        .map(|(i, query)| {
+            let q_start = Instant::now();
+            let results = search_fn(query, k);
+            let latency_us = q_start.elapsed().as_nanos() as f64 / 1000.0;
+
+            let gt_set: HashSet<u32> = neighbors[i].iter().take(k).map(|&n| n as u32).collect();
+            let found: HashSet<u32> = results.iter().map(|r| r.0).collect();
+            let recall = gt_set.intersection(&found).count() as f64 / k as f64;
+            (latency_us, recall)
+        })
+        .collect();
+    let elapsed_s = batch_start.elapsed().as_secs_f64();
+
+    per_query.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+    let n = per_query.len();
+    let total_latency_us: f64 = per_query.iter().map(|(latency, _)| *latency).sum();
+    let total_recall: f64 = per_query.iter().map(|(_, recall)| *recall).sum();
+
+    BenchResult {
+        recall_at_k: total_recall / n as f64,
+        qps: n as f64 / elapsed_s,
+        latency_us: total_latency_us / n as f64,
+        p50_us: per_query[n / 2].0,
+        p95_us: per_query[(n as f64 * 0.95) as usize].0,
+        p99_us: per_query[(n as f64 * 0.99) as usize].0,
+    }
+}
+
+pub(crate) fn current_rss_kb() -> Option<u64> {
+    #[cfg(target_os = "macos")]
+    {
+        let output = std::process::Command::new("ps")
+            .args(["-o", "rss=", "-p", &std::process::id().to_string()])
+            .output()
+            .ok()?;
+        let s = String::from_utf8_lossy(&output.stdout);
+        s.trim().parse::<u64>().ok()
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let status = std::fs::read_to_string("/proc/self/status").ok()?;
+        for line in status.lines() {
+            if let Some(rest) = line.strip_prefix("VmRSS:") {
+                let kb_str = rest.trim().trim_end_matches(" kB").trim();
+                return kb_str.parse::<u64>().ok();
+            }
+        }
+        None
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        None
+    }
+}
+
+#[cfg(feature = "diskann")]
+pub(crate) fn dir_size_bytes(path: &Path) -> std::io::Result<u64> {
+    let mut total = 0;
+    for entry in std::fs::read_dir(path)? {
+        let entry = entry?;
+        let metadata = entry.metadata()?;
+        if metadata.is_dir() {
+            total += dir_size_bytes(&entry.path())?;
+        } else {
+            total += metadata.len();
+        }
+    }
+    Ok(total)
+}
+
+pub(crate) fn brute_force_search(
+    train: &[Vec<f32>],
+    query: &[f32],
+    k: usize,
+    metric: vicinity::DistanceMetric,
+) -> Vec<(u32, f32)> {
+    let mut dists: Vec<(u32, f32)> = train
+        .iter()
+        .enumerate()
+        .map(|(i, v)| (i as u32, metric.distance(query, v)))
+        .collect();
+    dists.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+    dists.truncate(k);
+    dists
+}
+
+#[cfg(feature = "fresh_graph")]
+pub(crate) fn brute_force_search_ids(
+    train: &[Vec<f32>],
+    active_ids: &[u32],
+    query: &[f32],
+    k: usize,
+    metric: vicinity::DistanceMetric,
+) -> Vec<i32> {
+    let mut dists: Vec<(u32, f32)> = active_ids
+        .iter()
+        .map(|&id| (id, metric.distance(query, &train[id as usize])))
+        .collect();
+    dists.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+    dists.into_iter().take(k).map(|(id, _)| id as i32).collect()
+}
+
+pub(crate) fn print_header() {
+    println!(
+        "{:>10} {:>10} {:>10} {:>10} {:>10} {:>10}",
+        "param", "Recall@10", "QPS", "p50(us)", "p95(us)", "p99(us)"
+    );
+    println!("{}", "-".repeat(65));
+}
+
+pub(crate) fn print_row(param_label: &str, result: &BenchResult) {
+    println!(
+        "{:>10} {:>9.1}% {:>9.0} {:>9.0} {:>9.0} {:>9.0}",
+        param_label,
+        result.recall_at_k * 100.0,
+        result.qps,
+        result.p50_us,
+        result.p95_us,
+        result.p99_us
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn diskann_line(algorithm: &str, storage: &str) -> String {
+        let storage_mode = if storage == "memory" {
+            "in_memory"
+        } else {
+            storage
+        };
+        format!(
+            "{{\"algorithm\":\"{}\",\"params\":{{\"m\":16,\"ef_construction\":200,\"alpha\":1.2,\"ef_search\":10,\"storage\":\"{}\"}},\"storage_mode\":\"{}\",\"recall_at_10\":1.0,\"qps\":1.0}}",
+            algorithm, storage, storage_mode
+        )
+    }
+
+    fn single_line(algorithm: &str, params: &str) -> String {
+        format!(
+            "{{\"algorithm\":\"{}\",\"params\":{},\"recall_at_10\":1.0,\"qps\":1.0}}",
+            algorithm, params
+        )
+    }
+
+    fn sample_result() -> BenchResult {
+        BenchResult {
+            recall_at_k: 1.0,
+            qps: 10.0,
+            latency_us: 100.0,
+            p50_us: 90.0,
+            p95_us: 150.0,
+            p99_us: 200.0,
+        }
+    }
+
+    #[test]
+    fn json_line_records_default_storage_context() {
+        let line = json_line(
+            "hnsw",
+            "{\"m\":16,\"ef_search\":10}",
+            1.0,
+            Some(123),
+            &sample_result(),
+        );
+
+        assert!(line.contains("\"storage_mode\":\"in_memory\""));
+        assert!(line.contains("\"cache_state\":\"warm_after_build\""));
+        assert!(line.contains("\"rss_kb\":123"));
+    }
+
+    #[test]
+    fn json_line_promotes_diskann_storage_context() {
+        let storage = ResultStorage {
+            storage_mode: "mmap",
+            cache_state: "warm_after_open",
+            load_time_s: Some(0.125),
+            index_bytes: Some(4096),
+        };
+        let line = json_line_with_storage(
+            "diskann_mmap",
+            "{\"storage\":\"mmap\"}",
+            2.0,
+            None,
+            &sample_result(),
+            &storage,
+        );
+
+        assert!(line.contains("\"storage_mode\":\"mmap\""));
+        assert!(line.contains("\"cache_state\":\"warm_after_open\""));
+        assert!(line.contains("\"load_time_s\":0.1250"));
+        assert!(line.contains("\"index_bytes\":4096"));
+    }
+
+    #[test]
+    fn diskann_resume_requires_memory_file_and_mmap_rows() {
+        let cfg = Config {
+            ef_search_values: vec![10],
+            ..Config::default()
+        };
+        let completed = CompletedResults {
+            lines: vec![
+                diskann_line("diskann", "memory"),
+                diskann_line("diskann_file", "file"),
+            ],
+            ..CompletedResults::default()
+        };
+
+        assert!(!request_completed(
+            &completed, "diskann", &cfg, 25, 1_000, 100
+        ));
+    }
+
+    #[test]
+    fn diskann_resume_accepts_all_storage_mode_rows() {
+        let cfg = Config {
+            ef_search_values: vec![10],
+            ..Config::default()
+        };
+        let completed = CompletedResults {
+            lines: vec![
+                diskann_line("diskann", "memory"),
+                diskann_line("diskann_file", "file"),
+                diskann_line("diskann_mmap", "mmap"),
+            ],
+            ..CompletedResults::default()
+        };
+
+        assert!(request_completed(
+            &completed, "diskann", &cfg, 25, 1_000, 100
+        ));
+    }
+
+    #[test]
+    fn classic_tree_resume_accepts_matching_single_row() {
+        let cfg = Config::default();
+        let completed = CompletedResults {
+            lines: vec![single_line(
+                "kdtree",
+                "{\"max_leaf_size\":10,\"max_depth\":32}",
+            )],
+            ..CompletedResults::default()
+        };
+
+        assert!(request_completed(
+            &completed, "kdtree", &cfg, 25, 1_000, 100
+        ));
+    }
+
+    #[test]
+    fn classic_tree_resume_ignores_skipped_dataset_modes() {
+        let cfg = Config {
+            is_euclidean: true,
+            ..Config::default()
+        };
+        let completed = CompletedResults {
+            lines: vec![single_line(
+                "kdtree",
+                "{\"max_leaf_size\":10,\"max_depth\":32}",
+            )],
+            ..CompletedResults::default()
+        };
+
+        assert!(!request_completed(
+            &completed, "kdtree", &cfg, 25, 1_000, 100
+        ));
+    }
+}

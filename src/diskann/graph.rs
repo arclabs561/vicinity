@@ -9,6 +9,7 @@ use rand::Rng;
 use smallvec::SmallVec;
 
 use crate::RetrieveError;
+use durability::mmap::{AccessPattern, MappedFile};
 
 /// DiskANN index for disk-based approximate nearest neighbor search.
 ///
@@ -166,17 +167,21 @@ impl DiskANNIndex {
 pub struct DiskANNSearcher {
     dimension: usize,
     start_node: u32,
-    params: DiskANNParams,
 
     // Components
     graph_reader: super::disk_io::DiskGraphReader,
-    vectors_file: std::fs::File,
+    vectors: VectorStorage,
     /// External doc_ids aligned with internal indices (loaded from doc_ids.bin).
     doc_ids: Vec<u32>,
     /// Reusable byte buffer for vector reads (avoids per-read allocation).
     read_buf: Vec<u8>,
     /// Reusable f32 buffer for parsed vectors.
     vec_buf: Vec<f32>,
+}
+
+enum VectorStorage {
+    File(std::fs::File),
+    Mmap(Box<MappedFile>),
 }
 
 /// Per-query I/O diagnostics from [`DiskANNSearcher`].
@@ -206,6 +211,16 @@ pub struct DiskANNSearchDiagnostics {
 impl DiskANNSearcher {
     /// Load searcher from index directory.
     pub fn load(index_dir: &Path) -> Result<Self, RetrieveError> {
+        Self::load_with_storage(index_dir, false)
+    }
+
+    /// Load searcher from index directory using read-only memory maps for graph
+    /// and vector data.
+    pub fn load_mmap(index_dir: &Path) -> Result<Self, RetrieveError> {
+        Self::load_with_storage(index_dir, true)
+    }
+
+    fn load_with_storage(index_dir: &Path, mmap: bool) -> Result<Self, RetrieveError> {
         // 1. Load Metadata
         let metadata_path = index_dir.join("metadata.json");
         let metadata_file = std::fs::File::open(&metadata_path)?;
@@ -226,18 +241,14 @@ impl DiskANNSearcher {
             .ok_or(RetrieveError::FormatError("Missing start_node".to_string()))?
             as u32;
 
-        let params_val = &metadata["params"];
-        let params = DiskANNParams {
-            m: params_val["m"].as_u64().unwrap_or(32) as usize,
-            ef_construction: params_val["ef_construction"].as_u64().unwrap_or(100) as usize,
-            alpha: params_val["alpha"].as_f64().unwrap_or(1.2) as f32,
-            ef_search: params_val["ef_search"].as_u64().unwrap_or(100) as usize,
-            seed: None,
-        };
-
         // 2. Open Graph
         let graph_path = index_dir.join("graph.index");
-        let graph_reader = super::disk_io::DiskGraphReader::open(&graph_path).map_err(|e| {
+        let graph_reader_result = if mmap {
+            super::disk_io::DiskGraphReader::open_mmap(&graph_path)
+        } else {
+            super::disk_io::DiskGraphReader::open(&graph_path)
+        };
+        let graph_reader = graph_reader_result.map_err(|e| {
             RetrieveError::Io(Arc::new(std::io::Error::other(format!(
                 "failed to open graph: {}",
                 e
@@ -246,7 +257,17 @@ impl DiskANNSearcher {
 
         // 3. Open Vectors
         let vectors_path = index_dir.join("vectors.bin");
-        let vectors_file = std::fs::File::open(&vectors_path)?;
+        let vectors = if mmap {
+            VectorStorage::Mmap(Box::new(
+                MappedFile::open(&vectors_path, AccessPattern::Random).map_err(|e| {
+                    RetrieveError::Io(Arc::new(std::io::Error::other(format!(
+                        "failed to mmap vectors: {e}"
+                    ))))
+                })?,
+            ))
+        } else {
+            VectorStorage::File(std::fs::File::open(&vectors_path)?)
+        };
 
         // 4. Load doc_ids
         let doc_ids_path = index_dir.join("doc_ids.bin");
@@ -273,10 +294,9 @@ impl DiskANNSearcher {
             vec_buf: vec![0.0f32; dimension],
             dimension,
             start_node,
-            params,
             graph_reader,
             doc_ids,
-            vectors_file,
+            vectors,
         })
     }
 
@@ -305,18 +325,17 @@ impl DiskANNSearcher {
             });
         }
 
-        let ef = ef_search.max(k).max(self.params.ef_search);
+        let ef = ef_search.max(k);
         let mut diagnostics = DiskANNSearchDiagnostics {
             ef_search: ef,
             ..DiskANNSearchDiagnostics::default()
         };
 
-        // Use greedy search similar to in-memory, but fetching neighbors from disk
-        // Note: Performance will be limited by random I/O here without caching/prefetching
-        // This is a functional baseline.
-
+        use std::cmp::Reverse;
+        use std::collections::BinaryHeap;
         let mut visited = HashSet::new();
-        let mut retset: Vec<Candidate> = Vec::with_capacity(ef + 1);
+        let mut frontier: BinaryHeap<Reverse<Candidate>> = BinaryHeap::with_capacity(ef * 2);
+        let mut results: BinaryHeap<Candidate> = BinaryHeap::with_capacity(ef + 1);
 
         // Fetch start node vector
         let start_dist = {
@@ -325,18 +344,24 @@ impl DiskANNSearcher {
             crate::simd::l2_distance_squared(query, v)
         };
 
-        retset.push(Candidate {
+        frontier.push(Reverse(Candidate {
+            id: self.start_node,
+            dist: start_dist,
+        }));
+        results.push(Candidate {
             id: self.start_node,
             dist: start_dist,
         });
         visited.insert(self.start_node);
 
-        let mut current_idx = 0;
-        retset.sort_unstable_by(|a, b| a.dist.total_cmp(&b.dist));
-
-        while current_idx < retset.len() {
-            let current = retset[current_idx];
-            current_idx += 1;
+        while let Some(Reverse(current)) = frontier.pop() {
+            if results.len() >= ef {
+                if let Some(worst) = results.peek() {
+                    if current.dist >= worst.dist {
+                        break;
+                    }
+                }
+            }
 
             // Fetch neighbors from disk
             // TODO: Cache hot nodes (top levels of Vamana) in RAM
@@ -357,28 +382,28 @@ impl DiskANNSearcher {
                     crate::simd::l2_distance_squared(query, v)
                 };
 
-                retset.push(Candidate { id: neighbor, dist });
-            }
-
-            // Keep top L
-            retset.sort_unstable_by(|a, b| a.dist.total_cmp(&b.dist));
-            if retset.len() > ef {
-                retset.truncate(ef);
+                frontier.push(Reverse(Candidate { id: neighbor, dist }));
+                results.push(Candidate { id: neighbor, dist });
+                if results.len() > ef {
+                    results.pop();
+                }
             }
         }
 
         diagnostics.visited_nodes = visited.len();
-        diagnostics.retained_candidates = retset.len();
+        diagnostics.retained_candidates = results.len();
         diagnostics.vector_bytes =
             diagnostics.vector_reads * self.dimension * std::mem::size_of::<f32>();
 
-        let results = retset
+        let mut result_vec = results.into_vec();
+        result_vec.sort_unstable_by(|a, b| a.dist.total_cmp(&b.dist));
+        let results = result_vec
             .into_iter()
-            .take(k)
             .filter_map(|c| {
                 let doc_id = self.doc_ids.get(c.id as usize).copied()?;
                 Some((doc_id, c.dist))
             })
+            .take(k)
             .collect();
 
         Ok((results, diagnostics))
@@ -386,10 +411,24 @@ impl DiskANNSearcher {
 
     /// Read a vector from disk into the reusable buffer, returning a slice.
     fn read_vector(&mut self, idx: u32) -> Result<&[f32], RetrieveError> {
-        use std::io::{Read, Seek, SeekFrom};
-        let offset = idx as u64 * self.dimension as u64 * 4;
-        self.vectors_file.seek(SeekFrom::Start(offset))?;
-        self.vectors_file.read_exact(&mut self.read_buf)?;
+        let offset = idx as usize * self.dimension * 4;
+        match &mut self.vectors {
+            VectorStorage::File(file) => {
+                use std::io::{Read, Seek, SeekFrom};
+                file.seek(SeekFrom::Start(offset as u64))?;
+                file.read_exact(&mut self.read_buf)?;
+            }
+            VectorStorage::Mmap(mapped) => {
+                let end = offset
+                    .checked_add(self.dimension * 4)
+                    .ok_or_else(|| RetrieveError::FormatError("vector offset overflow".into()))?;
+                let bytes = mapped.as_slice();
+                if end > bytes.len() {
+                    return Err(RetrieveError::OutOfBounds(idx as usize));
+                }
+                self.read_buf.copy_from_slice(&bytes[offset..end]);
+            }
+        }
 
         for i in 0..self.dimension {
             let start = i * 4;

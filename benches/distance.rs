@@ -7,6 +7,7 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 use rand::prelude::*;
 use vicinity::distance::{
     cosine_distance, cosine_distance_normalized, inner_product_distance, l2_distance,
+    l2_distance_squared,
 };
 
 // === Generators ===
@@ -42,6 +43,24 @@ fn bench_l2_dimensions(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::from_parameter(dim), dim, |bench, _| {
             bench.iter(|| l2_distance(black_box(a), black_box(b)));
+        });
+    }
+
+    group.finish();
+}
+
+fn bench_l2_squared_dimensions(c: &mut Criterion) {
+    let mut group = c.benchmark_group("l2_distance_squared");
+
+    for dim in [64, 128, 256, 384, 768, 1536].iter() {
+        group.throughput(Throughput::Elements(*dim as u64));
+
+        let vectors = random_vectors(2, *dim);
+        let a = &vectors[0];
+        let b = &vectors[1];
+
+        group.bench_with_input(BenchmarkId::from_parameter(dim), dim, |bench, _| {
+            bench.iter(|| l2_distance_squared(black_box(a), black_box(b)));
         });
     }
 
@@ -119,7 +138,7 @@ fn bench_batch_distances(c: &mut Criterion) {
                 candidates
                     .iter()
                     .map(|c| l2_distance(black_box(query), black_box(c)))
-                    .collect::<Vec<_>>()
+                    .sum::<f32>()
             });
         });
     }
@@ -130,6 +149,7 @@ fn bench_batch_distances(c: &mut Criterion) {
 criterion_group!(
     benches,
     bench_l2_dimensions,
+    bench_l2_squared_dimensions,
     bench_inner_product_dimensions,
     bench_cosine_dimensions,
     bench_cosine_normalized_dimensions,

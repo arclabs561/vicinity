@@ -19,17 +19,17 @@ available.
 ```
 Which index?
 ├── General purpose: HNSW (default)
-├── Memory constrained: HNSW + RaBitQ (SymphonyQG) or IVF-PQ
-├── Disk-backed / large scale: DiskANN (experimental; file-based, mmap planned)
+├── Memory constrained: IVF-PQ compressed in-memory search
+├── File-backed search: DiskANN (experimental; mmap/page layout planned)
 ├── Streaming insert/delete: FreshGraph (per-op latency) or LsmIndex (write throughput)
 ├── Filtered search: ACORN (metadata filters) or Curator (label filters)
 ├── Batch/static: IVF-PQ or IVF-AVQ
 └── Sparse vectors: SparseMIPS
 ```
 
-For high-dimensional data (d ≥ 256), prefer SQ4U or SymphonyQG over plain HNSW. Quantized
-graph traversal reduces distance computation cost. At low dimensions (d ≤ 25), plain HNSW
-wins; quantization overhead outweighs savings.
+Start with plain HNSW and benchmark alternatives on your dataset. SQ4U and
+SymphonyQG are available for quantized graph traversal, but current measurements
+do not show a win over plain HNSW on the published GloVe-25 or GIST-960 runs.
 
 ## Install
 
@@ -37,9 +37,9 @@ Requires Rust 1.89+. Each algorithm is a separate feature; enable what you need:
 
 ```toml
 [dependencies]
-vicinity = { version = "0.10", features = ["hnsw"] }          # graph index
-# vicinity = { version = "0.10", features = ["ivf_pq"] }      # compressed index
-# vicinity = { version = "0.10", features = ["nsw"] }         # flat graph
+vicinity = { version = "0.10.5", features = ["hnsw"] }          # graph index
+# vicinity = { version = "0.10.5", features = ["ivf_pq"] }      # compressed index
+# vicinity = { version = "0.10.5", features = ["nsw"] }         # flat graph
 ```
 
 ## Usage
@@ -66,7 +66,8 @@ let results = index.search(&[0.1; 128], 5, 50)?;
 
 ### IVF-PQ
 
-Compressed index. 32–64× less memory than HNSW, lower recall. Use for datasets that don't fit in RAM.
+Compressed in-memory index. 32–64× less vector payload than HNSW, lower recall.
+Use when raw vectors dominate RAM; use DiskANN for file-backed search.
 
 ```rust
 use vicinity::ivf_pq::{IVFPQIndex, IVFPQParams};
@@ -81,15 +82,21 @@ for (id, vec) in dataset.iter().enumerate() {
 index.build()?;
 
 let results = index.search(&query, 5)?;
+let reranked = index.search_reranked(&query, 5, 200)?;
 ```
+
+`search()` uses compressed PQ distances and still works after `compact()`.
+`search_reranked()` keeps raw vectors and reranks an approximate candidate pool
+with exact cosine distance.
 
 See [`examples/ivf_pq_demo.rs`](examples/ivf_pq_demo.rs) for a runnable end-to-end example.
 
 ### Python (pyvicinity)
 
-HNSW is available from Python via [`pyvicinity`](https://pypi.org/project/pyvicinity/)
-(abi3 wheel, CPython 3.9+). The wheel exposes HNSW search over NumPy
-`float32` arrays.
+The Python bindings expose HNSW search over NumPy `float32` arrays. Wheels
+built from this source tree use abi3 for CPython 3.10+. The published
+[`pyvicinity`](https://pypi.org/project/pyvicinity/) package may lag this
+repository.
 
 ```bash
 pip install pyvicinity
@@ -135,7 +142,7 @@ Save and load indexes with the `serde` feature:
 
 ```toml
 [dependencies]
-vicinity = { version = "0.10", features = ["hnsw", "serde"] }
+vicinity = { version = "0.10.5", features = ["hnsw", "serde"] }
 ```
 
 ```rust
@@ -173,13 +180,22 @@ versus after deleting those sidecars and forcing source-segment rebuilds.
 
 ## Benchmark
 
-GloVe-25 (1.18M vectors, 25-d, angular distance), Apple Silicon, single-threaded:
+The benchmark harness writes JSONL rows with recall, QPS, build time, RSS, and
+p50/p95/p99 latency:
+
+```bash
+cargo run --example ann_benchmark --release --features hnsw,ivf_pq,ivf_avq -- \
+  data/ann-benchmarks/glove-25-angular \
+  --algo hnsw --algo ivfpq --algo ivf_avq --json --fresh
+```
+
+Historical GloVe-25 results (1.18M vectors, 25-d, angular distance):
 
 <p align="center">
   <img src="docs/plots/algorithm_comparison_glove-25-angular.png" width="680" alt="Recall vs QPS on GloVe-25" />
 </p>
 
-Summary at best recall per algorithm:
+Summary at best recall per algorithm from older single-threaded runs:
 
 | Algorithm | Recall@10 | QPS |
 |-----------|-----------|-----|
@@ -191,7 +207,10 @@ Summary at best recall per algorithm:
 | IVF-AVQ | 90.9% | 194 |
 | RP-Forest | 58.5% | 4,221 |
 
-Full numbers and SIFT-128 results in [`docs/benchmark-results.md`](docs/benchmark-results.md).
+The IVF-PQ row above predates the reranked search path and is not the expected
+ceiling. Selected benchmark tables and current run commands are in
+[`docs/benchmark-results.md`](docs/benchmark-results.md); raw SIFT-128 records
+are in [`docs/sift-128-euclidean.jsonl`](docs/sift-128-euclidean.jsonl).
 
 ## Algorithms
 
@@ -200,8 +219,8 @@ Each algorithm has a named feature flag:
 | Algorithm | Feature | Notes |
 |-----------|---------|-------|
 | HNSW | `hnsw` (default) | Best recall/QPS balance for in-memory search |
-| SQ4U | `hnsw` + `sq4` | HNSW with 4-bit quantized graph traversal + exact rerank; benefits high-d data |
-| SymphonyQG | `hnsw` + `ivf_rabitq` | HNSW with RaBitQ quantized graph traversal; cheap approximate beam search + exact rerank |
+| SQ4U | `hnsw` + `sq4` | HNSW with 4-bit quantized graph traversal + exact rerank; experimental, benchmark before defaulting |
+| SymphonyQG | `hnsw` + `ivf_rabitq` | HNSW with RaBitQ quantized graph traversal; experimental, benchmark before defaulting |
 | NSW | `nsw` | Flat small-world graph; competitive with HNSW on high-d data |
 | Vamana | `vamana` | DiskANN-style robust pruning; fast search, higher build time |
 | NSG | `nsg` | Monotonic RNG pruning; build slows above ~50K vectors due to O(n) ensure_connectivity |
@@ -209,14 +228,14 @@ Each algorithm has a named feature flag:
 | FINGER | `finger` | Projection-based distance lower bounds for search pruning |
 | PiPNN | `pipnn` | Partition-then-refine with HashPrune; reduces I/O during build |
 | FreshGraph | `fresh_graph` | Streaming insert/delete with tombstones |
-| IVF-PQ | `ivf_pq` | Compressed index; 32-64x less memory, lower recall |
+| IVF-PQ | `ivf_pq` | Compressed index with optional exact reranking |
 | IVF-AVQ | `ivf_avq` | Anisotropic VQ + reranking; inner product search |
 | IVF-RaBitQ | `ivf_rabitq` | RaBitQ binary quantization; provable error bounds |
 | RpQuant | `rp_quant` | Random projection + scalar quantization |
 | BinaryFlat | `binary_index` | 1-bit quantization + full-precision rerank |
 | Curator | `curator` | K-means tree with per-label Bloom filters; low-selectivity filtered search |
 | FilteredGraph | `filtered_graph` | Predicate-filtered graph search (AND/OR metadata filters) |
-| ACORN | `hnsw` | Filtered HNSW search with subgraph sampling (SIGMOD 2024) |
+| ACORN | `hnsw` | Filtered HNSW search with two-hop expansion (SIGMOD 2024) |
 | RangeFiltered | `range_filtered` | HNSW + attribute-range post-filter (renamed from `esg` in 0.8.0) |
 | SparseMIPS | `sparse_mips` | Graph index for sparse vectors (SPLADE/BM25) |
 | LEMUR | `lemur` | Late-interaction MIPS; needs externally-provided encoder weights (no in-tree training); mean-pool used in place of OLS |
@@ -225,9 +244,9 @@ Each algorithm has a named feature flag:
 | DiskANN | `diskann` | Vamana + SSD I/O layout; experimental |
 | SNG | `sng` | OPT-SNG (auto-tuned sparse neighborhood graph); sub-quadratic build per arXiv:2509.15531 |
 | DEG | `hnsw` | Density-adaptive edge budgets (in-house experimental variant; no benchmark) |
-| KD-Tree | `kdtree` | Exact NN; fast for d <= 20 (experimental) |
-| Ball Tree | `balltree` | Exact NN; slightly better than KD-Tree for d=20-50 (experimental) |
-| RP-Forest | `rptree` | Approximate; fast build, moderate recall (experimental) |
+| KD-Tree | `kdtree` | Tree baseline for low-dimensional angular data (experimental) |
+| Ball Tree | `balltree` | Tree baseline for low-dimensional angular data (experimental) |
+| RP-Forest | `rptree` | Approximate tree baseline; fast build, lower recall (experimental) |
 
 Quantization features are split by use: the public IVF-RaBitQ and
 `hnsw::SymphonyQGIndex` types use `ivf_rabitq`; standalone
@@ -258,6 +277,9 @@ specific gap that, once closed, would promote it:
 - **LEMUR**: late-interaction MIPS; ships an inference-only skeleton
   that requires externally-provided encoder weights and uses mean-pool
   in place of the paper's OLS fit. Promote when in-tree training lands.
+- **SQ4U and SymphonyQG**: quantized graph traversal with exact rerank.
+  Promote when they beat plain HNSW on recall/QPS on at least two published
+  benchmark datasets; the current published runs do not show that yet.
 
 See [docs.rs](https://docs.rs/vicinity) for the full API.
 

@@ -4,16 +4,16 @@
 //!
 //! | Situation | Method | Compression | Feature |
 //! |-----------|--------|-------------|---------|
-//! | **Best accuracy** | RaBitQ 4-bit | 8x | `rabitq` |
-//! | **Best compression** | Ternary | 20x | `saq` |
-//! | **No training data** | Binary (sign) | 32x | `saq` |
+//! | **RaBitQ path** | RaBitQ 4-bit | 8x | `quantization`, `rabitq` |
+//! | **Ternary path** | Ternary | ~16x | `quantization`, `saq` |
+//! | **No training data** | Binary (sign) | 32x | `binary_index` |
 //! | **Multi-dimensional** | Product Quantization | 32x | See `ivf_pq` |
 //!
 //! # Feature Flags
 //!
 //! ```toml
-//! vicinity = { version = "0.8", features = ["rabitq"] }  # RaBitQ
-//! vicinity = { version = "0.8", features = ["saq"] }     # Ternary/Binary
+//! vicinity = { version = "0.10.5", features = ["quantization", "rabitq"] }  # RaBitQ
+//! vicinity = { version = "0.10.5", features = ["quantization", "saq"] }     # Ternary
 //! ```
 //!
 //! # The Problem: Memory at Scale
@@ -27,9 +27,9 @@
 //! | Method | Bits/dim | Compression | Recall@10 |
 //! |--------|----------|-------------|-----------|
 //! | float32 | 32 | 1x | 100% |
-//! | **RaBitQ 4-bit** | 4 | 8x | 95%+ |
-//! | **Ternary** | 1.58 | 20x | 85%+ |
-//! | Binary | 1 | 32x | 75%+ |
+//! | **RaBitQ 4-bit** | 4 | 8x | Workload-dependent |
+//! | **Ternary** | ~1.58 | ~16x | Workload-dependent |
+//! | Binary | 1 | 32x | Workload-dependent |
 //!
 //! ## Scalar vs Vector Quantization
 //!
@@ -89,7 +89,7 @@
 //!
 //! ## Usage
 //!
-//! Requires `features = ["rabitq"]`:
+//! Requires `features = ["quantization", "rabitq"]`:
 //!
 //! ```ignore
 //! use vicinity::quantization::rabitq::{RaBitQConfig, RaBitQQuantizer};
@@ -98,7 +98,7 @@
 //! let mut quantizer = RaBitQQuantizer::with_config(768, 42, config)?;
 //!
 //! // Train on sample vectors
-//! quantizer.fit(&sample_vectors)?;
+//! quantizer.fit(&sample_vectors, sample_vectors.len() / 768)?;
 //!
 //! // Quantize database
 //! let codes: Vec<_> = vectors.iter()

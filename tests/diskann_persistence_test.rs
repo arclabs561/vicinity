@@ -162,6 +162,52 @@ fn test_diskann_save_load_roundtrip() {
 }
 
 #[test]
+fn test_diskann_file_search_matches_in_memory_search() {
+    let n = 500;
+    let d = 24;
+    let k = 10;
+    let ef = 40;
+    let vectors = generate_vectors(n, d, 99);
+    let queries = generate_vectors(12, d, 199);
+    let params = DiskANNParams {
+        m: 16,
+        ef_construction: 50,
+        alpha: 1.2,
+        ef_search: ef,
+        seed: Some(7),
+        ..DiskANNParams::default()
+    };
+
+    let mut index = DiskANNIndex::new(d, params).expect("create index");
+    for (i, vec) in vectors.iter().enumerate() {
+        index.add(i as u32, vec.clone()).expect("add vector");
+    }
+    index.build().expect("build index");
+
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let index_path = temp_dir.path().join("diskann_parity");
+    index.save(&index_path).expect("save index");
+    let mut searcher = DiskANNSearcher::load(&index_path).expect("load searcher");
+    let mut mmap_searcher = DiskANNSearcher::load_mmap(&index_path).expect("load mmap searcher");
+
+    for query in &queries {
+        let in_memory = index.search(query, k, ef).expect("in-memory search");
+        let file_backed = searcher.search(query, k, ef).expect("file-backed search");
+        let mmap_backed = mmap_searcher
+            .search(query, k, ef)
+            .expect("mmap-backed search");
+        assert_eq!(
+            file_backed, in_memory,
+            "file-backed search must preserve in-memory DiskANN ranking"
+        );
+        assert_eq!(
+            mmap_backed, in_memory,
+            "mmap-backed search must preserve in-memory DiskANN ranking"
+        );
+    }
+}
+
+#[test]
 fn test_diskann_metadata_roundtrip() {
     let n = 100;
     let d = 16;

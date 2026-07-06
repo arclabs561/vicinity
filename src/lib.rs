@@ -29,19 +29,19 @@
 //! | Situation | Recommendation | Feature | Persistence |
 //! |-----------|----------------|---------|-------------|
 //! | **General Purpose** (Best Recall/Speed) | [`hnsw::HNSWIndex`] | `hnsw` (default) | Yes: JSON via `serde` (`save_to_file`); binary via `persistence` (segment writer) |
-//! | **Billion-Scale** (Memory Constrained) | `ivf_pq::IVFPQIndex` | `ivf_pq` | No |
+//! | **Memory Constrained** (compressed in-memory search) | `ivf_pq::IVFPQIndex` | `ivf_pq` | Yes: snapshot reloads into memory |
 //! | **Flat Graph** (Simpler, competitive on high-d) | `nsw::NSWIndex` | `nsw` | No |
-//! | **Label Filtering** (Low selectivity) | `curator::CuratorIndex` | `curator` | No |
-//! | **Complex Predicates** (AND/OR filters) | `filtered_graph::FilteredGraphIndex` | `filtered_graph` | No |
-//! | **Range Filtering** (Numeric attributes) | `range_filtered::RangeFilteredIndex` | `range_filtered` | No |
-//! | **Dynamic Insert/Delete** (per-op latency) | `fresh_graph::FreshGraphIndex` | `fresh_graph` | No |
+//! | **Label Filtering** (Low selectivity) | `curator::CuratorIndex` | `curator` | Yes: snapshot reloads and rebuilds tree |
+//! | **Complex Predicates** (AND/OR filters) | `filtered_graph::FilteredGraphIndex` | `filtered_graph` | Yes: snapshot reloads into memory |
+//! | **Range Filtering** (Numeric attributes) | `range_filtered::RangeFilteredIndex` | `range_filtered` | Yes: snapshot reloads and rebuilds HNSW |
+//! | **Dynamic Insert/Delete** (per-op latency) | `fresh_graph::FreshGraphIndex` | `fresh_graph` | Yes: snapshot reloads into memory |
 //! | **Streaming Bulk Writes** (write throughput) | `streaming::lsm::LsmIndex` | `hnsw` (LSM is built-in) | No |
 //! | **Sparse Vectors** (SPLADE/BM25) | `sparse_mips::SparseMipsIndex` | `sparse_mips` | No |
 //! | **High-d Compression** (768d+) | `rp_quant::RpQuantIndex` | `rp_quant` | No |
 //! | **Quantized Graph** (HNSW + RaBitQ, cosine) | `hnsw::SymphonyQGIndex` | `hnsw` + `ivf_rabitq` | No |
 //! | **Quantized Graph** (HNSW + RaBitQ, cosine + L2) | `hnsw::SymphonyQGVRIndex` | `hnsw` + `ivf_rabitq` | No |
 //! | **Binary Quantization** (1-bit + rerank) | `binary_index::BinaryFlatIndex` | `binary_index` | No |
-//! | **Out-of-Core** (SSD-based) | `diskann` | `diskann` (experimental) | Yes (file-based save/load; mmap planned) |
+//! | **File-Backed Search** (SSD-based, experimental) | `diskann` | `diskann` (experimental) | Yes: file and mmap searcher |
 //! | **4-bit Scalar Quant** (8x compression) | `sq4::SQ4Index` | `sq4` | No |
 //! | **8-bit Scalar Quant** (4x compression) | `hnsw::HNSWSq8Index` | `hnsw` + `sq8` | No |
 //!
@@ -52,22 +52,24 @@
 //! 1. **Start with HNSW**. It's the industry standard for a reason. It offers the best
 //!    trade-off between search speed and recall for datasets that fit in RAM.
 //!
-//! 2. **Use IVF-PQ** if your dataset is too large for RAM (e.g., > 10M vectors on a laptop).
-//!    It compresses vectors (32x-64x) but has lower recall than HNSW.
+//! 2. **Use IVF-PQ** when raw vectors dominate memory. It compresses the vector
+//!    payload and can drop raw vectors with `compact()`, but it is still an
+//!    in-memory ANN index rather than a disk-resident search path.
 //!
 //! 3. **Try NSW (Flat)** if you want a simpler graph, or you are benchmarking on
 //!    modern embeddings (hundreds/thousands of dimensions). Recent empirical work suggests the
 //!    hierarchy may provide less incremental value in that regime (see arXiv:2412.01940).
 //!    *Note: HNSW is the more common default in production systems, so it’s still a safe first choice.*
 //!
-//! 4. **Use DiskANN** (experimental) if you have an NVMe SSD and 1B+ vectors.
+//! 4. **Use DiskANN** (experimental) when you need a file-backed searcher.
+//!    Treat mmap/page-layout behavior as a separate benchmark target.
 //!
 //! ```toml
 //! # Minimal (HNSW + SIMD)
-//! vicinity = "0.8"
+//! vicinity = "0.10.5"
 //!
 //! # With quantization support
-//! vicinity = { version = "0.8", features = ["ivf_pq"] }
+//! vicinity = { version = "0.10.5", features = ["ivf_pq"] }
 //! ```
 //!
 //! # Notes (evidence-backed)

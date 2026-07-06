@@ -14,7 +14,7 @@
 //! # Feature Flag
 //!
 //! ```toml
-//! vicinity = { version = "0.8", features = ["filtered_graph"] }
+//! vicinity = { version = "0.10.5", features = ["filtered_graph"] }
 //! ```
 //!
 //! # Quick Start
@@ -45,14 +45,20 @@
 
 use crate::distance::cosine_distance_normalized;
 use crate::RetrieveError;
+use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::io::{BufReader, BufWriter, Read, Write};
+use std::path::Path;
+
+const FILTERED_GRAPH_FORMAT_VERSION: u32 = 1;
+const FILTERED_GRAPH_NEIGHBORS_MAGIC: &[u8; 8] = b"FILTGRAF";
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
 /// A typed attribute value stored alongside each vector.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub enum AttrValue {
     /// UTF-8 string.
     String(String),
@@ -65,7 +71,7 @@ pub enum AttrValue {
 }
 
 /// A single comparison predicate over one attribute.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum Predicate {
     /// Attribute equals value.
     Eq(String, AttrValue),
@@ -82,7 +88,7 @@ pub enum Predicate {
 }
 
 /// A boolean filter tree over [`Predicate`]s.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum Filter {
     /// A single predicate leaf.
     Clause(Predicate),
@@ -105,6 +111,46 @@ pub struct FilteredGraphParams {
     pub ef_search: usize,
     /// RNG pruning threshold (alpha > 1 relaxes diversity). Default: 1.2.
     pub alpha: f32,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct PersistedFilteredGraphParams {
+    max_degree: usize,
+    ef_construction: usize,
+    ef_search: usize,
+    alpha: f32,
+}
+
+impl From<&FilteredGraphParams> for PersistedFilteredGraphParams {
+    fn from(params: &FilteredGraphParams) -> Self {
+        Self {
+            max_degree: params.max_degree,
+            ef_construction: params.ef_construction,
+            ef_search: params.ef_search,
+            alpha: params.alpha,
+        }
+    }
+}
+
+impl PersistedFilteredGraphParams {
+    fn into_params(self) -> FilteredGraphParams {
+        FilteredGraphParams {
+            max_degree: self.max_degree,
+            ef_construction: self.ef_construction,
+            ef_search: self.ef_search,
+            alpha: self.alpha,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct FilteredGraphManifest {
+    version: u32,
+    dimension: usize,
+    num_vectors: usize,
+    medoid: u32,
+    params: PersistedFilteredGraphParams,
+    inverted: HashMap<String, Vec<(AttrValue, Vec<u32>)>>,
 }
 
 impl Default for FilteredGraphParams {
@@ -232,6 +278,79 @@ impl FilteredGraphIndex {
 
         self.built = true;
         Ok(())
+    }
+
+    /// Save a built filtered graph index to a directory.
+    pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<(), RetrieveError> {
+        if !self.built {
+            return Err(RetrieveError::InvalidParameter(
+                "cannot save unbuilt filtered graph index".into(),
+            ));
+        }
+        let output_dir = output_dir.as_ref();
+        std::fs::create_dir_all(output_dir)?;
+        let manifest = FilteredGraphManifest {
+            version: FILTERED_GRAPH_FORMAT_VERSION,
+            dimension: self.dimension,
+            num_vectors: self.num_vectors,
+            medoid: self.medoid,
+            params: PersistedFilteredGraphParams::from(&self.params),
+            inverted: self.inverted.clone(),
+        };
+
+        write_json_atomic(&output_dir.join("manifest.json"), &manifest)?;
+        write_f32_atomic(&output_dir.join("vectors.bin"), &self.vectors)?;
+        write_u32_atomic(&output_dir.join("doc_ids.bin"), &self.doc_ids)?;
+        write_neighbors_atomic(&output_dir.join("neighbors.bin"), &self.neighbors)?;
+        Ok(())
+    }
+
+    /// Load a filtered graph index saved by [`Self::save_to_dir`].
+    pub fn load_from_dir(input_dir: impl AsRef<Path>) -> Result<Self, RetrieveError> {
+        let input_dir = input_dir.as_ref();
+        let manifest: FilteredGraphManifest = read_json(&input_dir.join("manifest.json"))?;
+        if manifest.version != FILTERED_GRAPH_FORMAT_VERSION {
+            return Err(RetrieveError::FormatError(format!(
+                "unsupported filtered graph format version {}",
+                manifest.version
+            )));
+        }
+        if manifest.dimension == 0 {
+            return Err(RetrieveError::FormatError(
+                "filtered graph manifest has zero dimension".into(),
+            ));
+        }
+        if manifest.num_vectors == 0 {
+            return Err(RetrieveError::FormatError(
+                "filtered graph manifest has zero vectors".into(),
+            ));
+        }
+        if manifest.medoid as usize >= manifest.num_vectors {
+            return Err(RetrieveError::FormatError(format!(
+                "filtered graph medoid {} exceeds vector count {}",
+                manifest.medoid, manifest.num_vectors
+            )));
+        }
+
+        let vectors = read_f32_exact(
+            &input_dir.join("vectors.bin"),
+            manifest.num_vectors * manifest.dimension,
+        )?;
+        let doc_ids = read_u32_exact(&input_dir.join("doc_ids.bin"), manifest.num_vectors)?;
+        let neighbors = read_neighbors(&input_dir.join("neighbors.bin"), manifest.num_vectors)?;
+
+        Ok(Self {
+            dimension: manifest.dimension,
+            params: manifest.params.into_params(),
+            built: true,
+            vectors,
+            num_vectors: manifest.num_vectors,
+            doc_ids,
+            staging_attrs: Vec::new(),
+            neighbors,
+            medoid: manifest.medoid,
+            inverted: manifest.inverted,
+        })
     }
 
     /// Search for the k nearest neighbors of `query` that satisfy `filter`.
@@ -733,6 +852,167 @@ fn normalize(v: &[f32]) -> Vec<f32> {
     }
 }
 
+fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), RetrieveError> {
+    write_atomic(path, |writer| {
+        serde_json::to_writer_pretty(writer, value)
+            .map_err(|e| std::io::Error::other(e.to_string()))
+    })
+}
+
+fn write_f32_atomic(path: &Path, values: &[f32]) -> Result<(), RetrieveError> {
+    write_atomic(path, |writer| {
+        for value in values {
+            writer.write_all(&value.to_le_bytes())?;
+        }
+        Ok(())
+    })
+}
+
+fn write_u32_atomic(path: &Path, values: &[u32]) -> Result<(), RetrieveError> {
+    write_atomic(path, |writer| {
+        for value in values {
+            writer.write_all(&value.to_le_bytes())?;
+        }
+        Ok(())
+    })
+}
+
+fn write_neighbors_atomic(
+    path: &Path,
+    neighbors: &[SmallVec<[u32; 16]>],
+) -> Result<(), RetrieveError> {
+    write_atomic(path, |writer| {
+        writer.write_all(FILTERED_GRAPH_NEIGHBORS_MAGIC)?;
+        writer.write_all(&(neighbors.len() as u64).to_le_bytes())?;
+        for list in neighbors {
+            writer.write_all(&(list.len() as u64).to_le_bytes())?;
+            for id in list {
+                writer.write_all(&id.to_le_bytes())?;
+            }
+        }
+        Ok(())
+    })
+}
+
+fn write_atomic<F>(path: &Path, write: F) -> Result<(), RetrieveError>
+where
+    F: FnOnce(&mut BufWriter<std::fs::File>) -> std::io::Result<()>,
+{
+    let tmp_path = path.with_extension("tmp");
+    let file = std::fs::File::create(&tmp_path)?;
+    let mut writer = BufWriter::new(file);
+    write(&mut writer)?;
+    writer.flush()?;
+    drop(writer);
+    std::fs::rename(&tmp_path, path)?;
+    Ok(())
+}
+
+fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, RetrieveError> {
+    let file = std::fs::File::open(path)?;
+    serde_json::from_reader(BufReader::new(file))
+        .map_err(|e| RetrieveError::FormatError(e.to_string()))
+}
+
+fn read_f32_exact(path: &Path, expected_len: usize) -> Result<Vec<f32>, RetrieveError> {
+    let bytes = std::fs::read(path)?;
+    let expected_bytes = expected_len
+        .checked_mul(4)
+        .ok_or_else(|| RetrieveError::FormatError("filtered graph f32 length overflow".into()))?;
+    if bytes.len() != expected_bytes {
+        return Err(RetrieveError::FormatError(format!(
+            "filtered graph f32 file has {} bytes, expected {}",
+            bytes.len(),
+            expected_bytes
+        )));
+    }
+    Ok(bytes
+        .chunks_exact(4)
+        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        .collect())
+}
+
+fn read_u32_exact(path: &Path, expected_len: usize) -> Result<Vec<u32>, RetrieveError> {
+    let bytes = std::fs::read(path)?;
+    let expected_bytes = expected_len
+        .checked_mul(4)
+        .ok_or_else(|| RetrieveError::FormatError("filtered graph u32 length overflow".into()))?;
+    if bytes.len() != expected_bytes {
+        return Err(RetrieveError::FormatError(format!(
+            "filtered graph u32 file has {} bytes, expected {}",
+            bytes.len(),
+            expected_bytes
+        )));
+    }
+    Ok(bytes
+        .chunks_exact(4)
+        .map(|chunk| u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        .collect())
+}
+
+fn read_neighbors(
+    path: &Path,
+    expected_nodes: usize,
+) -> Result<Vec<SmallVec<[u32; 16]>>, RetrieveError> {
+    let mut reader = BufReader::new(std::fs::File::open(path)?);
+    let mut magic = [0u8; 8];
+    reader.read_exact(&mut magic)?;
+    if &magic != FILTERED_GRAPH_NEIGHBORS_MAGIC {
+        return Err(RetrieveError::FormatError(
+            "invalid filtered graph neighbors magic".into(),
+        ));
+    }
+    let count = read_u64(&mut reader)?;
+    if count as usize != expected_nodes {
+        return Err(RetrieveError::FormatError(format!(
+            "filtered graph neighbors count {} does not match manifest count {}",
+            count, expected_nodes
+        )));
+    }
+
+    let mut neighbors = Vec::with_capacity(expected_nodes);
+    for node in 0..expected_nodes {
+        let len = read_u64(&mut reader)? as usize;
+        if len > expected_nodes.saturating_sub(1) {
+            return Err(RetrieveError::FormatError(format!(
+                "filtered graph node {node} has too many neighbors: {len}"
+            )));
+        }
+        let mut list = SmallVec::<[u32; 16]>::new();
+        for _ in 0..len {
+            let id = read_u32(&mut reader)?;
+            if id as usize >= expected_nodes {
+                return Err(RetrieveError::FormatError(format!(
+                    "filtered graph neighbor id {id} exceeds vector count {expected_nodes}"
+                )));
+            }
+            list.push(id);
+        }
+        neighbors.push(list);
+    }
+
+    let mut trailing = [0u8; 1];
+    match reader.read(&mut trailing) {
+        Ok(0) => Ok(neighbors),
+        Ok(_) => Err(RetrieveError::FormatError(
+            "filtered graph neighbors file has trailing bytes".into(),
+        )),
+        Err(err) => Err(err.into()),
+    }
+}
+
+fn read_u64(reader: &mut impl Read) -> Result<u64, RetrieveError> {
+    let mut bytes = [0u8; 8];
+    reader.read_exact(&mut bytes)?;
+    Ok(u64::from_le_bytes(bytes))
+}
+
+fn read_u32(reader: &mut impl Read) -> Result<u32, RetrieveError> {
+    let mut bytes = [0u8; 4];
+    reader.read_exact(&mut bytes)?;
+    Ok(u32::from_le_bytes(bytes))
+}
+
 // ── FloatOrd ──────────────────────────────────────────────────────────────────
 
 use crate::distance::FloatOrd;
@@ -994,6 +1274,91 @@ mod tests {
         ));
         let results = idx.search_filtered(&data[0..dim], 5, &filter).unwrap();
         assert!(results.is_empty());
+    }
+
+    // ── Persistence ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn save_load_roundtrip_preserves_filtered_search() {
+        let dim = 8;
+        let n = 36;
+        let data = make_vectors(n, dim, 113);
+        let params = FilteredGraphParams {
+            max_degree: 12,
+            ef_construction: 30,
+            ef_search: 30,
+            alpha: 1.2,
+        };
+        let mut idx = FilteredGraphIndex::new(dim, params).unwrap();
+
+        for i in 0..n {
+            let start = i * dim;
+            let mut attrs = HashMap::new();
+            attrs.insert(
+                "parity".to_string(),
+                AttrValue::String(if i % 2 == 0 { "even" } else { "odd" }.to_string()),
+            );
+            attrs.insert("score".to_string(), AttrValue::Int(i as i64));
+            idx.add_slice(i as u32, &data[start..start + dim], attrs)
+                .unwrap();
+        }
+        idx.build().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        idx.save_to_dir(dir.path()).unwrap();
+        let loaded = FilteredGraphIndex::load_from_dir(dir.path()).unwrap();
+
+        let filter = Filter::And(vec![
+            Filter::Clause(Predicate::Eq(
+                "parity".to_string(),
+                AttrValue::String("even".to_string()),
+            )),
+            Filter::Clause(Predicate::Gt("score".to_string(), AttrValue::Int(10))),
+        ]);
+        assert_eq!(
+            idx.search_filtered(&data[8..16], 8, &filter).unwrap(),
+            loaded.search_filtered(&data[8..16], 8, &filter).unwrap()
+        );
+        assert_eq!(
+            idx.search_with_ef(&data[0..dim], 8, 30).unwrap(),
+            loaded.search_with_ef(&data[0..dim], 8, 30).unwrap()
+        );
+    }
+
+    #[test]
+    fn load_rejects_future_manifest_version() {
+        let idx = build_index(20, 8, 251);
+        let dir = tempfile::tempdir().unwrap();
+        idx.save_to_dir(dir.path()).unwrap();
+
+        let manifest_path = dir.path().join("manifest.json");
+        let mut manifest: FilteredGraphManifest = read_json(&manifest_path).unwrap();
+        manifest.version = FILTERED_GRAPH_FORMAT_VERSION + 1;
+        write_json_atomic(&manifest_path, &manifest).unwrap();
+
+        match FilteredGraphIndex::load_from_dir(dir.path()) {
+            Err(RetrieveError::FormatError(message)) => {
+                assert!(message.contains("unsupported filtered graph format version"));
+            }
+            Err(err) => panic!("expected format error, got {err:?}"),
+            Ok(_) => panic!("expected format error, got successful load"),
+        }
+    }
+
+    #[test]
+    fn load_rejects_corrupt_neighbors_magic() {
+        let idx = build_index(20, 8, 271);
+        let dir = tempfile::tempdir().unwrap();
+        idx.save_to_dir(dir.path()).unwrap();
+        std::fs::write(dir.path().join("neighbors.bin"), b"BADGRAPH").unwrap();
+
+        match FilteredGraphIndex::load_from_dir(dir.path()) {
+            Err(RetrieveError::FormatError(message)) => {
+                assert!(message.contains("invalid filtered graph neighbors magic"));
+            }
+            Err(err) => panic!("expected format error, got {err:?}"),
+            Ok(_) => panic!("expected format error, got successful load"),
+        }
     }
 
     // ── Empty index errors ────────────────────────────────────────────────────

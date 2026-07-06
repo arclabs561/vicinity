@@ -346,9 +346,120 @@ fn ivf_pq_recall_vs_brute_force() {
     // codebook_size) risks CI flakiness on within-seed variance.
     // A regression that drops recall below 0.20 indicates a real
     // codebook-corruption or cluster-routing bug, not noise.
+    const RECALL_FLOOR: f32 = 0.20;
+    const RECALL_EPSILON: f32 = 1e-6;
     assert!(
-        recall >= 0.20,
+        recall + RECALL_EPSILON >= RECALL_FLOOR,
         "IVF-PQ avg recall@{K} = {recall:.3}, expected >= 0.20"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Classic trees
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "kdtree")]
+#[test]
+fn kdtree_recall_vs_brute_force() {
+    use vicinity::classic::trees::kdtree::{KDTreeIndex, KDTreeParams};
+
+    let vectors = dataset();
+    let qs = queries();
+
+    let mut idx = KDTreeIndex::new(DIM, KDTreeParams::default()).unwrap();
+    for (i, v) in vectors.iter().enumerate() {
+        idx.add(i as u32, v.clone()).unwrap();
+    }
+    idx.build().unwrap();
+
+    let recall = avg_recall(&vectors, &qs, |q| idx.search(q, K).unwrap());
+    assert!(
+        recall >= 0.40,
+        "KD-tree avg recall@{K} = {recall:.3}, expected >= 0.40"
+    );
+}
+
+#[cfg(feature = "balltree")]
+#[test]
+fn balltree_recall_vs_brute_force() {
+    use vicinity::classic::trees::balltree::{BallTreeIndex, BallTreeParams};
+
+    let vectors = dataset();
+    let qs = queries();
+
+    let mut idx = BallTreeIndex::new(DIM, BallTreeParams::default()).unwrap();
+    for (i, v) in vectors.iter().enumerate() {
+        idx.add(i as u32, v.clone()).unwrap();
+    }
+    idx.build().unwrap();
+
+    let recall = avg_recall(&vectors, &qs, |q| idx.search(q, K).unwrap());
+    assert!(
+        recall >= 0.40,
+        "Ball tree avg recall@{K} = {recall:.3}, expected >= 0.40"
+    );
+}
+
+#[cfg(feature = "rptree")]
+#[test]
+fn rptree_recall_vs_brute_force() {
+    use vicinity::classic::trees::random_projection::{RPTreeIndex, RPTreeParams};
+
+    let vectors = dataset();
+    let qs = queries();
+
+    let mut idx = RPTreeIndex::new(DIM, RPTreeParams::default()).unwrap();
+    for (i, v) in vectors.iter().enumerate() {
+        idx.add(i as u32, v.clone()).unwrap();
+    }
+    idx.build().unwrap();
+
+    let recall = avg_recall(&vectors, &qs, |q| idx.search(q, K).unwrap());
+    assert!(
+        recall >= 0.05,
+        "RP-tree avg recall@{K} = {recall:.3}, expected >= 0.05"
+    );
+}
+
+#[cfg(feature = "rptree")]
+#[test]
+fn rp_forest_recall_vs_brute_force() {
+    use vicinity::classic::trees::rp_forest::{RpForestIndex, RpForestParams};
+
+    let vectors = dataset();
+    let qs = queries();
+
+    let mut idx = RpForestIndex::new(DIM, RpForestParams::default()).unwrap();
+    for (i, v) in vectors.iter().enumerate() {
+        idx.add(i as u32, v.clone()).unwrap();
+    }
+    idx.build().unwrap();
+
+    let recall = avg_recall(&vectors, &qs, |q| idx.search(q, K).unwrap());
+    assert!(
+        recall >= 0.10,
+        "RP-forest avg recall@{K} = {recall:.3}, expected >= 0.10"
+    );
+}
+
+#[cfg(feature = "kmeans_tree")]
+#[test]
+fn kmeans_tree_recall_vs_brute_force() {
+    use vicinity::classic::trees::kmeans_tree::{KMeansTreeIndex, KMeansTreeParams};
+
+    let vectors = dataset();
+    let qs = queries();
+
+    let mut idx = KMeansTreeIndex::new(DIM, KMeansTreeParams::default()).unwrap();
+    for (i, v) in vectors.iter().enumerate() {
+        idx.add(i as u32, v.clone()).unwrap();
+    }
+    idx.build().unwrap();
+
+    let recall = avg_recall(&vectors, &qs, |q| idx.search(q, K).unwrap());
+    assert!(
+        recall >= 0.10,
+        "K-means tree avg recall@{K} = {recall:.3}, expected >= 0.10"
     );
 }
 

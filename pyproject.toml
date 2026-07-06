@@ -5,9 +5,9 @@ build-backend = "maturin"
 [project]
 name = "pyvicinity"
 dynamic = ["version"]
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = ["numpy"]
-description = "Multi-algorithm approximate nearest-neighbor search (Rust-backed)"
+description = "HNSW approximate nearest-neighbor search"
 license = { text = "MIT OR Apache-2.0" }
 classifiers = [
   "Development Status :: 4 - Beta",
@@ -15,6 +15,10 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
   "Programming Language :: Rust",
   "Programming Language :: Python :: Implementation :: CPython",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
   "Typing :: Typed",
 ]
 
@@ -30,7 +34,7 @@ ann-benchmarks = ["h5py"]
 test = ["pytest>=7", "numpy"]
 
 [tool.ruff]
-target-version = "py39"
+target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "UP", "B", "SIM", "I"]

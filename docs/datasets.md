@@ -11,6 +11,7 @@ Which datasets to use for benchmarking and evaluation.
 | **Stress test** | Bundled `hard_*` | ~31MB | 10K x 768, hard, never reaches 90% recall |
 | **Standard benchmark** | SIFT-128 | 501MB | Industry standard, Euclidean |
 | **Text embeddings** | GloVe-100 | 463MB | Word vectors, Angular |
+| **Quantization checks** | GloVe-200 | 918MB | Higher dimension, Angular |
 | **High-dimensional** | GIST-960 | 3.6GB | Stress test, near modern dims |
 | **Modern embeddings** | Generate from fastembed | varies | Match your production dims |
 
@@ -23,9 +24,15 @@ From [ann-benchmarks.com](http://ann-benchmarks.com/). All include train/test sp
 | Dataset | Dims | Vectors | Distance | Size | Notes |
 |---------|------|---------|----------|------|-------|
 | GloVe-25 | 25 | 1.18M | Angular | 121MB | Fastest download |
+| GloVe-50 | 50 | 1.18M | Angular | 235MB | Lower-mid text dimension |
 | GloVe-100 | 100 | 1.18M | Angular | 463MB | Good balance |
+| GloVe-200 | 200 | 1.18M | Angular | 918MB | Better for quantized variants |
 | SIFT-128 | 128 | 1M | Euclidean | 501MB | Standard benchmark |
 | NYTimes-256 | 256 | 290K | Angular | 301MB | Text-like dims |
+
+These datasets are small enough for normal in-memory sweeps on a development
+machine. Use them to compare algorithm families at fixed recall and to validate
+resume behavior, latency tails, and build-time reporting.
 
 ### Stress Testing
 
@@ -33,20 +40,32 @@ From [ann-benchmarks.com](http://ann-benchmarks.com/). All include train/test sp
 |---------|------|---------|----------|------|-------|
 | Fashion-MNIST | 784 | 60K | Euclidean | 217MB | High-dim images |
 | GIST-960 | 960 | 1M | Euclidean | 3.6GB | Near modern dims |
-| DEEP1B | 96 | 10M | Angular | 3.6GB | Large scale |
+| Deep Image | 96 | 10M | Angular | 3.6GB | Large scale |
 
-### Download
+Stress datasets should be reported with explicit storage modes. An in-memory
+row answers a different question from a file or mmap row: in-memory QPS measures
+the search algorithm and memory layout after data is resident, while file/mmap
+rows include open/load behavior and can depend on the OS page cache. Do not
+collapse these rows into a single leaderboard number.
+
+### Download and Convert
 
 ```sh
+# List available datasets
+uv run scripts/download_ann_benchmarks.py --list
+
 # GloVe (recommended starting point)
-curl -o data/glove-100-angular.hdf5 http://ann-benchmarks.com/glove-100-angular.hdf5
+uv run scripts/download_ann_benchmarks.py glove-100-angular
 
 # SIFT (Euclidean benchmark)
-curl -o data/sift-128-euclidean.hdf5 http://ann-benchmarks.com/sift-128-euclidean.hdf5
-
-# NYTimes (text-like)
-curl -o data/nytimes-256-angular.hdf5 http://ann-benchmarks.com/nytimes-256-angular.hdf5
+uv run scripts/download_ann_benchmarks.py sift-128-euclidean
 ```
+
+The script writes `data/ann-benchmarks/<dataset>/{train,test,neighbors}.bin`
+plus `dataset.json`. Re-running it is idempotent: existing converted files are
+reused only when their headers, byte lengths, and manifest match the current
+conversion settings. Use `--force` to rebuild the `.bin` files from the cached
+HDF5, or `--redownload` to replace the cached HDF5 before conversion.
 
 ## Modern Embedding Dimensions
 
@@ -109,6 +128,9 @@ with `scripts/download_ann_benchmarks.py`:
 ```sh
 uv run scripts/download_ann_benchmarks.py glove-25-angular
 # writes data/ann-benchmarks/glove-25-angular/{train,test,neighbors}.bin
+
+uv run scripts/download_ann_benchmarks.py glove-25-angular --force
+# rebuilds the converted binary files from the cached HDF5
 ```
 
 ## Recommendations by Task

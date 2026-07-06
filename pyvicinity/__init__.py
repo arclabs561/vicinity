@@ -1,8 +1,9 @@
-"""pyvicinity: multi-algorithm approximate nearest-neighbor search (Rust-backed).
+"""pyvicinity: HNSW approximate nearest-neighbor search.
 
 Python bindings for the ``vicinity`` Rust crate (crates.io). The PyPI
 distribution is named ``pyvicinity`` because the bare ``vicinity`` name
-is held on PyPI by an unrelated project.
+is held on PyPI by an unrelated project. The current Python API exposes HNSW;
+other vicinity algorithms are Rust-only for now.
 
 Quick start::
 

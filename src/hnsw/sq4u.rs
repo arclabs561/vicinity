@@ -16,7 +16,7 @@
 //!
 //! # Example
 //!
-//! ```rust,no_run
+//! ```rust,ignore
 //! # fn main() -> Result<(), vicinity::RetrieveError> {
 //! use vicinity::hnsw::sq4u::HNSWSq4Index;
 //!

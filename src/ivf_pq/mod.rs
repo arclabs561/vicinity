@@ -10,7 +10,7 @@
 //! # Feature Flag
 //!
 //! ```toml
-//! vicinity = { version = "0.8", features = ["ivf_pq"] }
+//! vicinity = { version = "0.10.5", features = ["ivf_pq"] }
 //! ```
 //!
 //! # Quick Start
@@ -23,14 +23,28 @@
 //!     num_codebooks: 8,     // M subvectors
 //!     codebook_size: 256,   // 8-bit codes
 //!     nprobe: 10,           // cells to search
+//!     seed: 42,             // deterministic training
+//!     ..Default::default()
 //! };
 //!
 //! let mut index = IVFPQIndex::new(128, params)?;
-//! index.train(&training_vectors)?;  // Need ~10k-100k samples
-//! index.add_batch(&database)?;
+//! for (doc_id, vector) in database.iter().enumerate() {
+//!     index.add_slice(doc_id as u32, vector)?;
+//! }
+//! index.build()?;  // trains centroids and PQ codebooks
 //!
 //! let results = index.search(&query, 10)?;
+//! let reranked = index.search_reranked(&query, 10, 200)?;
 //! ```
+//!
+//! `search()` returns approximate IVF-PQ distances and works after [`IVFPQIndex::compact`].
+//! `search_reranked()` retrieves a larger approximate candidate pool, then recomputes exact
+//! distances over retained f32 vectors. Use it when recall matters more than the extra memory
+//! needed to keep those raw vectors.
+//!
+//! `save_to_dir()` and `load_from_dir()` persist a built index as a manifest plus
+//! binary array files. Raw vectors are saved only when present; a compacted index
+//! reloads with approximate search available and reranked search unavailable.
 //!
 //! # Memory Calculation
 //!
@@ -98,6 +112,7 @@
 //! | nprobe | Recall | Search latency |
 //! | num_clusters | Search speed | Training time, accuracy at edges |
 //! | num_codebooks | Accuracy | Memory, training time |
+//! | search_reranked candidate pool | Recall | Search latency, raw-vector memory |
 //!
 //! # When to Use
 //!

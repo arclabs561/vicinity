@@ -66,6 +66,15 @@ jobs:
         run: cargo nextest run --lib --all-features
         env:
           RUSTFLAGS: ""
+      - name: Test (all-feature integration coverage)
+        run: >
+          cargo nextest run --all-features
+          --test prop_ann_universal
+          --test cross_algorithm_consistency
+          --test correctness_regression
+          --test recall_ground_truth
+        env:
+          RUSTFLAGS: ""
       # nextest does not support doctests yet (nextest-rs/nextest#16).
       - name: Doc tests
         run: cargo test --doc --no-default-features --features hnsw
@@ -74,6 +83,10 @@ jobs:
           for ex in 03_quick_benchmark sift_benchmark lid_demo; do
             cargo run --no-default-features --features hnsw --release --example "$ex"
           done
+          cargo run --no-default-features --features hnsw --release --example acorn_selectivity -- \
+            --n 500 --queries 50 --k 10 --neighbors 16 --json
+          cargo run --no-default-features --features hnsw,filtered_graph,range_filtered,curator --release --example acorn_selectivity -- \
+            --n 200 --queries 10 --k 5 --neighbors 12 --json
       - name: CLI smoke
         run: |
           printf '{"id":0,"vec":[1.0,0.0,0.0]}\n{"id":1,"vec":[0.0,1.0,0.0]}\n{"id":2,"vec":[0.7,0.7,0.0]}\n' > /tmp/v.jsonl
@@ -197,16 +210,19 @@ jobs:
   # Stubtest catches drift between the hand-written `_core.pyi` and the
   # compiled module the moment a Rust signature changes (voyager pattern).
   python:
-    name: Python (pyvicinity)
+    name: Python (pyvicinity / ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     needs: basics
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.13"]
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-python@v6.2.0
         with:
-          python-version: "3.13"
+          python-version: ${{ matrix.python-version }}
       # GH Actions runners don't have a venv, and maturin develop needs
       # one. Pin the venv via $VIRTUAL_ENV + $GITHUB_PATH so subsequent
       # steps inherit it. maturin develop is preferred over `maturin build
@@ -223,13 +239,17 @@ jobs:
       - name: Build extension (editable)
         run: maturin develop --release --features hnsw,python
       - name: Ruff
-        run: python -m ruff check pyvicinity tests/test_python.py
+        run: python -m ruff check pyvicinity tests/test_python.py examples/python
+      - name: Ruff format
+        run: python -m ruff format --check pyvicinity tests/test_python.py examples/python
       - name: mypy --strict
         run: python -m mypy --strict pyvicinity
       - name: Stubtest (.pyi vs compiled module)
         run: python -m mypy.stubtest pyvicinity._core
       - name: Pytest
         run: python -m pytest tests/test_python.py -v
+      - name: Python harness example
+        run: python examples/python/03_ann_benchmarks_harness.py
   # Documentation build
   docs:
     name: Docs
@@ -239,7 +259,10 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v6.2.0
+        with:
+          python-version: "3.10"
       - name: Build docs
-        run: cargo doc --no-default-features --features hnsw --no-deps
+        run: cargo doc --all-features --no-deps
         env:
           RUSTDOCFLAGS: -Dwarnings

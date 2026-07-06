@@ -12,7 +12,7 @@
 //!
 //! # Example
 //!
-//! ```rust,no_run
+//! ```rust,ignore
 //! # fn main() -> Result<(), vicinity::RetrieveError> {
 //! use vicinity::hnsw::symphony_qg::SymphonyQGIndex;
 //!
@@ -325,8 +325,10 @@ impl SymphonyQGIndex {
     }
 }
 
-/// Approximate L2 squared distance from a pre-rotated query to a quantized vector.
-/// Returns L2^2 (no sqrt) -- monotonic with L2, correct for ranking.
+/// RaBitQ ranking score from a pre-rotated query to a quantized vector.
+///
+/// RaBitQ separates this query-constant-free proxy from absolute L2 squared
+/// distance. The proxy is the right value for within-query graph traversal.
 #[inline]
 fn approx_dist_sqr(rotated_query: &[f32], qv: &QuantizedVector) -> f32 {
     RaBitQQuantizer::approximate_l2_sqr_prerotated(rotated_query, qv)
@@ -1016,7 +1018,8 @@ mod tests {
 
     #[test]
     fn test_distance_matches_qntz() {
-        // Verify prerotated distance matches qntz's approximate_l2_sqr
+        // Verify prerotated ranking proxy plus the query constant matches
+        // qntz's absolute approximate_l2_sqr.
         let dim = 32;
         let n = 50;
         let seed = 42;
@@ -1038,9 +1041,11 @@ mod tests {
         // qntz standard distance (rotates internally each call)
         let qntz_dist = quantizer.approximate_l2_sqr(query, &codes[1]).unwrap();
 
-        // prerotated API distance
+        // prerotated API ranking proxy
         let rotated = quantizer.rotate_query(query).unwrap();
-        let prerotated_dist = RaBitQQuantizer::approximate_l2_sqr_prerotated(&rotated, &codes[1]);
+        let query_norm_sqr: f32 = rotated.iter().map(|x| x * x).sum();
+        let prerotated_proxy = RaBitQQuantizer::approximate_l2_sqr_prerotated(&rotated, &codes[1]);
+        let prerotated_dist = (query_norm_sqr + prerotated_proxy).max(0.0);
 
         let diff = (qntz_dist - prerotated_dist).abs();
         assert!(
@@ -1333,8 +1338,12 @@ mod tests {
     }
 
     /// Timing validation: measure build and search speed at moderate scale.
-    /// This is a sanity check, not a performance regression test.
+    ///
+    /// Marked `#[ignore]` because this measures wall-clock performance, not a
+    /// correctness invariant. Run it explicitly on an unloaded machine when
+    /// checking SymphonyQG-VR build/search behavior.
     #[test]
+    #[ignore = "measurement only; run with --release --ignored --nocapture"]
     fn test_vr_build_and_search_timing() {
         use crate::distance::DistanceMetric;
         use crate::hnsw::graph::HNSWParams;

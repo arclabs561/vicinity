@@ -9,6 +9,7 @@
 
 # Python venv
 .venv/
+/uv.lock
 
 # Generated plots / reports
 /docs/plots/index.html

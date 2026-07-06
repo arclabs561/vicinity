@@ -20,23 +20,30 @@
 //!
 //! - Dasgupta & Freund (2008): "Random projection trees and low dimensional manifolds"
 
+use crate::classic::trees::persistence::{read_json, validate_vector_shape, write_json_atomic};
 use crate::simd;
 use crate::RetrieveError;
+use serde::{Deserialize, Serialize};
+use std::path::Path;
+
+const RPTREE_FORMAT_VERSION: u32 = 1;
 
 /// Random Projection Tree index.
 ///
 /// Single tree using random hyperplanes for space partitioning.
+#[derive(Deserialize, Serialize)]
 pub struct RPTreeIndex {
     pub(crate) vectors: Vec<f32>,
     pub(crate) dimension: usize,
     pub(crate) num_vectors: usize,
+    doc_ids: Vec<u32>,
     params: RPTreeParams,
     built: bool,
     root: Option<RPNode>,
 }
 
 /// Random Projection Tree parameters.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RPTreeParams {
     /// Maximum leaf size
     pub max_leaf_size: usize,
@@ -55,6 +62,7 @@ impl Default for RPTreeParams {
 }
 
 /// Random Projection Tree node.
+#[derive(Clone, Deserialize, Serialize)]
 enum RPNode {
     /// Internal node: splits with random hyperplane
     Internal {
@@ -65,6 +73,12 @@ enum RPNode {
     },
     /// Leaf node: contains vector indices
     Leaf { indices: Vec<u32> },
+}
+
+#[derive(Deserialize, Serialize)]
+struct RPTreeSnapshot {
+    version: u32,
+    index: RPTreeIndex,
 }
 
 impl RPTreeIndex {
@@ -80,6 +94,7 @@ impl RPTreeIndex {
             vectors: Vec::new(),
             dimension,
             num_vectors: 0,
+            doc_ids: Vec::new(),
             params,
             built: false,
             root: None,
@@ -87,7 +102,7 @@ impl RPTreeIndex {
     }
 
     /// Add a vector to the index.
-    pub fn add(&mut self, _doc_id: u32, embedding: Vec<f32>) -> Result<(), RetrieveError> {
+    pub fn add(&mut self, doc_id: u32, embedding: Vec<f32>) -> Result<(), RetrieveError> {
         if embedding.len() != self.dimension {
             return Err(RetrieveError::InvalidParameter(format!(
                 "Embedding dimension {} != {}",
@@ -103,6 +118,7 @@ impl RPTreeIndex {
         }
 
         self.vectors.extend_from_slice(&embedding);
+        self.doc_ids.push(doc_id);
         self.num_vectors += 1;
         Ok(())
     }
@@ -122,6 +138,61 @@ impl RPTreeIndex {
 
         self.built = true;
         Ok(())
+    }
+
+    /// Save a built random-projection tree index to a directory.
+    pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<(), RetrieveError> {
+        if !self.built {
+            return Err(RetrieveError::InvalidParameter(
+                "cannot save unbuilt random-projection tree index".into(),
+            ));
+        }
+        let output_dir = output_dir.as_ref();
+        std::fs::create_dir_all(output_dir)?;
+        write_json_atomic(
+            &output_dir.join("index.json"),
+            &RPTreeSnapshot {
+                version: RPTREE_FORMAT_VERSION,
+                index: self.clone_for_snapshot(),
+            },
+        )
+    }
+
+    /// Load a random-projection tree index saved by [`Self::save_to_dir`].
+    pub fn load_from_dir(input_dir: impl AsRef<Path>) -> Result<Self, RetrieveError> {
+        let snapshot: RPTreeSnapshot = read_json(&input_dir.as_ref().join("index.json"))?;
+        if snapshot.version != RPTREE_FORMAT_VERSION {
+            return Err(RetrieveError::FormatError(format!(
+                "unsupported random-projection tree format version {}",
+                snapshot.version
+            )));
+        }
+        let index = snapshot.index;
+        validate_vector_shape(
+            "random-projection tree",
+            index.dimension,
+            index.num_vectors,
+            &index.vectors,
+            &index.doc_ids,
+        )?;
+        if !index.built || index.root.is_none() {
+            return Err(RetrieveError::FormatError(
+                "random-projection tree snapshot is not built".into(),
+            ));
+        }
+        Ok(index)
+    }
+
+    fn clone_for_snapshot(&self) -> Self {
+        Self {
+            vectors: self.vectors.clone(),
+            dimension: self.dimension,
+            num_vectors: self.num_vectors,
+            doc_ids: self.doc_ids.clone(),
+            params: self.params.clone(),
+            built: self.built,
+            root: self.root.clone(),
+        }
     }
 
     /// Build tree recursively.
@@ -236,11 +307,11 @@ impl RPTreeIndex {
             .map(|&idx| {
                 let vec = self.get_vector(idx as usize);
                 let dist = crate::distance::cosine_distance_normalized(query, vec);
-                (idx, dist)
+                (self.doc_ids[idx as usize], dist)
             })
             .collect();
 
-        results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+        results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
         results.truncate(k);
 
         Ok(results)
@@ -284,5 +355,43 @@ impl RPTreeIndex {
         let start = idx * self.dimension;
         let end = start + self.dimension;
         &self.vectors[start..end]
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    fn build_index() -> RPTreeIndex {
+        let mut index = RPTreeIndex::new(4, RPTreeParams::default()).unwrap();
+        for i in 0..32u32 {
+            let mut v = vec![0.0f32; 4];
+            v[(i as usize) % 4] = 1.0;
+            index.add(4000 + i, v).unwrap();
+        }
+        index.build().unwrap();
+        index
+    }
+
+    #[test]
+    fn search_returns_external_doc_ids() {
+        let index = build_index();
+        let results = index.search(&[1.0, 0.0, 0.0, 0.0], 6).unwrap();
+        assert!(!results.is_empty());
+        assert!(results.iter().all(|(id, _)| *id >= 4000));
+    }
+
+    #[test]
+    fn save_load_roundtrip_preserves_sampled_tree() {
+        let index = build_index();
+        let dir = tempfile::tempdir().unwrap();
+        index.save_to_dir(dir.path()).unwrap();
+        let loaded = RPTreeIndex::load_from_dir(dir.path()).unwrap();
+        let query = [1.0, 0.0, 0.0, 0.0];
+        assert_eq!(
+            index.search(&query, 8).unwrap(),
+            loaded.search(&query, 8).unwrap()
+        );
     }
 }

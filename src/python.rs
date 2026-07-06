@@ -52,16 +52,18 @@ impl From<RustMetric> for PyDistanceMetric {
 
 /// HNSW index for approximate nearest-neighbor search.
 ///
-/// Example::
+/// Example:
 ///
-///     import numpy as np
-///     from pyvicinity import HNSWIndex, DistanceMetric
+/// ```python
+/// import numpy as np
+/// from pyvicinity import HNSWIndex, DistanceMetric
 ///
-///     index = HNSWIndex(dim=128, metric=DistanceMetric.Cosine, auto_normalize=True)
-///     vectors = np.random.randn(10000, 128).astype(np.float32)
-///     index.add_items(vectors)
-///     index.build()
-///     ids, dists = index.search(vectors[0], k=10, ef=50)
+/// index = HNSWIndex(dim=128, metric=DistanceMetric.Cosine, auto_normalize=True)
+/// vectors = np.random.randn(10000, 128).astype(np.float32)
+/// index.add_items(vectors)
+/// index.build()
+/// ids, dists = index.search(vectors[0], k=10, ef=50)
+/// ```
 #[pyclass(name = "HNSWIndex", module = "pyvicinity")]
 pub struct PyHNSWIndex {
     inner: RustHNSW,

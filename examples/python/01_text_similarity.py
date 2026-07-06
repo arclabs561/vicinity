@@ -1,5 +1,5 @@
 # /// script
-# requires-python = ">=3.9"
+# requires-python = ">=3.10"
 # dependencies = [
 #   "pyvicinity",
 #   "numpy",
@@ -81,10 +81,12 @@ def main() -> None:
     ]
     query_vecs = model.encode(queries, convert_to_numpy=True).astype(np.float32)
 
-    for q, qv in zip(queries, query_vecs):
+    for q, qv in zip(queries, query_vecs, strict=True):
         print(f"\n>> {q}")
         ids, dists = index.search(qv, k=3)
-        for rank, (i, d) in enumerate(zip(ids.tolist(), dists.tolist()), 1):
+        for rank, (i, d) in enumerate(
+            zip(ids.tolist(), dists.tolist(), strict=True), 1
+        ):
             print(f"  {rank}. ({d:+.3f}) {CORPUS[i]}")
 
 

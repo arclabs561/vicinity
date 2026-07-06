@@ -1,8 +1,59 @@
 # Benchmark Results
 
-Machine: Apple Silicon (M-series), single-threaded, `--release`.
-SIMD: `innr` (pure Rust SIMD, default feature).
-QPS: sequential single-query throughput (queries / wall-clock seconds). 50-query warmup.
+Historical benchmark tables for standard ANN datasets.
+
+Current benchmark runs should use `examples/ann_benchmark.rs`, which writes one
+`_meta` JSON line with the dataset, metric, actual `rustc --version`, MSRV, and
+crate version, followed by one JSON line per measurement with build time, RSS,
+storage mode, cache state, and p50/p95/p99 latency. Use `--resume` to skip
+completed rows and `--fresh` to recreate the result file.
+
+QPS below is sequential single-query throughput (queries / wall-clock seconds)
+from older single-run `--release` measurements on Apple Silicon. The exact CPU
+model, thread count, frequency, and thermal state were not recorded for these
+older rows, so treat absolute QPS as historical context. Re-run the harness on
+your target machine before comparing against external papers.
+
+Recommended current commands:
+
+```bash
+# Full single-query curve with latency tails.
+cargo run --example ann_benchmark --release --features hnsw,ivf_pq,ivf_avq -- \
+  data/ann-benchmarks/glove-25-angular \
+  --algo hnsw --algo ivfpq --algo ivf_avq --json --fresh
+
+# HNSW single-query plus parallel-query throughput.
+RAYON_NUM_THREADS=4 cargo run --example ann_benchmark --release --features hnsw,parallel -- \
+  data/ann-benchmarks/glove-25-angular --algo hnsw --batch --json --fresh
+
+# IVF-PQ with exact reranking pools.
+cargo run --example ann_benchmark --release --features ivf_pq,hnsw -- \
+  data/ann-benchmarks/glove-25-angular --algo ivfpq \
+  --pq-codebooks 5 --pq-codebook-size 16 --pq-rerank-pools 100,500 --json --fresh
+
+# DiskANN in-memory graph search plus file and mmap search from the same build.
+cargo run --example ann_benchmark --release --features hnsw,diskann -- \
+  data/ann-benchmarks/glove-25-angular --algo diskann --json --fresh
+
+# Classic tree baselines. These are comparison rows, not optimization targets.
+cargo run --example ann_benchmark --release --features kdtree,balltree,rptree,kmeans_tree -- \
+  data/ann-benchmarks/glove-25-angular \
+  --algo kdtree --algo balltree --algo rptree --algo rp_forest --algo kmeans_tree --json --fresh
+
+# FreshGraph delete/insert churn, scored against a live active-set oracle.
+cargo run --example ann_benchmark --release --features hnsw,fresh_graph -- \
+  data/ann-benchmarks/glove-25-angular --algo fresh_graph_churn --json --fresh
+```
+
+These commands intentionally separate low-recall, high-throughput operating
+points from high-recall runs. External comparisons should use a recall/QPS
+curve, not only the `Recall@10 = 100%` row.
+
+Persistence and storage-mode benchmark rows follow `docs/persistence.md`.
+Methods with both in-memory and file-backed search should report separate
+`storage_mode=in_memory`, `storage_mode=file`, and, when implemented,
+`storage_mode=mmap` rows. File and mmap rows should also report `load_time_s`
+and `index_bytes` when the runner opens a saved index.
 
 ## GloVe-25 (1.18M vectors, 25-d, angular distance)
 

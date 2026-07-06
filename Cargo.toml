@@ -33,11 +33,11 @@ thiserror = "2.0"
 # by disabling libpython linking for test binaries on macOS.
 # Maturin sets `PYO3_BUILD_EXTENSION_MODULE=1` when building wheels.
 #
-# `abi3-py39` builds a stable-ABI wheel that works on CPython 3.9+, so one
+# `abi3-py310` builds a stable-ABI wheel that works on CPython 3.10+, so one
 # wheel per platform/arch covers every supported Python version. Caveat:
 # abi3 wheels are not compatible with free-threaded CPython (3.13t+); revisit
 # if/when free-threaded support is requested.
-pyo3 = { version = "0.27.2", optional = true, features = ["abi3-py39"] }
+pyo3 = { version = "0.27.2", optional = true, features = ["abi3-py310"] }
 numpy = { version = "0.27.0", optional = true }
 
 # SIMD primitives (ecosystem crate)
@@ -64,7 +64,7 @@ rmt = { version = "0.1.3", optional = true }
 sketchir = { version = "0.3.1", optional = true }
 
 # Vector quantization primitives (extracted from `vicinity`)
-qntz = { package = "qntz", version = "0.1.8", optional = true, features = [
+qntz = { package = "qntz", version = "0.2.1", optional = true, features = [
   "simd",
 ] }
 
@@ -74,7 +74,7 @@ postcard = { version = "1.0", optional = true, features = [
   "alloc",
   "use-std",
 ] }
-durability = { version = "0.6.1", optional = true }
+durability = { version = "0.6.1", optional = true, features = ["mmap"] }
 segstore = { version = "0.4.1", optional = true }
 
 
@@ -100,13 +100,13 @@ ivf_pq = [
   "dep:serde_json",
   "smallvec/serde",
 ]
-diskann = ["dep:serde_json"]
-ivf_avq = ["dep:clump"]
+diskann = ["dep:serde_json", "dep:durability"]
+ivf_avq = ["dep:clump", "dep:serde", "dep:serde_json"]
 sng = []
-fresh_graph = []
-curator = []
+fresh_graph = ["dep:serde", "dep:serde_json"]
+curator = ["dep:serde", "dep:serde_json"]
 emg = []
-range_filtered = ["hnsw"]
+range_filtered = ["hnsw", "dep:serde", "dep:serde_json"]
 pipnn = []
 vamana = ["hnsw"]
 quantization = ["qntz"]
@@ -119,7 +119,7 @@ python = ["dep:pyo3", "dep:numpy", "hnsw"]
 # These are currently mostly organizational toggles.
 nsg = []
 finger = []
-filtered_graph = []
+filtered_graph = ["dep:serde", "dep:serde_json", "smallvec/serde"]
 rp_quant = []
 sparse_mips = []
 lsh = ["dep:sketchir"]
@@ -127,17 +127,17 @@ nsw = []
 sq4 = []
 sq8 = []
 lemur = []
-kdtree = []
-balltree = []
-kmeans_tree = []
-rptree = []
+kdtree = ["dep:serde", "dep:serde_json"]
+balltree = ["dep:serde", "dep:serde_json"]
+kmeans_tree = ["dep:serde", "dep:serde_json"]
+rptree = ["dep:serde", "dep:serde_json"]
 rmt-spectral = ["dep:rmt"]
 evoc = ["dep:clump"]
 
 id-compression = ["dep:cnk", "cnk/sbits", "cnk/ans"]
 # Quantization sub-features (kept separate so callers can be explicit)
 rabitq = ["qntz", "qntz/rabitq"]
-ivf_rabitq = ["rabitq", "dep:clump", "hnsw"]
+ivf_rabitq = ["rabitq", "dep:clump", "dep:serde", "dep:serde_json", "hnsw"]
 saq = ["qntz", "qntz/ternary"]
 # Re-exported quantizers (from `qntz`)
 qntz = ["dep:qntz"]
@@ -251,6 +251,11 @@ path = "examples/ann_benchmark.rs"
 required-features = ["hnsw"]
 
 [[example]]
+name = "acorn_selectivity"
+path = "examples/acorn_selectivity.rs"
+required-features = ["hnsw"]
+
+[[example]]
 name = "hybrid_search"
 path = "examples/hybrid_search.rs"
 required-features = ["hnsw"]
@@ -294,6 +299,10 @@ harness = false
 
 [[bench]]
 name = "distance"
+harness = false
+
+[[bench]]
+name = "pq_simd"
 harness = false
 
 [[bench]]

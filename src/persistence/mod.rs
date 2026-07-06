@@ -29,6 +29,9 @@
 //! The simple JSON path makes the same error-not-panic promise: corrupt or
 //! truncated JSON fails `load_from_reader` with a typed error, and structural
 //! invariants are validated before the index is usable.
+//!
+//! See `docs/persistence.md` for the repo-level storage-mode contract across
+//! HNSW, DiskANN, IVF, and streaming index families.
 
 pub mod directory;
 pub mod error;

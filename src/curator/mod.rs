@@ -9,7 +9,7 @@
 //! # Feature Flag
 //!
 //! ```toml
-//! vicinity = { version = "0.8", features = ["curator"] }
+//! vicinity = { version = "0.10.5", features = ["curator"] }
 //! ```
 //!
 //! # Quick Start
@@ -48,7 +48,12 @@
 use crate::distance::cosine_distance_normalized;
 use crate::distance::FloatOrd;
 use crate::RetrieveError;
+use serde::{Deserialize, Serialize};
 use std::collections::{BinaryHeap, HashMap};
+use std::io::{BufReader, BufWriter, Write};
+use std::path::Path;
+
+const CURATOR_FORMAT_VERSION: u32 = 1;
 
 /// Curator parameters.
 #[derive(Clone, Debug)]
@@ -61,6 +66,44 @@ pub struct CuratorParams {
     pub ef_search: usize,
     /// Beam width for tree descent initialization. Default: 4.
     pub beam_width: usize,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct PersistedCuratorParams {
+    branching_factor: usize,
+    max_leaf_size: usize,
+    ef_search: usize,
+    beam_width: usize,
+}
+
+impl From<&CuratorParams> for PersistedCuratorParams {
+    fn from(params: &CuratorParams) -> Self {
+        Self {
+            branching_factor: params.branching_factor,
+            max_leaf_size: params.max_leaf_size,
+            ef_search: params.ef_search,
+            beam_width: params.beam_width,
+        }
+    }
+}
+
+impl PersistedCuratorParams {
+    fn into_params(self) -> CuratorParams {
+        CuratorParams {
+            branching_factor: self.branching_factor,
+            max_leaf_size: self.max_leaf_size,
+            ef_search: self.ef_search,
+            beam_width: self.beam_width,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct CuratorManifest {
+    version: u32,
+    dimension: usize,
+    num_vectors: usize,
+    params: PersistedCuratorParams,
 }
 
 impl Default for CuratorParams {
@@ -220,6 +263,85 @@ impl CuratorIndex {
 
         self.built = true;
         Ok(())
+    }
+
+    /// Save a built Curator index to a directory.
+    pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<(), RetrieveError> {
+        if !self.built {
+            return Err(RetrieveError::InvalidParameter(
+                "cannot save unbuilt curator index".into(),
+            ));
+        }
+        if self.staging_labels.len() != self.num_vectors {
+            return Err(RetrieveError::InvalidParameter(
+                "curator labels are unavailable for persistence".into(),
+            ));
+        }
+
+        let output_dir = output_dir.as_ref();
+        std::fs::create_dir_all(output_dir)?;
+        let manifest = CuratorManifest {
+            version: CURATOR_FORMAT_VERSION,
+            dimension: self.dimension,
+            num_vectors: self.num_vectors,
+            params: PersistedCuratorParams::from(&self.params),
+        };
+
+        write_json_atomic(&output_dir.join("manifest.json"), &manifest)?;
+        write_json_atomic(&output_dir.join("labels.json"), &self.staging_labels)?;
+        write_f32_atomic(&output_dir.join("vectors.bin"), &self.vectors)?;
+        write_u32_atomic(&output_dir.join("doc_ids.bin"), &self.doc_ids)?;
+        Ok(())
+    }
+
+    /// Load a Curator index saved by [`Self::save_to_dir`].
+    pub fn load_from_dir(input_dir: impl AsRef<Path>) -> Result<Self, RetrieveError> {
+        let input_dir = input_dir.as_ref();
+        let manifest: CuratorManifest = read_json(&input_dir.join("manifest.json"))?;
+        if manifest.version != CURATOR_FORMAT_VERSION {
+            return Err(RetrieveError::FormatError(format!(
+                "unsupported curator format version {}",
+                manifest.version
+            )));
+        }
+        if manifest.dimension == 0 {
+            return Err(RetrieveError::FormatError(
+                "curator manifest has zero dimension".into(),
+            ));
+        }
+        if manifest.num_vectors == 0 {
+            return Err(RetrieveError::FormatError(
+                "curator manifest has zero vectors".into(),
+            ));
+        }
+
+        let vectors = read_f32_exact(
+            &input_dir.join("vectors.bin"),
+            manifest.num_vectors * manifest.dimension,
+        )?;
+        let doc_ids = read_u32_exact(&input_dir.join("doc_ids.bin"), manifest.num_vectors)?;
+        let labels: Vec<Vec<String>> = read_json(&input_dir.join("labels.json"))?;
+        if labels.len() != manifest.num_vectors {
+            return Err(RetrieveError::FormatError(format!(
+                "curator labels count {} does not match vector count {}",
+                labels.len(),
+                manifest.num_vectors
+            )));
+        }
+
+        let mut index = Self {
+            dimension: manifest.dimension,
+            params: manifest.params.into_params(),
+            built: false,
+            vectors,
+            num_vectors: manifest.num_vectors,
+            doc_ids,
+            staging_labels: labels,
+            nodes: Vec::new(),
+            root: 0,
+        };
+        index.build()?;
+        Ok(index)
     }
 
     /// Search with a label filter.
@@ -632,6 +754,90 @@ fn hash_label(label: &str) -> u64 {
     hash
 }
 
+fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), RetrieveError> {
+    write_atomic(path, |writer| {
+        serde_json::to_writer_pretty(writer, value)
+            .map_err(|e| std::io::Error::other(e.to_string()))
+    })
+}
+
+fn write_f32_atomic(path: &Path, values: &[f32]) -> Result<(), RetrieveError> {
+    write_atomic(path, |writer| {
+        for value in values {
+            writer.write_all(&value.to_le_bytes())?;
+        }
+        Ok(())
+    })
+}
+
+fn write_u32_atomic(path: &Path, values: &[u32]) -> Result<(), RetrieveError> {
+    write_atomic(path, |writer| {
+        for value in values {
+            writer.write_all(&value.to_le_bytes())?;
+        }
+        Ok(())
+    })
+}
+
+fn write_atomic(
+    path: &Path,
+    write: impl FnOnce(&mut BufWriter<std::fs::File>) -> std::io::Result<()>,
+) -> Result<(), RetrieveError> {
+    let tmp_path = path.with_extension("tmp");
+    {
+        let file = std::fs::File::create(&tmp_path)?;
+        let mut writer = BufWriter::new(file);
+        write(&mut writer)?;
+        writer.flush()?;
+    }
+    std::fs::rename(&tmp_path, path)?;
+    Ok(())
+}
+
+fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, RetrieveError> {
+    let file = std::fs::File::open(path)?;
+    serde_json::from_reader(BufReader::new(file))
+        .map_err(|e| RetrieveError::FormatError(e.to_string()))
+}
+
+fn read_f32_exact(path: &Path, expected_len: usize) -> Result<Vec<f32>, RetrieveError> {
+    let bytes = std::fs::read(path)?;
+    let expected_bytes = expected_len
+        .checked_mul(std::mem::size_of::<f32>())
+        .ok_or_else(|| RetrieveError::FormatError("curator f32 byte length overflow".into()))?;
+    if bytes.len() != expected_bytes {
+        return Err(RetrieveError::FormatError(format!(
+            "{} size mismatch: expected {} bytes, got {}",
+            path.display(),
+            expected_bytes,
+            bytes.len()
+        )));
+    }
+    Ok(bytes
+        .chunks_exact(4)
+        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        .collect())
+}
+
+fn read_u32_exact(path: &Path, expected_len: usize) -> Result<Vec<u32>, RetrieveError> {
+    let bytes = std::fs::read(path)?;
+    let expected_bytes = expected_len
+        .checked_mul(std::mem::size_of::<u32>())
+        .ok_or_else(|| RetrieveError::FormatError("curator u32 byte length overflow".into()))?;
+    if bytes.len() != expected_bytes {
+        return Err(RetrieveError::FormatError(format!(
+            "{} size mismatch: expected {} bytes, got {}",
+            path.display(),
+            expected_bytes,
+            bytes.len()
+        )));
+    }
+    Ok(bytes
+        .chunks_exact(4)
+        .map(|chunk| u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        .collect())
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -760,6 +966,94 @@ mod tests {
         assert!(!results.is_empty());
         for (doc_id, _) in &results {
             assert!(*doc_id < 5, "expected rare doc_id < 5, got {}", doc_id);
+        }
+    }
+
+    #[test]
+    fn save_load_roundtrip_preserves_filtered_search() {
+        let dim = 16;
+        let mut index = CuratorIndex::new(
+            dim,
+            CuratorParams {
+                max_leaf_size: 16,
+                ef_search: 128,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        for i in 0..64u32 {
+            let mut labels = vec![if i % 2 == 0 { "even" } else { "odd" }.to_string()];
+            if i < 8 {
+                labels.push("rare".to_string());
+            }
+            index.add(i, make_vector(dim, i), labels).unwrap();
+        }
+        index.build().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        index.save_to_dir(dir.path()).unwrap();
+        let loaded = CuratorIndex::load_from_dir(dir.path()).unwrap();
+
+        let query = make_vector(dim, 2);
+        assert_eq!(
+            index.search_filtered(&query, 5, "rare").unwrap(),
+            loaded.search_filtered(&query, 5, "rare").unwrap()
+        );
+        assert_eq!(
+            index.search(&query, 5).unwrap(),
+            loaded.search(&query, 5).unwrap()
+        );
+    }
+
+    #[test]
+    fn load_rejects_future_manifest_version() {
+        let dim = 8;
+        let mut index = CuratorIndex::new(dim, CuratorParams::default()).unwrap();
+        for i in 0..16u32 {
+            index
+                .add(i, make_vector(dim, i), vec!["label".to_string()])
+                .unwrap();
+        }
+        index.build().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        index.save_to_dir(dir.path()).unwrap();
+        let manifest_path = dir.path().join("manifest.json");
+        let mut manifest: CuratorManifest = read_json(&manifest_path).unwrap();
+        manifest.version = CURATOR_FORMAT_VERSION + 1;
+        write_json_atomic(&manifest_path, &manifest).unwrap();
+
+        match CuratorIndex::load_from_dir(dir.path()) {
+            Err(RetrieveError::FormatError(message)) => {
+                assert!(message.contains("unsupported curator format version"));
+            }
+            Err(err) => panic!("expected format error, got {err:?}"),
+            Ok(_) => panic!("expected format error, got successful load"),
+        }
+    }
+
+    #[test]
+    fn load_rejects_truncated_vectors() {
+        let dim = 8;
+        let mut index = CuratorIndex::new(dim, CuratorParams::default()).unwrap();
+        for i in 0..16u32 {
+            index
+                .add(i, make_vector(dim, i), vec!["label".to_string()])
+                .unwrap();
+        }
+        index.build().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        index.save_to_dir(dir.path()).unwrap();
+        std::fs::write(dir.path().join("vectors.bin"), [1u8, 2, 3]).unwrap();
+
+        match CuratorIndex::load_from_dir(dir.path()) {
+            Err(RetrieveError::FormatError(message)) => {
+                assert!(message.contains("vectors.bin size mismatch"));
+            }
+            Err(err) => panic!("expected format error, got {err:?}"),
+            Ok(_) => panic!("expected format error, got successful load"),
         }
     }
 

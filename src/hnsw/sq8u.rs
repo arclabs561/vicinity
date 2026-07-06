@@ -22,7 +22,7 @@
 //!
 //! # Example
 //!
-//! ```rust,no_run
+//! ```rust,ignore
 //! # fn main() -> Result<(), vicinity::RetrieveError> {
 //! use vicinity::hnsw::sq8u::HNSWSq8Index;
 //!

@@ -51,6 +51,15 @@ impl ProductQuantizer {
 
     /// Train quantizer on vectors.
     pub fn fit(&mut self, vectors: &[f32], num_vectors: usize) -> Result<(), RetrieveError> {
+        self.fit_with_seed(vectors, num_vectors, None)
+    }
+
+    pub(crate) fn fit_with_seed(
+        &mut self,
+        vectors: &[f32],
+        num_vectors: usize,
+        seed: Option<u64>,
+    ) -> Result<(), RetrieveError> {
         let mut flat_codebooks =
             Vec::with_capacity(self.num_codebooks * self.codebook_size * self.subvector_dim);
         let mut actual_codebook_size = self.codebook_size;
@@ -71,6 +80,9 @@ impl ProductQuantizer {
             // cosine k-means would normalize codewords to unit vectors and
             // break the L2 ADC approximation.
             let mut kmeans = KMeansEuclidean::new(self.subvector_dim, self.codebook_size)?;
+            if let Some(seed) = seed {
+                kmeans = kmeans.with_seed(seed.wrapping_add(codebook_idx as u64));
+            }
             kmeans.fit(&flat, num_vectors)?;
 
             let centroids = kmeans.centroids();

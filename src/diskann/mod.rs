@@ -9,7 +9,7 @@
 //! # Feature Flag
 //!
 //! ```toml
-//! vicinity = { version = "0.8", features = ["diskann"] }
+//! vicinity = { version = "0.10.5", features = ["diskann"] }
 //! ```
 //!
 //! # Status: Experimental
@@ -46,6 +46,10 @@
 //! HNSW/NSW require all data in memory. DiskANN keeps vectors on SSD.
 //!
 //! # How It Works
+//!
+//! Current code searches separate fixed-record graph and vector files with
+//! ordinary `seek`/`read_exact` I/O. The co-located page layout below is the
+//! design target for the next DiskANN performance pass, not the current layout.
 //!
 //! ```text
 //! Memory:  [Cache: ~1% hot nodes] + [Beam search state]

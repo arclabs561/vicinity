@@ -10,7 +10,7 @@
 //! # Feature Flag
 //!
 //! ```toml
-//! vicinity = { version = "0.8", features = ["fresh_graph"] }
+//! vicinity = { version = "0.10.5", features = ["fresh_graph"] }
 //! ```
 //!
 //! # Quick Start
@@ -57,8 +57,14 @@
 
 use crate::distance::cosine_distance_normalized;
 use crate::RetrieveError;
+use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 use std::collections::BinaryHeap;
+use std::io::{BufReader, BufWriter, Read, Write};
+use std::path::Path;
+
+const FRESH_GRAPH_FORMAT_VERSION: u32 = 1;
+const FRESH_GRAPH_NEIGHBORS_MAGIC: &[u8; 8] = b"FRESHNBR";
 
 /// FreshGraph construction and search parameters.
 #[derive(Clone, Debug)]
@@ -71,6 +77,46 @@ pub struct FreshGraphParams {
     pub ef_search: usize,
     /// RNG relaxation factor (alpha >= 1.0). Higher = denser graph. Default: 1.2.
     pub alpha: f32,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct PersistedFreshGraphParams {
+    max_degree: usize,
+    ef_construction: usize,
+    ef_search: usize,
+    alpha: f32,
+}
+
+impl From<&FreshGraphParams> for PersistedFreshGraphParams {
+    fn from(params: &FreshGraphParams) -> Self {
+        Self {
+            max_degree: params.max_degree,
+            ef_construction: params.ef_construction,
+            ef_search: params.ef_search,
+            alpha: params.alpha,
+        }
+    }
+}
+
+impl PersistedFreshGraphParams {
+    fn into_params(self) -> FreshGraphParams {
+        FreshGraphParams {
+            max_degree: self.max_degree,
+            ef_construction: self.ef_construction,
+            ef_search: self.ef_search,
+            alpha: self.alpha,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct FreshGraphManifest {
+    version: u32,
+    dimension: usize,
+    num_vectors: usize,
+    num_deleted: usize,
+    entry_point: u32,
+    params: PersistedFreshGraphParams,
 }
 
 impl Default for FreshGraphParams {
@@ -266,6 +312,105 @@ impl FreshGraphIndex {
 
         self.built = true;
         Ok(())
+    }
+
+    /// Save a built FreshGraph snapshot to a directory.
+    ///
+    /// This persists the current graph state, including post-build inserts and
+    /// tombstones. It is a snapshot format, not a write-ahead log.
+    pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<(), RetrieveError> {
+        if !self.built {
+            return Err(RetrieveError::InvalidParameter(
+                "cannot save unbuilt fresh graph index".into(),
+            ));
+        }
+        if self.doc_ids.len() != self.num_vectors
+            || self.deleted.len() != self.num_vectors
+            || self.inbound_count.len() != self.num_vectors
+            || self.neighbors.len() != self.num_vectors
+        {
+            return Err(RetrieveError::InvalidParameter(
+                "fresh graph internal arrays are not aligned".into(),
+            ));
+        }
+
+        let output_dir = output_dir.as_ref();
+        std::fs::create_dir_all(output_dir)?;
+        let manifest = FreshGraphManifest {
+            version: FRESH_GRAPH_FORMAT_VERSION,
+            dimension: self.dimension,
+            num_vectors: self.num_vectors,
+            num_deleted: self.num_deleted,
+            entry_point: self.entry_point,
+            params: PersistedFreshGraphParams::from(&self.params),
+        };
+
+        write_json_atomic(&output_dir.join("manifest.json"), &manifest)?;
+        write_f32_atomic(&output_dir.join("vectors.bin"), &self.vectors)?;
+        write_u32_atomic(&output_dir.join("doc_ids.bin"), &self.doc_ids)?;
+        write_u32_atomic(&output_dir.join("inbound_count.bin"), &self.inbound_count)?;
+        write_bool_atomic(&output_dir.join("deleted.bin"), &self.deleted)?;
+        write_neighbors_atomic(&output_dir.join("neighbors.bin"), &self.neighbors)?;
+        Ok(())
+    }
+
+    /// Load a FreshGraph snapshot saved by [`Self::save_to_dir`].
+    pub fn load_from_dir(input_dir: impl AsRef<Path>) -> Result<Self, RetrieveError> {
+        let input_dir = input_dir.as_ref();
+        let manifest: FreshGraphManifest = read_json(&input_dir.join("manifest.json"))?;
+        if manifest.version != FRESH_GRAPH_FORMAT_VERSION {
+            return Err(RetrieveError::FormatError(format!(
+                "unsupported fresh graph format version {}",
+                manifest.version
+            )));
+        }
+        if manifest.dimension == 0 {
+            return Err(RetrieveError::FormatError(
+                "fresh graph manifest has zero dimension".into(),
+            ));
+        }
+        if manifest.num_vectors == 0 {
+            return Err(RetrieveError::FormatError(
+                "fresh graph manifest has zero vectors".into(),
+            ));
+        }
+        if manifest.entry_point as usize >= manifest.num_vectors {
+            return Err(RetrieveError::FormatError(format!(
+                "fresh graph entry point {} exceeds vector count {}",
+                manifest.entry_point, manifest.num_vectors
+            )));
+        }
+
+        let vectors = read_f32_exact(
+            &input_dir.join("vectors.bin"),
+            manifest.num_vectors * manifest.dimension,
+        )?;
+        let doc_ids = read_u32_exact(&input_dir.join("doc_ids.bin"), manifest.num_vectors)?;
+        let inbound_count =
+            read_u32_exact(&input_dir.join("inbound_count.bin"), manifest.num_vectors)?;
+        let deleted = read_bool_exact(&input_dir.join("deleted.bin"), manifest.num_vectors)?;
+        let neighbors = read_neighbors(&input_dir.join("neighbors.bin"), manifest.num_vectors)?;
+        let deleted_count = deleted.iter().filter(|&&is_deleted| is_deleted).count();
+        if deleted_count != manifest.num_deleted {
+            return Err(RetrieveError::FormatError(format!(
+                "fresh graph deleted count {} does not match manifest count {}",
+                deleted_count, manifest.num_deleted
+            )));
+        }
+
+        Ok(Self {
+            dimension: manifest.dimension,
+            params: manifest.params.into_params(),
+            vectors,
+            num_vectors: manifest.num_vectors,
+            doc_ids,
+            neighbors,
+            inbound_count,
+            deleted,
+            num_deleted: manifest.num_deleted,
+            entry_point: manifest.entry_point,
+            built: true,
+        })
     }
 
     /// Insert a new vector into the built index without a full rebuild.
@@ -907,6 +1052,201 @@ impl FreshGraphIndex {
     }
 }
 
+fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), RetrieveError> {
+    write_atomic(path, |writer| {
+        serde_json::to_writer_pretty(writer, value)
+            .map_err(|e| std::io::Error::other(e.to_string()))
+    })
+}
+
+fn write_f32_atomic(path: &Path, values: &[f32]) -> Result<(), RetrieveError> {
+    write_atomic(path, |writer| {
+        for value in values {
+            writer.write_all(&value.to_le_bytes())?;
+        }
+        Ok(())
+    })
+}
+
+fn write_u32_atomic(path: &Path, values: &[u32]) -> Result<(), RetrieveError> {
+    write_atomic(path, |writer| {
+        for value in values {
+            writer.write_all(&value.to_le_bytes())?;
+        }
+        Ok(())
+    })
+}
+
+fn write_bool_atomic(path: &Path, values: &[bool]) -> Result<(), RetrieveError> {
+    write_atomic(path, |writer| {
+        for value in values {
+            writer.write_all(&[*value as u8])?;
+        }
+        Ok(())
+    })
+}
+
+fn write_neighbors_atomic(
+    path: &Path,
+    neighbors: &[SmallVec<[u32; 16]>],
+) -> Result<(), RetrieveError> {
+    write_atomic(path, |writer| {
+        writer.write_all(FRESH_GRAPH_NEIGHBORS_MAGIC)?;
+        writer.write_all(&(neighbors.len() as u64).to_le_bytes())?;
+        for list in neighbors {
+            writer.write_all(&(list.len() as u64).to_le_bytes())?;
+            for id in list {
+                writer.write_all(&id.to_le_bytes())?;
+            }
+        }
+        Ok(())
+    })
+}
+
+fn write_atomic(
+    path: &Path,
+    write: impl FnOnce(&mut BufWriter<std::fs::File>) -> std::io::Result<()>,
+) -> Result<(), RetrieveError> {
+    let tmp_path = path.with_extension("tmp");
+    {
+        let file = std::fs::File::create(&tmp_path)?;
+        let mut writer = BufWriter::new(file);
+        write(&mut writer)?;
+        writer.flush()?;
+    }
+    std::fs::rename(&tmp_path, path)?;
+    Ok(())
+}
+
+fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, RetrieveError> {
+    let file = std::fs::File::open(path)?;
+    serde_json::from_reader(BufReader::new(file))
+        .map_err(|e| RetrieveError::FormatError(e.to_string()))
+}
+
+fn read_f32_exact(path: &Path, expected_len: usize) -> Result<Vec<f32>, RetrieveError> {
+    let bytes = std::fs::read(path)?;
+    let expected_bytes = expected_len
+        .checked_mul(std::mem::size_of::<f32>())
+        .ok_or_else(|| RetrieveError::FormatError("fresh graph f32 byte length overflow".into()))?;
+    if bytes.len() != expected_bytes {
+        return Err(RetrieveError::FormatError(format!(
+            "{} size mismatch: expected {} bytes, got {}",
+            path.display(),
+            expected_bytes,
+            bytes.len()
+        )));
+    }
+    Ok(bytes
+        .chunks_exact(4)
+        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        .collect())
+}
+
+fn read_u32_exact(path: &Path, expected_len: usize) -> Result<Vec<u32>, RetrieveError> {
+    let bytes = std::fs::read(path)?;
+    let expected_bytes = expected_len
+        .checked_mul(std::mem::size_of::<u32>())
+        .ok_or_else(|| RetrieveError::FormatError("fresh graph u32 byte length overflow".into()))?;
+    if bytes.len() != expected_bytes {
+        return Err(RetrieveError::FormatError(format!(
+            "{} size mismatch: expected {} bytes, got {}",
+            path.display(),
+            expected_bytes,
+            bytes.len()
+        )));
+    }
+    Ok(bytes
+        .chunks_exact(4)
+        .map(|chunk| u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        .collect())
+}
+
+fn read_bool_exact(path: &Path, expected_len: usize) -> Result<Vec<bool>, RetrieveError> {
+    let bytes = std::fs::read(path)?;
+    if bytes.len() != expected_len {
+        return Err(RetrieveError::FormatError(format!(
+            "{} size mismatch: expected {} bytes, got {}",
+            path.display(),
+            expected_len,
+            bytes.len()
+        )));
+    }
+    bytes
+        .into_iter()
+        .map(|byte| match byte {
+            0 => Ok(false),
+            1 => Ok(true),
+            other => Err(RetrieveError::FormatError(format!(
+                "fresh graph deleted flag has invalid byte {other}"
+            ))),
+        })
+        .collect()
+}
+
+fn read_neighbors(
+    path: &Path,
+    expected_nodes: usize,
+) -> Result<Vec<SmallVec<[u32; 16]>>, RetrieveError> {
+    let mut reader = BufReader::new(std::fs::File::open(path)?);
+    let mut magic = [0u8; 8];
+    reader.read_exact(&mut magic)?;
+    if &magic != FRESH_GRAPH_NEIGHBORS_MAGIC {
+        return Err(RetrieveError::FormatError(
+            "invalid fresh graph neighbors magic".into(),
+        ));
+    }
+    let count = read_u64(&mut reader)?;
+    if count as usize != expected_nodes {
+        return Err(RetrieveError::FormatError(format!(
+            "fresh graph neighbors count {} does not match manifest count {}",
+            count, expected_nodes
+        )));
+    }
+
+    let mut neighbors = Vec::with_capacity(expected_nodes);
+    for node in 0..expected_nodes {
+        let len = read_u64(&mut reader)? as usize;
+        if len > expected_nodes.saturating_sub(1) {
+            return Err(RetrieveError::FormatError(format!(
+                "fresh graph node {node} has too many neighbors: {len}"
+            )));
+        }
+        let mut list = SmallVec::<[u32; 16]>::new();
+        for _ in 0..len {
+            let id = read_u32(&mut reader)?;
+            if id as usize >= expected_nodes {
+                return Err(RetrieveError::FormatError(format!(
+                    "fresh graph neighbor id {id} exceeds vector count {expected_nodes}"
+                )));
+            }
+            list.push(id);
+        }
+        neighbors.push(list);
+    }
+
+    let mut trailing = [0u8; 1];
+    match reader.read(&mut trailing) {
+        Ok(0) => Ok(neighbors),
+        Ok(_) => Err(RetrieveError::FormatError(
+            "fresh graph neighbors file has trailing bytes".into(),
+        )),
+        Err(err) => Err(err.into()),
+    }
+}
+
+fn read_u64(reader: &mut impl Read) -> Result<u64, RetrieveError> {
+    let mut bytes = [0u8; 8];
+    reader.read_exact(&mut bytes)?;
+    Ok(u64::from_le_bytes(bytes))
+}
+
+fn read_u32(reader: &mut impl Read) -> Result<u32, RetrieveError> {
+    let mut bytes = [0u8; 4];
+    reader.read_exact(&mut bytes)?;
+    Ok(u32::from_le_bytes(bytes))
+}
+
 use crate::distance::FloatOrd;
 
 #[cfg(test)]
@@ -1097,6 +1437,103 @@ mod tests {
                 *id >= (n / 2) as u32,
                 "deleted doc {id} appeared after compact"
             );
+        }
+    }
+
+    #[test]
+    fn save_load_roundtrip_preserves_updates_and_tombstones() {
+        let dim = 16;
+        let n = 32;
+        let data = make_vectors(n + 3, dim, 0xFACE);
+        let mut index = FreshGraphIndex::new(dim, default_params()).unwrap();
+        for i in 0..n {
+            index
+                .add_slice(i as u32, &data[i * dim..(i + 1) * dim])
+                .unwrap();
+        }
+        index.build().unwrap();
+
+        for extra in 0..3 {
+            let id = n + extra;
+            index
+                .insert((100 + extra) as u32, &data[id * dim..(id + 1) * dim])
+                .unwrap();
+        }
+        assert!(index.delete(0).unwrap());
+        assert!(index.delete(100).unwrap());
+
+        let dir = tempfile::tempdir().unwrap();
+        index.save_to_dir(dir.path()).unwrap();
+        let loaded = FreshGraphIndex::load_from_dir(dir.path()).unwrap();
+
+        let query = &data[dim..2 * dim];
+        assert_eq!(index.len(), loaded.len());
+        assert_eq!(index.num_deleted(), loaded.num_deleted());
+        assert_eq!(
+            index.search(query, 8).unwrap(),
+            loaded.search(query, 8).unwrap()
+        );
+        assert_eq!(
+            index.search_with_ef(query, 8, 40).unwrap(),
+            loaded.search_with_ef(query, 8, 40).unwrap()
+        );
+        assert!(!loaded
+            .search(query, loaded.len())
+            .unwrap()
+            .iter()
+            .any(|(doc_id, _)| *doc_id == 0 || *doc_id == 100));
+    }
+
+    #[test]
+    fn load_rejects_future_manifest_version() {
+        let dim = 8;
+        let data = make_vectors(12, dim, 0x1234);
+        let mut index = FreshGraphIndex::new(dim, default_params()).unwrap();
+        for i in 0..12 {
+            index
+                .add_slice(i as u32, &data[i * dim..(i + 1) * dim])
+                .unwrap();
+        }
+        index.build().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        index.save_to_dir(dir.path()).unwrap();
+        let manifest_path = dir.path().join("manifest.json");
+        let mut manifest: FreshGraphManifest = read_json(&manifest_path).unwrap();
+        manifest.version = FRESH_GRAPH_FORMAT_VERSION + 1;
+        write_json_atomic(&manifest_path, &manifest).unwrap();
+
+        match FreshGraphIndex::load_from_dir(dir.path()) {
+            Err(RetrieveError::FormatError(message)) => {
+                assert!(message.contains("unsupported fresh graph format version"));
+            }
+            Err(err) => panic!("expected format error, got {err:?}"),
+            Ok(_) => panic!("expected format error, got successful load"),
+        }
+    }
+
+    #[test]
+    fn load_rejects_corrupt_neighbors_magic() {
+        let dim = 8;
+        let data = make_vectors(12, dim, 0x5678);
+        let mut index = FreshGraphIndex::new(dim, default_params()).unwrap();
+        for i in 0..12 {
+            index
+                .add_slice(i as u32, &data[i * dim..(i + 1) * dim])
+                .unwrap();
+        }
+        index.build().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        index.save_to_dir(dir.path()).unwrap();
+        std::fs::write(dir.path().join("neighbors.bin"), b"BADFRESH").unwrap();
+
+        match FreshGraphIndex::load_from_dir(dir.path()) {
+            Err(RetrieveError::FormatError(message)) => {
+                assert!(message.contains("invalid fresh graph neighbors magic"));
+            }
+            Err(err) => panic!("expected format error, got {err:?}"),
+            Ok(_) => panic!("expected format error, got successful load"),
         }
     }
 

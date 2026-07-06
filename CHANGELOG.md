@@ -569,4 +569,4 @@ CI-greening commits. Earlier than 0.3 the project was pre-public; consult
 
 [v0.3.0...v0.3.6](https://github.com/arclabs561/vicinity/compare/v0.3.0...v0.3.6)
 
-[Unreleased]: https://github.com/arclabs561/vicinity/compare/v0.6.2...HEAD
+[Unreleased]: https://github.com/arclabs561/vicinity/compare/v0.10.5...HEAD

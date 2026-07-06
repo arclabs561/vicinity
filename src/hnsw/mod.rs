@@ -108,7 +108,7 @@
 //!
 //! # Advanced Features
 //!
-//! - [`filtered`]: ACORN-style attribute filtering
+//! - [`HNSWIndex::search_acorn`]: ACORN-style metadata filtering
 //! - [`dual_branch`]: LID-based insertion with skip bridges (arXiv:2501.13992)
 //! - `symphony_qg`: RaBitQ quantized graph traversal (SymphonyQG, SIGMOD 2025)
 //! - [`deg`]: Density-adaptive edge budgets

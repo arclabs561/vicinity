@@ -14,7 +14,7 @@
 //! # Feature Flag
 //!
 //! ```toml
-//! vicinity = { version = "0.8", features = ["pipnn"] }
+//! vicinity = { version = "0.10.5", features = ["pipnn"] }
 //! ```
 //!
 //! # Quick Start

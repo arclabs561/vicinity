@@ -39,8 +39,8 @@ jobs:
             exit 1
           fi
 
-  # Wheels are abi3 (cp39-abi3) -- one wheel per platform/arch covers all
-  # CPython 3.9+ versions. Free-threaded Python is not supported by abi3.
+  # Wheels are abi3 (cp310-abi3) -- one wheel per platform/arch covers all
+  # CPython 3.10+ versions. Free-threaded Python is not supported by abi3.
   build-wheels:
     needs: guard
     strategy:
