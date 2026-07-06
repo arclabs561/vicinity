@@ -101,13 +101,17 @@ full sorting to `select_nth_unstable_by` plus sorting the retained prefix
 (`dfbf176`). That targeted re-run used the same dataset and IVF-PQ shape, with
 build time 72.13s and RSS 644,320 KB.
 
+Rows marked `**` add the direct 1-D ADC table path used by the GloVe-25
+`cb=25` shape. That targeted re-run used the same dataset and IVF-PQ shape,
+with build time 72.25s and RSS 644,240 KB.
+
 | nprobe | Rerank pool | Recall@10 | QPS | p95 us |
 |--------|-------------|-----------|-----|--------|
 | 16 | none | 91.60% | 1,034.5 | 1,399.9 |
 | 16 | 500 | 92.43% | 1,016.6 | 1,409.6 |
 | 16 | 5,000 | 92.43% | 826.5 | 1,657.0 |
-| 32 | none* | 95.64% | 706.3 | 1,881.0 |
-| 32 | 500* | 96.69% | 651.1 | 2,023.0 |
+| 32 | none** | 95.64% | 811.7 | 1,684.2 |
+| 32 | 500** | 96.69% | 796.3 | 1,706.9 |
 | 32 | 5,000 | 96.69% | 471.7 | 2,797.4 |
 | 64 | none | 97.68% | 266.9 | 4,760.1 |
 | 64 | 500 | 98.91% | 265.2 | 4,783.3 |

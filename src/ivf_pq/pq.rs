@@ -199,6 +199,17 @@ impl ProductQuantizer {
         table.clear();
         table.reserve(self.num_codebooks * self.codebook_size);
 
+        if self.subvector_dim == 1 {
+            for (codebook_idx, &q) in query.iter().take(self.num_codebooks).enumerate() {
+                let codebook_offset = codebook_idx * self.codebook_size;
+                for code in 0..self.codebook_size {
+                    let diff = q - self.codebooks[codebook_offset + code];
+                    table.push(diff * diff);
+                }
+            }
+            return Ok(());
+        }
+
         for codebook_idx in 0..self.num_codebooks {
             let start_dim = codebook_idx * self.subvector_dim;
             let end_dim = (codebook_idx + 1) * self.subvector_dim;
@@ -260,4 +271,26 @@ fn get_vector(vectors: &[f32], dimension: usize, idx: usize) -> &[f32] {
     let start = idx * dimension;
     let end = start + dimension;
     &vectors[start..end]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn adc_table_specializes_one_dimensional_subvectors() {
+        let pq = ProductQuantizer {
+            dimension: 2,
+            num_codebooks: 2,
+            codebook_size: 3,
+            subvector_dim: 1,
+            codebooks: vec![0.0, 1.0, 3.0, -1.0, 2.0, 4.0],
+        };
+        let mut table = Vec::new();
+
+        pq.compute_adc_table_into(&[2.0, 1.0], &mut table)
+            .expect("valid query");
+
+        assert_eq!(table, vec![4.0, 1.0, 1.0, 4.0, 1.0, 9.0]);
+    }
 }
