@@ -32,17 +32,17 @@ only after the interface has two real consumers.
 | `store::UpdatableIndex` | Yes, via `segstore` + HNSW sidecars | Segment sidecars loaded into memory | No | No | Add/delete/compact/checkpoint | Keep on `segstore`; this is the segmented-HNSW path. |
 | DiskANN | Yes, graph + vector files | Yes | Yes | Yes | Build-once | Mmap exists for current separate graph/vector files. Page/co-location layout remains next. Do not route through `segstore`. |
 | NSW / SNG / Vamana / NSG / FINGER / PiPNN / EMG | Yes, directory format | Yes | No | No | Build-once | Persists the built in-memory graph state and restores it directly. This is snapshot-memory persistence, not file-backed search. |
-| HNSW quantized variants | No | Yes | No | No | Build-once | Persist derived quantization payloads only after the in-memory search mode is benchmarked and promoted. |
+| HNSW quantized variants | Yes, for SQ4/SQ8 and non-compacted SymphonyQG | Yes | No | No | Build-once | SQ variants persist the underlying HNSW and rebuild quantization. SymphonyQG persists the underlying HNSW and RaBitQ manifest, then rebuilds quantized state on load. SymphonyQG-VR compacted snapshots are rejected because current search still needs raw parent vectors. |
 | IVF-PQ | Yes, directory format | Yes | No | No | Build-once | Persists centroids, PQ codebooks, posting lists, codes, and optional raw vectors for rerank. |
 | IVF-AVQ | Yes, directory format | Yes | No | No | Build-once | Persists centroids, AVQ codebooks, partitions, codes, and raw vectors for rerank. |
 | IVF-RaBitQ | Yes, directory format for non-compacted indexes | Yes | No | No | Build-once | Persists raw vectors, centroids, and cluster membership, then rebuilds RaBitQ edge codes on load. |
-| FreshGraph | Yes, snapshot directory format | Yes | No | No | Insert/delete/compact | Persists current graph state, tombstones, and inbound counts. WAL/checkpoint durability remains separate from `segstore`. |
+| FreshGraph / in-place graph | Yes | Yes | No | No | Insert/delete/compact | FreshGraph uses a snapshot directory with tombstones and inbound counts. `InPlaceIndex` and `MappedInPlaceIndex` use validated file snapshots that preserve free slots and external-ID maps. WAL/checkpoint durability remains separate from `segstore`. |
 | Curator | Yes, directory format | Yes | No | No | Build-once | Persists normalized vectors, doc IDs, labels, and parameters, then rebuilds the tree on load. |
 | Range-filtered graph | Yes, directory format | Yes | No | No | Build-once | Persists normalized vectors and sorted attributes, then rebuilds HNSW on load. |
 | Filtered graph | Yes, directory format | Yes | No | No | Build-once | Persists normalized vectors, graph neighbors, medoid, and inverted filter payloads. |
 | BinaryFlat / RP-Quant | Yes, directory format | Yes | No | No | Build-once | Persists full-precision vectors and params, then rebuilds quantizer or projection-derived payloads on load. |
 | SparseMIPS | Yes, directory format | Yes | No | No | Build-once | Persists sparse vectors in CSR-style offsets, indices, and values files plus the built graph. |
-| streaming LSM / EVoC | No | Yes | No | No | Varies | Keep memory-only until each has a benchmark row and a concrete persistence consumer. |
+| streaming LSM / EVoC | No | Yes | No | No | Varies | Keep memory-only until each has a benchmark row and a concrete persistence consumer. LSM is a multi-level mutable structure; do not add a quick snapshot until the durable tiering contract is designed. |
 | Classic trees | Yes, directory format | Yes | No | No | Build-once | KD-tree, Ball tree, K-means tree, RP-tree, and RP-forest persist built trees and preserve external doc IDs. |
 
 ## Required Persistence Tests
