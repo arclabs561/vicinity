@@ -176,6 +176,28 @@ pub(crate) fn nprobe_values(max_probe: usize) -> impl Iterator<Item = usize> {
         .filter(move |&nprobe| nprobe <= max_probe)
 }
 
+fn diskann_checks(cfg: &Config) -> Vec<Vec<String>> {
+    const STORAGE_ROWS: [(&str, &str, &str); 3] = [
+        ("diskann", "memory", "in_memory"),
+        ("diskann_file", "file", "file"),
+        ("diskann_mmap", "mmap", "mmap"),
+    ];
+
+    STORAGE_ROWS
+        .into_iter()
+        .flat_map(|(algorithm, storage, storage_mode)| {
+            ef_checks(algorithm, cfg, |_| {
+                vec![
+                    format!("\"m\":{}", cfg.m),
+                    format!("\"ef_construction\":{}", cfg.ef_construction),
+                    format!("\"storage\":\"{}\"", storage),
+                    format!("\"storage_mode\":\"{}\"", storage_mode),
+                ]
+            })
+        })
+        .collect()
+}
+
 fn required_result_checks(
     algo: &str,
     cfg: &Config,
@@ -321,35 +343,7 @@ fn required_result_checks(
             ]
         }),
         "vamana" => ef_checks("vamana", cfg, |_| Vec::new()),
-        "diskann" => ef_checks("diskann", cfg, |ef| {
-            vec![
-                format!("\"m\":{}", cfg.m),
-                format!("\"ef_construction\":{}", cfg.ef_construction),
-                format!("\"ef_search\":{}", ef),
-                "\"storage_mode\":\"in_memory\"".to_string(),
-                "\"storage\":\"memory\"".to_string(),
-            ]
-        })
-        .into_iter()
-        .chain(ef_checks("diskann_file", cfg, |ef| {
-            vec![
-                format!("\"m\":{}", cfg.m),
-                format!("\"ef_construction\":{}", cfg.ef_construction),
-                format!("\"ef_search\":{}", ef),
-                "\"storage_mode\":\"file\"".to_string(),
-                "\"storage\":\"file\"".to_string(),
-            ]
-        }))
-        .chain(ef_checks("diskann_mmap", cfg, |ef| {
-            vec![
-                format!("\"m\":{}", cfg.m),
-                format!("\"ef_construction\":{}", cfg.ef_construction),
-                format!("\"ef_search\":{}", ef),
-                "\"storage_mode\":\"mmap\"".to_string(),
-                "\"storage\":\"mmap\"".to_string(),
-            ]
-        }))
-        .collect(),
+        "diskann" => diskann_checks(cfg),
         "finger" => {
             let indexed_vectors = train_len.min(50_000);
             let capped = train_len > indexed_vectors;
@@ -877,6 +871,13 @@ mod tests {
         )
     }
 
+    fn legacy_diskann_line_without_storage_mode(algorithm: &str, storage: &str) -> String {
+        format!(
+            "{{\"algorithm\":\"{}\",\"params\":{{\"m\":16,\"ef_construction\":200,\"alpha\":1.2,\"ef_search\":10,\"storage\":\"{}\"}},\"recall_at_10\":1.0,\"qps\":1.0}}",
+            algorithm, storage
+        )
+    }
+
     fn single_line(algorithm: &str, params: &str) -> String {
         format!(
             "{{\"algorithm\":\"{}\",\"params\":{},\"recall_at_10\":1.0,\"qps\":1.0}}",
@@ -968,6 +969,26 @@ mod tests {
         };
 
         assert!(request_completed(
+            &completed, "diskann", &cfg, 25, 1_000, 100
+        ));
+    }
+
+    #[test]
+    fn diskann_resume_rejects_rows_without_storage_mode_context() {
+        let cfg = Config {
+            ef_search_values: vec![10],
+            ..Config::default()
+        };
+        let completed = CompletedResults {
+            lines: vec![
+                legacy_diskann_line_without_storage_mode("diskann", "memory"),
+                legacy_diskann_line_without_storage_mode("diskann_file", "file"),
+                legacy_diskann_line_without_storage_mode("diskann_mmap", "mmap"),
+            ],
+            ..CompletedResults::default()
+        };
+
+        assert!(!request_completed(
             &completed, "diskann", &cfg, 25, 1_000, 100
         ));
     }
