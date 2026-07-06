@@ -282,22 +282,15 @@ fn hnsw_quantized_checks(algorithm: &str, cfg: &Config) -> Vec<ExpectedResult> {
 }
 
 fn hnsw_quantized_snapshot_checks(algorithm: &str, cfg: &Config) -> Vec<ExpectedResult> {
-    cfg.ef_search_values
-        .iter()
-        .flat_map(|&ef| {
-            snapshot_check(
-                algorithm,
-                &format!(
-                    "{{\"m\":{},\"ef_construction\":{},\"ef_search\":{},\"rerank_pool\":{}}}",
-                    cfg.m,
-                    cfg.ef_construction,
-                    ef,
-                    (ef * 2).max(100)
-                ),
-                cfg,
-            )
-        })
-        .collect()
+    ef_snapshot_checks(algorithm, cfg, |ef| {
+        format!(
+            "{{\"m\":{},\"ef_construction\":{},\"ef_search\":{},\"rerank_pool\":{}}}",
+            cfg.m,
+            cfg.ef_construction,
+            ef,
+            (ef * 2).max(100)
+        )
+    })
 }
 
 fn snapshot_check(algorithm: &str, params_json: &str, cfg: &Config) -> Vec<ExpectedResult> {
@@ -310,6 +303,55 @@ fn snapshot_check(algorithm: &str, params_json: &str, cfg: &Config) -> Vec<Expec
         ));
     }
     checks
+}
+
+fn serde_snapshot_check(algorithm: &str, params_json: &str, cfg: &Config) -> Vec<ExpectedResult> {
+    #[cfg(not(feature = "serde"))]
+    {
+        let _ = cfg;
+        single_result_check(algorithm, params_json)
+    }
+
+    #[cfg(feature = "serde")]
+    {
+        let mut checks = single_result_check(algorithm, params_json);
+        if cfg.snapshot_load {
+            checks.push(ExpectedResult::with_params_and_storage(
+                algorithm,
+                params_json,
+                "snapshot_loaded",
+            ));
+        }
+        checks
+    }
+}
+
+fn ef_snapshot_checks(
+    algorithm: &str,
+    cfg: &Config,
+    params_json: impl Fn(usize) -> String,
+) -> Vec<ExpectedResult> {
+    cfg.ef_search_values
+        .iter()
+        .flat_map(|&ef| {
+            let params_json = params_json(ef);
+            snapshot_check(algorithm, &params_json, cfg)
+        })
+        .collect()
+}
+
+fn ef_serde_snapshot_checks(
+    algorithm: &str,
+    cfg: &Config,
+    params_json: impl Fn(usize) -> String,
+) -> Vec<ExpectedResult> {
+    cfg.ef_search_values
+        .iter()
+        .flat_map(|&ef| {
+            let params_json = params_json(ef);
+            serde_snapshot_check(algorithm, &params_json, cfg)
+        })
+        .collect()
 }
 
 fn tree_snapshot_checks(enabled: bool, algorithm: &str, cfg: &Config) -> Vec<ExpectedResult> {
@@ -428,31 +470,19 @@ fn required_result_checks(
         "hnsw" => cfg
             .ef_search_values
             .iter()
-            .flat_map(|ef| {
+            .flat_map(|&ef| {
                 let params_json = format!(
                     "{{\"m\":{},\"ef_construction\":{},\"ef_search\":{}}}",
                     cfg.m, cfg.ef_construction, ef
                 );
-                #[cfg(any(feature = "serde", feature = "parallel"))]
-                let mut base_marker = single_result_check("hnsw", &params_json);
-                #[cfg(not(any(feature = "serde", feature = "parallel")))]
-                let base_marker = single_result_check("hnsw", &params_json);
-                #[cfg(feature = "serde")]
-                if cfg.snapshot_load {
-                    base_marker.push(ExpectedResult::with_params_and_storage(
-                        "hnsw",
-                        &params_json,
-                        "snapshot_loaded",
-                    ));
-                }
                 #[cfg(not(feature = "parallel"))]
                 {
-                    base_marker
+                    serde_snapshot_check("hnsw", &params_json, cfg)
                 }
 
                 #[cfg(feature = "parallel")]
                 {
-                    let mut markers = base_marker;
+                    let mut markers = serde_snapshot_check("hnsw", &params_json, cfg);
                     if cfg.batch {
                         markers.push(result_check_with_fragments(
                             "hnsw_parallel",
@@ -588,39 +618,24 @@ fn required_result_checks(
         "emg" | "nsg" | "fresh_graph" => {
             ef_checks(algo, cfg, |_| vec!["\"max_degree\":32".to_string()])
         }
-        "dual_branch" => cfg
-            .ef_search_values
-            .iter()
-            .flat_map(|&ef| {
-                snapshot_check(
-                    "dual_branch",
-                    &format!(
-                        "{{\"m\":{},\"m_high_lid\":{},\"ef_construction\":{},\"ef_search\":{}}}",
-                        cfg.m,
-                        (cfg.m + cfg.m / 2).max(cfg.m + 1),
-                        cfg.ef_construction,
-                        ef
-                    ),
-                    cfg,
-                )
-            })
-            .collect(),
+        "dual_branch" => ef_serde_snapshot_checks("dual_branch", cfg, |ef| {
+            format!(
+                "{{\"m\":{},\"m_high_lid\":{},\"ef_construction\":{},\"ef_search\":{}}}",
+                cfg.m,
+                (cfg.m + cfg.m / 2).max(cfg.m + 1),
+                cfg.ef_construction,
+                ef
+            )
+        }),
         "deg" => {
             let indexed_vectors = train_len.min(10_000);
             let capped = train_len > indexed_vectors;
-            cfg.ef_search_values
-                .iter()
-                .flat_map(|&ef| {
-                    snapshot_check(
-                        "deg",
-                        &format!(
-                            "{{\"base_edges\":16,\"max_edges\":32,\"min_edges\":8,\"density_k\":10,\"alpha\":1.2,\"ef_search\":{},\"indexed_vectors\":{},\"capped\":{}}}",
-                            ef, indexed_vectors, capped
-                        ),
-                        cfg,
-                    )
-                })
-                .collect()
+            ef_serde_snapshot_checks("deg", cfg, |ef| {
+                format!(
+                    "{{\"base_edges\":16,\"max_edges\":32,\"min_edges\":8,\"density_k\":10,\"alpha\":1.2,\"ef_search\":{},\"indexed_vectors\":{},\"capped\":{}}}",
+                    ef, indexed_vectors, capped
+                )
+            })
         }
         "filtered_graph" => ef_checks("filtered_graph", cfg, |_| {
             vec![
@@ -1788,6 +1803,7 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "serde")]
     #[test]
     fn hnsw_variant_resume_requires_snapshot_rows() {
         let cfg = Config {
@@ -1831,6 +1847,36 @@ mod tests {
             2_000,
             200
         ));
+        assert!(request_completed(
+            &completed,
+            "dual_branch",
+            &cfg,
+            25,
+            2_000,
+            200
+        ));
+        assert!(request_completed(&completed, "deg", &cfg, 25, 2_000, 200));
+    }
+
+    #[cfg(not(feature = "serde"))]
+    #[test]
+    fn hnsw_variant_resume_does_not_require_disabled_snapshot_rows() {
+        let cfg = Config {
+            ef_search_values: vec![50],
+            snapshot_load: true,
+            ..Config::default()
+        };
+        let dual_params = "{\"m\":16,\"m_high_lid\":24,\"ef_construction\":200,\"ef_search\":50}";
+        let deg_params =
+            "{\"base_edges\":16,\"max_edges\":32,\"min_edges\":8,\"density_k\":10,\"alpha\":1.2,\"ef_search\":50,\"indexed_vectors\":2000,\"capped\":false}";
+        let completed = CompletedResults {
+            lines: vec![
+                single_line("dual_branch", dual_params),
+                single_line("deg", deg_params),
+            ],
+            ..CompletedResults::default()
+        };
+
         assert!(request_completed(
             &completed,
             "dual_branch",
