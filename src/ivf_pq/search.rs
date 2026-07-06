@@ -9,6 +9,8 @@ use rand::SeedableRng;
 use serde::{Deserialize, Serialize};
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
+#[cfg(feature = "benchmark")]
+use std::time::{Duration, Instant};
 
 /// Minimum candidates in a partition to use SIMD batch ADC.
 /// Below this threshold, scalar per-candidate lookup is used.
@@ -66,6 +68,61 @@ fn copy_rows_by_index(vectors: &[f32], dimension: usize, indices: &[usize]) -> V
         out.extend_from_slice(&vectors[start..start + dimension]);
     }
     out
+}
+
+/// IVF-PQ search phase timings for benchmark/profiling builds.
+#[cfg(feature = "benchmark")]
+#[derive(Clone, Debug, Default)]
+pub struct IVFPQSearchProfile {
+    /// Time spent normalizing the query.
+    pub normalize: Duration,
+    /// Time spent selecting coarse IVF centroids.
+    pub centroid_lookup: Duration,
+    /// Time spent computing query residuals against selected centroids.
+    pub residual: Duration,
+    /// Time spent building ADC lookup tables.
+    pub adc_table: Duration,
+    /// Time spent copying PQ codes into contiguous scan batches.
+    pub code_copy: Duration,
+    /// Time spent in scalar, SIMD, or FastScan ADC distance dispatch.
+    pub adc_dispatch: Duration,
+    /// Time spent selecting and sorting the returned top-k prefix.
+    pub finalizer: Duration,
+    /// Number of IVF clusters probed.
+    pub probed_clusters: usize,
+    /// Number of probed clusters searched through the batched path.
+    pub simd_clusters: usize,
+    /// Number of probed clusters searched through the scalar fallback.
+    pub scalar_clusters: usize,
+    /// Number of vectors scanned across all probed clusters.
+    pub scanned_vectors: usize,
+    /// Number of approximate candidates produced before top-k finalization.
+    pub candidate_count: usize,
+    /// Number of results returned after top-k finalization.
+    pub returned_count: usize,
+    /// Number of PQ code bytes copied into contiguous scan batches.
+    pub code_copy_bytes: usize,
+}
+
+#[cfg(feature = "benchmark")]
+impl IVFPQSearchProfile {
+    /// Add another profile into this aggregate.
+    pub fn add_assign(&mut self, other: &Self) {
+        self.normalize += other.normalize;
+        self.centroid_lookup += other.centroid_lookup;
+        self.residual += other.residual;
+        self.adc_table += other.adc_table;
+        self.code_copy += other.code_copy;
+        self.adc_dispatch += other.adc_dispatch;
+        self.finalizer += other.finalizer;
+        self.probed_clusters += other.probed_clusters;
+        self.simd_clusters += other.simd_clusters;
+        self.scalar_clusters += other.scalar_clusters;
+        self.scanned_vectors += other.scanned_vectors;
+        self.candidate_count += other.candidate_count;
+        self.returned_count += other.returned_count;
+        self.code_copy_bytes += other.code_copy_bytes;
+    }
 }
 
 /// Quantizer strategy.
@@ -1040,6 +1097,22 @@ impl IVFPQIndex {
             .collect())
     }
 
+    /// Search and return phase timings for benchmark/profiling builds.
+    #[cfg(feature = "benchmark")]
+    pub fn search_profiled(
+        &self,
+        query: &[f32],
+        k: usize,
+    ) -> Result<(Vec<(u32, f32)>, IVFPQSearchProfile), RetrieveError> {
+        let mut profile = IVFPQSearchProfile::default();
+        let candidates = self.search_approx_internal_observed(query, k, Some(&mut profile))?;
+        let results = candidates
+            .into_iter()
+            .map(|(vector_idx, dist)| (self.doc_ids[vector_idx as usize], dist))
+            .collect();
+        Ok((results, profile))
+    }
+
     /// Search with approximate IVF-PQ retrieval followed by exact f32 reranking.
     ///
     /// `candidate_pool` controls how many approximate candidates are reranked.
@@ -1092,6 +1165,22 @@ impl IVFPQIndex {
         query: &[f32],
         k: usize,
     ) -> Result<Vec<(u32, f32)>, RetrieveError> {
+        #[cfg(feature = "benchmark")]
+        {
+            self.search_approx_internal_observed(query, k, None)
+        }
+        #[cfg(not(feature = "benchmark"))]
+        {
+            self.search_approx_internal_observed(query, k)
+        }
+    }
+
+    fn search_approx_internal_observed(
+        &self,
+        query: &[f32],
+        k: usize,
+        #[cfg(feature = "benchmark")] mut profile: Option<&mut IVFPQSearchProfile>,
+    ) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
             return Err(RetrieveError::InvalidParameter(
                 "index must be built before search".into(),
@@ -1111,11 +1200,24 @@ impl IVFPQIndex {
             .ok_or(RetrieveError::InvalidParameter("PQ not initialized".into()))?;
 
         // Normalize query (index operates on unit-length vectors)
+        #[cfg(feature = "benchmark")]
+        let normalize_start = Instant::now();
         let query_normalized = normalize_query(query);
+        #[cfg(feature = "benchmark")]
+        if let Some(profile) = &mut profile {
+            profile.normalize += normalize_start.elapsed();
+        }
         let query = query_normalized.as_slice();
 
         // Find closest clusters
+        #[cfg(feature = "benchmark")]
+        let centroid_start = Instant::now();
         let cluster_distances = self.find_nearest_centroids(query, self.params.nprobe);
+        #[cfg(feature = "benchmark")]
+        if let Some(profile) = &mut profile {
+            profile.centroid_lookup += centroid_start.elapsed();
+            profile.probed_clusters += cluster_distances.len();
+        }
 
         // Pre-allocate reusable buffers for the nprobe loop
         let mut candidates = Vec::new();
@@ -1128,22 +1230,53 @@ impl IVFPQIndex {
             let ids = cluster.get_ids_ref();
 
             // Compute query residual in-place (no allocation)
+            #[cfg(feature = "benchmark")]
+            let residual_start = Instant::now();
             let centroid = self.get_centroid(*cluster_idx);
             for (i, (q, c)) in query.iter().zip(centroid.iter()).enumerate() {
                 query_residual[i] = q - c;
             }
+            #[cfg(feature = "benchmark")]
+            if let Some(profile) = &mut profile {
+                profile.residual += residual_start.elapsed();
+                profile.scanned_vectors += ids.len();
+            }
 
             // Build ADC table from query residual (reuses buffer)
+            #[cfg(feature = "benchmark")]
+            let adc_table_start = Instant::now();
             pq.compute_adc_table_into(&query_residual, &mut adc_table)?;
+            #[cfg(feature = "benchmark")]
+            if let Some(profile) = &mut profile {
+                profile.adc_table += adc_table_start.elapsed();
+            }
 
             if ids.len() >= SIMD_BATCH_THRESHOLD {
                 let num_cb = self.params.num_codebooks;
+                #[cfg(feature = "benchmark")]
+                if let Some(profile) = &mut profile {
+                    profile.simd_clusters += 1;
+                }
 
                 let distances = if self.params.codebook_size == 16 {
                     // FastScan path: 4-bit codes, SIMD shuffle-based lookup.
                     if let Some(packed) = cluster.fastscan_codes.as_ref() {
-                        crate::pq_simd::fastscan_batch_flat(packed, &adc_table)
+                        #[cfg(feature = "benchmark")]
+                        {
+                            let dispatch_start = Instant::now();
+                            let distances = crate::pq_simd::fastscan_batch_flat(packed, &adc_table);
+                            if let Some(profile) = &mut profile {
+                                profile.adc_dispatch += dispatch_start.elapsed();
+                            }
+                            distances
+                        }
+                        #[cfg(not(feature = "benchmark"))]
+                        {
+                            crate::pq_simd::fastscan_batch_flat(packed, &adc_table)
+                        }
                     } else {
+                        #[cfg(feature = "benchmark")]
+                        let copy_start = Instant::now();
                         codes_batch.clear();
                         codes_batch.reserve(ids.len() * num_cb);
                         for &vector_idx in ids.as_ref() {
@@ -1151,23 +1284,49 @@ impl IVFPQIndex {
                             codes_batch
                                 .extend_from_slice(&self.quantized_codes[start..start + num_cb]);
                         }
+                        #[cfg(feature = "benchmark")]
+                        if let Some(profile) = &mut profile {
+                            profile.code_copy += copy_start.elapsed();
+                            profile.code_copy_bytes += codes_batch.len();
+                        }
                         let packed = PackedCodes4bit::pack(&codes_batch, ids.len(), num_cb);
-                        crate::pq_simd::fastscan_batch_flat(&packed, &adc_table)
+                        #[cfg(feature = "benchmark")]
+                        let dispatch_start = Instant::now();
+                        let distances = crate::pq_simd::fastscan_batch_flat(&packed, &adc_table);
+                        #[cfg(feature = "benchmark")]
+                        if let Some(profile) = &mut profile {
+                            profile.adc_dispatch += dispatch_start.elapsed();
+                        }
+                        distances
                     }
                 } else {
                     // Standard ADC batch path for larger codebooks
+                    #[cfg(feature = "benchmark")]
+                    let copy_start = Instant::now();
                     codes_batch.clear();
                     codes_batch.reserve(ids.len() * num_cb);
                     for &vector_idx in ids.as_ref() {
                         let start = vector_idx as usize * num_cb;
                         codes_batch.extend_from_slice(&self.quantized_codes[start..start + num_cb]);
                     }
+                    #[cfg(feature = "benchmark")]
+                    if let Some(profile) = &mut profile {
+                        profile.code_copy += copy_start.elapsed();
+                        profile.code_copy_bytes += codes_batch.len();
+                    }
                     let packed_lut = PackedLUT::from_flat(
                         &adc_table,
                         self.params.num_codebooks,
                         self.params.codebook_size,
                     );
-                    adc_batch_dispatch(&codes_batch, num_cb, &packed_lut)
+                    #[cfg(feature = "benchmark")]
+                    let dispatch_start = Instant::now();
+                    let distances = adc_batch_dispatch(&codes_batch, num_cb, &packed_lut);
+                    #[cfg(feature = "benchmark")]
+                    if let Some(profile) = &mut profile {
+                        profile.adc_dispatch += dispatch_start.elapsed();
+                    }
+                    distances
                 };
 
                 for (i, &vector_idx) in ids.iter().enumerate() {
@@ -1175,6 +1334,12 @@ impl IVFPQIndex {
                 }
             } else {
                 // Scalar fallback for small clusters
+                #[cfg(feature = "benchmark")]
+                if let Some(profile) = &mut profile {
+                    profile.scalar_clusters += 1;
+                }
+                #[cfg(feature = "benchmark")]
+                let dispatch_start = Instant::now();
                 for &vector_idx in ids.as_ref() {
                     let start = vector_idx as usize * self.params.num_codebooks;
                     let end = start + self.params.num_codebooks;
@@ -1183,10 +1348,26 @@ impl IVFPQIndex {
                     let dist = pq.distance_with_table(&adc_table, codes);
                     candidates.push((vector_idx, dist));
                 }
+                #[cfg(feature = "benchmark")]
+                if let Some(profile) = &mut profile {
+                    profile.adc_dispatch += dispatch_start.elapsed();
+                }
             }
         }
 
-        Ok(finish_top_k_by_distance(candidates, k))
+        #[cfg(feature = "benchmark")]
+        if let Some(profile) = &mut profile {
+            profile.candidate_count += candidates.len();
+        }
+        #[cfg(feature = "benchmark")]
+        let finalizer_start = Instant::now();
+        let results = finish_top_k_by_distance(candidates, k);
+        #[cfg(feature = "benchmark")]
+        if let Some(profile) = &mut profile {
+            profile.finalizer += finalizer_start.elapsed();
+            profile.returned_count += results.len();
+        }
+        Ok(results)
     }
 
     /// Search with filter using cluster tagging (integrated filtering).

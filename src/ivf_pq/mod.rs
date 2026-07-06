@@ -148,6 +148,8 @@
 pub mod opq;
 pub mod pq;
 pub mod search;
+#[cfg(feature = "benchmark")]
+pub use search::IVFPQSearchProfile;
 pub use search::{IVFPQIndex, IVFPQParams};
 
 // OPQ (Optimized PQ) is implemented in opq.rs; enable via IVFPQParams::use_opq = true.
