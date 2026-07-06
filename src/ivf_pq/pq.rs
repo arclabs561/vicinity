@@ -202,8 +202,10 @@ impl ProductQuantizer {
         if self.subvector_dim == 1 {
             for (codebook_idx, &q) in query.iter().take(self.num_codebooks).enumerate() {
                 let codebook_offset = codebook_idx * self.codebook_size;
-                for code in 0..self.codebook_size {
-                    let diff = q - self.codebooks[codebook_offset + code];
+                let codebook =
+                    &self.codebooks[codebook_offset..codebook_offset + self.codebook_size];
+                for &codeword in codebook {
+                    let diff = q - codeword;
                     table.push(diff * diff);
                 }
             }
