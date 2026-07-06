@@ -38,6 +38,7 @@ use std::collections::{BinaryHeap, HashSet};
 
 /// DEG configuration.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DEGConfig {
     /// Base number of edges per node
     pub base_edges: usize,
@@ -68,6 +69,7 @@ impl Default for DEGConfig {
 
 /// Node density information.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DensityInfo {
     /// Local density score (higher = denser region)
     pub density: f32,
@@ -163,6 +165,35 @@ impl DEGIndex {
         self.select_entry_point();
 
         Ok(())
+    }
+
+    /// Save a built DEG index to a file.
+    #[cfg(feature = "serde")]
+    pub fn save_to_file<P: AsRef<std::path::Path>>(&self, path: P) -> Result<(), RetrieveError> {
+        let file = std::fs::File::create(path.as_ref())?;
+        serde_json::to_writer_pretty(
+            std::io::BufWriter::new(file),
+            &DegSnapshot {
+                magic: *b"VICDEG01",
+                version: 1,
+                config: self.config.clone(),
+                dim: self.dim,
+                vectors: self.vectors.clone(),
+                edges: self.edges.clone(),
+                density: self.density.clone(),
+                entry_point: self.entry_point,
+            },
+        )
+        .map_err(|e| RetrieveError::FormatError(e.to_string()))
+    }
+
+    /// Load a DEG index from a file snapshot.
+    #[cfg(feature = "serde")]
+    pub fn load_from_file<P: AsRef<std::path::Path>>(path: P) -> Result<Self, RetrieveError> {
+        let file = std::fs::File::open(path.as_ref())?;
+        let snapshot: DegSnapshot = serde_json::from_reader(std::io::BufReader::new(file))
+            .map_err(|e| RetrieveError::FormatError(e.to_string()))?;
+        snapshot.into_index()
     }
 
     /// Estimate local density for each node.
@@ -424,6 +455,81 @@ impl DEGIndex {
     }
 }
 
+#[cfg(feature = "serde")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct DegSnapshot {
+    magic: [u8; 8],
+    version: u32,
+    config: DEGConfig,
+    dim: usize,
+    vectors: Vec<Vec<f32>>,
+    edges: Vec<Vec<u32>>,
+    density: Vec<DensityInfo>,
+    entry_point: Option<u32>,
+}
+
+#[cfg(feature = "serde")]
+impl DegSnapshot {
+    fn into_index(self) -> Result<DEGIndex, RetrieveError> {
+        if self.magic != *b"VICDEG01" {
+            return Err(RetrieveError::FormatError(
+                "invalid DEG snapshot magic".into(),
+            ));
+        }
+        if self.version != 1 {
+            return Err(RetrieveError::FormatError(format!(
+                "unsupported DEG snapshot version {}",
+                self.version
+            )));
+        }
+        if self.dim == 0 {
+            return Err(RetrieveError::FormatError(
+                "DEG snapshot has zero dimension".into(),
+            ));
+        }
+        let n = self.vectors.len();
+        if self.edges.len() != n || self.density.len() != n {
+            return Err(RetrieveError::FormatError(
+                "DEG snapshot vectors, edges, and density lengths differ".into(),
+            ));
+        }
+        for (i, vector) in self.vectors.iter().enumerate() {
+            if vector.len() != self.dim {
+                return Err(RetrieveError::FormatError(format!(
+                    "DEG vector {i} has dimension {}, expected {}",
+                    vector.len(),
+                    self.dim
+                )));
+            }
+        }
+        for (node, neighbors) in self.edges.iter().enumerate() {
+            for &neighbor in neighbors {
+                if neighbor as usize >= n {
+                    return Err(RetrieveError::FormatError(format!(
+                        "DEG node {node} has out-of-range neighbor {neighbor}"
+                    )));
+                }
+            }
+        }
+        if let Some(entry) = self.entry_point {
+            if entry as usize >= n {
+                return Err(RetrieveError::FormatError(format!(
+                    "DEG entry point {entry} exceeds vector count {n}"
+                )));
+            }
+        }
+
+        Ok(DEGIndex {
+            config: self.config,
+            dim: self.dim,
+            vectors: self.vectors,
+            edges: self.edges,
+            density: self.density,
+            entry_point: self.entry_point,
+        })
+    }
+}
+
 /// Search candidate.
 #[derive(Clone, Copy)]
 struct Candidate {
@@ -529,6 +635,33 @@ mod tests {
         for i in 1..results.len() {
             assert!(results[i - 1].1 <= results[i].1);
         }
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn save_load_roundtrip_preserves_search() {
+        let mut index = DEGIndex::new(
+            4,
+            DEGConfig {
+                density_k: 3,
+                base_edges: 4,
+                ..Default::default()
+            },
+        );
+        for v in create_clustered_data(3, 10, 4) {
+            index.add(v).unwrap();
+        }
+        index.build().unwrap();
+
+        let query = vec![0.0; 4];
+        let before = index.search(&query, 5).unwrap();
+        let file = tempfile::NamedTempFile::new().unwrap();
+        index.save_to_file(file.path()).unwrap();
+        let loaded = DEGIndex::load_from_file(file.path()).unwrap();
+        let after = loaded.search(&query, 5).unwrap();
+
+        assert_eq!(after, before);
+        assert_eq!(loaded.len(), index.len());
     }
 
     #[test]
