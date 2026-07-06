@@ -246,7 +246,9 @@ Each algorithm has a named feature flag:
 | DEG | `hnsw` | Density-adaptive edge budgets (in-house experimental variant; no benchmark) |
 | KD-Tree | `kdtree` | Tree baseline for low-dimensional angular data (experimental) |
 | Ball Tree | `balltree` | Tree baseline for low-dimensional angular data (experimental) |
+| RP-Tree | `rptree` | Single random-projection tree baseline (experimental) |
 | RP-Forest | `rptree` | Approximate tree baseline; fast build, lower recall (experimental) |
+| K-Means Tree | `kmeans_tree` | Hierarchical clustering tree baseline (experimental) |
 
 Quantization features are split by use: the public IVF-RaBitQ and
 `hnsw::SymphonyQGIndex` types use `ivf_rabitq`; standalone
