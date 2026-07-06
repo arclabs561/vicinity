@@ -48,6 +48,10 @@ cargo run --example ann_benchmark --release --features hnsw,fresh_graph -- \
 cargo run --example ann_benchmark --release --features hnsw -- \
   data/ann-benchmarks/glove-25-angular \
   --algo inplace --algo inplace_churn --json --fresh
+
+# LSM-tiered streaming churn, scored against a live active-set oracle.
+cargo run --example ann_benchmark --release --features hnsw -- \
+  data/ann-benchmarks/glove-25-angular --algo lsm_churn --json --fresh
 ```
 
 These commands intentionally separate low-recall, high-throughput operating

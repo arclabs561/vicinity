@@ -192,15 +192,8 @@ impl LsmIndex {
         // Remove from tombstones if re-inserting a deleted ID
         self.tombstones.remove(&doc_id);
 
-        // Normalize for cosine
-        let norm: f32 = vector.iter().map(|x| x * x).sum::<f32>().sqrt();
-        if norm > 1e-10 {
-            self.levels[0]
-                .vectors
-                .extend(vector.iter().map(|x| x / norm));
-        } else {
-            self.levels[0].vectors.extend_from_slice(vector);
-        }
+        let stored = self.prepare_vector(vector);
+        self.levels[0].vectors.extend_from_slice(&stored);
         self.levels[0].doc_ids.push(doc_id);
         self.levels[0].count += 1;
         self.total_inserts += 1;
@@ -219,11 +212,37 @@ impl LsmIndex {
         self.total_deletes += 1;
     }
 
+    fn prepare_vector(&self, vector: &[f32]) -> Vec<f32> {
+        if self.config.distance_metric != DistanceMetric::Cosine {
+            return vector.to_vec();
+        }
+
+        let norm: f32 = vector.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm > 1e-10 {
+            vector.iter().map(|x| x / norm).collect()
+        } else {
+            vector.to_vec()
+        }
+    }
+
     /// Search across all levels, merging results.
     ///
     /// Searches each level independently, filters tombstones, and merges by
     /// distance. Cost: `O(L * search_per_level)` where L = number of levels.
     pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>> {
+        self.search_with_ef(query, k, self.config.ef_search)
+    }
+
+    /// Search across all levels with an explicit per-level HNSW `ef_search`.
+    ///
+    /// This is useful for benchmark sweeps because the LSM levels can stay in
+    /// place while the search beam changes.
+    pub fn search_with_ef(
+        &self,
+        query: &[f32],
+        k: usize,
+        ef_search: usize,
+    ) -> Result<Vec<(u32, f32)>> {
         if query.len() != self.config.dimension {
             return Err(RetrieveError::DimensionMismatch {
                 query_dim: query.len(),
@@ -231,13 +250,7 @@ impl LsmIndex {
             });
         }
 
-        // Normalize query
-        let query_norm: f32 = query.iter().map(|x| x * x).sum::<f32>().sqrt();
-        let query_normalized: Vec<f32> = if query_norm > 1e-10 {
-            query.iter().map(|x| x / query_norm).collect()
-        } else {
-            query.to_vec()
-        };
+        let query_normalized = self.prepare_vector(query);
         let query = query_normalized.as_slice();
 
         let mut all_results: Vec<(u32, f32)> = Vec::new();
@@ -261,7 +274,7 @@ impl LsmIndex {
                 #[cfg(feature = "hnsw")]
                 {
                     if let Some(ref hnsw) = level.hnsw {
-                        let ef = self.config.ef_search.max(k);
+                        let ef = ef_search.max(k);
                         match hnsw.search(query, k, ef) {
                             Ok(results) => results
                                 .into_iter()
@@ -370,7 +383,8 @@ impl LsmIndex {
             let mut hnsw = crate::hnsw::HNSWIndex::builder(dim)
                 .m(self.config.hnsw_m)
                 .ef_construction(self.config.hnsw_ef_construction)
-                .auto_normalize(false) // already normalized
+                .metric(self.config.distance_metric)
+                .auto_normalize(false) // cosine vectors are already normalized
                 .build()?;
             for (i, &doc_id) in merged_ids.iter().enumerate() {
                 let start = i * dim;
@@ -505,6 +519,7 @@ impl LsmIndex {
             let mut hnsw = crate::hnsw::HNSWIndex::builder(dim)
                 .m(self.config.hnsw_m)
                 .ef_construction(self.config.hnsw_ef_construction)
+                .metric(self.config.distance_metric)
                 .auto_normalize(false)
                 .build()?;
             for (i, &doc_id) in all_ids.iter().enumerate() {
@@ -565,6 +580,13 @@ mod tests {
         }
     }
 
+    fn make_l2_config(dim: usize, buffer_capacity: usize) -> LsmConfig {
+        LsmConfig {
+            buffer_capacity,
+            ..make_config(dim)
+        }
+    }
+
     fn make_vector(dim: usize, seed: u32) -> Vec<f32> {
         (0..dim)
             .map(|i| (seed as f32 * 0.1 + i as f32 * 0.01).sin())
@@ -585,6 +607,32 @@ mod tests {
         let results = index.search(&make_vector(8, 0), 3).unwrap();
         assert!(!results.is_empty());
         assert_eq!(results[0].0, 0); // Self-match
+    }
+
+    #[test]
+    fn l2_l0_preserves_vector_magnitude() {
+        let mut index = LsmIndex::new(make_l2_config(2, 10));
+
+        index.insert(0, vec![1.0, 0.0]).unwrap();
+        index.insert(1, vec![2.0, 0.0]).unwrap();
+
+        let results = index.search(&[2.0, 0.0], 2).unwrap();
+        assert_eq!(results[0].0, 1);
+    }
+
+    #[test]
+    fn l2_compacted_level_preserves_vector_magnitude() {
+        let mut index = LsmIndex::new(make_l2_config(2, 2));
+
+        index.insert(0, vec![1.0, 0.0]).unwrap();
+        index.insert(1, vec![2.0, 0.0]).unwrap();
+
+        assert!(
+            index.level_sizes().len() >= 2,
+            "expected compaction into L1"
+        );
+        let results = index.search_with_ef(&[2.0, 0.0], 2, 20).unwrap();
+        assert_eq!(results[0].0, 1);
     }
 
     #[test]

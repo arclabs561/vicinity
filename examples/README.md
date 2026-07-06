@@ -116,6 +116,10 @@ cargo run --example ann_benchmark --release --features hnsw,fresh_graph -- \
 cargo run --example ann_benchmark --release --features hnsw -- \
   data/ann-benchmarks/glove-25-angular --algo inplace --algo inplace_churn --json
 
+# LSM-tiered streaming churn, scored against a live active-set oracle
+cargo run --example ann_benchmark --release --features hnsw -- \
+  data/ann-benchmarks/glove-25-angular --algo lsm_churn --json
+
 # Classic tree baselines for comparison
 cargo run --example ann_benchmark --release --features kdtree,balltree,rptree,kmeans_tree -- \
   data/ann-benchmarks/glove-25-angular \
@@ -149,8 +153,8 @@ Read the linked paper before treating output as a recommendation.
 Do you have < 10K vectors?
  └─> Brute force (no index needed)
 
-Do you need streaming inserts with theoretical guarantees?
- └─> Hash/LSH-style approaches (locality-sensitive hashing)
+Do you need streaming inserts/deletes?
+ └─> In-place graph or LSM-tiered streaming rows in `ann_benchmark`
 
 Are you memory-constrained (> 1M vectors)?
  └─> IVF-PQ (see ivf_pq_demo)

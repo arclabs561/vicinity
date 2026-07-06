@@ -26,6 +26,9 @@
 //!
 //! cargo run --example ann_benchmark --release --features hnsw -- \
 //!   data/ann-benchmarks/glove-25-angular --algo inplace --algo inplace_churn --json
+//!
+//! cargo run --example ann_benchmark --release --features hnsw -- \
+//!   data/ann-benchmarks/glove-25-angular --algo lsm_churn --json
 //! ```
 
 #[path = "common/mod.rs"]
@@ -1176,6 +1179,126 @@ fn run_inplace_churn(cfg: &Config, train: &[Vec<f32>], test: &[Vec<f32>], dim: u
     }
 }
 
+#[cfg(feature = "hnsw")]
+fn run_lsm_churn(cfg: &Config, train: &[Vec<f32>], test: &[Vec<f32>], dim: usize) {
+    use vicinity::streaming::{LsmConfig, LsmIndex};
+
+    let base_n = cfg
+        .churn_base_size
+        .min(train.len().saturating_sub(cfg.churn_cycles.max(1)));
+    if base_n == 0 {
+        eprintln!("lsm_churn: dataset is too small for churn benchmark");
+        return;
+    }
+    let cycles = cfg.churn_cycles.min(train.len().saturating_sub(base_n));
+    let query_count = cfg.churn_queries.min(test.len());
+    if cycles == 0 || query_count == 0 {
+        eprintln!("lsm_churn: need at least one update cycle and one query");
+        return;
+    }
+
+    let buffer_capacity = (base_n / 10).clamp(20, 10_000);
+    let lsm_cfg = LsmConfig {
+        dimension: dim,
+        buffer_capacity,
+        size_ratio: 4,
+        max_levels: 5,
+        hnsw_m: cfg.m,
+        hnsw_ef_construction: cfg.ef_construction,
+        ef_search: cfg.ef_search_values.iter().copied().max().unwrap_or(100),
+        distance_metric: dataset_metric(cfg),
+    };
+
+    if !cfg.json {
+        println!(
+            "--- LSM churn (base={}, cycles={}, queries={}, buffer={}, ratio=4, metric={:?}) ---",
+            base_n, cycles, query_count, buffer_capacity, lsm_cfg.distance_metric
+        );
+    }
+
+    let build_start = Instant::now();
+    let mut index = LsmIndex::new(lsm_cfg);
+    for (i, vec) in train.iter().take(base_n).enumerate() {
+        index.insert_slice(i as u32, vec).unwrap();
+    }
+    let build_time_s = build_start.elapsed().as_secs_f64();
+
+    let mut active: Vec<u32> = (0..base_n as u32).collect();
+    let mut rng_state = 0x517c_c1b7_2722_0a95_u64;
+    let update_start = Instant::now();
+    for offset in 0..cycles {
+        let new_id = (base_n + offset) as u32;
+        rng_state = rng_state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1);
+        let victim_pos = ((rng_state >> 33) as usize) % active.len();
+        let victim = active.swap_remove(victim_pos);
+        index.delete(victim);
+        index.insert_slice(new_id, &train[new_id as usize]).unwrap();
+        active.push(new_id);
+    }
+    let update_time_s = update_start.elapsed().as_secs_f64();
+    let update_qps = cycles as f64 / update_time_s;
+    let stats = index.stats();
+    let rss = current_rss_kb();
+
+    let test_subset = &test[..query_count];
+    let live_neighbors: Vec<Vec<i32>> = test_subset
+        .iter()
+        .map(|query| brute_force_search_ids(train, &active, query, 10, dataset_metric(cfg)))
+        .collect();
+
+    if !cfg.json {
+        println!(
+            "Build: {:.2}s; Updates: {:.2}s ({:.0}/s); compactions: {}; levels: {:?}; tombstones: {}\n",
+            build_time_s,
+            update_time_s,
+            update_qps,
+            stats.total_compactions,
+            stats.level_sizes,
+            stats.tombstone_count
+        );
+        print_header();
+    }
+
+    for &ef in &cfg.ef_search_values {
+        let result = evaluate(
+            &|q, k| index.search_with_ef(q, k, ef).unwrap(),
+            test_subset,
+            &live_neighbors,
+            10,
+        );
+        if cfg.json {
+            let params_json = format!(
+                "{{\"m\":{},\"ef_construction\":{},\"ef_search\":{},\"base_size\":{},\"cycles\":{},\"queries\":{},\"buffer_capacity\":{},\"size_ratio\":4,\"max_levels\":5,\"update_time_s\":{:.4},\"update_qps\":{:.1},\"compactions\":{},\"levels\":{},\"level_sizes\":{:?},\"tombstones\":{}}}",
+                cfg.m,
+                cfg.ef_construction,
+                ef,
+                base_n,
+                cycles,
+                query_count,
+                buffer_capacity,
+                update_time_s,
+                update_qps,
+                stats.total_compactions,
+                stats.num_levels,
+                stats.level_sizes,
+                stats.tombstone_count
+            );
+            emit_result(
+                &cfg.results_path,
+                &json_line("lsm_churn", &params_json, build_time_s, rss, &result),
+            );
+        } else {
+            print_row(&format!("ef={}", ef), &result);
+        }
+    }
+
+    if !cfg.json {
+        println!();
+    }
+}
+
 #[cfg(feature = "filtered_graph")]
 fn run_filtered_graph(
     cfg: &Config,
@@ -2057,6 +2180,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 eprintln!("InPlace churn not available (compile with --features hnsw)");
             }
 
+            #[cfg(feature = "hnsw")]
+            "lsm_churn" => run_lsm_churn(&cfg, &train, &test, dim),
+
+            #[cfg(not(feature = "hnsw"))]
+            "lsm_churn" => {
+                eprintln!("LSM churn not available (compile with --features hnsw)");
+            }
+
             #[cfg(feature = "filtered_graph")]
             "filtered_graph" => run_filtered_graph(&cfg, &train, &test, &neighbors, dim),
 
@@ -2199,7 +2330,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             other => {
                 eprintln!(
-                    "Unknown algorithm: {}. Options: hnsw, nsw, ivfpq, ivf_avq, emg, nsg, pipnn, sng, vamana, diskann, ivf_rabitq, symphony_qg, symphony_qg_vr, finger, fresh_graph, fresh_graph_churn, inplace, inplace_churn, filtered_graph, rp_quant, sparse_mips, curator, range_filtered, binary_index, sq4, sq4u, sq8u, adsampling, lsh, hnsw_prt, kdtree, balltree, rptree, rp_forest, kmeans_tree, brute",
+                    "Unknown algorithm: {}. Options: hnsw, nsw, ivfpq, ivf_avq, emg, nsg, pipnn, sng, vamana, diskann, ivf_rabitq, symphony_qg, symphony_qg_vr, finger, fresh_graph, fresh_graph_churn, inplace, inplace_churn, lsm_churn, filtered_graph, rp_quant, sparse_mips, curator, range_filtered, binary_index, sq4, sq4u, sq8u, adsampling, lsh, hnsw_prt, kdtree, balltree, rptree, rp_forest, kmeans_tree, brute",
                     other
                 );
             }

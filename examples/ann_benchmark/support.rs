@@ -408,6 +408,26 @@ fn required_result_checks(
                 })
                 .collect()
         }
+        "lsm_churn" => {
+            let base_size = cfg
+                .churn_base_size
+                .min(train_len.saturating_sub(cfg.churn_cycles.max(1)));
+            let cycles = cfg.churn_cycles.min(train_len.saturating_sub(base_size));
+            let queries = cfg.churn_queries.min(test_len);
+            if base_size == 0 || cycles == 0 || queries == 0 {
+                return Vec::new();
+            }
+            let buffer_capacity = (base_size / 10).clamp(20, 10_000);
+            ef_checks("lsm_churn", cfg, |_| {
+                vec![
+                    format!("\"base_size\":{}", base_size),
+                    format!("\"cycles\":{}", cycles),
+                    format!("\"queries\":{}", queries),
+                    format!("\"buffer_capacity\":{}", buffer_capacity),
+                    "\"size_ratio\":4".to_string(),
+                ]
+            })
+        }
         "adsampling" => ef_checks("adsampling", cfg, |_| {
             vec![
                 format!("\"m\":{}", cfg.m),
