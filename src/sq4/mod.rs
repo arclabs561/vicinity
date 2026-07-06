@@ -20,9 +20,11 @@
 
 use crate::distance::cosine_distance_normalized;
 use crate::RetrieveError;
+use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 /// SQ4 index parameters.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SQ4Params {
     /// Candidate multiplier for re-ranking: fetch `k * rerank_factor` candidates
     /// from quantized scan, then re-rank with exact distance. Default: 10.
@@ -180,6 +182,71 @@ impl SQ4Index {
         Ok(())
     }
 
+    /// Save a built SQ4 index to a directory snapshot.
+    ///
+    /// The persisted vectors are already normalized by `add_slice`. Codes and
+    /// per-dimension scales are rebuilt on load because they are deterministic
+    /// derived state.
+    pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<(), RetrieveError> {
+        if !self.built {
+            return Err(RetrieveError::InvalidParameter("index not built".into()));
+        }
+        let output_dir = output_dir.as_ref();
+        std::fs::create_dir_all(output_dir)?;
+        let manifest = Sq4SnapshotManifest {
+            magic: *b"VICSQ401",
+            version: 1,
+            dimension: self.dimension,
+            num_vectors: self.num_vectors,
+            params: self.params.clone(),
+        };
+        crate::graph_snapshot::write_json_atomic(&output_dir.join("manifest.json"), &manifest)?;
+        crate::graph_snapshot::write_f32_atomic(&output_dir.join("vectors.bin"), &self.vectors)?;
+        crate::graph_snapshot::write_u32_atomic(&output_dir.join("doc_ids.bin"), &self.doc_ids)?;
+        Ok(())
+    }
+
+    /// Load an SQ4 index from a directory snapshot.
+    pub fn load_from_dir(input_dir: impl AsRef<Path>) -> Result<Self, RetrieveError> {
+        let input_dir = input_dir.as_ref();
+        let manifest: Sq4SnapshotManifest =
+            crate::graph_snapshot::read_json(&input_dir.join("manifest.json"))?;
+        if manifest.magic != *b"VICSQ401" {
+            return Err(RetrieveError::FormatError(
+                "invalid SQ4 snapshot magic".into(),
+            ));
+        }
+        if manifest.version != 1 {
+            return Err(RetrieveError::FormatError(format!(
+                "unsupported SQ4 snapshot version {}",
+                manifest.version
+            )));
+        }
+        if manifest.dimension == 0 {
+            return Err(RetrieveError::FormatError(
+                "SQ4 snapshot has zero dimension".into(),
+            ));
+        }
+
+        let vector_len = manifest
+            .num_vectors
+            .checked_mul(manifest.dimension)
+            .ok_or_else(|| RetrieveError::FormatError("SQ4 vector length overflow".into()))?;
+        let vectors =
+            crate::graph_snapshot::read_f32_exact(&input_dir.join("vectors.bin"), vector_len)?;
+        let doc_ids = crate::graph_snapshot::read_u32_exact(
+            &input_dir.join("doc_ids.bin"),
+            manifest.num_vectors,
+        )?;
+
+        let mut index = Self::new(manifest.dimension, manifest.params)?;
+        index.vectors = vectors;
+        index.doc_ids = doc_ids;
+        index.num_vectors = manifest.num_vectors;
+        index.build()?;
+        Ok(index)
+    }
+
     /// Search for the `k` nearest neighbors.
     ///
     /// Performs asymmetric distance computation (float query vs 4-bit codes),
@@ -258,6 +325,15 @@ impl SQ4Index {
     pub fn code_memory(&self) -> usize {
         self.codes.len()
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Sq4SnapshotManifest {
+    magic: [u8; 8],
+    version: u32,
+    dimension: usize,
+    num_vectors: usize,
+    params: SQ4Params,
 }
 
 /// Pack a float vector into 4-bit codes, two per byte.
@@ -387,6 +463,28 @@ mod tests {
         assert_eq!(results.len(), 5);
         // Self should be the closest (doc_id = 0).
         assert_eq!(results[0].0, 0);
+    }
+
+    #[test]
+    fn save_load_roundtrip_preserves_search() {
+        let d = 32;
+        let n = 80;
+        let mut index = SQ4Index::new(d, SQ4Params::default()).unwrap();
+        for i in 0..n {
+            let v: Vec<f32> = (0..d).map(|j| ((i + j) as f32) * 0.001).collect();
+            index.add_slice(10_000 + i as u32, &v).unwrap();
+        }
+        index.build().unwrap();
+
+        let query: Vec<f32> = (0..d).map(|j| (j as f32) * 0.001).collect();
+        let before = index.search(&query, 8).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        index.save_to_dir(dir.path()).unwrap();
+        let loaded = SQ4Index::load_from_dir(dir.path()).unwrap();
+        let after = loaded.search(&query, 8).unwrap();
+
+        assert_eq!(after, before);
+        assert!(after.iter().all(|(id, _)| *id >= 10_000));
     }
 
     #[test]

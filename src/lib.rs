@@ -225,6 +225,7 @@ pub mod filtering;
     feature = "rp_quant",
     feature = "sparse_mips",
     feature = "lsh",
+    feature = "sq4",
     all(feature = "hnsw", feature = "sq4"),
     all(feature = "hnsw", feature = "sq8")
 ))]

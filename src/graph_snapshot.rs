@@ -49,7 +49,8 @@ pub(crate) fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T, RetrieveE
     feature = "binary_index",
     feature = "rp_quant",
     feature = "sparse_mips",
-    feature = "lsh"
+    feature = "lsh",
+    feature = "sq4"
 ))]
 pub(crate) fn write_f32_atomic(path: &Path, values: &[f32]) -> Result<(), RetrieveError> {
     write_atomic(path, |writer| {
@@ -70,7 +71,8 @@ pub(crate) fn write_f32_atomic(path: &Path, values: &[f32]) -> Result<(), Retrie
     feature = "emg",
     feature = "binary_index",
     feature = "rp_quant",
-    feature = "sparse_mips"
+    feature = "sparse_mips",
+    feature = "sq4"
 ))]
 pub(crate) fn write_u32_atomic(path: &Path, values: &[u32]) -> Result<(), RetrieveError> {
     write_atomic(path, |writer| {
@@ -145,7 +147,8 @@ fn write_atomic(
     feature = "binary_index",
     feature = "rp_quant",
     feature = "sparse_mips",
-    feature = "lsh"
+    feature = "lsh",
+    feature = "sq4"
 ))]
 pub(crate) fn read_f32_exact(path: &Path, expected_len: usize) -> Result<Vec<f32>, RetrieveError> {
     let bytes = std::fs::read(path)?;
@@ -176,7 +179,8 @@ pub(crate) fn read_f32_exact(path: &Path, expected_len: usize) -> Result<Vec<f32
     feature = "emg",
     feature = "binary_index",
     feature = "rp_quant",
-    feature = "sparse_mips"
+    feature = "sparse_mips",
+    feature = "sq4"
 ))]
 pub(crate) fn read_u32_exact(path: &Path, expected_len: usize) -> Result<Vec<u32>, RetrieveError> {
     let bytes = std::fs::read(path)?;
