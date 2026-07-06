@@ -1307,6 +1307,14 @@ pub(crate) fn brute_force_search(
     dists
 }
 
+#[cfg(any(
+    feature = "filtered_graph",
+    feature = "finger",
+    feature = "fresh_graph",
+    feature = "hnsw",
+    feature = "nsg",
+    feature = "sng"
+))]
 pub(crate) fn brute_force_search_ids(
     train: &[Vec<f32>],
     active_ids: &[u32],
@@ -1322,6 +1330,14 @@ pub(crate) fn brute_force_search_ids(
     dists.into_iter().take(k).map(|(id, _)| id as i32).collect()
 }
 
+#[cfg(any(
+    feature = "filtered_graph",
+    feature = "finger",
+    feature = "fresh_graph",
+    feature = "hnsw",
+    feature = "nsg",
+    feature = "sng"
+))]
 pub(crate) fn brute_force_neighbors_for_ids(
     train: &[Vec<f32>],
     active_ids: &[u32],

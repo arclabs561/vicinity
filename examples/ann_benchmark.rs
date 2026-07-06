@@ -52,6 +52,26 @@ mod quant;
 mod support;
 
 use std::path::Path;
+
+#[cfg(any(
+    feature = "balltree",
+    feature = "curator",
+    feature = "diskann",
+    feature = "emg",
+    feature = "filtered_graph",
+    feature = "finger",
+    feature = "fresh_graph",
+    feature = "hnsw",
+    feature = "kdtree",
+    feature = "kmeans_tree",
+    feature = "nsg",
+    feature = "nsw",
+    feature = "pipnn",
+    feature = "range_filtered",
+    feature = "rptree",
+    feature = "sng",
+    feature = "vamana"
+))]
 use std::time::Instant;
 
 #[cfg(any(
@@ -126,6 +146,14 @@ fn snapshot_storage(load_time_s: f64, index_bytes: Option<u64>) -> ResultStorage
 
 // ─── Algorithm runners ───────────────────────────────────────────────────────
 
+#[cfg(any(
+    feature = "filtered_graph",
+    feature = "finger",
+    feature = "fresh_graph",
+    feature = "hnsw",
+    feature = "nsg",
+    feature = "sng"
+))]
 fn dataset_metric(cfg: &Config) -> vicinity::DistanceMetric {
     if cfg.is_euclidean {
         vicinity::DistanceMetric::L2

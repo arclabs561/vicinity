@@ -248,7 +248,6 @@ required-features = ["hnsw"]
 [[example]]
 name = "ann_benchmark"
 path = "examples/ann_benchmark.rs"
-required-features = ["hnsw"]
 
 [[example]]
 name = "acorn_selectivity"
