@@ -22,6 +22,13 @@ pub(crate) struct Config {
     pub(crate) pq_training_sample_size: Option<usize>,
     pub(crate) pq_kmeans_max_iter: usize,
     pub(crate) pq_rerank_pools: Vec<usize>,
+    pub(crate) tree_leaf_sizes: Vec<usize>,
+    pub(crate) tree_depths: Vec<usize>,
+    pub(crate) rp_num_trees: Vec<usize>,
+    pub(crate) kmeans_clusters: Vec<usize>,
+    pub(crate) kmeans_leaf_sizes: Vec<usize>,
+    pub(crate) kmeans_depths: Vec<usize>,
+    pub(crate) kmeans_iters: Vec<usize>,
     pub(crate) batch: bool,
     pub(crate) resume: bool,
     pub(crate) snapshot_load: bool,
@@ -47,6 +54,13 @@ impl Default for Config {
             pq_training_sample_size: None,
             pq_kmeans_max_iter: 100,
             pq_rerank_pools: Vec::new(),
+            tree_leaf_sizes: vec![10],
+            tree_depths: vec![32],
+            rp_num_trees: vec![10],
+            kmeans_clusters: vec![16],
+            kmeans_leaf_sizes: vec![50],
+            kmeans_depths: vec![10],
+            kmeans_iters: vec![10],
             batch: false,
             resume: false,
             snapshot_load: false,
@@ -201,17 +215,62 @@ fn snapshot_check(algorithm: &str, params_json: &str, cfg: &Config) -> Vec<Expec
     checks
 }
 
-fn conditional_snapshot_check(
-    enabled: bool,
-    algorithm: &str,
-    params_json: &str,
-    cfg: &Config,
-) -> Vec<ExpectedResult> {
-    if enabled {
-        snapshot_check(algorithm, params_json, cfg)
-    } else {
-        Vec::new()
+fn tree_snapshot_checks(enabled: bool, algorithm: &str, cfg: &Config) -> Vec<ExpectedResult> {
+    if !enabled {
+        return Vec::new();
     }
+
+    cfg.tree_leaf_sizes
+        .iter()
+        .flat_map(|&leaf_size| {
+            cfg.tree_depths.iter().flat_map(move |&depth| {
+                snapshot_check(algorithm, &tree_params_json(leaf_size, depth), cfg)
+            })
+        })
+        .collect()
+}
+
+fn rp_forest_snapshot_checks(enabled: bool, cfg: &Config) -> Vec<ExpectedResult> {
+    if !enabled {
+        return Vec::new();
+    }
+
+    cfg.rp_num_trees
+        .iter()
+        .flat_map(|&num_trees| {
+            cfg.tree_leaf_sizes.iter().flat_map(move |&leaf_size| {
+                snapshot_check(
+                    "rp_forest",
+                    &rp_forest_params_json(num_trees, leaf_size),
+                    cfg,
+                )
+            })
+        })
+        .collect()
+}
+
+fn kmeans_tree_snapshot_checks(cfg: &Config) -> Vec<ExpectedResult> {
+    cfg.kmeans_clusters
+        .iter()
+        .flat_map(|&num_clusters| {
+            cfg.kmeans_leaf_sizes.iter().flat_map(move |&leaf_size| {
+                cfg.kmeans_depths.iter().flat_map(move |&depth| {
+                    cfg.kmeans_iters.iter().flat_map(move |&max_iterations| {
+                        snapshot_check(
+                            "kmeans_tree",
+                            &kmeans_tree_params_json(
+                                num_clusters,
+                                leaf_size,
+                                depth,
+                                max_iterations,
+                            ),
+                            cfg,
+                        )
+                    })
+                })
+            })
+        })
+        .collect()
 }
 
 pub(crate) fn nprobe_values(max_probe: usize) -> impl Iterator<Item = usize> {
@@ -502,37 +561,39 @@ fn required_result_checks(
         }
         "sq8u" | "sq4u" | "symphony_qg_vr" => hnsw_quantized_checks(algo, cfg),
         "symphony_qg" => ef_checks("symphony_qg", cfg, |_| Vec::new()),
-        "kdtree" => conditional_snapshot_check(
-            !cfg.is_euclidean && dim <= 50,
-            "kdtree",
-            "{\"max_leaf_size\":10,\"max_depth\":32}",
-            cfg,
-        ),
-        "balltree" => conditional_snapshot_check(
-            !cfg.is_euclidean,
-            "balltree",
-            "{\"max_leaf_size\":10,\"max_depth\":32}",
-            cfg,
-        ),
-        "rptree" => conditional_snapshot_check(
-            !cfg.is_euclidean,
-            "rptree",
-            "{\"max_leaf_size\":10,\"max_depth\":32}",
-            cfg,
-        ),
-        "rp_forest" => conditional_snapshot_check(
-            !cfg.is_euclidean,
-            "rp_forest",
-            "{\"num_trees\":10,\"max_leaf_size\":10}",
-            cfg,
-        ),
-        "kmeans_tree" => snapshot_check(
-            "kmeans_tree",
-            "{\"num_clusters\":16,\"max_leaf_size\":50,\"max_depth\":10,\"max_iterations\":10}",
-            cfg,
-        ),
+        "kdtree" => tree_snapshot_checks(!cfg.is_euclidean && dim <= 50, "kdtree", cfg),
+        "balltree" => tree_snapshot_checks(!cfg.is_euclidean, "balltree", cfg),
+        "rptree" => tree_snapshot_checks(!cfg.is_euclidean, "rptree", cfg),
+        "rp_forest" => rp_forest_snapshot_checks(!cfg.is_euclidean, cfg),
+        "kmeans_tree" => kmeans_tree_snapshot_checks(cfg),
         _ => vec![ExpectedResult::new(algo, std::iter::empty::<String>())],
     }
+}
+
+pub(crate) fn tree_params_json(max_leaf_size: usize, max_depth: usize) -> String {
+    format!(
+        "{{\"max_leaf_size\":{},\"max_depth\":{}}}",
+        max_leaf_size, max_depth
+    )
+}
+
+pub(crate) fn rp_forest_params_json(num_trees: usize, max_leaf_size: usize) -> String {
+    format!(
+        "{{\"num_trees\":{},\"max_leaf_size\":{}}}",
+        num_trees, max_leaf_size
+    )
+}
+
+pub(crate) fn kmeans_tree_params_json(
+    num_clusters: usize,
+    max_leaf_size: usize,
+    max_depth: usize,
+    max_iterations: usize,
+) -> String {
+    format!(
+        "{{\"num_clusters\":{},\"max_leaf_size\":{},\"max_depth\":{},\"max_iterations\":{}}}",
+        num_clusters, max_leaf_size, max_depth, max_iterations
+    )
 }
 
 pub(crate) fn request_completed(
@@ -570,6 +631,19 @@ pub(crate) fn rustc_version() -> String {
         .map(|version| version.trim().to_string())
         .filter(|version| !version.is_empty())
         .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn parse_usize_list(value: &str, fallback: &[usize]) -> Vec<usize> {
+    let parsed: Vec<usize> = value
+        .split(',')
+        .filter_map(|s| s.trim().parse().ok())
+        .filter(|&n| n > 0)
+        .collect();
+    if parsed.is_empty() {
+        fallback.to_vec()
+    } else {
+        parsed
+    }
 }
 
 pub(crate) fn parse_args() -> Config {
@@ -650,6 +724,48 @@ pub(crate) fn parse_args() -> Config {
                         .split(',')
                         .filter_map(|s| s.trim().parse().ok())
                         .collect();
+                }
+            }
+            "--tree-leaf-sizes" => {
+                i += 1;
+                if i < args.len() {
+                    cfg.tree_leaf_sizes = parse_usize_list(&args[i], &[10]);
+                }
+            }
+            "--tree-depths" => {
+                i += 1;
+                if i < args.len() {
+                    cfg.tree_depths = parse_usize_list(&args[i], &[32]);
+                }
+            }
+            "--rp-num-trees" => {
+                i += 1;
+                if i < args.len() {
+                    cfg.rp_num_trees = parse_usize_list(&args[i], &[10]);
+                }
+            }
+            "--kmeans-clusters" => {
+                i += 1;
+                if i < args.len() {
+                    cfg.kmeans_clusters = parse_usize_list(&args[i], &[16]);
+                }
+            }
+            "--kmeans-leaf-sizes" => {
+                i += 1;
+                if i < args.len() {
+                    cfg.kmeans_leaf_sizes = parse_usize_list(&args[i], &[50]);
+                }
+            }
+            "--kmeans-depths" => {
+                i += 1;
+                if i < args.len() {
+                    cfg.kmeans_depths = parse_usize_list(&args[i], &[10]);
+                }
+            }
+            "--kmeans-iters" => {
+                i += 1;
+                if i < args.len() {
+                    cfg.kmeans_iters = parse_usize_list(&args[i], &[10]);
                 }
             }
             "--batch" => {

@@ -67,8 +67,9 @@ use support::brute_force_search_ids;
 #[cfg(feature = "parallel")]
 use support::evaluate_parallel;
 use support::{
-    brute_force_search, current_rss_kb, emit_result, evaluate, json_line, load_completed_results,
-    parse_args, print_header, print_row, request_completed, rustc_version, Config,
+    brute_force_search, current_rss_kb, emit_result, evaluate, json_line, kmeans_tree_params_json,
+    load_completed_results, parse_args, print_header, print_row, request_completed,
+    rp_forest_params_json, rustc_version, tree_params_json, Config,
 };
 #[cfg(any(
     feature = "balltree",
@@ -1744,63 +1745,62 @@ fn run_kdtree(
 
     if !cfg.json {
         println!("--- KD-Tree ---");
-    }
-
-    let params = KDTreeParams::default();
-    let build_start = Instant::now();
-    let mut index = KDTreeIndex::new(dim, params.clone()).unwrap();
-    for (i, vec) in train.iter().enumerate() {
-        index.add(i as u32, vec.clone()).unwrap();
-    }
-    index.build().unwrap();
-    let build_time_s = build_start.elapsed().as_secs_f64();
-    let rss = current_rss_kb();
-
-    if !cfg.json {
-        println!(
-            "Build: {:.2}s ({:.0} vectors/sec)\n",
-            build_time_s,
-            train.len() as f64 / build_time_s
-        );
         print_header();
     }
 
-    let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
-    let params_json = format!(
-        "{{\"max_leaf_size\":{},\"max_depth\":{}}}",
-        params.max_leaf_size, params.max_depth
-    );
-    if cfg.json {
-        emit_result(
-            &cfg.results_path,
-            &json_line("kdtree", &params_json, build_time_s, rss, &result),
-        );
-    } else {
-        print_row("--", &result);
-    }
+    for &max_leaf_size in &cfg.tree_leaf_sizes {
+        for &max_depth in &cfg.tree_depths {
+            let params = KDTreeParams {
+                max_leaf_size,
+                max_depth,
+            };
+            let build_start = Instant::now();
+            let mut index = KDTreeIndex::new(dim, params.clone()).unwrap();
+            for (i, vec) in train.iter().enumerate() {
+                index.add(i as u32, vec.clone()).unwrap();
+            }
+            index.build().unwrap();
+            let build_time_s = build_start.elapsed().as_secs_f64();
+            let rss = current_rss_kb();
 
-    if cfg.snapshot_load {
-        let temp_dir = tempfile::tempdir().expect("create temp dir for KD-tree snapshot benchmark");
-        index.save_to_dir(temp_dir.path()).unwrap();
-        let index_bytes = dir_size_bytes(temp_dir.path()).ok();
-        let load_start = Instant::now();
-        let loaded = KDTreeIndex::load_from_dir(temp_dir.path()).unwrap();
-        let load_time_s = load_start.elapsed().as_secs_f64();
-        let loaded_result = evaluate(&|q, k| loaded.search(q, k).unwrap(), test, neighbors, 10);
-        if cfg.json {
-            emit_result(
-                &cfg.results_path,
-                &json_line_with_storage(
-                    "kdtree",
-                    &params_json,
-                    build_time_s,
-                    rss,
-                    &loaded_result,
-                    &snapshot_storage(load_time_s, index_bytes),
-                ),
-            );
-        } else {
-            print_row("snapshot_loaded", &loaded_result);
+            let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
+            let params_json = tree_params_json(params.max_leaf_size, params.max_depth);
+            let label = format!("leaf={} depth={}", params.max_leaf_size, params.max_depth);
+            if cfg.json {
+                emit_result(
+                    &cfg.results_path,
+                    &json_line("kdtree", &params_json, build_time_s, rss, &result),
+                );
+            } else {
+                print_row(&label, &result);
+            }
+
+            if cfg.snapshot_load {
+                let temp_dir =
+                    tempfile::tempdir().expect("create temp dir for KD-tree snapshot benchmark");
+                index.save_to_dir(temp_dir.path()).unwrap();
+                let index_bytes = dir_size_bytes(temp_dir.path()).ok();
+                let load_start = Instant::now();
+                let loaded = KDTreeIndex::load_from_dir(temp_dir.path()).unwrap();
+                let load_time_s = load_start.elapsed().as_secs_f64();
+                let loaded_result =
+                    evaluate(&|q, k| loaded.search(q, k).unwrap(), test, neighbors, 10);
+                if cfg.json {
+                    emit_result(
+                        &cfg.results_path,
+                        &json_line_with_storage(
+                            "kdtree",
+                            &params_json,
+                            build_time_s,
+                            rss,
+                            &loaded_result,
+                            &snapshot_storage(load_time_s, index_bytes),
+                        ),
+                    );
+                } else {
+                    print_row(&format!("{label} snapshot_loaded"), &loaded_result);
+                }
+            }
         }
     }
 
@@ -1826,64 +1826,62 @@ fn run_balltree(
 
     if !cfg.json {
         println!("--- Ball Tree ---");
-    }
-
-    let params = BallTreeParams::default();
-    let build_start = Instant::now();
-    let mut index = BallTreeIndex::new(dim, params.clone()).unwrap();
-    for (i, vec) in train.iter().enumerate() {
-        index.add(i as u32, vec.clone()).unwrap();
-    }
-    index.build().unwrap();
-    let build_time_s = build_start.elapsed().as_secs_f64();
-    let rss = current_rss_kb();
-
-    if !cfg.json {
-        println!(
-            "Build: {:.2}s ({:.0} vectors/sec)\n",
-            build_time_s,
-            train.len() as f64 / build_time_s
-        );
         print_header();
     }
 
-    let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
-    let params_json = format!(
-        "{{\"max_leaf_size\":{},\"max_depth\":{}}}",
-        params.max_leaf_size, params.max_depth
-    );
-    if cfg.json {
-        emit_result(
-            &cfg.results_path,
-            &json_line("balltree", &params_json, build_time_s, rss, &result),
-        );
-    } else {
-        print_row("--", &result);
-    }
+    for &max_leaf_size in &cfg.tree_leaf_sizes {
+        for &max_depth in &cfg.tree_depths {
+            let params = BallTreeParams {
+                max_leaf_size,
+                max_depth,
+            };
+            let build_start = Instant::now();
+            let mut index = BallTreeIndex::new(dim, params.clone()).unwrap();
+            for (i, vec) in train.iter().enumerate() {
+                index.add(i as u32, vec.clone()).unwrap();
+            }
+            index.build().unwrap();
+            let build_time_s = build_start.elapsed().as_secs_f64();
+            let rss = current_rss_kb();
 
-    if cfg.snapshot_load {
-        let temp_dir =
-            tempfile::tempdir().expect("create temp dir for Ball tree snapshot benchmark");
-        index.save_to_dir(temp_dir.path()).unwrap();
-        let index_bytes = dir_size_bytes(temp_dir.path()).ok();
-        let load_start = Instant::now();
-        let loaded = BallTreeIndex::load_from_dir(temp_dir.path()).unwrap();
-        let load_time_s = load_start.elapsed().as_secs_f64();
-        let loaded_result = evaluate(&|q, k| loaded.search(q, k).unwrap(), test, neighbors, 10);
-        if cfg.json {
-            emit_result(
-                &cfg.results_path,
-                &json_line_with_storage(
-                    "balltree",
-                    &params_json,
-                    build_time_s,
-                    rss,
-                    &loaded_result,
-                    &snapshot_storage(load_time_s, index_bytes),
-                ),
-            );
-        } else {
-            print_row("snapshot_loaded", &loaded_result);
+            let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
+            let params_json = tree_params_json(params.max_leaf_size, params.max_depth);
+            let label = format!("leaf={} depth={}", params.max_leaf_size, params.max_depth);
+            if cfg.json {
+                emit_result(
+                    &cfg.results_path,
+                    &json_line("balltree", &params_json, build_time_s, rss, &result),
+                );
+            } else {
+                print_row(&label, &result);
+            }
+
+            if cfg.snapshot_load {
+                let temp_dir =
+                    tempfile::tempdir().expect("create temp dir for Ball tree snapshot benchmark");
+                index.save_to_dir(temp_dir.path()).unwrap();
+                let index_bytes = dir_size_bytes(temp_dir.path()).ok();
+                let load_start = Instant::now();
+                let loaded = BallTreeIndex::load_from_dir(temp_dir.path()).unwrap();
+                let load_time_s = load_start.elapsed().as_secs_f64();
+                let loaded_result =
+                    evaluate(&|q, k| loaded.search(q, k).unwrap(), test, neighbors, 10);
+                if cfg.json {
+                    emit_result(
+                        &cfg.results_path,
+                        &json_line_with_storage(
+                            "balltree",
+                            &params_json,
+                            build_time_s,
+                            rss,
+                            &loaded_result,
+                            &snapshot_storage(load_time_s, index_bytes),
+                        ),
+                    );
+                } else {
+                    print_row(&format!("{label} snapshot_loaded"), &loaded_result);
+                }
+            }
         }
     }
 
@@ -1911,61 +1909,63 @@ fn run_rptree(
         println!("--- Random Projection Tree ---");
     }
 
-    let params = RPTreeParams::default();
-    let build_start = Instant::now();
-    let mut index = RPTreeIndex::new(dim, params.clone()).unwrap();
-    for (i, vec) in train.iter().enumerate() {
-        index.add(i as u32, vec.clone()).unwrap();
-    }
-    index.build().unwrap();
-    let build_time_s = build_start.elapsed().as_secs_f64();
-    let rss = current_rss_kb();
-
     if !cfg.json {
-        println!(
-            "Build: {:.2}s ({:.0} vectors/sec)\n",
-            build_time_s,
-            train.len() as f64 / build_time_s
-        );
         print_header();
     }
 
-    let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
-    let params_json = format!(
-        "{{\"max_leaf_size\":{},\"max_depth\":{}}}",
-        params.max_leaf_size, params.max_depth
-    );
-    if cfg.json {
-        emit_result(
-            &cfg.results_path,
-            &json_line("rptree", &params_json, build_time_s, rss, &result),
-        );
-    } else {
-        print_row("--", &result);
-    }
+    for &max_leaf_size in &cfg.tree_leaf_sizes {
+        for &max_depth in &cfg.tree_depths {
+            let params = RPTreeParams {
+                max_leaf_size,
+                max_depth,
+            };
+            let build_start = Instant::now();
+            let mut index = RPTreeIndex::new(dim, params.clone()).unwrap();
+            for (i, vec) in train.iter().enumerate() {
+                index.add(i as u32, vec.clone()).unwrap();
+            }
+            index.build().unwrap();
+            let build_time_s = build_start.elapsed().as_secs_f64();
+            let rss = current_rss_kb();
 
-    if cfg.snapshot_load {
-        let temp_dir = tempfile::tempdir().expect("create temp dir for RP-tree snapshot benchmark");
-        index.save_to_dir(temp_dir.path()).unwrap();
-        let index_bytes = dir_size_bytes(temp_dir.path()).ok();
-        let load_start = Instant::now();
-        let loaded = RPTreeIndex::load_from_dir(temp_dir.path()).unwrap();
-        let load_time_s = load_start.elapsed().as_secs_f64();
-        let loaded_result = evaluate(&|q, k| loaded.search(q, k).unwrap(), test, neighbors, 10);
-        if cfg.json {
-            emit_result(
-                &cfg.results_path,
-                &json_line_with_storage(
-                    "rptree",
-                    &params_json,
-                    build_time_s,
-                    rss,
-                    &loaded_result,
-                    &snapshot_storage(load_time_s, index_bytes),
-                ),
-            );
-        } else {
-            print_row("snapshot_loaded", &loaded_result);
+            let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
+            let params_json = tree_params_json(params.max_leaf_size, params.max_depth);
+            let label = format!("leaf={} depth={}", params.max_leaf_size, params.max_depth);
+            if cfg.json {
+                emit_result(
+                    &cfg.results_path,
+                    &json_line("rptree", &params_json, build_time_s, rss, &result),
+                );
+            } else {
+                print_row(&label, &result);
+            }
+
+            if cfg.snapshot_load {
+                let temp_dir =
+                    tempfile::tempdir().expect("create temp dir for RP-tree snapshot benchmark");
+                index.save_to_dir(temp_dir.path()).unwrap();
+                let index_bytes = dir_size_bytes(temp_dir.path()).ok();
+                let load_start = Instant::now();
+                let loaded = RPTreeIndex::load_from_dir(temp_dir.path()).unwrap();
+                let load_time_s = load_start.elapsed().as_secs_f64();
+                let loaded_result =
+                    evaluate(&|q, k| loaded.search(q, k).unwrap(), test, neighbors, 10);
+                if cfg.json {
+                    emit_result(
+                        &cfg.results_path,
+                        &json_line_with_storage(
+                            "rptree",
+                            &params_json,
+                            build_time_s,
+                            rss,
+                            &loaded_result,
+                            &snapshot_storage(load_time_s, index_bytes),
+                        ),
+                    );
+                } else {
+                    print_row(&format!("{label} snapshot_loaded"), &loaded_result);
+                }
+            }
         }
     }
 
@@ -1982,7 +1982,7 @@ fn run_rp_forest(
     neighbors: &[Vec<i32>],
     dim: usize,
 ) {
-    use vicinity::classic::trees::rp_forest::{RpForestIndex, RpForestParams};
+    use vicinity::classic::trees::rp_forest::{RPTreeParams, RpForestIndex, RpForestParams};
 
     if cfg.is_euclidean {
         eprintln!("rp_forest: skipping (cosine-only search, dataset is euclidean)");
@@ -1993,62 +1993,67 @@ fn run_rp_forest(
         println!("--- Random Projection Forest ---");
     }
 
-    let params = RpForestParams::default();
-    let build_start = Instant::now();
-    let mut index = RpForestIndex::new(dim, params.clone()).unwrap();
-    for (i, vec) in train.iter().enumerate() {
-        index.add(i as u32, vec.clone()).unwrap();
-    }
-    index.build().unwrap();
-    let build_time_s = build_start.elapsed().as_secs_f64();
-    let rss = current_rss_kb();
-
     if !cfg.json {
-        println!(
-            "Build: {:.2}s ({:.0} vectors/sec)\n",
-            build_time_s,
-            train.len() as f64 / build_time_s
-        );
         print_header();
     }
 
-    let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
-    let params_json = format!(
-        "{{\"num_trees\":{},\"max_leaf_size\":{}}}",
-        params.num_trees, params.tree_params.max_leaf_size
-    );
-    if cfg.json {
-        emit_result(
-            &cfg.results_path,
-            &json_line("rp_forest", &params_json, build_time_s, rss, &result),
-        );
-    } else {
-        print_row("--", &result);
-    }
+    for &num_trees in &cfg.rp_num_trees {
+        for &max_leaf_size in &cfg.tree_leaf_sizes {
+            let params = RpForestParams {
+                num_trees,
+                tree_params: RPTreeParams { max_leaf_size },
+            };
+            let build_start = Instant::now();
+            let mut index = RpForestIndex::new(dim, params.clone()).unwrap();
+            for (i, vec) in train.iter().enumerate() {
+                index.add(i as u32, vec.clone()).unwrap();
+            }
+            index.build().unwrap();
+            let build_time_s = build_start.elapsed().as_secs_f64();
+            let rss = current_rss_kb();
 
-    if cfg.snapshot_load {
-        let temp_dir =
-            tempfile::tempdir().expect("create temp dir for RP-forest snapshot benchmark");
-        index.save_to_dir(temp_dir.path()).unwrap();
-        let index_bytes = dir_size_bytes(temp_dir.path()).ok();
-        let load_start = Instant::now();
-        let loaded = RpForestIndex::load_from_dir(temp_dir.path()).unwrap();
-        let load_time_s = load_start.elapsed().as_secs_f64();
-        let loaded_result = evaluate(&|q, k| loaded.search(q, k).unwrap(), test, neighbors, 10);
-        if cfg.json {
-            emit_result(
-                &cfg.results_path,
-                &json_line_with_storage(
-                    "rp_forest",
-                    &params_json,
-                    build_time_s,
-                    rss,
-                    &loaded_result,
-                    &snapshot_storage(load_time_s, index_bytes),
-                ),
+            let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
+            let params_json =
+                rp_forest_params_json(params.num_trees, params.tree_params.max_leaf_size);
+            let label = format!(
+                "trees={} leaf={}",
+                params.num_trees, params.tree_params.max_leaf_size
             );
-        } else {
-            print_row("snapshot_loaded", &loaded_result);
+            if cfg.json {
+                emit_result(
+                    &cfg.results_path,
+                    &json_line("rp_forest", &params_json, build_time_s, rss, &result),
+                );
+            } else {
+                print_row(&label, &result);
+            }
+
+            if cfg.snapshot_load {
+                let temp_dir =
+                    tempfile::tempdir().expect("create temp dir for RP-forest snapshot benchmark");
+                index.save_to_dir(temp_dir.path()).unwrap();
+                let index_bytes = dir_size_bytes(temp_dir.path()).ok();
+                let load_start = Instant::now();
+                let loaded = RpForestIndex::load_from_dir(temp_dir.path()).unwrap();
+                let load_time_s = load_start.elapsed().as_secs_f64();
+                let loaded_result =
+                    evaluate(&|q, k| loaded.search(q, k).unwrap(), test, neighbors, 10);
+                if cfg.json {
+                    emit_result(
+                        &cfg.results_path,
+                        &json_line_with_storage(
+                            "rp_forest",
+                            &params_json,
+                            build_time_s,
+                            rss,
+                            &loaded_result,
+                            &snapshot_storage(load_time_s, index_bytes),
+                        ),
+                    );
+                } else {
+                    print_row(&format!("{label} snapshot_loaded"), &loaded_result);
+                }
+            }
         }
     }
 
@@ -2071,62 +2076,80 @@ fn run_kmeans_tree(
         println!("--- K-Means Tree ---");
     }
 
-    let params = KMeansTreeParams::default();
-    let build_start = Instant::now();
-    let mut index = KMeansTreeIndex::new(dim, params.clone()).unwrap();
-    for (i, vec) in train.iter().enumerate() {
-        index.add(i as u32, vec.clone()).unwrap();
-    }
-    index.build().unwrap();
-    let build_time_s = build_start.elapsed().as_secs_f64();
-    let rss = current_rss_kb();
-
     if !cfg.json {
-        println!(
-            "Build: {:.2}s ({:.0} vectors/sec)\n",
-            build_time_s,
-            train.len() as f64 / build_time_s
-        );
         print_header();
     }
 
-    let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
-    let params_json = format!(
-        "{{\"num_clusters\":{},\"max_leaf_size\":{},\"max_depth\":{},\"max_iterations\":{}}}",
-        params.num_clusters, params.max_leaf_size, params.max_depth, params.max_iterations
-    );
-    if cfg.json {
-        emit_result(
-            &cfg.results_path,
-            &json_line("kmeans_tree", &params_json, build_time_s, rss, &result),
-        );
-    } else {
-        print_row("--", &result);
-    }
+    for &num_clusters in &cfg.kmeans_clusters {
+        for &max_leaf_size in &cfg.kmeans_leaf_sizes {
+            for &max_depth in &cfg.kmeans_depths {
+                for &max_iterations in &cfg.kmeans_iters {
+                    let params = KMeansTreeParams {
+                        num_clusters,
+                        max_leaf_size,
+                        max_depth,
+                        max_iterations,
+                    };
+                    let build_start = Instant::now();
+                    let mut index = KMeansTreeIndex::new(dim, params.clone()).unwrap();
+                    for (i, vec) in train.iter().enumerate() {
+                        index.add(i as u32, vec.clone()).unwrap();
+                    }
+                    index.build().unwrap();
+                    let build_time_s = build_start.elapsed().as_secs_f64();
+                    let rss = current_rss_kb();
 
-    if cfg.snapshot_load {
-        let temp_dir =
-            tempfile::tempdir().expect("create temp dir for K-means tree snapshot benchmark");
-        index.save_to_dir(temp_dir.path()).unwrap();
-        let index_bytes = dir_size_bytes(temp_dir.path()).ok();
-        let load_start = Instant::now();
-        let loaded = KMeansTreeIndex::load_from_dir(temp_dir.path()).unwrap();
-        let load_time_s = load_start.elapsed().as_secs_f64();
-        let loaded_result = evaluate(&|q, k| loaded.search(q, k).unwrap(), test, neighbors, 10);
-        if cfg.json {
-            emit_result(
-                &cfg.results_path,
-                &json_line_with_storage(
-                    "kmeans_tree",
-                    &params_json,
-                    build_time_s,
-                    rss,
-                    &loaded_result,
-                    &snapshot_storage(load_time_s, index_bytes),
-                ),
-            );
-        } else {
-            print_row("snapshot_loaded", &loaded_result);
+                    let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
+                    let params_json = kmeans_tree_params_json(
+                        params.num_clusters,
+                        params.max_leaf_size,
+                        params.max_depth,
+                        params.max_iterations,
+                    );
+                    let label = format!(
+                        "clusters={} leaf={} depth={} iters={}",
+                        params.num_clusters,
+                        params.max_leaf_size,
+                        params.max_depth,
+                        params.max_iterations
+                    );
+                    if cfg.json {
+                        emit_result(
+                            &cfg.results_path,
+                            &json_line("kmeans_tree", &params_json, build_time_s, rss, &result),
+                        );
+                    } else {
+                        print_row(&label, &result);
+                    }
+
+                    if cfg.snapshot_load {
+                        let temp_dir = tempfile::tempdir()
+                            .expect("create temp dir for K-means tree snapshot benchmark");
+                        index.save_to_dir(temp_dir.path()).unwrap();
+                        let index_bytes = dir_size_bytes(temp_dir.path()).ok();
+                        let load_start = Instant::now();
+                        let loaded = KMeansTreeIndex::load_from_dir(temp_dir.path()).unwrap();
+                        let load_time_s = load_start.elapsed().as_secs_f64();
+                        let loaded_result =
+                            evaluate(&|q, k| loaded.search(q, k).unwrap(), test, neighbors, 10);
+                        if cfg.json {
+                            emit_result(
+                                &cfg.results_path,
+                                &json_line_with_storage(
+                                    "kmeans_tree",
+                                    &params_json,
+                                    build_time_s,
+                                    rss,
+                                    &loaded_result,
+                                    &snapshot_storage(load_time_s, index_bytes),
+                                ),
+                            );
+                        } else {
+                            print_row(&format!("{label} snapshot_loaded"), &loaded_result);
+                        }
+                    }
+                }
+            }
         }
     }
 

@@ -134,6 +134,7 @@ cargo run --example ann_benchmark --release --features hnsw -- \
 cargo run --example ann_benchmark --release --features kdtree,balltree,rptree,kmeans_tree -- \
   data/ann-benchmarks/glove-25-angular \
   --algo kdtree --algo balltree --algo rptree --algo rp_forest --algo kmeans_tree \
+  --tree-leaf-sizes 10,50 --rp-num-trees 10,20 --kmeans-clusters 8,16 \
   --snapshot-load --json
 
 # Lower-recall HNSW accelerator comparison
