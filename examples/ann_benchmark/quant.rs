@@ -3,14 +3,16 @@
 use std::time::Instant;
 
 use crate::support::{
-    current_rss_kb, emit_result, evaluate, ivfpq_params_json, json_line, nprobe_values,
-    print_header, print_row, Config,
+    current_rss_kb, emit_result, evaluate, json_line, nprobe_values, print_header, print_row,
+    Config,
 };
 
 #[cfg(feature = "ivf_pq")]
+use crate::support::ivfpq_params_json;
+#[cfg(any(feature = "ivf_pq", feature = "ivf_avq", feature = "ivf_rabitq"))]
 use crate::support::{dir_size_bytes, json_line_with_storage, ResultStorage};
 
-#[cfg(feature = "ivf_pq")]
+#[cfg(any(feature = "ivf_pq", feature = "ivf_avq", feature = "ivf_rabitq"))]
 fn snapshot_storage(load_time_s: f64, index_bytes: Option<u64>) -> ResultStorage<'static> {
     ResultStorage {
         storage_mode: "snapshot_loaded",
@@ -271,6 +273,17 @@ pub(crate) fn run_ivf_avq(
     index.build().unwrap();
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
+    let mut snapshot_index = if cfg.snapshot_load {
+        let temp_dir = tempfile::tempdir().expect("create temp dir for IVF-AVQ snapshot benchmark");
+        index.save_to_dir(temp_dir.path()).unwrap();
+        let index_bytes = dir_size_bytes(temp_dir.path()).ok();
+        let load_start = Instant::now();
+        let loaded = IVFAVQIndex::load_from_dir(temp_dir.path()).unwrap();
+        let load_time_s = load_start.elapsed().as_secs_f64();
+        Some((temp_dir, loaded, load_time_s, index_bytes))
+    } else {
+        None
+    };
 
     if !cfg.json {
         println!(
@@ -295,6 +308,30 @@ pub(crate) fn run_ivf_avq(
             );
         } else {
             print_row(&format!("np={}", nprobe), &result);
+        }
+
+        if let Some((_temp_dir, loaded, load_time_s, index_bytes)) = snapshot_index.as_mut() {
+            loaded.set_nprobe(nprobe);
+            let loaded_result = evaluate(&|q, k| loaded.search(q, k).unwrap(), test, neighbors, 10);
+            let params_json = format!(
+                "{{\"num_partitions\":{},\"num_codebooks\":{},\"codebook_size\":{},\"nprobe\":{},\"num_reorder\":{}}}",
+                num_partitions, num_codebooks, codebook_size, nprobe, num_reorder
+            );
+            if cfg.json {
+                emit_result(
+                    &cfg.results_path,
+                    &json_line_with_storage(
+                        "ivf_avq",
+                        &params_json,
+                        build_time_s,
+                        rss,
+                        &loaded_result,
+                        &snapshot_storage(*load_time_s, *index_bytes),
+                    ),
+                );
+            } else {
+                print_row(&format!("np={} snapshot_loaded", nprobe), &loaded_result);
+            }
         }
     }
 
@@ -337,6 +374,18 @@ pub(crate) fn run_ivf_rabitq(
     index.build().unwrap();
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
+    let mut snapshot_index = if cfg.snapshot_load {
+        let temp_dir =
+            tempfile::tempdir().expect("create temp dir for IVF-RaBitQ snapshot benchmark");
+        index.save_to_dir(temp_dir.path()).unwrap();
+        let index_bytes = dir_size_bytes(temp_dir.path()).ok();
+        let load_start = Instant::now();
+        let loaded = IVFRaBitQIndex::load_from_dir(temp_dir.path()).unwrap();
+        let load_time_s = load_start.elapsed().as_secs_f64();
+        Some((temp_dir, loaded, load_time_s, index_bytes))
+    } else {
+        None
+    };
 
     if !cfg.json {
         println!(
@@ -361,6 +410,30 @@ pub(crate) fn run_ivf_rabitq(
             );
         } else {
             print_row(&format!("np={}", nprobe), &result);
+        }
+
+        if let Some((_temp_dir, loaded, load_time_s, index_bytes)) = snapshot_index.as_mut() {
+            loaded.set_nprobe(nprobe);
+            let loaded_result = evaluate(&|q, k| loaded.search(q, k).unwrap(), test, neighbors, 10);
+            let params_json = format!(
+                "{{\"num_clusters\":{},\"total_bits\":4,\"nprobe\":{}}}",
+                num_clusters, nprobe
+            );
+            if cfg.json {
+                emit_result(
+                    &cfg.results_path,
+                    &json_line_with_storage(
+                        "ivf_rabitq",
+                        &params_json,
+                        build_time_s,
+                        rss,
+                        &loaded_result,
+                        &snapshot_storage(*load_time_s, *index_bytes),
+                    ),
+                );
+            } else {
+                print_row(&format!("np={} snapshot_loaded", nprobe), &loaded_result);
+            }
         }
     }
 

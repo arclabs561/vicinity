@@ -513,26 +513,28 @@ fn required_result_checks(
                 .unwrap_or(1);
             nprobe_values(cfg, num_partitions)
                 .into_iter()
-                .map(|nprobe| {
-                    ExpectedResult::with_params(
+                .flat_map(|nprobe| {
+                    snapshot_check(
                         "ivf_avq",
                         &format!(
                             "{{\"num_partitions\":{},\"num_codebooks\":{},\"codebook_size\":256,\"nprobe\":{},\"num_reorder\":100}}",
                             num_partitions, num_codebooks, nprobe
                         ),
+                        cfg,
                     )
                 })
                 .collect()
         }
         "ivf_rabitq" => nprobe_values(cfg, 256)
             .into_iter()
-            .map(|nprobe| {
-                ExpectedResult::with_params(
+            .flat_map(|nprobe| {
+                snapshot_check(
                     "ivf_rabitq",
                     &format!(
                         "{{\"num_clusters\":256,\"total_bits\":4,\"nprobe\":{}}}",
                         nprobe
                     ),
+                    cfg,
                 )
             })
             .collect(),
@@ -1172,7 +1174,9 @@ pub(crate) fn current_rss_kb() -> Option<u64> {
 #[cfg(any(
     feature = "balltree",
     feature = "diskann",
+    feature = "ivf_avq",
     feature = "ivf_pq",
+    feature = "ivf_rabitq",
     feature = "kdtree",
     feature = "kmeans_tree",
     feature = "rptree"
@@ -1461,6 +1465,61 @@ mod tests {
         ));
         assert!(request_completed(
             &completed, "kdtree", &cfg, 25, 1_000, 100
+        ));
+    }
+
+    #[test]
+    fn ivf_snapshot_resume_requires_snapshot_storage_rows() {
+        let cfg = Config {
+            snapshot_load: true,
+            pq_nprobe_values: Some(vec![1]),
+            ..Config::default()
+        };
+        let avq_params = "{\"num_partitions\":256,\"num_codebooks\":16,\"codebook_size\":256,\"nprobe\":1,\"num_reorder\":100}";
+        let rabitq_params = "{\"num_clusters\":256,\"total_bits\":4,\"nprobe\":1}";
+        let missing_snapshot = CompletedResults {
+            lines: vec![
+                single_line_with_storage("ivf_avq", avq_params, "in_memory"),
+                single_line_with_storage("ivf_rabitq", rabitq_params, "in_memory"),
+            ],
+            ..CompletedResults::default()
+        };
+        let completed = CompletedResults {
+            lines: vec![
+                single_line_with_storage("ivf_avq", avq_params, "in_memory"),
+                single_line_with_storage("ivf_avq", avq_params, "snapshot_loaded"),
+                single_line_with_storage("ivf_rabitq", rabitq_params, "in_memory"),
+                single_line_with_storage("ivf_rabitq", rabitq_params, "snapshot_loaded"),
+            ],
+            ..CompletedResults::default()
+        };
+
+        assert!(!request_completed(
+            &missing_snapshot,
+            "ivf_avq",
+            &cfg,
+            128,
+            2_000,
+            200
+        ));
+        assert!(!request_completed(
+            &missing_snapshot,
+            "ivf_rabitq",
+            &cfg,
+            128,
+            2_000,
+            200
+        ));
+        assert!(request_completed(
+            &completed, "ivf_avq", &cfg, 128, 2_000, 200
+        ));
+        assert!(request_completed(
+            &completed,
+            "ivf_rabitq",
+            &cfg,
+            128,
+            2_000,
+            200
         ));
     }
 

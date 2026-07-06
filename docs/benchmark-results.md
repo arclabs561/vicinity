@@ -99,7 +99,7 @@ families that accept dense `Vec<f32>` input:
 | Area | Algorithms / rows | Eval path |
 | --- | --- | --- |
 | Graph search | HNSW, NSW, Vamana, DiskANN, NSG, SNG, EMG, PiPNN, FINGER, FreshGraph | `ann_benchmark --algo ...` |
-| IVF / quantized search | IVF-PQ, IVF-PQ rerank, IVF-AVQ, IVF-RaBitQ, RP-Quant, BinaryIndex | `ann_benchmark --algo ...`; IVF-PQ also supports sampled training and snapshot-loaded rows |
+| IVF / quantized search | IVF-PQ, IVF-PQ rerank, IVF-AVQ, IVF-RaBitQ, RP-Quant, BinaryIndex | `ann_benchmark --algo ...`; IVF-PQ supports sampled training; IVF-PQ, IVF-AVQ, and IVF-RaBitQ support snapshot-loaded rows |
 | Quantized HNSW accelerators | SQ4U, SQ8U, SymphonyQG, SymphonyQG-VR, ADSampling, HNSW-PRT | `ann_benchmark --algo ...` |
 | Filtering | FilteredGraph, RangeFiltered, Curator, ACORN | dense rows via `ann_benchmark`; selectivity curves via `acorn_selectivity` |
 | Classical baselines | KD-tree, Ball tree, RP-tree, RP-forest, K-means tree, brute force | `ann_benchmark --algo ...`; tree rows can add `--snapshot-load` |
