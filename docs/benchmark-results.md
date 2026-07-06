@@ -80,6 +80,41 @@ Methods with both in-memory and file-backed search should report separate
 `storage_mode=mmap` rows. File and mmap rows should also report `load_time_s`
 and `index_bytes` when the runner opens a saved index.
 
+### IVF-PQ sampled-training diagnostic (2026-07-06)
+
+Command:
+
+```bash
+cargo run --example ann_benchmark --release --features ivf_pq,hnsw -- \
+  data/ann-benchmarks/glove-25-angular --algo ivfpq \
+  --pq-clusters 1024 --pq-codebooks 25 --pq-codebook-size 256 \
+  --pq-training-sample-size 100000 --pq-kmeans-max-iter 20 \
+  --pq-nprobes 16,32,64 --pq-rerank-pools 500,5000 \
+  --results /tmp/vicinity-ivfpq-glove25-cb25-sampled.jsonl --fresh --json
+```
+
+Build: 71.37s, RSS 643,904 KB, `rustc 1.95.0`. These rows are in-memory,
+warm-after-build search on GloVe-25.
+
+| nprobe | Rerank pool | Recall@10 | QPS | p95 us |
+|--------|-------------|-----------|-----|--------|
+| 16 | none | 91.60% | 1,034.5 | 1,399.9 |
+| 16 | 500 | 92.43% | 1,016.6 | 1,409.6 |
+| 16 | 5,000 | 92.43% | 826.5 | 1,657.0 |
+| 32 | none | 95.64% | 526.7 | 2,569.8 |
+| 32 | 500 | 96.69% | 517.6 | 2,614.2 |
+| 32 | 5,000 | 96.69% | 471.7 | 2,797.4 |
+| 64 | none | 97.68% | 266.9 | 4,760.1 |
+| 64 | 500 | 98.91% | 265.2 | 4,783.3 |
+| 64 | 5,000 | 98.91% | 252.3 | 4,963.0 |
+
+Interpretation: sampled training is not the recall blocker when the PQ shape
+has enough capacity. The earlier `cb=5, codebook_size=16` recipe was a
+memory-stress configuration and saturates at low recall on GloVe-25. With
+`cb=25, codebook_size=256`, recall crosses 95% at `nprobe=32`. The remaining
+gap versus FAISS-style IVF-PQ targets is QPS, so the next optimization target is
+the ADC/FastScan scan path and candidate-selection cost, not larger rerank pools.
+
 ## GloVe-25 (1.18M vectors, 25-d, angular distance)
 
 Ground truth: brute-force k-NN on L2-normalized vectors (angular ≡ cosine for unit vectors).
