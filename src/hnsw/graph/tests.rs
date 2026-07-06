@@ -188,6 +188,7 @@ fn test_hnsw_save_load_roundtrip() {
         loaded.doc_id_to_internal.len(),
         index.doc_id_to_internal.len()
     );
+    assert_eq!(loaded.entry_point(), index.entry_point());
 
     // Search the loaded index and compare results.
     let loaded_results = loaded.search(&q, k, ef).unwrap();
@@ -195,6 +196,14 @@ fn test_hnsw_save_load_roundtrip() {
         loaded_results, original_results,
         "search results should be identical after save/load roundtrip"
     );
+
+    #[cfg(any(feature = "persistence", feature = "store"))]
+    {
+        let postcard = index.to_postcard().unwrap();
+        let loaded = HNSWIndex::from_postcard(&postcard).unwrap();
+        assert_eq!(loaded.entry_point(), index.entry_point());
+        assert_eq!(loaded.search(&q, k, ef).unwrap(), original_results);
+    }
 }
 
 /// Round-trip via the path-based API (covers `save_to_file` /

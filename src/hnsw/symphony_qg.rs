@@ -41,6 +41,8 @@
 use crate::hnsw::graph::HNSWIndex;
 use crate::RetrieveError;
 use qntz::rabitq::{QuantizedVector, RaBitQConfig, RaBitQQuantizer};
+#[cfg(feature = "serde")]
+use std::path::Path;
 
 /// HNSW index with RaBitQ quantized graph traversal.
 ///
@@ -127,6 +129,50 @@ impl SymphonyQGIndex {
         self.index.build()?;
         self.quantize_vectors()?;
         Ok(())
+    }
+
+    /// Save a built SymphonyQG index to a directory.
+    ///
+    /// The format stores the underlying HNSW index and rebuilds RaBitQ state on
+    /// load from the saved raw vectors.
+    #[cfg(feature = "serde")]
+    pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<(), RetrieveError> {
+        if !self.index.is_built() || !self.quantized_built {
+            return Err(RetrieveError::InvalidParameter(
+                "cannot save unbuilt SymphonyQG index".into(),
+            ));
+        }
+
+        let output_dir = output_dir.as_ref();
+        std::fs::create_dir_all(output_dir)?;
+        write_manifest(
+            &output_dir.join("manifest.json"),
+            SymphonyQGManifest {
+                magic: *b"VICSQG01",
+                version: 1,
+                rabitq_config: PersistedRaBitQConfig::from(self.rabitq_config),
+                seed: self.seed,
+            },
+        )?;
+        self.index.save_to_file(output_dir.join("hnsw.json"))
+    }
+
+    /// Load a SymphonyQG index saved by [`Self::save_to_dir`].
+    #[cfg(feature = "serde")]
+    pub fn load_from_dir(input_dir: impl AsRef<Path>) -> Result<Self, RetrieveError> {
+        let input_dir = input_dir.as_ref();
+        let manifest = read_manifest(&input_dir.join("manifest.json"), *b"VICSQG01")?;
+        let index = HNSWIndex::load_from_file(input_dir.join("hnsw.json"))?;
+        let mut loaded = Self {
+            index,
+            codes: Vec::new(),
+            quantizer: None,
+            rabitq_config: manifest.rabitq_config.into(),
+            seed: manifest.seed,
+            quantized_built: false,
+        };
+        loaded.quantize_vectors()?;
+        Ok(loaded)
     }
 
     /// Quantize all vectors using RaBitQ.
@@ -433,6 +479,69 @@ impl SymphonyQGVRIndex {
         Ok(())
     }
 
+    /// Save a built vertex-relative SymphonyQG index to a directory.
+    ///
+    /// Compacted indexes are rejected because this implementation still needs
+    /// raw parent vectors for upper-layer descent and base-layer parent terms.
+    #[cfg(feature = "serde")]
+    pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<(), RetrieveError> {
+        if !self.built {
+            return Err(RetrieveError::InvalidParameter(
+                "cannot save unbuilt SymphonyQG-VR index".into(),
+            ));
+        }
+        if self.is_compacted() {
+            return Err(RetrieveError::InvalidParameter(
+                "cannot save compacted SymphonyQG-VR index".into(),
+            ));
+        }
+
+        let output_dir = output_dir.as_ref();
+        std::fs::create_dir_all(output_dir)?;
+        write_manifest(
+            &output_dir.join("manifest.json"),
+            SymphonyQGManifest {
+                magic: *b"VICSQVR1",
+                version: 1,
+                rabitq_config: PersistedRaBitQConfig::from(self.rabitq_config),
+                seed: self.seed,
+            },
+        )?;
+        self.index.save_to_file(output_dir.join("hnsw.json"))
+    }
+
+    /// Load a vertex-relative SymphonyQG index saved by [`Self::save_to_dir`].
+    #[cfg(feature = "serde")]
+    pub fn load_from_dir(input_dir: impl AsRef<Path>) -> Result<Self, RetrieveError> {
+        let input_dir = input_dir.as_ref();
+        let manifest = read_manifest(&input_dir.join("manifest.json"), *b"VICSQVR1")?;
+        let index = HNSWIndex::load_from_file(input_dir.join("hnsw.json"))?;
+        let dimension = index.dimension;
+        let rabitq_config: RaBitQConfig = manifest.rabitq_config.into();
+        let total_bits = rabitq_config.total_bits;
+        let ex_bits = total_bits.saturating_sub(1);
+        let cb = -((1u32 << ex_bits) as f32 - 0.5);
+        let codes_per_byte = 8 / total_bits.max(1);
+        let packed_dim = dimension.div_ceil(codes_per_byte);
+        let mut loaded = Self {
+            index,
+            edge_scalars: Vec::new(),
+            packed_codes: Vec::new(),
+            packed_dim,
+            total_bits,
+            cb,
+            neighbor_offsets: Vec::new(),
+            quantizer: None,
+            rabitq_config,
+            seed: manifest.seed,
+            dimension,
+            built: false,
+        };
+        loaded.build_edge_codes()?;
+        loaded.built = true;
+        Ok(loaded)
+    }
+
     /// Build per-edge RaBitQ codes using vertex-relative centroids.
     fn build_edge_codes(&mut self) -> Result<(), RetrieveError> {
         let n = self.index.num_vectors;
@@ -596,6 +705,12 @@ impl SymphonyQGVRIndex {
     ) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built || self.index.num_vectors == 0 || self.index.layers.is_empty() {
             return Ok(Vec::new());
+        }
+        if self.is_compacted() {
+            return Err(RetrieveError::InvalidParameter(
+                "SymphonyQG-VR search currently requires raw vectors; compacted search is unavailable"
+                    .into(),
+            ));
         }
         if query.len() != self.dimension {
             return Err(RetrieveError::DimensionMismatch {
@@ -771,8 +886,11 @@ impl SymphonyQGVRIndex {
         0.0 // Refined by the beam search immediately
     }
 
-    /// Drop f32 vectors to reclaim memory. After compaction, `search_reranked`
-    /// is unavailable -- only quantized `search` works.
+    /// Drop f32 vectors to reclaim memory.
+    ///
+    /// Current vertex-relative search still needs raw parent vectors, so both
+    /// `search` and `search_reranked` reject compacted indexes until parent
+    /// distance state is stored separately.
     ///
     /// At d=960, 1M vectors, this saves 3.84 GB.
     pub fn compact(&mut self) {
@@ -850,6 +968,74 @@ impl SymphonyQGVRIndex {
             offsets_bytes: offsets,
         }
     }
+}
+
+#[cfg(feature = "serde")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct SymphonyQGManifest {
+    magic: [u8; 8],
+    version: u32,
+    rabitq_config: PersistedRaBitQConfig,
+    seed: u64,
+}
+
+#[cfg(feature = "serde")]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+struct PersistedRaBitQConfig {
+    total_bits: usize,
+    t_const: Option<f32>,
+}
+
+#[cfg(feature = "serde")]
+impl From<RaBitQConfig> for PersistedRaBitQConfig {
+    fn from(config: RaBitQConfig) -> Self {
+        Self {
+            total_bits: config.total_bits,
+            t_const: config.t_const,
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl From<PersistedRaBitQConfig> for RaBitQConfig {
+    fn from(config: PersistedRaBitQConfig) -> Self {
+        Self {
+            total_bits: config.total_bits,
+            t_const: config.t_const,
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+fn write_manifest(path: &Path, manifest: SymphonyQGManifest) -> Result<(), RetrieveError> {
+    let file = std::fs::File::create(path)?;
+    serde_json::to_writer_pretty(std::io::BufWriter::new(file), &manifest)
+        .map_err(|e| RetrieveError::FormatError(e.to_string()))
+}
+
+#[cfg(feature = "serde")]
+fn read_manifest(path: &Path, magic: [u8; 8]) -> Result<SymphonyQGManifest, RetrieveError> {
+    let file = std::fs::File::open(path)?;
+    let manifest: SymphonyQGManifest = serde_json::from_reader(std::io::BufReader::new(file))
+        .map_err(|e| RetrieveError::FormatError(e.to_string()))?;
+    if manifest.magic != magic {
+        return Err(RetrieveError::FormatError(
+            "invalid SymphonyQG snapshot magic".into(),
+        ));
+    }
+    if manifest.version != 1 {
+        return Err(RetrieveError::FormatError(format!(
+            "unsupported SymphonyQG snapshot version {}",
+            manifest.version
+        )));
+    }
+    if !(1..=8).contains(&manifest.rabitq_config.total_bits) {
+        return Err(RetrieveError::FormatError(format!(
+            "invalid RaBitQ total_bits {}",
+            manifest.rabitq_config.total_bits
+        )));
+    }
+    Ok(manifest)
 }
 
 /// Memory breakdown for [`SymphonyQGVRIndex`].
@@ -1014,6 +1200,29 @@ mod tests {
         let results = index.search_reranked(&q, 5, 32, 50).unwrap();
         assert!(!results.is_empty());
         assert_eq!(results[0].0, 0, "self-query should return doc_id 0");
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn save_load_roundtrip_preserves_symphony_qg_search() {
+        let dim = 32;
+        let n = 160;
+        let mut index = SymphonyQGIndex::new(dim, 8, 8).unwrap();
+        let vectors: Vec<Vec<f32>> = (0..n).map(|i| make_normalized_vector(i, dim)).collect();
+
+        for (i, v) in vectors.iter().enumerate() {
+            index.add_slice(10_000 + i as u32, v).unwrap();
+        }
+        index.build().unwrap();
+
+        let query = &vectors[3];
+        let before = index.search_reranked(query, 5, 64, 50).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        index.save_to_dir(dir.path()).unwrap();
+        let loaded = SymphonyQGIndex::load_from_dir(dir.path()).unwrap();
+
+        assert_eq!(loaded.search_reranked(query, 5, 64, 50).unwrap(), before);
+        assert_eq!(loaded.len(), index.len());
     }
 
     #[test]
@@ -1335,6 +1544,95 @@ mod tests {
             "VR L2 recall@10 too low: {}/10 overlap with brute-force",
             overlap
         );
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn save_load_roundtrip_preserves_symphony_qg_vr_search() {
+        use crate::distance::DistanceMetric;
+        use crate::hnsw::graph::HNSWParams;
+
+        let dim = 48;
+        let n = 160;
+        let vectors: Vec<Vec<f32>> = (0..n)
+            .map(|seed| {
+                let v: Vec<f32> = (0..dim)
+                    .map(|j| ((seed * dim + j) as f32 * 0.618_034).fract() * 2.0 - 1.0)
+                    .collect();
+                let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+                let target_norm = 5.0 + (seed as f32 % 5.0);
+                v.iter().map(|x| x * target_norm / norm).collect()
+            })
+            .collect();
+
+        let params = HNSWParams {
+            m: 12,
+            m_max: 24,
+            ef_construction: 120,
+            metric: DistanceMetric::L2,
+            seed: Some(42),
+            ..Default::default()
+        };
+        let mut index = SymphonyQGVRIndex::new(dim, params, RaBitQConfig::bits4(), 42).unwrap();
+        for (i, v) in vectors.iter().enumerate() {
+            index.add_slice(20_000 + i as u32, v).unwrap();
+        }
+        index.build().unwrap();
+
+        let query = &vectors[7];
+        let before = index.search_reranked(query, 5, 80, 40).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        index.save_to_dir(dir.path()).unwrap();
+        let loaded = SymphonyQGVRIndex::load_from_dir(dir.path()).unwrap();
+
+        assert_eq!(loaded.search_reranked(query, 5, 80, 40).unwrap(), before);
+        assert_eq!(loaded.len(), index.len());
+    }
+
+    #[test]
+    fn symphony_qg_vr_compacted_search_rejects_raw_vector_dependency() {
+        use crate::distance::DistanceMetric;
+        use crate::hnsw::graph::HNSWParams;
+
+        let dim = 32;
+        let n = 80;
+        let vectors: Vec<Vec<f32>> = (0..n)
+            .map(|seed| {
+                (0..dim)
+                    .map(|j| ((seed * dim + j) as f32 * 0.618_034).fract() * 2.0 - 1.0)
+                    .collect()
+            })
+            .collect();
+        let params = HNSWParams {
+            m: 8,
+            m_max: 16,
+            ef_construction: 80,
+            metric: DistanceMetric::L2,
+            seed: Some(42),
+            ..Default::default()
+        };
+        let mut index = SymphonyQGVRIndex::new(dim, params, RaBitQConfig::bits4(), 42).unwrap();
+        for (i, v) in vectors.iter().enumerate() {
+            index.add_slice(i as u32, v).unwrap();
+        }
+        index.build().unwrap();
+        index.compact();
+
+        let err = index.search(&vectors[0], 5, 40).unwrap_err();
+        assert!(
+            err.to_string().contains("requires raw vectors"),
+            "unexpected error: {err}"
+        );
+
+        #[cfg(feature = "serde")]
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let err = index.save_to_dir(dir.path()).unwrap_err();
+            assert!(
+                err.to_string().contains("compacted SymphonyQG-VR"),
+                "unexpected error: {err}"
+            );
+        }
     }
 
     /// Timing validation: measure build and search speed at moderate scale.

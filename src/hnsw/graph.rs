@@ -1272,6 +1272,7 @@ impl HNSWIndex {
             .enumerate()
             .map(|(i, &doc_id)| (doc_id, i as u32))
             .collect();
+        index.cached_entry_point = index.compute_entry_point();
 
         Ok(index)
     }
@@ -1308,6 +1309,7 @@ impl HNSWIndex {
             .enumerate()
             .map(|(i, &doc_id)| (doc_id, i as u32))
             .collect();
+        index.cached_entry_point = index.compute_entry_point();
         Ok(index)
     }
 
