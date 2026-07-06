@@ -37,6 +37,10 @@
 //! let reranked = index.search_reranked(&query, 10, 200)?;
 //! ```
 //!
+//! For large datasets, `build_with_training_sample(sample_size)` trains IVF centroids
+//! and PQ codebooks on a deterministic sample, then assigns and indexes every vector.
+//! This bounds k-means training cost without changing the searchable population.
+//!
 //! `search()` returns approximate IVF-PQ distances and works after [`IVFPQIndex::compact`].
 //! `search_reranked()` retrieves a larger approximate candidate pool, then recomputes exact
 //! distances over retained f32 vectors. Use it when recall matters more than the extra memory
@@ -113,6 +117,9 @@
 //! | num_clusters | Search speed | Training time, accuracy at edges |
 //! | num_codebooks | Accuracy | Memory, training time |
 //! | search_reranked candidate pool | Recall | Search latency, raw-vector memory |
+//!
+//! `build()` trains on all vectors. `build_with_training_sample()` trades some training
+//! fidelity for much shorter builds on million-scale and larger datasets.
 //!
 //! # When to Use
 //!

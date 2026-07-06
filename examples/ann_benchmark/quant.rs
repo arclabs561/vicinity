@@ -3,8 +3,8 @@
 use std::time::Instant;
 
 use crate::support::{
-    current_rss_kb, emit_result, evaluate, json_line, nprobe_values, print_header, print_row,
-    Config,
+    current_rss_kb, emit_result, evaluate, ivfpq_params_json, json_line, nprobe_values,
+    print_header, print_row, Config,
 };
 
 #[cfg(feature = "ivf_pq")]
@@ -67,7 +67,9 @@ pub(crate) fn run_ivfpq(
     for (i, vec) in train.iter().enumerate() {
         index.add_slice(i as u32, vec).unwrap();
     }
-    index.build().unwrap();
+    index
+        .build_with_training_options(cfg.pq_training_sample_size, cfg.pq_kmeans_max_iter)
+        .unwrap();
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
 
@@ -85,9 +87,14 @@ pub(crate) fn run_ivfpq(
         index.set_nprobe(nprobe);
         let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
         if cfg.json {
-            let params_json = format!(
-                "{{\"num_clusters\":{},\"num_codebooks\":{},\"codebook_size\":{},\"nprobe\":{}}}",
-                num_clusters, num_codebooks, codebook_size, nprobe
+            let params_json = ivfpq_params_json(
+                num_clusters,
+                num_codebooks,
+                codebook_size,
+                nprobe,
+                None,
+                cfg.pq_training_sample_size,
+                cfg.pq_kmeans_max_iter,
             );
             emit_result(
                 &cfg.results_path,
@@ -108,9 +115,14 @@ pub(crate) fn run_ivfpq(
                 10,
             );
             if cfg.json {
-                let params_json = format!(
-                    "{{\"num_clusters\":{},\"num_codebooks\":{},\"codebook_size\":{},\"nprobe\":{},\"rerank_pool\":{}}}",
-                    num_clusters, num_codebooks, codebook_size, nprobe, rerank_pool
+                let params_json = ivfpq_params_json(
+                    num_clusters,
+                    num_codebooks,
+                    codebook_size,
+                    nprobe,
+                    Some(rerank_pool),
+                    cfg.pq_training_sample_size,
+                    cfg.pq_kmeans_max_iter,
                 );
                 emit_result(
                     &cfg.results_path,

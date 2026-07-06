@@ -60,6 +60,16 @@ impl ProductQuantizer {
         num_vectors: usize,
         seed: Option<u64>,
     ) -> Result<(), RetrieveError> {
+        self.fit_with_seed_and_max_iter(vectors, num_vectors, seed, 100)
+    }
+
+    pub(crate) fn fit_with_seed_and_max_iter(
+        &mut self,
+        vectors: &[f32],
+        num_vectors: usize,
+        seed: Option<u64>,
+        max_iter: usize,
+    ) -> Result<(), RetrieveError> {
         let mut flat_codebooks =
             Vec::with_capacity(self.num_codebooks * self.codebook_size * self.subvector_dim);
         let mut actual_codebook_size = self.codebook_size;
@@ -79,7 +89,8 @@ impl ProductQuantizer {
             // PQ codebooks live in residual space where magnitude matters;
             // cosine k-means would normalize codewords to unit vectors and
             // break the L2 ADC approximation.
-            let mut kmeans = KMeansEuclidean::new(self.subvector_dim, self.codebook_size)?;
+            let mut kmeans = KMeansEuclidean::new(self.subvector_dim, self.codebook_size)?
+                .with_max_iter(max_iter);
             if let Some(seed) = seed {
                 kmeans = kmeans.with_seed(seed.wrapping_add(codebook_idx as u64));
             }

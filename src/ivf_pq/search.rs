@@ -4,6 +4,8 @@ use super::opq::OptimizedProductQuantizer;
 use super::pq::ProductQuantizer;
 use crate::pq_simd::{adc_batch_dispatch, PackedCodes4bit, PackedLUT};
 use crate::RetrieveError;
+use rand::seq::SliceRandom;
+use rand::SeedableRng;
 use serde::{Deserialize, Serialize};
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
@@ -16,6 +18,25 @@ const IVFPQ_CLUSTER_MAGIC: &[u8; 8] = b"VICIVF1\0";
 
 // flat_table_to_nested removed: PackedLUT::from_flat skips the intermediate allocation.
 
+fn default_kmeans_max_iter() -> usize {
+    100
+}
+
+#[derive(Clone, Copy, Debug)]
+struct IVFPQTrainingConfig {
+    sample_size: Option<usize>,
+    kmeans_max_iter: usize,
+}
+
+impl Default for IVFPQTrainingConfig {
+    fn default() -> Self {
+        Self {
+            sample_size: None,
+            kmeans_max_iter: default_kmeans_max_iter(),
+        }
+    }
+}
+
 fn normalize_query(query: &[f32]) -> Vec<f32> {
     let norm: f32 = query.iter().map(|x| x * x).sum::<f32>().sqrt();
     if norm > 1e-10 {
@@ -23,6 +44,15 @@ fn normalize_query(query: &[f32]) -> Vec<f32> {
     } else {
         query.to_vec()
     }
+}
+
+fn copy_rows_by_index(vectors: &[f32], dimension: usize, indices: &[usize]) -> Vec<f32> {
+    let mut out = Vec::with_capacity(indices.len() * dimension);
+    for &idx in indices {
+        let start = idx * dimension;
+        out.extend_from_slice(&vectors[start..start + dimension]);
+    }
+    out
 }
 
 /// Quantizer strategy.
@@ -515,6 +545,40 @@ impl IVFPQIndex {
 
     /// Build the index.
     pub fn build(&mut self) -> Result<(), RetrieveError> {
+        self.build_with_training_config(IVFPQTrainingConfig::default())
+    }
+
+    /// Build the index using a deterministic sample for IVF and PQ training.
+    ///
+    /// All inserted vectors are still assigned, quantized, and searchable. The
+    /// sample only bounds k-means training cost for large datasets.
+    pub fn build_with_training_sample(
+        &mut self,
+        training_sample_size: usize,
+    ) -> Result<(), RetrieveError> {
+        self.build_with_training_options(Some(training_sample_size), default_kmeans_max_iter())
+    }
+
+    /// Build the index with explicit IVF/PQ k-means training controls.
+    ///
+    /// `training_sample_size = None` trains on all inserted vectors, matching
+    /// [`Self::build`]. `kmeans_max_iter` applies to both the coarse IVF
+    /// k-means and the PQ codebook k-means calls.
+    pub fn build_with_training_options(
+        &mut self,
+        training_sample_size: Option<usize>,
+        kmeans_max_iter: usize,
+    ) -> Result<(), RetrieveError> {
+        self.build_with_training_config(IVFPQTrainingConfig {
+            sample_size: training_sample_size,
+            kmeans_max_iter,
+        })
+    }
+
+    fn build_with_training_config(
+        &mut self,
+        training: IVFPQTrainingConfig,
+    ) -> Result<(), RetrieveError> {
         if self.built {
             return Ok(());
         }
@@ -536,11 +600,47 @@ impl IVFPQIndex {
             )));
         }
 
+        if training.kmeans_max_iter == 0 {
+            return Err(RetrieveError::InvalidParameter(
+                "kmeans_max_iter must be greater than 0".into(),
+            ));
+        }
+
+        let training_indices = self.training_indices(training.sample_size)?;
+        let training_count = training_indices.len();
+        let min_training_count = self
+            .params
+            .num_clusters
+            .min(self.num_vectors)
+            .max(self.params.codebook_size);
+        if training_count < min_training_count {
+            return Err(RetrieveError::InvalidParameter(format!(
+                "IVF-PQ training sample is too small (got {}, need at least {} \
+                 for num_clusters={} and codebook_size={})",
+                training_count,
+                min_training_count,
+                self.params.num_clusters,
+                self.params.codebook_size
+            )));
+        }
+
+        let sampled_training = if training_count == self.num_vectors {
+            None
+        } else {
+            Some(copy_rows_by_index(
+                &self.vectors,
+                self.dimension,
+                &training_indices,
+            ))
+        };
+        let training_vectors = sampled_training.as_deref().unwrap_or(&self.vectors);
+
         // Stage 1: k-means clustering for IVF
         let mut kmeans =
             crate::partitioning::kmeans::KMeans::new(self.dimension, self.params.num_clusters)?
-                .with_seed(self.params.seed);
-        kmeans.fit(&self.vectors, self.num_vectors)?;
+                .with_seed(self.params.seed)
+                .with_max_iter(training.kmeans_max_iter);
+        kmeans.fit(training_vectors, training_count)?;
         // Flatten centroids to contiguous storage for cache-friendly access.
         self.centroids = kmeans
             .centroids()
@@ -663,7 +763,17 @@ impl IVFPQIndex {
                 self.params.num_codebooks,
                 self.params.codebook_size,
             )?;
-            opq.fit(&residuals, self.num_vectors, 10)?; // 10 iterations
+            let training_residuals = if training_count == self.num_vectors {
+                None
+            } else {
+                Some(copy_rows_by_index(
+                    &residuals,
+                    self.dimension,
+                    &training_indices,
+                ))
+            };
+            let opq_training = training_residuals.as_deref().unwrap_or(&residuals);
+            opq.fit(opq_training, training_count, 10)?; // 10 iterations
             Quantizer::Optimized(opq)
         } else {
             let mut pq = ProductQuantizer::new(
@@ -671,7 +781,22 @@ impl IVFPQIndex {
                 self.params.num_codebooks,
                 self.params.codebook_size,
             )?;
-            pq.fit_with_seed(&residuals, self.num_vectors, Some(self.params.seed))?;
+            let training_residuals = if training_count == self.num_vectors {
+                None
+            } else {
+                Some(copy_rows_by_index(
+                    &residuals,
+                    self.dimension,
+                    &training_indices,
+                ))
+            };
+            let pq_training = training_residuals.as_deref().unwrap_or(&residuals);
+            pq.fit_with_seed_and_max_iter(
+                pq_training,
+                training_count,
+                Some(self.params.seed),
+                training.kmeans_max_iter,
+            )?;
             Quantizer::Product(pq)
         };
 
@@ -687,6 +812,32 @@ impl IVFPQIndex {
         self.pq = Some(pq);
         self.built = true;
         Ok(())
+    }
+
+    fn training_indices(
+        &self,
+        training_sample_size: Option<usize>,
+    ) -> Result<Vec<usize>, RetrieveError> {
+        let Some(sample_size) = training_sample_size else {
+            return Ok((0..self.num_vectors).collect());
+        };
+
+        if sample_size == 0 {
+            return Err(RetrieveError::InvalidParameter(
+                "training_sample_size must be greater than 0".into(),
+            ));
+        }
+
+        if sample_size >= self.num_vectors {
+            return Ok((0..self.num_vectors).collect());
+        }
+
+        let mut indices: Vec<usize> = (0..self.num_vectors).collect();
+        let mut rng = rand::rngs::StdRng::seed_from_u64(self.params.seed);
+        indices.shuffle(&mut rng);
+        indices.truncate(sample_size);
+        indices.sort_unstable();
+        Ok(indices)
     }
 
     fn build_fastscan_cache(&mut self) {
@@ -1530,6 +1681,116 @@ mod tests {
                 .filter(|cluster| cluster.len() >= SIMD_BATCH_THRESHOLD)
                 .all(|cluster| cluster.fastscan_codes.is_some()),
             "clusters large enough for batched 4-bit search should be prepacked"
+        );
+    }
+
+    #[test]
+    fn sampled_training_is_deterministic_with_seed() {
+        let dim = 16;
+        let n = 180;
+        use rand::{Rng, SeedableRng};
+        let mut rng = rand::rngs::StdRng::seed_from_u64(15);
+        let vectors: Vec<Vec<f32>> = (0..n)
+            .map(|_| (0..dim).map(|_| rng.random::<f32>()).collect())
+            .collect();
+        let query: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
+
+        let build = || {
+            let params = IVFPQParams {
+                num_clusters: 8,
+                num_codebooks: 4,
+                codebook_size: 16,
+                nprobe: 8,
+                seed: 77,
+                ..IVFPQParams::default()
+            };
+            let mut index = IVFPQIndex::new(dim, params).unwrap();
+            for (i, vector) in vectors.iter().enumerate() {
+                index.add_slice(i as u32, vector).unwrap();
+            }
+            index.build_with_training_sample(64).unwrap();
+            #[cfg(feature = "hnsw")]
+            {
+                index.coarse_quantizer = None;
+            }
+            index
+        };
+
+        let a = build();
+        let b = build();
+        assert_eq!(a.centroids, b.centroids);
+        assert_eq!(a.quantized_codes, b.quantized_codes);
+        assert_eq!(a.search(&query, 10).unwrap(), b.search(&query, 10).unwrap());
+    }
+
+    #[test]
+    fn sampled_training_indexes_all_inserted_vectors() {
+        let dim = 16;
+        let n = 180;
+        use rand::{Rng, SeedableRng};
+        let mut rng = rand::rngs::StdRng::seed_from_u64(16);
+
+        let params = IVFPQParams {
+            num_clusters: 8,
+            num_codebooks: 4,
+            codebook_size: 16,
+            nprobe: 8,
+            seed: 88,
+            ..IVFPQParams::default()
+        };
+        let mut index = IVFPQIndex::new(dim, params).unwrap();
+        let mut vectors = Vec::new();
+        for i in 0..n {
+            let doc_id = 50_000 + i as u32;
+            let vector: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
+            index.add(doc_id, vector.clone()).unwrap();
+            vectors.push(vector);
+        }
+        index.build_with_training_sample(64).unwrap();
+
+        let query_idx = n - 1;
+        let results = index.search_reranked(&vectors[query_idx], 1, n).unwrap();
+        assert_eq!(results[0].0, 50_000 + query_idx as u32);
+    }
+
+    #[test]
+    fn save_load_sampled_training_preserves_search() {
+        let dim = 16;
+        let n = 180;
+        use rand::{Rng, SeedableRng};
+        let mut rng = rand::rngs::StdRng::seed_from_u64(17);
+
+        let params = IVFPQParams {
+            num_clusters: 8,
+            num_codebooks: 4,
+            codebook_size: 16,
+            nprobe: 8,
+            seed: 99,
+            ..IVFPQParams::default()
+        };
+        let mut index = IVFPQIndex::new(dim, params).unwrap();
+        for i in 0..n {
+            let vector: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
+            index.add(10_000 + i as u32, vector).unwrap();
+        }
+        index.build_with_training_options(Some(64), 5).unwrap();
+        #[cfg(feature = "hnsw")]
+        {
+            index.coarse_quantizer = None;
+        }
+
+        let query: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
+        let approx_before = index.search(&query, 10).unwrap();
+        let reranked_before = index.search_reranked(&query, 10, 80).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        index.save_to_dir(dir.path()).unwrap();
+        let loaded = IVFPQIndex::load_from_dir(dir.path()).unwrap();
+
+        assert_eq!(loaded.search(&query, 10).unwrap(), approx_before);
+        assert_eq!(
+            loaded.search_reranked(&query, 10, 80).unwrap(),
+            reranked_before
         );
     }
 

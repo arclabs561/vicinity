@@ -19,6 +19,8 @@ pub(crate) struct Config {
     pub(crate) pq_num_clusters: Option<usize>,
     pub(crate) pq_num_codebooks: Option<usize>,
     pub(crate) pq_codebook_size: usize,
+    pub(crate) pq_training_sample_size: Option<usize>,
+    pub(crate) pq_kmeans_max_iter: usize,
     pub(crate) pq_rerank_pools: Vec<usize>,
     pub(crate) batch: bool,
     pub(crate) resume: bool,
@@ -41,6 +43,8 @@ impl Default for Config {
             pq_num_clusters: None,
             pq_num_codebooks: None,
             pq_codebook_size: 256,
+            pq_training_sample_size: None,
+            pq_kmeans_max_iter: 100,
             pq_rerank_pools: Vec::new(),
             batch: false,
             resume: false,
@@ -297,9 +301,14 @@ fn required_result_checks(
                 .flat_map(|nprobe| {
                     let mut markers = vec![ExpectedResult::with_params(
                         "ivfpq",
-                        &format!(
-                            "{{\"num_clusters\":{},\"num_codebooks\":{},\"codebook_size\":{},\"nprobe\":{}}}",
-                            num_clusters, num_codebooks, cfg.pq_codebook_size, nprobe
+                        &ivfpq_params_json(
+                            num_clusters,
+                            num_codebooks,
+                            cfg.pq_codebook_size,
+                            nprobe,
+                            None,
+                            cfg.pq_training_sample_size,
+                            cfg.pq_kmeans_max_iter,
                         ),
                     )];
                     markers.extend(
@@ -310,9 +319,14 @@ fn required_result_checks(
                             .map(|rerank_pool| {
                                 ExpectedResult::with_params(
                                     "ivfpq_rerank",
-                                    &format!(
-                                        "{{\"num_clusters\":{},\"num_codebooks\":{},\"codebook_size\":{},\"nprobe\":{},\"rerank_pool\":{}}}",
-                                        num_clusters, num_codebooks, cfg.pq_codebook_size, nprobe, rerank_pool
+                                    &ivfpq_params_json(
+                                        num_clusters,
+                                        num_codebooks,
+                                        cfg.pq_codebook_size,
+                                        nprobe,
+                                        Some(rerank_pool),
+                                        cfg.pq_training_sample_size,
+                                        cfg.pq_kmeans_max_iter,
                                     ),
                                 )
                             }),
@@ -595,6 +609,18 @@ pub(crate) fn parse_args() -> Config {
                     cfg.pq_codebook_size = args[i].parse().unwrap_or(256);
                 }
             }
+            "--pq-training-sample-size" => {
+                i += 1;
+                if i < args.len() {
+                    cfg.pq_training_sample_size = args[i].parse().ok();
+                }
+            }
+            "--pq-kmeans-max-iter" => {
+                i += 1;
+                if i < args.len() {
+                    cfg.pq_kmeans_max_iter = args[i].parse().unwrap_or(100);
+                }
+            }
             "--pq-rerank-pools" => {
                 i += 1;
                 if i < args.len() {
@@ -660,6 +686,29 @@ pub(crate) fn parse_args() -> Config {
 
     cfg.is_euclidean = cfg.data_dir.contains("euclidean");
     cfg
+}
+
+pub(crate) fn ivfpq_params_json(
+    num_clusters: usize,
+    num_codebooks: usize,
+    codebook_size: usize,
+    nprobe: usize,
+    rerank_pool: Option<usize>,
+    training_sample_size: Option<usize>,
+    kmeans_max_iter: usize,
+) -> String {
+    let training_sample = training_sample_size
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "null".to_string());
+    let mut params = format!(
+        "{{\"num_clusters\":{},\"num_codebooks\":{},\"codebook_size\":{},\"nprobe\":{},\"training_sample_size\":{},\"kmeans_max_iter\":{}",
+        num_clusters, num_codebooks, codebook_size, nprobe, training_sample, kmeans_max_iter
+    );
+    if let Some(rerank_pool) = rerank_pool {
+        params.push_str(&format!(",\"rerank_pool\":{}", rerank_pool));
+    }
+    params.push('}');
+    params
 }
 
 pub(crate) struct BenchResult {

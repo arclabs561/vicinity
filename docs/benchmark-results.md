@@ -30,6 +30,7 @@ RAYON_NUM_THREADS=4 cargo run --example ann_benchmark --release --features hnsw,
 cargo run --example ann_benchmark --release --features ivf_pq,hnsw -- \
   data/ann-benchmarks/glove-25-angular --algo ivfpq \
   --pq-clusters 1024 --pq-codebooks 5 --pq-codebook-size 16 \
+  --pq-training-sample-size 100000 --pq-kmeans-max-iter 20 \
   --pq-rerank-pools 100,500 --json --fresh
 
 # DiskANN in-memory graph search plus file and mmap search from the same build.

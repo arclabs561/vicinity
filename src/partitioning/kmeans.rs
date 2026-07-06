@@ -18,6 +18,7 @@ pub struct KMeans {
     dimension: usize,
     k: usize,
     seed: Option<u64>,
+    max_iter: usize,
     /// Stored fit result from clump; `None` before `fit()` is called.
     fit: Option<clump::KmeansFit<clump::CosineDistance>>,
 }
@@ -35,6 +36,7 @@ impl KMeans {
             dimension,
             k,
             seed: None,
+            max_iter: 100,
             fit: None,
         })
     }
@@ -45,6 +47,13 @@ impl KMeans {
     #[must_use]
     pub fn with_seed(mut self, seed: u64) -> Self {
         self.seed = Some(seed);
+        self
+    }
+
+    /// Configure the maximum number of k-means iterations.
+    #[must_use]
+    pub fn with_max_iter(mut self, max_iter: usize) -> Self {
+        self.max_iter = max_iter;
         self
     }
 
@@ -65,8 +74,9 @@ impl KMeans {
         // and returns an error. Clamping preserves backward compatibility.
         let effective_k = self.k.min(num_vectors);
 
-        let mut builder =
-            clump::Kmeans::with_metric(effective_k, clump::CosineDistance).with_tol(1e-6);
+        let mut builder = clump::Kmeans::with_metric(effective_k, clump::CosineDistance)
+            .with_tol(1e-6)
+            .with_max_iter(self.max_iter);
 
         if let Some(s) = self.seed {
             builder = builder.with_seed(s);
@@ -114,6 +124,7 @@ pub(crate) struct KMeansEuclidean {
     dimension: usize,
     k: usize,
     seed: Option<u64>,
+    max_iter: usize,
     fit: Option<clump::KmeansFit<clump::Euclidean>>,
 }
 
@@ -129,6 +140,7 @@ impl KMeansEuclidean {
             dimension,
             k,
             seed: None,
+            max_iter: 100,
             fit: None,
         })
     }
@@ -137,6 +149,13 @@ impl KMeansEuclidean {
     #[allow(dead_code)]
     pub(crate) fn with_seed(mut self, seed: u64) -> Self {
         self.seed = Some(seed);
+        self
+    }
+
+    #[must_use]
+    #[allow(dead_code)]
+    pub(crate) fn with_max_iter(mut self, max_iter: usize) -> Self {
+        self.max_iter = max_iter;
         self
     }
 
@@ -150,7 +169,9 @@ impl KMeansEuclidean {
         let data = soa_to_aos(vectors, num_vectors, self.dimension);
         let effective_k = self.k.min(num_vectors);
 
-        let mut builder = clump::Kmeans::with_metric(effective_k, clump::Euclidean).with_tol(1e-6);
+        let mut builder = clump::Kmeans::with_metric(effective_k, clump::Euclidean)
+            .with_tol(1e-6)
+            .with_max_iter(self.max_iter);
 
         if let Some(s) = self.seed {
             builder = builder.with_seed(s);
