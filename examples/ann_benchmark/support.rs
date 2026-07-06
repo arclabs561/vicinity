@@ -566,9 +566,15 @@ fn required_result_checks(
                 })
                 .collect()
         }
-        "emg" | "nsg" | "fresh_graph" | "filtered_graph" => {
+        "emg" | "nsg" | "fresh_graph" => {
             ef_checks(algo, cfg, |_| vec!["\"max_degree\":32".to_string()])
         }
+        "filtered_graph" => ef_checks("filtered_graph", cfg, |_| {
+            vec![
+                "\"max_degree\":32".to_string(),
+                "\"filter_mode\":\"none\"".to_string(),
+            ]
+        }),
         "inplace" => cfg
             .ef_search_values
             .iter()
@@ -665,6 +671,14 @@ fn required_result_checks(
         }
         "sq8u" | "sq4u" | "symphony_qg_vr" => hnsw_quantized_checks(algo, cfg),
         "symphony_qg" => ef_checks("symphony_qg", cfg, |_| Vec::new()),
+        "curator" => single_result_check(
+            "curator",
+            "{\"branching_factor\":16,\"max_leaf_size\":128,\"filter_mode\":\"none\"}",
+        ),
+        "range_filtered" => single_result_check(
+            "range_filtered",
+            "{\"hnsw_m\":16,\"ef_search\":100,\"filter_mode\":\"none\"}",
+        ),
         "kdtree" => tree_snapshot_checks(!cfg.is_euclidean && dim <= 50, "kdtree", cfg),
         "balltree" => tree_snapshot_checks(!cfg.is_euclidean, "balltree", cfg),
         "rptree" => tree_snapshot_checks(!cfg.is_euclidean, "rptree", cfg),
@@ -1578,6 +1592,79 @@ mod tests {
         assert!(request_completed(
             &completed,
             "binary_index",
+            &cfg,
+            25,
+            2_000,
+            200
+        ));
+    }
+
+    #[test]
+    fn filtered_dense_resume_requires_unfiltered_mode_label() {
+        let cfg = Config {
+            ef_search_values: vec![50],
+            ..Config::default()
+        };
+        let legacy_filtered_params = "{\"max_degree\":32,\"ef_search\":50}";
+        let filtered_params = "{\"max_degree\":32,\"ef_search\":50,\"filter_mode\":\"none\"}";
+        let curator_params =
+            "{\"branching_factor\":16,\"max_leaf_size\":128,\"filter_mode\":\"none\"}";
+        let range_params = "{\"hnsw_m\":16,\"ef_search\":100,\"filter_mode\":\"none\"}";
+        let missing_filter_mode = CompletedResults {
+            lines: vec![
+                single_line("filtered_graph", legacy_filtered_params),
+                single_line("curator", "{\"branching_factor\":16,\"max_leaf_size\":128}"),
+                single_line("range_filtered", "{\"hnsw_m\":16,\"ef_search\":100}"),
+            ],
+            ..CompletedResults::default()
+        };
+        let completed = CompletedResults {
+            lines: vec![
+                single_line("filtered_graph", filtered_params),
+                single_line("curator", curator_params),
+                single_line("range_filtered", range_params),
+            ],
+            ..CompletedResults::default()
+        };
+
+        assert!(!request_completed(
+            &missing_filter_mode,
+            "filtered_graph",
+            &cfg,
+            25,
+            2_000,
+            200
+        ));
+        assert!(!request_completed(
+            &missing_filter_mode,
+            "curator",
+            &cfg,
+            25,
+            2_000,
+            200
+        ));
+        assert!(!request_completed(
+            &missing_filter_mode,
+            "range_filtered",
+            &cfg,
+            25,
+            2_000,
+            200
+        ));
+        assert!(request_completed(
+            &completed,
+            "filtered_graph",
+            &cfg,
+            25,
+            2_000,
+            200
+        ));
+        assert!(request_completed(
+            &completed, "curator", &cfg, 25, 2_000, 200
+        ));
+        assert!(request_completed(
+            &completed,
+            "range_filtered",
             &cfg,
             25,
             2_000,

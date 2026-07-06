@@ -1448,7 +1448,10 @@ fn run_filtered_graph(
             10,
         );
         if cfg.json {
-            let params_json = format!("{{\"max_degree\":32,\"ef_search\":{}}}", ef);
+            let params_json = format!(
+                "{{\"max_degree\":32,\"ef_search\":{},\"filter_mode\":\"none\"}}",
+                ef
+            );
             emit_result(
                 &cfg.results_path,
                 &json_line("filtered_graph", &params_json, build_time_s, rss, &result),
@@ -1601,7 +1604,7 @@ fn run_curator(
 
     let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
     if cfg.json {
-        let params_json = r#"{"branching_factor":16,"max_leaf_size":128}"#;
+        let params_json = r#"{"branching_factor":16,"max_leaf_size":128,"filter_mode":"none"}"#;
         emit_result(
             &cfg.results_path,
             &json_line("curator", params_json, build_time_s, rss, &result),
@@ -1652,7 +1655,7 @@ fn run_range_filtered(
 
     let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
     if cfg.json {
-        let params_json = r#"{"hnsw_m":16,"ef_search":100}"#;
+        let params_json = r#"{"hnsw_m":16,"ef_search":100,"filter_mode":"none"}"#;
         emit_result(
             &cfg.results_path,
             &json_line("range_filtered", params_json, build_time_s, rss, &result),
