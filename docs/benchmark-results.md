@@ -68,11 +68,51 @@ cargo run --example ann_benchmark --release --features hnsw -- \
 # Filtered-search selectivity sweep. This is synthetic and writes its own JSONL.
 cargo run --example acorn_selectivity --release \
   --features hnsw,filtered_graph,range_filtered,curator -- --json --fresh
+
+# Broad dense-dataset coverage sweep. This emits recall/QPS/latency rows for
+# the implemented single-vector search families that can consume dense vectors.
+FEATURES=hnsw,nsw,vamana,diskann,ivf_pq,ivf_avq,ivf_rabitq,emg,nsg,pipnn,sng
+FEATURES=$FEATURES,finger,fresh_graph,filtered_graph,curator,range_filtered
+FEATURES=$FEATURES,rp_quant,binary_index,sq4,sq8,lsh,rptree,kdtree,balltree,kmeans_tree
+cargo run --example ann_benchmark --release \
+  --features "$FEATURES" \
+  data/ann-benchmarks/glove-25-angular \
+  --algo hnsw --algo nsw --algo vamana --algo diskann \
+  --algo ivfpq --algo ivf_avq --algo ivf_rabitq \
+  --algo emg --algo nsg --algo pipnn --algo sng --algo finger \
+  --algo fresh_graph --algo filtered_graph --algo curator --algo range_filtered \
+  --algo rp_quant --algo binary_index --algo sq4 --algo sq4u --algo sq8u \
+  --algo symphony_qg --algo symphony_qg_vr --algo adsampling --algo lsh --algo hnsw_prt \
+  --algo brute --algo kdtree --algo balltree --algo rptree --algo rp_forest --algo kmeans_tree \
+  --pq-training-sample-size 100000 --pq-kmeans-max-iter 20 --json --fresh
 ```
 
 These commands intentionally separate low-recall, high-throughput operating
 points from high-recall runs. External comparisons should use a recall/QPS
 curve, not only the `Recall@10 = 100%` row.
+
+## Benchmark Coverage
+
+The dense `ann_benchmark` runner covers the implemented single-vector ANN
+families that accept dense `Vec<f32>` input:
+
+| Area | Algorithms / rows | Eval path |
+| --- | --- | --- |
+| Graph search | HNSW, NSW, Vamana, DiskANN, NSG, SNG, EMG, PiPNN, FINGER, FreshGraph | `ann_benchmark --algo ...` |
+| IVF / quantized search | IVF-PQ, IVF-PQ rerank, IVF-AVQ, IVF-RaBitQ, RP-Quant, BinaryIndex | `ann_benchmark --algo ...`; IVF-PQ also supports sampled training and snapshot-loaded rows |
+| Quantized HNSW accelerators | SQ4U, SQ8U, SymphonyQG, SymphonyQG-VR, ADSampling, HNSW-PRT | `ann_benchmark --algo ...` |
+| Filtering | FilteredGraph, RangeFiltered, Curator, ACORN | dense rows via `ann_benchmark`; selectivity curves via `acorn_selectivity` |
+| Classical baselines | KD-tree, Ball tree, RP-tree, RP-forest, K-means tree, brute force | `ann_benchmark --algo ...`; tree rows can add `--snapshot-load` |
+| Streaming / updates | FreshGraph churn, in-place graph, in-place churn, LSM churn | `ann_benchmark --algo fresh_graph_churn --algo inplace --algo inplace_churn --algo lsm_churn` |
+
+Not every implemented module should produce a dense ANN row:
+
+| Module | Why it is separate | Honest eval direction |
+| --- | --- | --- |
+| SparseMIPS | Requires sparse vectors, not dense ann-benchmarks `f32` arrays | Add a SPLADE/BM25 sparse dataset harness before reporting QPS/recall |
+| EVoC | Clustering wrapper, not nearest-neighbor search | Report clustering metrics such as NMI/ARI on labeled clustering datasets |
+| LEMUR | Inference scaffold that requires externally trained encoder weights | Evaluate on multi-vector retrieval datasets with MaxSim ground truth |
+| SAQ / quantization helpers | Quantizers, not standalone indexes | Report quantization error, encoding throughput, and downstream recall when attached to an index |
 
 Persistence and storage-mode benchmark rows follow `docs/persistence.md`.
 Methods with both in-memory and file-backed search should report separate
