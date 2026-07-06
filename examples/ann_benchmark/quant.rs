@@ -3,16 +3,29 @@
 use std::time::Instant;
 
 use crate::support::{
-    current_rss_kb, emit_result, evaluate, json_line, nprobe_values, print_header, print_row,
-    Config,
+    current_rss_kb, emit_result, evaluate, json_line, print_header, print_row, Config,
 };
 
 #[cfg(feature = "ivf_pq")]
 use crate::support::ivfpq_params_json;
 #[cfg(any(feature = "ivf_pq", feature = "ivf_avq", feature = "ivf_rabitq"))]
+use crate::support::nprobe_values;
+#[cfg(any(
+    feature = "ivf_pq",
+    feature = "ivf_avq",
+    feature = "ivf_rabitq",
+    feature = "rp_quant",
+    feature = "binary_index"
+))]
 use crate::support::{dir_size_bytes, json_line_with_storage, ResultStorage};
 
-#[cfg(any(feature = "ivf_pq", feature = "ivf_avq", feature = "ivf_rabitq"))]
+#[cfg(any(
+    feature = "ivf_pq",
+    feature = "ivf_avq",
+    feature = "ivf_rabitq",
+    feature = "rp_quant",
+    feature = "binary_index"
+))]
 fn snapshot_storage(load_time_s: f64, index_bytes: Option<u64>) -> ResultStorage<'static> {
     ResultStorage {
         storage_mode: "snapshot_loaded",
@@ -475,6 +488,17 @@ pub(crate) fn run_rp_quant(
     index.build().unwrap();
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
+    let snapshot_index = if cfg.snapshot_load {
+        let temp_dir = tempfile::tempdir().expect("create temp dir for RpQuant snapshot benchmark");
+        index.save_to_dir(temp_dir.path()).unwrap();
+        let index_bytes = dir_size_bytes(temp_dir.path()).ok();
+        let load_start = Instant::now();
+        let loaded = RpQuantIndex::load_from_dir(temp_dir.path()).unwrap();
+        let load_time_s = load_start.elapsed().as_secs_f64();
+        Some((temp_dir, loaded, load_time_s, index_bytes))
+    } else {
+        None
+    };
 
     if !cfg.json {
         println!(
@@ -486,11 +510,11 @@ pub(crate) fn run_rp_quant(
     }
 
     let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
+    let params_json = format!(
+        "{{\"projected_dim\":{},\"rerank_factor\":10}}",
+        projected_dim
+    );
     if cfg.json {
-        let params_json = format!(
-            "{{\"projected_dim\":{},\"rerank_factor\":10}}",
-            projected_dim
-        );
         emit_result(
             &cfg.results_path,
             &json_line("rp_quant", &params_json, build_time_s, rss, &result),
@@ -498,6 +522,26 @@ pub(crate) fn run_rp_quant(
     } else {
         print_row("--", &result);
         println!();
+    }
+
+    if let Some((_temp_dir, loaded, load_time_s, index_bytes)) = snapshot_index {
+        let loaded_result = evaluate(&|q, k| loaded.search(q, k).unwrap(), test, neighbors, 10);
+        if cfg.json {
+            emit_result(
+                &cfg.results_path,
+                &json_line_with_storage(
+                    "rp_quant",
+                    &params_json,
+                    build_time_s,
+                    rss,
+                    &loaded_result,
+                    &snapshot_storage(load_time_s, index_bytes),
+                ),
+            );
+        } else {
+            print_row("snapshot_loaded", &loaded_result);
+            println!();
+        }
     }
 }
 
@@ -635,6 +679,18 @@ pub(crate) fn run_binary_index(
     index.build().unwrap();
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
+    let snapshot_index = if cfg.snapshot_load {
+        let temp_dir =
+            tempfile::tempdir().expect("create temp dir for BinaryFlat snapshot benchmark");
+        index.save_to_dir(temp_dir.path()).unwrap();
+        let index_bytes = dir_size_bytes(temp_dir.path()).ok();
+        let load_start = Instant::now();
+        let loaded = BinaryFlatIndex::load_from_dir(temp_dir.path()).unwrap();
+        let load_time_s = load_start.elapsed().as_secs_f64();
+        Some((temp_dir, loaded, load_time_s, index_bytes))
+    } else {
+        None
+    };
 
     if !cfg.json {
         println!(
@@ -646,8 +702,8 @@ pub(crate) fn run_binary_index(
     }
 
     let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
+    let params_json = r#"{"rerank_factor":10}"#;
     if cfg.json {
-        let params_json = r#"{"rerank_factor":10}"#;
         emit_result(
             &cfg.results_path,
             &json_line("binary_index", params_json, build_time_s, rss, &result),
@@ -655,6 +711,26 @@ pub(crate) fn run_binary_index(
     } else {
         print_row("--", &result);
         println!();
+    }
+
+    if let Some((_temp_dir, loaded, load_time_s, index_bytes)) = snapshot_index {
+        let loaded_result = evaluate(&|q, k| loaded.search(q, k).unwrap(), test, neighbors, 10);
+        if cfg.json {
+            emit_result(
+                &cfg.results_path,
+                &json_line_with_storage(
+                    "binary_index",
+                    params_json,
+                    build_time_s,
+                    rss,
+                    &loaded_result,
+                    &snapshot_storage(load_time_s, index_bytes),
+                ),
+            );
+        } else {
+            print_row("snapshot_loaded", &loaded_result);
+            println!();
+        }
     }
 }
 

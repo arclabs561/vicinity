@@ -538,6 +538,12 @@ fn required_result_checks(
                 )
             })
             .collect(),
+        "rp_quant" => snapshot_check(
+            "rp_quant",
+            &format!("{{\"projected_dim\":{},\"rerank_factor\":10}}", 64.min(dim)),
+            cfg,
+        ),
+        "binary_index" => snapshot_check("binary_index", "{\"rerank_factor\":10}", cfg),
         "lsh" => {
             let num_tables_values = [8, 16, 32];
             let num_probes_values = [2, 4, 8, 16];
@@ -1173,12 +1179,14 @@ pub(crate) fn current_rss_kb() -> Option<u64> {
 
 #[cfg(any(
     feature = "balltree",
+    feature = "binary_index",
     feature = "diskann",
     feature = "ivf_avq",
     feature = "ivf_pq",
     feature = "ivf_rabitq",
     feature = "kdtree",
     feature = "kmeans_tree",
+    feature = "rp_quant",
     feature = "rptree"
 ))]
 pub(crate) fn dir_size_bytes(path: &Path) -> std::io::Result<u64> {
@@ -1518,6 +1526,60 @@ mod tests {
             "ivf_rabitq",
             &cfg,
             128,
+            2_000,
+            200
+        ));
+    }
+
+    #[test]
+    fn flat_quant_snapshot_resume_requires_snapshot_storage_rows() {
+        let cfg = Config {
+            snapshot_load: true,
+            ..Config::default()
+        };
+        let rp_params = "{\"projected_dim\":25,\"rerank_factor\":10}";
+        let binary_params = "{\"rerank_factor\":10}";
+        let missing_snapshot = CompletedResults {
+            lines: vec![
+                single_line_with_storage("rp_quant", rp_params, "in_memory"),
+                single_line_with_storage("binary_index", binary_params, "in_memory"),
+            ],
+            ..CompletedResults::default()
+        };
+        let completed = CompletedResults {
+            lines: vec![
+                single_line_with_storage("rp_quant", rp_params, "in_memory"),
+                single_line_with_storage("rp_quant", rp_params, "snapshot_loaded"),
+                single_line_with_storage("binary_index", binary_params, "in_memory"),
+                single_line_with_storage("binary_index", binary_params, "snapshot_loaded"),
+            ],
+            ..CompletedResults::default()
+        };
+
+        assert!(!request_completed(
+            &missing_snapshot,
+            "rp_quant",
+            &cfg,
+            25,
+            2_000,
+            200
+        ));
+        assert!(!request_completed(
+            &missing_snapshot,
+            "binary_index",
+            &cfg,
+            25,
+            2_000,
+            200
+        ));
+        assert!(request_completed(
+            &completed, "rp_quant", &cfg, 25, 2_000, 200
+        ));
+        assert!(request_completed(
+            &completed,
+            "binary_index",
+            &cfg,
+            25,
             2_000,
             200
         ));
