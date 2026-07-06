@@ -7,6 +7,7 @@ compiled module by ``mypy.stubtest`` in CI -- keep in sync with
 
 from __future__ import annotations
 
+from os import PathLike
 from typing import ClassVar, final
 
 import numpy as np
@@ -110,6 +111,13 @@ class HNSWIndex:
 
     def set_ef_search(self, ef: int) -> None:
         """Set the default ``ef_search`` parameter for subsequent queries."""
+
+    def save(self, path: str | PathLike[str]) -> None:
+        """Save this index to a JSON snapshot file."""
+
+    @staticmethod
+    def load(path: str | PathLike[str]) -> HNSWIndex:
+        """Load an index from a JSON snapshot file written by :meth:`save`."""
 
     def search(
         self,

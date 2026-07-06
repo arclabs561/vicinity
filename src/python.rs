@@ -6,6 +6,7 @@
 //! produced via `into_pyarray`.
 
 use std::borrow::Cow;
+use std::path::PathBuf;
 
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::exceptions::PyValueError;
@@ -203,6 +204,33 @@ impl PyHNSWIndex {
     /// Set the default `ef_search` parameter for subsequent queries.
     fn set_ef_search(&mut self, ef: usize) {
         self.ef_search = ef;
+        self.inner.params.ef_search = ef;
+    }
+
+    /// Save this index to a JSON snapshot file.
+    ///
+    /// The underlying Rust snapshot does not persist tombstones or metadata.
+    /// pyvicinity does not expose deletion or filtered-search metadata today,
+    /// so this round-trip preserves the current Python API surface.
+    fn save(&self, path: PathBuf) -> PyResult<()> {
+        self.inner
+            .save_to_file(path)
+            .map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
+    /// Load an index from a JSON snapshot file written by `save`.
+    #[staticmethod]
+    fn load(path: PathBuf) -> PyResult<Self> {
+        let inner =
+            RustHNSW::load_from_file(path).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(Self {
+            ef_search: inner.params.ef_search,
+            auto_normalize: inner.params.auto_normalize,
+            metric: inner.params.metric.into(),
+            m: inner.params.m,
+            ef_construction: inner.params.ef_construction,
+            inner,
+        })
     }
 
     /// Search for k nearest neighbors of a single query vector.

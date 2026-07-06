@@ -216,6 +216,27 @@ def test_set_ef_search_sticks() -> None:
     assert idx.ef_search == 123
 
 
+def test_save_load_round_trip(tmp_path) -> None:
+    idx, X = _build(n=80, dim=8, seed=11)
+    idx.set_ef_search(77)
+
+    path = tmp_path / "hnsw.json"
+    idx.save(path)
+    loaded = HNSWIndex.load(path)
+
+    assert len(loaded) == len(idx)
+    assert loaded.dimension == idx.dimension
+    assert loaded.metric == idx.metric
+    assert loaded.auto_normalize == idx.auto_normalize
+    assert loaded.m == idx.m
+    assert loaded.ef_construction == idx.ef_construction
+    assert loaded.ef_search == 77
+
+    ids, dists = loaded.search(X[0], k=5)
+    assert ids[0] == 0
+    assert abs(float(dists[0])) < 1e-4
+
+
 def test_distance_metric_equality() -> None:
     assert DistanceMetric.Cosine == DistanceMetric.Cosine
     assert DistanceMetric.Cosine != DistanceMetric.L2
