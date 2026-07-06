@@ -47,6 +47,18 @@ pub(crate) fn write_f32_atomic(path: &Path, values: &[f32]) -> Result<(), Retrie
     })
 }
 
+#[cfg(any(
+    feature = "nsw",
+    feature = "sng",
+    feature = "vamana",
+    feature = "nsg",
+    feature = "finger",
+    feature = "pipnn",
+    feature = "emg",
+    feature = "binary_index",
+    feature = "rp_quant",
+    feature = "sparse_mips"
+))]
 pub(crate) fn write_u32_atomic(path: &Path, values: &[u32]) -> Result<(), RetrieveError> {
     write_atomic(path, |writer| {
         for value in values {
@@ -56,6 +68,7 @@ pub(crate) fn write_u32_atomic(path: &Path, values: &[u32]) -> Result<(), Retrie
     })
 }
 
+#[cfg(feature = "sparse_mips")]
 pub(crate) fn write_u64_atomic(path: &Path, values: &[u64]) -> Result<(), RetrieveError> {
     write_atomic(path, |writer| {
         for value in values {
@@ -127,6 +140,18 @@ pub(crate) fn read_f32_exact(path: &Path, expected_len: usize) -> Result<Vec<f32
         .collect())
 }
 
+#[cfg(any(
+    feature = "nsw",
+    feature = "sng",
+    feature = "vamana",
+    feature = "nsg",
+    feature = "finger",
+    feature = "pipnn",
+    feature = "emg",
+    feature = "binary_index",
+    feature = "rp_quant",
+    feature = "sparse_mips"
+))]
 pub(crate) fn read_u32_exact(path: &Path, expected_len: usize) -> Result<Vec<u32>, RetrieveError> {
     let bytes = std::fs::read(path)?;
     let expected_bytes = expected_len
@@ -146,6 +171,7 @@ pub(crate) fn read_u32_exact(path: &Path, expected_len: usize) -> Result<Vec<u32
         .collect())
 }
 
+#[cfg(feature = "sparse_mips")]
 pub(crate) fn read_u64_exact(path: &Path, expected_len: usize) -> Result<Vec<u64>, RetrieveError> {
     let bytes = std::fs::read(path)?;
     let expected_bytes = expected_len

@@ -223,7 +223,8 @@ pub mod filtering;
     feature = "emg",
     feature = "binary_index",
     feature = "rp_quant",
-    feature = "sparse_mips"
+    feature = "sparse_mips",
+    feature = "lsh"
 ))]
 pub(crate) mod graph_snapshot;
 #[cfg(any(

@@ -21,11 +21,13 @@
 
 use crate::distance;
 use crate::RetrieveError;
+use serde::{Deserialize, Serialize};
 use sketchir::cross_polytope::{self, CrossPolytopeHasher};
 use std::collections::HashMap;
+use std::path::Path;
 
 /// Parameters for cross-polytope LSH.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LSHParams {
     /// Number of hash tables (L). More tables = higher recall, more memory.
     pub num_tables: usize,
@@ -62,6 +64,9 @@ pub struct CrossPolytopeLSHIndex {
     params: LSHParams,
     /// L independent hashers (one per table), from sketchir.
     hashers: Vec<CrossPolytopeHasher>,
+    /// Seed used to build `hashers`. `params.seed` can be `None`, but a built
+    /// index needs the realized seed for deterministic reloads.
+    hasher_seed: Option<u64>,
     /// L hash tables. Each table maps bucket_id -> list of vector indices.
     tables: Vec<HashMap<u32, Vec<u32>>>,
     /// Whether the index has been built.
@@ -93,6 +98,7 @@ impl CrossPolytopeLSHIndex {
             num_vectors: 0,
             params,
             hashers: Vec::new(),
+            hasher_seed: None,
             tables: Vec::new(),
             built: false,
         })
@@ -147,7 +153,7 @@ impl CrossPolytopeLSHIndex {
             return Err(RetrieveError::EmptyIndex);
         }
 
-        let base_seed = self.params.seed.unwrap_or_else(|| {
+        let base_seed = self.params.seed.or(self.hasher_seed).unwrap_or_else(|| {
             use rand::RngCore;
             rand::rng().next_u64()
         });
@@ -156,6 +162,7 @@ impl CrossPolytopeLSHIndex {
         self.hashers =
             cross_polytope::multi_hasher(self.dimension, self.params.num_tables, base_seed)
                 .map_err(|e| RetrieveError::InvalidParameter(format!("sketchir: {e}")))?;
+        self.hasher_seed = Some(base_seed);
 
         // Hash all vectors into tables.
         self.tables = vec![HashMap::new(); self.params.num_tables];
@@ -175,6 +182,68 @@ impl CrossPolytopeLSHIndex {
 
         self.built = true;
         Ok(())
+    }
+
+    /// Save a built LSH index to a directory snapshot.
+    ///
+    /// Hash tables are rebuilt on load from the persisted vectors and realized
+    /// hasher seed. This keeps the format small while preserving exact search
+    /// behavior for deterministic `sketchir` hash generation.
+    pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<(), RetrieveError> {
+        if !self.built {
+            return Err(RetrieveError::InvalidParameter("index not built".into()));
+        }
+        let output_dir = output_dir.as_ref();
+        std::fs::create_dir_all(output_dir)?;
+        let manifest = LshSnapshotManifest {
+            magic: *b"VICLSH01",
+            version: 1,
+            dimension: self.dimension,
+            num_vectors: self.num_vectors,
+            params: self.params.clone(),
+            hasher_seed: self
+                .hasher_seed
+                .ok_or_else(|| RetrieveError::FormatError("built LSH index has no seed".into()))?,
+        };
+        crate::graph_snapshot::write_json_atomic(&output_dir.join("manifest.json"), &manifest)?;
+        crate::graph_snapshot::write_f32_atomic(&output_dir.join("vectors.bin"), &self.vectors)?;
+        Ok(())
+    }
+
+    /// Load an LSH index from a directory snapshot.
+    pub fn load_from_dir(input_dir: impl AsRef<Path>) -> Result<Self, RetrieveError> {
+        let input_dir = input_dir.as_ref();
+        let manifest: LshSnapshotManifest =
+            crate::graph_snapshot::read_json(&input_dir.join("manifest.json"))?;
+        if manifest.magic != *b"VICLSH01" {
+            return Err(RetrieveError::FormatError(
+                "invalid LSH snapshot magic".into(),
+            ));
+        }
+        if manifest.version != 1 {
+            return Err(RetrieveError::FormatError(format!(
+                "unsupported LSH snapshot version {}",
+                manifest.version
+            )));
+        }
+        if manifest.dimension == 0 {
+            return Err(RetrieveError::FormatError(
+                "LSH snapshot has zero dimension".into(),
+            ));
+        }
+
+        let vector_len = manifest
+            .num_vectors
+            .checked_mul(manifest.dimension)
+            .ok_or_else(|| RetrieveError::FormatError("LSH vector length overflow".into()))?;
+        let vectors =
+            crate::graph_snapshot::read_f32_exact(&input_dir.join("vectors.bin"), vector_len)?;
+
+        let mut index = Self::new(manifest.dimension, manifest.params)?;
+        index.hasher_seed = Some(manifest.hasher_seed);
+        index.add_vectors(&vectors)?;
+        index.build()?;
+        Ok(index)
     }
 
     /// Search for the k nearest neighbors of `query`.
@@ -262,6 +331,16 @@ impl CrossPolytopeLSHIndex {
             },
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LshSnapshotManifest {
+    magic: [u8; 8],
+    version: u32,
+    dimension: usize,
+    num_vectors: usize,
+    params: LSHParams,
+    hasher_seed: u64,
 }
 
 /// Statistics about a cross-polytope LSH index.
@@ -477,6 +556,48 @@ mod tests {
         assert!(
             results.iter().any(|&(id, _)| id == new_id),
             "newly inserted vector should be found"
+        );
+    }
+
+    #[test]
+    fn save_load_roundtrip_preserves_search() {
+        let dim = 16;
+        let data = clustered_data(4, 30, dim);
+        let params = LSHParams {
+            num_tables: 10,
+            num_probes: 5,
+            seed: None,
+        };
+
+        let mut index = CrossPolytopeLSHIndex::new(dim, params).unwrap();
+        index.add_vectors(&data).unwrap();
+        index.build().unwrap();
+        let inserted_id = index.insert(&vec![2.5; dim]).unwrap();
+
+        let query = &data[dim..2 * dim];
+        let before = index.search(query, 8).unwrap();
+        assert!(
+            index
+                .search(&vec![2.5; dim], 8)
+                .unwrap()
+                .iter()
+                .any(|(id, _)| *id == inserted_id),
+            "online insert should be present before snapshot"
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        index.save_to_dir(dir.path()).unwrap();
+        let loaded = CrossPolytopeLSHIndex::load_from_dir(dir.path()).unwrap();
+        let after = loaded.search(query, 8).unwrap();
+
+        assert_eq!(after, before);
+        assert!(
+            loaded
+                .search(&vec![2.5; dim], 8)
+                .unwrap()
+                .iter()
+                .any(|(id, _)| *id == inserted_id),
+            "online insert should survive snapshot"
         );
     }
 
