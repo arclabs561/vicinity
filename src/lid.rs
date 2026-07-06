@@ -97,6 +97,7 @@ use crate::distance;
 
 /// Result of LID estimation for a single point.
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LidEstimate {
     /// Estimated local intrinsic dimensionality.
     pub lid: f32,
@@ -568,6 +569,7 @@ pub enum LidCategory {
 
 /// Compute LID statistics for a batch of estimates.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LidStats {
     /// Mean LID across all points.
     pub mean: f32,

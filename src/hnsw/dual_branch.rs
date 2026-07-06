@@ -43,6 +43,7 @@ use std::collections::{BinaryHeap, HashSet};
 
 /// Configuration for Dual-Branch HNSW.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DualBranchConfig {
     /// Base maximum connections per node (standard HNSW M).
     pub m: usize,
@@ -83,6 +84,7 @@ impl Default for DualBranchConfig {
 
 /// A skip bridge connecting two distant nodes.
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SkipBridge {
     /// Source node.
     pub from: u32,
@@ -192,6 +194,44 @@ impl DualBranchHNSW {
 
         self.built = true;
         Ok(())
+    }
+
+    /// Save a built Dual-Branch HNSW index to a file.
+    #[cfg(feature = "serde")]
+    pub fn save_to_file<P: AsRef<std::path::Path>>(&self, path: P) -> Result<(), RetrieveError> {
+        if !self.built {
+            return Err(RetrieveError::InvalidParameter("index not built".into()));
+        }
+
+        let file = std::fs::File::create(path.as_ref())?;
+        serde_json::to_writer_pretty(
+            std::io::BufWriter::new(file),
+            &DualBranchSnapshot {
+                magic: *b"VICDBH01",
+                version: 1,
+                vectors: self.vectors.clone(),
+                dimension: self.dimension,
+                num_vectors: self.num_vectors,
+                neighbors: self.neighbors.clone(),
+                skip_bridges: self.skip_bridges.clone(),
+                skip_adjacency: self.skip_adjacency.clone(),
+                lid_estimates: self.lid_estimates.clone(),
+                lid_stats: self.lid_stats.clone(),
+                config: self.config.clone(),
+                entry_point: self.entry_point,
+            },
+        )
+        .map_err(|e| RetrieveError::FormatError(e.to_string()))
+    }
+
+    /// Load a Dual-Branch HNSW index from a file snapshot.
+    #[cfg(feature = "serde")]
+    pub fn load_from_file<P: AsRef<std::path::Path>>(path: P) -> Result<Self, RetrieveError> {
+        let file = std::fs::File::open(path.as_ref())?;
+        let snapshot: DualBranchSnapshot =
+            serde_json::from_reader(std::io::BufReader::new(file))
+                .map_err(|e| RetrieveError::FormatError(e.to_string()))?;
+        snapshot.into_index()
     }
 
     /// Insert a single node into the graph.
@@ -609,6 +649,113 @@ impl DualBranchHNSW {
     }
 }
 
+#[cfg(feature = "serde")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct DualBranchSnapshot {
+    magic: [u8; 8],
+    version: u32,
+    vectors: Vec<f32>,
+    dimension: usize,
+    num_vectors: usize,
+    neighbors: Vec<Vec<u32>>,
+    skip_bridges: Vec<SkipBridge>,
+    skip_adjacency: Vec<Vec<usize>>,
+    lid_estimates: Vec<LidEstimate>,
+    lid_stats: Option<LidStats>,
+    config: DualBranchConfig,
+    entry_point: Option<u32>,
+}
+
+#[cfg(feature = "serde")]
+impl DualBranchSnapshot {
+    fn into_index(self) -> Result<DualBranchHNSW, RetrieveError> {
+        if self.magic != *b"VICDBH01" {
+            return Err(RetrieveError::FormatError(
+                "invalid DualBranchHNSW snapshot magic".into(),
+            ));
+        }
+        if self.version != 1 {
+            return Err(RetrieveError::FormatError(format!(
+                "unsupported DualBranchHNSW snapshot version {}",
+                self.version
+            )));
+        }
+        if self.dimension == 0 {
+            return Err(RetrieveError::FormatError(
+                "DualBranchHNSW snapshot has zero dimension".into(),
+            ));
+        }
+        if self.vectors.len() != self.num_vectors * self.dimension {
+            return Err(RetrieveError::FormatError(format!(
+                "DualBranchHNSW snapshot has {} vector scalars, expected {}",
+                self.vectors.len(),
+                self.num_vectors * self.dimension
+            )));
+        }
+        if self.neighbors.len() != self.num_vectors
+            || self.skip_adjacency.len() != self.num_vectors
+            || self.lid_estimates.len() != self.num_vectors
+        {
+            return Err(RetrieveError::FormatError(
+                "DualBranchHNSW snapshot vector-owned arrays have mismatched lengths".into(),
+            ));
+        }
+        for (node, neighbors) in self.neighbors.iter().enumerate() {
+            for &neighbor in neighbors {
+                if neighbor as usize >= self.num_vectors {
+                    return Err(RetrieveError::FormatError(format!(
+                        "DualBranchHNSW node {node} has out-of-range neighbor {neighbor}"
+                    )));
+                }
+            }
+        }
+        for (bridge_idx, bridge) in self.skip_bridges.iter().enumerate() {
+            if bridge.from as usize >= self.num_vectors || bridge.to as usize >= self.num_vectors {
+                return Err(RetrieveError::FormatError(format!(
+                    "DualBranchHNSW skip bridge {bridge_idx} has out-of-range endpoint"
+                )));
+            }
+        }
+        for (node, bridge_indices) in self.skip_adjacency.iter().enumerate() {
+            for &bridge_idx in bridge_indices {
+                if bridge_idx >= self.skip_bridges.len() {
+                    return Err(RetrieveError::FormatError(format!(
+                        "DualBranchHNSW node {node} references out-of-range skip bridge {bridge_idx}"
+                    )));
+                }
+                if self.skip_bridges[bridge_idx].from as usize != node {
+                    return Err(RetrieveError::FormatError(format!(
+                        "DualBranchHNSW node {node} references skip bridge {bridge_idx} from node {}",
+                        self.skip_bridges[bridge_idx].from
+                    )));
+                }
+            }
+        }
+        if let Some(entry) = self.entry_point {
+            if entry as usize >= self.num_vectors {
+                return Err(RetrieveError::FormatError(format!(
+                    "DualBranchHNSW entry point {entry} exceeds vector count {}",
+                    self.num_vectors
+                )));
+            }
+        }
+
+        Ok(DualBranchHNSW {
+            vectors: self.vectors,
+            dimension: self.dimension,
+            num_vectors: self.num_vectors,
+            neighbors: self.neighbors,
+            skip_bridges: self.skip_bridges,
+            skip_adjacency: self.skip_adjacency,
+            lid_estimates: self.lid_estimates,
+            lid_stats: self.lid_stats,
+            config: self.config,
+            entry_point: self.entry_point,
+            built: true,
+        })
+    }
+}
+
 /// Statistics about a Dual-Branch HNSW index.
 #[derive(Debug, Clone)]
 pub struct DualBranchStats {
@@ -926,5 +1073,39 @@ mod tests {
         // neighbor selection (heuristic pruning, diversity) implemented in HNSWIndex.
         // For now, we just verify it returns something reasonable.
         assert!(recall > 0.1, "Recall too low: {}", recall);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn save_load_roundtrip_preserves_search() {
+        let dim = 8;
+        let data = create_clustered_data(4, 30, dim);
+        let config = DualBranchConfig {
+            m: 8,
+            m_high_lid: 12,
+            ef_construction: 50,
+            ef_search: 30,
+            skip_bridge_probability: 0.8,
+            seed: Some(42),
+            ..Default::default()
+        };
+
+        let mut index = DualBranchHNSW::new(dim, config);
+        index.add_vectors(&data).unwrap();
+        index.build().unwrap();
+
+        let query = &data[0..dim];
+        let before = index.search(query, 5).unwrap();
+        let file = tempfile::NamedTempFile::new().unwrap();
+        index.save_to_file(file.path()).unwrap();
+        let loaded = DualBranchHNSW::load_from_file(file.path()).unwrap();
+        let after = loaded.search(query, 5).unwrap();
+
+        assert_eq!(after, before);
+        assert_eq!(loaded.stats().num_vectors, index.stats().num_vectors);
+        assert_eq!(
+            loaded.stats().num_skip_bridges,
+            index.stats().num_skip_bridges
+        );
     }
 }
