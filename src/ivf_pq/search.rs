@@ -46,6 +46,19 @@ fn normalize_query(query: &[f32]) -> Vec<f32> {
     }
 }
 
+fn finish_top_k_by_distance(mut candidates: Vec<(u32, f32)>, k: usize) -> Vec<(u32, f32)> {
+    if k == 0 || candidates.is_empty() {
+        return Vec::new();
+    }
+
+    if candidates.len() > k {
+        candidates.select_nth_unstable_by(k - 1, |a, b| a.1.total_cmp(&b.1));
+        candidates.truncate(k);
+    }
+    candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+    candidates
+}
+
 fn copy_rows_by_index(vectors: &[f32], dimension: usize, indices: &[usize]) -> Vec<f32> {
     let mut out = Vec::with_capacity(indices.len() * dimension);
     for &idx in indices {
@@ -1032,7 +1045,7 @@ impl IVFPQIndex {
         let candidates = self.search_approx_internal(query, pool)?;
         let query_normalized = normalize_query(query);
 
-        let mut reranked: Vec<(u32, f32)> = candidates
+        let reranked: Vec<(u32, f32)> = candidates
             .into_iter()
             .map(|(vector_idx, _approx_dist)| {
                 let vector = self.get_vector(vector_idx as usize);
@@ -1041,9 +1054,7 @@ impl IVFPQIndex {
                 (self.doc_ids[vector_idx as usize], exact_dist)
             })
             .collect();
-        reranked.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
-        reranked.truncate(k);
-        Ok(reranked)
+        Ok(finish_top_k_by_distance(reranked, k))
     }
 
     fn search_approx_internal(
@@ -1145,9 +1156,7 @@ impl IVFPQIndex {
             }
         }
 
-        // Sort and return top k
-        candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
-        Ok(candidates.into_iter().take(k).collect())
+        Ok(finish_top_k_by_distance(candidates, k))
     }
 
     /// Search with filter using cluster tagging (integrated filtering).
@@ -1275,9 +1284,7 @@ impl IVFPQIndex {
             }
         }
 
-        // Sort and return top k
-        candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
-        Ok(candidates.into_iter().take(k).collect())
+        Ok(finish_top_k_by_distance(candidates, k))
     }
 
     /// Get vector from SoA storage.
@@ -1516,6 +1523,30 @@ fn read_u32(reader: &mut impl Read) -> Result<u32, RetrieveError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finish_top_k_by_distance_keeps_sorted_prefix() {
+        let candidates = vec![
+            (10, 5.0),
+            (11, 1.5),
+            (12, 3.0),
+            (13, 0.5),
+            (14, 2.0),
+            (15, 4.0),
+        ];
+
+        let out = finish_top_k_by_distance(candidates, 3);
+        assert_eq!(out, vec![(13, 0.5), (11, 1.5), (14, 2.0)]);
+    }
+
+    #[test]
+    fn finish_top_k_by_distance_handles_zero_and_short_inputs() {
+        assert!(finish_top_k_by_distance(vec![(1, 1.0)], 0).is_empty());
+        assert!(finish_top_k_by_distance(Vec::new(), 5).is_empty());
+
+        let out = finish_top_k_by_distance(vec![(2, 2.0), (1, 1.0)], 5);
+        assert_eq!(out, vec![(1, 1.0), (2, 2.0)]);
+    }
 
     /// compact() drops raw vectors; search still returns results using PQ distances.
     #[test]
