@@ -603,13 +603,14 @@ fn required_result_checks(
                     num_probes_values
                         .into_iter()
                         .filter(move |&num_probes| num_probes <= dim)
-                        .map(move |num_probes| {
-                            ExpectedResult::with_params(
+                        .flat_map(move |num_probes| {
+                            snapshot_check(
                                 "lsh",
                                 &format!(
                                     "{{\"num_tables\":{},\"num_probes\":{}}}",
                                     num_tables, num_probes
                                 ),
+                                cfg,
                             )
                         })
                 })
@@ -1270,6 +1271,7 @@ pub(crate) fn current_rss_kb() -> Option<u64> {
     feature = "ivf_rabitq",
     feature = "kdtree",
     feature = "kmeans_tree",
+    feature = "lsh",
     feature = "rp_quant",
     feature = "rptree",
     feature = "sq4",
@@ -1669,6 +1671,54 @@ mod tests {
             2_000,
             200
         ));
+    }
+
+    #[test]
+    fn lsh_snapshot_resume_requires_snapshot_storage_rows() {
+        let cfg = Config {
+            snapshot_load: true,
+            ..Config::default()
+        };
+        let params: Vec<String> = [8, 16, 32]
+            .into_iter()
+            .flat_map(|num_tables| {
+                [2, 4, 8, 16].into_iter().map(move |num_probes| {
+                    format!(
+                        "{{\"num_tables\":{},\"num_probes\":{}}}",
+                        num_tables, num_probes
+                    )
+                })
+            })
+            .collect();
+        let missing_snapshot = CompletedResults {
+            lines: params
+                .iter()
+                .map(|params| single_line_with_storage("lsh", params, "in_memory"))
+                .collect(),
+            ..CompletedResults::default()
+        };
+        let completed = CompletedResults {
+            lines: params
+                .iter()
+                .flat_map(|params| {
+                    [
+                        single_line_with_storage("lsh", params, "in_memory"),
+                        single_line_with_storage("lsh", params, "snapshot_loaded"),
+                    ]
+                })
+                .collect(),
+            ..CompletedResults::default()
+        };
+
+        assert!(!request_completed(
+            &missing_snapshot,
+            "lsh",
+            &cfg,
+            25,
+            2_000,
+            200
+        ));
+        assert!(request_completed(&completed, "lsh", &cfg, 25, 2_000, 200));
     }
 
     #[test]

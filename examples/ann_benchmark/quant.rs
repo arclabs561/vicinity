@@ -16,6 +16,7 @@ use crate::support::nprobe_values;
     feature = "ivf_rabitq",
     feature = "rp_quant",
     feature = "binary_index",
+    feature = "lsh",
     feature = "sq4",
     feature = "sq8"
 ))]
@@ -27,6 +28,7 @@ use crate::support::{dir_size_bytes, json_line_with_storage, ResultStorage};
     feature = "ivf_rabitq",
     feature = "rp_quant",
     feature = "binary_index",
+    feature = "lsh",
     feature = "sq4",
     feature = "sq8"
 ))]
@@ -846,6 +848,43 @@ pub(crate) fn run_lsh(
                 );
             } else {
                 print_row(&format!("probes={}", num_probes), &result);
+            }
+
+            if cfg.snapshot_load {
+                let temp_dir = tempfile::tempdir().expect("create temp dir for LSH snapshot");
+                search_index.save_to_dir(temp_dir.path()).unwrap();
+                let index_bytes = dir_size_bytes(temp_dir.path()).ok();
+                let load_start = Instant::now();
+                let loaded = CrossPolytopeLSHIndex::load_from_dir(temp_dir.path()).unwrap();
+                let load_time_s = load_start.elapsed().as_secs_f64();
+                let loaded_result = evaluate(
+                    &|q, k| loaded.search(q, k).unwrap_or_default(),
+                    test,
+                    neighbors,
+                    10,
+                );
+                if cfg.json {
+                    let params_json = format!(
+                        "{{\"num_tables\":{},\"num_probes\":{}}}",
+                        num_tables, num_probes
+                    );
+                    emit_result(
+                        &cfg.results_path,
+                        &json_line_with_storage(
+                            "lsh",
+                            &params_json,
+                            build_time_s,
+                            rss,
+                            &loaded_result,
+                            &snapshot_storage(load_time_s, index_bytes),
+                        ),
+                    );
+                } else {
+                    print_row(
+                        &format!("probes={} snapshot_loaded", num_probes),
+                        &loaded_result,
+                    );
+                }
             }
         }
 
