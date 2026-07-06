@@ -41,7 +41,8 @@ only after the interface has two real consumers.
 | Range-filtered graph | Yes, directory format | Yes | No | No | Build-once | Persists normalized vectors and sorted attributes, then rebuilds HNSW on load. |
 | Filtered graph | Yes, directory format | Yes | No | No | Build-once | Persists normalized vectors, graph neighbors, medoid, and inverted filter payloads. |
 | BinaryFlat / RP-Quant | Yes, directory format | Yes | No | No | Build-once | Persists full-precision vectors and params, then rebuilds quantizer or projection-derived payloads on load. |
-| SparseMIPS / streaming LSM / EVoC | No | Yes | No | No | Varies | Keep memory-only until each has a benchmark row and a concrete persistence consumer. |
+| SparseMIPS | Yes, directory format | Yes | No | No | Build-once | Persists sparse vectors in CSR-style offsets, indices, and values files plus the built graph. |
+| streaming LSM / EVoC | No | Yes | No | No | Varies | Keep memory-only until each has a benchmark row and a concrete persistence consumer. |
 | Classic trees | Yes, directory format | Yes | No | No | Build-once | KD-tree, Ball tree, K-means tree, RP-tree, and RP-forest persist built trees and preserve external doc IDs. |
 
 ## Required Persistence Tests

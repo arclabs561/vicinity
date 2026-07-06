@@ -222,7 +222,8 @@ pub mod filtering;
     feature = "pipnn",
     feature = "emg",
     feature = "binary_index",
-    feature = "rp_quant"
+    feature = "rp_quant",
+    feature = "sparse_mips"
 ))]
 pub(crate) mod graph_snapshot;
 #[cfg(any(

@@ -7,7 +7,8 @@ use serde::{de::DeserializeOwned, Serialize};
     feature = "nsg",
     feature = "finger",
     feature = "pipnn",
-    feature = "emg"
+    feature = "emg",
+    feature = "sparse_mips"
 ))]
 use smallvec::SmallVec;
 #[cfg(any(
@@ -17,7 +18,8 @@ use smallvec::SmallVec;
     feature = "nsg",
     feature = "finger",
     feature = "pipnn",
-    feature = "emg"
+    feature = "emg",
+    feature = "sparse_mips"
 ))]
 use std::io::Read;
 use std::io::{BufReader, BufWriter, Write};
@@ -54,6 +56,15 @@ pub(crate) fn write_u32_atomic(path: &Path, values: &[u32]) -> Result<(), Retrie
     })
 }
 
+pub(crate) fn write_u64_atomic(path: &Path, values: &[u64]) -> Result<(), RetrieveError> {
+    write_atomic(path, |writer| {
+        for value in values {
+            writer.write_all(&value.to_le_bytes())?;
+        }
+        Ok(())
+    })
+}
+
 #[cfg(any(
     feature = "nsw",
     feature = "sng",
@@ -61,7 +72,8 @@ pub(crate) fn write_u32_atomic(path: &Path, values: &[u32]) -> Result<(), Retrie
     feature = "nsg",
     feature = "finger",
     feature = "pipnn",
-    feature = "emg"
+    feature = "emg",
+    feature = "sparse_mips"
 ))]
 pub(crate) fn write_neighbors_atomic(
     path: &Path,
@@ -134,6 +146,29 @@ pub(crate) fn read_u32_exact(path: &Path, expected_len: usize) -> Result<Vec<u32
         .collect())
 }
 
+pub(crate) fn read_u64_exact(path: &Path, expected_len: usize) -> Result<Vec<u64>, RetrieveError> {
+    let bytes = std::fs::read(path)?;
+    let expected_bytes = expected_len
+        .checked_mul(std::mem::size_of::<u64>())
+        .ok_or_else(|| RetrieveError::FormatError("u64 byte length overflow".into()))?;
+    if bytes.len() != expected_bytes {
+        return Err(RetrieveError::FormatError(format!(
+            "{} size mismatch: expected {} bytes, got {}",
+            path.display(),
+            expected_bytes,
+            bytes.len()
+        )));
+    }
+    Ok(bytes
+        .chunks_exact(8)
+        .map(|chunk| {
+            u64::from_le_bytes([
+                chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
+            ])
+        })
+        .collect())
+}
+
 #[cfg(any(
     feature = "nsw",
     feature = "sng",
@@ -141,7 +176,8 @@ pub(crate) fn read_u32_exact(path: &Path, expected_len: usize) -> Result<Vec<u32
     feature = "nsg",
     feature = "finger",
     feature = "pipnn",
-    feature = "emg"
+    feature = "emg",
+    feature = "sparse_mips"
 ))]
 pub(crate) fn read_neighbors(
     path: &Path,
@@ -157,7 +193,7 @@ pub(crate) fn read_neighbors(
             path.display()
         )));
     }
-    let count = read_u64(&mut reader)? as usize;
+    let count = read_one_u64(&mut reader)? as usize;
     if count != expected_nodes {
         return Err(RetrieveError::FormatError(format!(
             "neighbor list count {} does not match manifest count {}",
@@ -167,7 +203,7 @@ pub(crate) fn read_neighbors(
 
     let mut neighbors = Vec::with_capacity(expected_nodes);
     for node in 0..expected_nodes {
-        let len = read_u64(&mut reader)? as usize;
+        let len = read_one_u64(&mut reader)? as usize;
         let max_reasonable_degree = expected_nodes.saturating_mul(4).max(64);
         if len > max_reasonable_degree {
             return Err(RetrieveError::FormatError(format!(
@@ -176,7 +212,7 @@ pub(crate) fn read_neighbors(
         }
         let mut list = SmallVec::<[u32; 16]>::new();
         for _ in 0..len {
-            let id = read_u32(&mut reader)?;
+            let id = read_one_u32(&mut reader)?;
             if id as usize >= expected_nodes {
                 return Err(RetrieveError::FormatError(format!(
                     "neighbor id {id} exceeds vector count {expected_nodes}"
@@ -263,9 +299,10 @@ pub(crate) fn validate_graph_shape(
     feature = "nsg",
     feature = "finger",
     feature = "pipnn",
-    feature = "emg"
+    feature = "emg",
+    feature = "sparse_mips"
 ))]
-fn read_u64(reader: &mut impl Read) -> Result<u64, RetrieveError> {
+fn read_one_u64(reader: &mut impl Read) -> Result<u64, RetrieveError> {
     let mut bytes = [0u8; 8];
     reader.read_exact(&mut bytes)?;
     Ok(u64::from_le_bytes(bytes))
@@ -278,9 +315,10 @@ fn read_u64(reader: &mut impl Read) -> Result<u64, RetrieveError> {
     feature = "nsg",
     feature = "finger",
     feature = "pipnn",
-    feature = "emg"
+    feature = "emg",
+    feature = "sparse_mips"
 ))]
-fn read_u32(reader: &mut impl Read) -> Result<u32, RetrieveError> {
+fn read_one_u32(reader: &mut impl Read) -> Result<u32, RetrieveError> {
     let mut bytes = [0u8; 4];
     reader.read_exact(&mut bytes)?;
     Ok(u32::from_le_bytes(bytes))

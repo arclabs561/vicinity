@@ -46,8 +46,13 @@
 
 use crate::distance::FloatOrd;
 use crate::RetrieveError;
+use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 use std::collections::{BinaryHeap, HashSet};
+use std::path::Path;
+
+const SPARSE_MIPS_FORMAT_VERSION: u32 = 1;
+const SPARSE_MIPS_NEIGHBORS_MAGIC: &[u8; 8] = b"SPMIPSG1";
 
 // ── Public types ───────────────────────────────────────────────────────────────
 
@@ -55,7 +60,7 @@ use std::collections::{BinaryHeap, HashSet};
 ///
 /// The `indices` array must be sorted in ascending order and have the same
 /// length as `values`. Duplicate indices are not allowed.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct SparseVector {
     /// Dimension indices, sorted ascending.
     pub indices: Vec<u32>,
@@ -90,7 +95,7 @@ impl SparseVector {
 }
 
 /// Construction and search parameters.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SparseMipsParams {
     /// Maximum out-degree per node. Default: 32.
     pub max_degree: usize,
@@ -126,6 +131,15 @@ pub struct SparseMipsIndex {
     doc_ids: Vec<u32>,
 
     neighbors: Vec<SmallVec<[u32; 16]>>,
+    entry_point: u32,
+}
+
+#[derive(Deserialize, Serialize)]
+struct SparseMipsSnapshot {
+    version: u32,
+    num_vectors: usize,
+    total_nnz: usize,
+    params: SparseMipsParams,
     entry_point: u32,
 }
 
@@ -227,6 +241,137 @@ impl SparseMipsIndex {
 
         self.built = true;
         Ok(())
+    }
+
+    /// Save a built SparseMIPS index to a directory.
+    ///
+    /// Sparse vectors are stored as CSR-style offsets, indices, and values.
+    /// Loading restores the built graph directly.
+    pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<(), RetrieveError> {
+        if !self.built {
+            return Err(RetrieveError::InvalidParameter(
+                "cannot save unbuilt SparseMIPS index".into(),
+            ));
+        }
+        let output_dir = output_dir.as_ref();
+        std::fs::create_dir_all(output_dir)?;
+
+        let mut offsets = Vec::with_capacity(self.num_vectors + 1);
+        let mut indices = Vec::new();
+        let mut values = Vec::new();
+        offsets.push(0u64);
+        for vector in &self.vectors {
+            if vector.indices.len() != vector.values.len() {
+                return Err(RetrieveError::FormatError(
+                    "SparseMIPS vector has mismatched indices and values".into(),
+                ));
+            }
+            indices.extend_from_slice(&vector.indices);
+            values.extend_from_slice(&vector.values);
+            offsets.push(indices.len() as u64);
+        }
+
+        let snapshot = SparseMipsSnapshot {
+            version: SPARSE_MIPS_FORMAT_VERSION,
+            num_vectors: self.num_vectors,
+            total_nnz: indices.len(),
+            params: self.params.clone(),
+            entry_point: self.entry_point,
+        };
+        crate::graph_snapshot::write_json_atomic(&output_dir.join("manifest.json"), &snapshot)?;
+        crate::graph_snapshot::write_u32_atomic(&output_dir.join("doc_ids.bin"), &self.doc_ids)?;
+        crate::graph_snapshot::write_neighbors_atomic(
+            &output_dir.join("neighbors.bin"),
+            SPARSE_MIPS_NEIGHBORS_MAGIC,
+            &self.neighbors,
+        )?;
+        crate::graph_snapshot::write_u64_atomic(&output_dir.join("offsets.bin"), &offsets)?;
+        crate::graph_snapshot::write_u32_atomic(&output_dir.join("indices.bin"), &indices)?;
+        crate::graph_snapshot::write_f32_atomic(&output_dir.join("values.bin"), &values)?;
+        Ok(())
+    }
+
+    /// Load a SparseMIPS index saved by [`Self::save_to_dir`].
+    pub fn load_from_dir(input_dir: impl AsRef<Path>) -> Result<Self, RetrieveError> {
+        let input_dir = input_dir.as_ref();
+        let snapshot: SparseMipsSnapshot =
+            crate::graph_snapshot::read_json(&input_dir.join("manifest.json"))?;
+        if snapshot.version != SPARSE_MIPS_FORMAT_VERSION {
+            return Err(RetrieveError::FormatError(format!(
+                "unsupported SparseMIPS format version {}",
+                snapshot.version
+            )));
+        }
+        if snapshot.num_vectors == 0 {
+            return Err(RetrieveError::FormatError(
+                "SparseMIPS manifest has zero vectors".into(),
+            ));
+        }
+        let doc_ids = crate::graph_snapshot::read_u32_exact(
+            &input_dir.join("doc_ids.bin"),
+            snapshot.num_vectors,
+        )?;
+        let neighbors = crate::graph_snapshot::read_neighbors(
+            &input_dir.join("neighbors.bin"),
+            SPARSE_MIPS_NEIGHBORS_MAGIC,
+            snapshot.num_vectors,
+        )?;
+        let offsets = crate::graph_snapshot::read_u64_exact(
+            &input_dir.join("offsets.bin"),
+            snapshot.num_vectors + 1,
+        )?;
+        let indices = crate::graph_snapshot::read_u32_exact(
+            &input_dir.join("indices.bin"),
+            snapshot.total_nnz,
+        )?;
+        let values = crate::graph_snapshot::read_f32_exact(
+            &input_dir.join("values.bin"),
+            snapshot.total_nnz,
+        )?;
+        if snapshot.entry_point as usize >= snapshot.num_vectors {
+            return Err(RetrieveError::FormatError(format!(
+                "SparseMIPS entry point {} exceeds vector count {}",
+                snapshot.entry_point, snapshot.num_vectors
+            )));
+        }
+        if offsets.first().copied() != Some(0)
+            || offsets.last().copied() != Some(snapshot.total_nnz as u64)
+        {
+            return Err(RetrieveError::FormatError(
+                "SparseMIPS offsets do not match manifest nnz".into(),
+            ));
+        }
+
+        let mut vectors = Vec::with_capacity(snapshot.num_vectors);
+        for pair in offsets.windows(2) {
+            let start = pair[0] as usize;
+            let end = pair[1] as usize;
+            if start > end || end > indices.len() {
+                return Err(RetrieveError::FormatError(
+                    "SparseMIPS offsets are not monotonic".into(),
+                ));
+            }
+            let vector_indices = indices[start..end].to_vec();
+            if !vector_indices.windows(2).all(|w| w[0] < w[1]) {
+                return Err(RetrieveError::FormatError(
+                    "SparseMIPS vector indices must be strictly increasing".into(),
+                ));
+            }
+            vectors.push(SparseVector {
+                indices: vector_indices,
+                values: values[start..end].to_vec(),
+            });
+        }
+
+        Ok(Self {
+            params: snapshot.params,
+            built: true,
+            vectors,
+            num_vectors: snapshot.num_vectors,
+            doc_ids,
+            neighbors,
+            entry_point: snapshot.entry_point,
+        })
     }
 
     /// Search for the `k` nearest neighbors by inner product.
@@ -552,6 +697,36 @@ mod tests {
             recall > 0.5,
             "self-search recall too low: {recall:.2} ({hits}/{n})"
         );
+    }
+
+    #[test]
+    fn save_load_roundtrip_preserves_search() {
+        let n = 50;
+        let vecs = make_sparse(n, 15, 200, 7);
+        let mut index = SparseMipsIndex::new(SparseMipsParams {
+            max_degree: 16,
+            ef_construction: 100,
+            ef_search: 50,
+            alpha: 1.2,
+        });
+
+        for (i, v) in vecs.iter().enumerate() {
+            index.add(50_000 + i as u32, v.clone()).unwrap();
+        }
+        index.build().unwrap();
+        let before = index.search(&vecs[0], 10).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        index.save_to_dir(dir.path()).unwrap();
+        let loaded = SparseMipsIndex::load_from_dir(dir.path()).unwrap();
+
+        assert_eq!(loaded.search(&vecs[0], 10).unwrap(), before);
+        assert_eq!(loaded.len(), index.len());
+        assert_eq!(loaded.entry_point, index.entry_point);
+        for (left, right) in loaded.vectors.iter().zip(index.vectors.iter()) {
+            assert_eq!(left.indices, right.indices);
+            assert_eq!(left.values, right.values);
+        }
     }
 
     #[test]
