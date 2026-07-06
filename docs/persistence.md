@@ -89,6 +89,7 @@ For file-backed searchers, recall should also be measured against ground truth.
 Persistence work is not complete until the benchmark harness can distinguish:
 
 - `storage_mode=in_memory`
+- `storage_mode=snapshot_loaded`
 - `storage_mode=file`
 - `storage_mode=mmap`
 
@@ -102,6 +103,10 @@ Storage rows are not interchangeable:
 
 - `storage_mode=in_memory` measures the search path after vectors and graph
   structures are resident in process memory.
+- `storage_mode=snapshot_loaded` measures an index saved to a snapshot,
+  reopened, and then searched from process memory. It captures load time,
+  serialized size, and post-load search equivalence; it is not an on-disk query
+  path.
 - `storage_mode=file` measures a searcher that reads persisted structures
   through normal file I/O. Report `load_time_s` separately from query latency.
 - `storage_mode=mmap` measures a searcher opened over memory-mapped persisted

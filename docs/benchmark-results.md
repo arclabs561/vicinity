@@ -38,9 +38,12 @@ cargo run --example ann_benchmark --release --features hnsw,diskann -- \
   data/ann-benchmarks/glove-25-angular --algo diskann --json --fresh
 
 # Classic tree baselines. These are comparison rows, not optimization targets.
+# `--snapshot-load` adds persisted-and-reopened rows; search is still in-memory
+# after load, unlike DiskANN's file and mmap rows.
 cargo run --example ann_benchmark --release --features kdtree,balltree,rptree,kmeans_tree -- \
   data/ann-benchmarks/glove-25-angular \
-  --algo kdtree --algo balltree --algo rptree --algo rp_forest --algo kmeans_tree --json --fresh
+  --algo kdtree --algo balltree --algo rptree --algo rp_forest --algo kmeans_tree \
+  --snapshot-load --json --fresh
 
 # FreshGraph delete/insert churn, scored against a live active-set oracle.
 cargo run --example ann_benchmark --release --features hnsw,fresh_graph -- \

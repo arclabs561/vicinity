@@ -24,6 +24,7 @@ pub(crate) struct Config {
     pub(crate) pq_rerank_pools: Vec<usize>,
     pub(crate) batch: bool,
     pub(crate) resume: bool,
+    pub(crate) snapshot_load: bool,
     pub(crate) churn_base_size: usize,
     pub(crate) churn_cycles: usize,
     pub(crate) churn_queries: usize,
@@ -48,6 +49,7 @@ impl Default for Config {
             pq_rerank_pools: Vec::new(),
             batch: false,
             resume: false,
+            snapshot_load: false,
             churn_base_size: 50_000,
             churn_cycles: 5_000,
             churn_queries: 1_000,
@@ -185,13 +187,28 @@ fn hnsw_quantized_checks(algorithm: &str, cfg: &Config) -> Vec<ExpectedResult> {
     })
 }
 
-fn conditional_single_check(
+fn snapshot_check(algorithm: &str, params_json: &str, cfg: &Config) -> Vec<ExpectedResult> {
+    let mut checks = single_result_check(algorithm, params_json);
+    if cfg.snapshot_load {
+        checks.push(result_check_with_fragments(
+            algorithm,
+            [
+                format!("\"params\":{}", params_json),
+                "\"storage_mode\":\"snapshot_loaded\"".to_string(),
+            ],
+        ));
+    }
+    checks
+}
+
+fn conditional_snapshot_check(
     enabled: bool,
     algorithm: &str,
     params_json: &str,
+    cfg: &Config,
 ) -> Vec<ExpectedResult> {
     if enabled {
-        single_result_check(algorithm, params_json)
+        snapshot_check(algorithm, params_json, cfg)
     } else {
         Vec::new()
     }
@@ -485,29 +502,34 @@ fn required_result_checks(
         }
         "sq8u" | "sq4u" | "symphony_qg_vr" => hnsw_quantized_checks(algo, cfg),
         "symphony_qg" => ef_checks("symphony_qg", cfg, |_| Vec::new()),
-        "kdtree" => conditional_single_check(
+        "kdtree" => conditional_snapshot_check(
             !cfg.is_euclidean && dim <= 50,
             "kdtree",
             "{\"max_leaf_size\":10,\"max_depth\":32}",
+            cfg,
         ),
-        "balltree" => conditional_single_check(
+        "balltree" => conditional_snapshot_check(
             !cfg.is_euclidean,
             "balltree",
             "{\"max_leaf_size\":10,\"max_depth\":32}",
+            cfg,
         ),
-        "rptree" => conditional_single_check(
+        "rptree" => conditional_snapshot_check(
             !cfg.is_euclidean,
             "rptree",
             "{\"max_leaf_size\":10,\"max_depth\":32}",
+            cfg,
         ),
-        "rp_forest" => conditional_single_check(
+        "rp_forest" => conditional_snapshot_check(
             !cfg.is_euclidean,
             "rp_forest",
             "{\"num_trees\":10,\"max_leaf_size\":10}",
+            cfg,
         ),
-        "kmeans_tree" => single_result_check(
+        "kmeans_tree" => snapshot_check(
             "kmeans_tree",
             "{\"num_clusters\":16,\"max_leaf_size\":50,\"max_depth\":10,\"max_iterations\":10}",
+            cfg,
         ),
         _ => vec![ExpectedResult::new(algo, std::iter::empty::<String>())],
     }
@@ -635,6 +657,9 @@ pub(crate) fn parse_args() -> Config {
             }
             "--resume" => {
                 cfg.resume = true;
+            }
+            "--snapshot-load" => {
+                cfg.snapshot_load = true;
             }
             "--churn-base-size" => {
                 i += 1;
@@ -919,7 +944,13 @@ pub(crate) fn current_rss_kb() -> Option<u64> {
     }
 }
 
-#[cfg(feature = "diskann")]
+#[cfg(any(
+    feature = "balltree",
+    feature = "diskann",
+    feature = "kdtree",
+    feature = "kmeans_tree",
+    feature = "rptree"
+))]
 pub(crate) fn dir_size_bytes(path: &Path) -> std::io::Result<u64> {
     let mut total = 0;
     for entry in std::fs::read_dir(path)? {

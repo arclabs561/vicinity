@@ -70,7 +70,13 @@ use support::{
     brute_force_search, current_rss_kb, emit_result, evaluate, json_line, load_completed_results,
     parse_args, print_header, print_row, request_completed, rustc_version, Config,
 };
-#[cfg(feature = "diskann")]
+#[cfg(any(
+    feature = "balltree",
+    feature = "diskann",
+    feature = "kdtree",
+    feature = "kmeans_tree",
+    feature = "rptree"
+))]
 use support::{dir_size_bytes, json_line_with_storage, ResultStorage};
 
 #[cfg(any(
@@ -84,6 +90,21 @@ use support::{dir_size_bytes, json_line_with_storage, ResultStorage};
     feature = "lsh"
 ))]
 use quant::*;
+
+#[cfg(any(
+    feature = "balltree",
+    feature = "kdtree",
+    feature = "kmeans_tree",
+    feature = "rptree"
+))]
+fn snapshot_storage(load_time_s: f64, index_bytes: Option<u64>) -> ResultStorage<'static> {
+    ResultStorage {
+        storage_mode: "snapshot_loaded",
+        cache_state: "warm_after_load",
+        load_time_s: Some(load_time_s),
+        index_bytes,
+    }
+}
 
 // ─── Algorithm runners ───────────────────────────────────────────────────────
 
@@ -1745,17 +1766,45 @@ fn run_kdtree(
     }
 
     let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
+    let params_json = format!(
+        "{{\"max_leaf_size\":{},\"max_depth\":{}}}",
+        params.max_leaf_size, params.max_depth
+    );
     if cfg.json {
-        let params_json = format!(
-            "{{\"max_leaf_size\":{},\"max_depth\":{}}}",
-            params.max_leaf_size, params.max_depth
-        );
         emit_result(
             &cfg.results_path,
             &json_line("kdtree", &params_json, build_time_s, rss, &result),
         );
     } else {
         print_row("--", &result);
+    }
+
+    if cfg.snapshot_load {
+        let temp_dir = tempfile::tempdir().expect("create temp dir for KD-tree snapshot benchmark");
+        index.save_to_dir(temp_dir.path()).unwrap();
+        let index_bytes = dir_size_bytes(temp_dir.path()).ok();
+        let load_start = Instant::now();
+        let loaded = KDTreeIndex::load_from_dir(temp_dir.path()).unwrap();
+        let load_time_s = load_start.elapsed().as_secs_f64();
+        let loaded_result = evaluate(&|q, k| loaded.search(q, k).unwrap(), test, neighbors, 10);
+        if cfg.json {
+            emit_result(
+                &cfg.results_path,
+                &json_line_with_storage(
+                    "kdtree",
+                    &params_json,
+                    build_time_s,
+                    rss,
+                    &loaded_result,
+                    &snapshot_storage(load_time_s, index_bytes),
+                ),
+            );
+        } else {
+            print_row("snapshot_loaded", &loaded_result);
+        }
+    }
+
+    if !cfg.json {
         println!();
     }
 }
@@ -1799,17 +1848,46 @@ fn run_balltree(
     }
 
     let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
+    let params_json = format!(
+        "{{\"max_leaf_size\":{},\"max_depth\":{}}}",
+        params.max_leaf_size, params.max_depth
+    );
     if cfg.json {
-        let params_json = format!(
-            "{{\"max_leaf_size\":{},\"max_depth\":{}}}",
-            params.max_leaf_size, params.max_depth
-        );
         emit_result(
             &cfg.results_path,
             &json_line("balltree", &params_json, build_time_s, rss, &result),
         );
     } else {
         print_row("--", &result);
+    }
+
+    if cfg.snapshot_load {
+        let temp_dir =
+            tempfile::tempdir().expect("create temp dir for Ball tree snapshot benchmark");
+        index.save_to_dir(temp_dir.path()).unwrap();
+        let index_bytes = dir_size_bytes(temp_dir.path()).ok();
+        let load_start = Instant::now();
+        let loaded = BallTreeIndex::load_from_dir(temp_dir.path()).unwrap();
+        let load_time_s = load_start.elapsed().as_secs_f64();
+        let loaded_result = evaluate(&|q, k| loaded.search(q, k).unwrap(), test, neighbors, 10);
+        if cfg.json {
+            emit_result(
+                &cfg.results_path,
+                &json_line_with_storage(
+                    "balltree",
+                    &params_json,
+                    build_time_s,
+                    rss,
+                    &loaded_result,
+                    &snapshot_storage(load_time_s, index_bytes),
+                ),
+            );
+        } else {
+            print_row("snapshot_loaded", &loaded_result);
+        }
+    }
+
+    if !cfg.json {
         println!();
     }
 }
@@ -1853,17 +1931,45 @@ fn run_rptree(
     }
 
     let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
+    let params_json = format!(
+        "{{\"max_leaf_size\":{},\"max_depth\":{}}}",
+        params.max_leaf_size, params.max_depth
+    );
     if cfg.json {
-        let params_json = format!(
-            "{{\"max_leaf_size\":{},\"max_depth\":{}}}",
-            params.max_leaf_size, params.max_depth
-        );
         emit_result(
             &cfg.results_path,
             &json_line("rptree", &params_json, build_time_s, rss, &result),
         );
     } else {
         print_row("--", &result);
+    }
+
+    if cfg.snapshot_load {
+        let temp_dir = tempfile::tempdir().expect("create temp dir for RP-tree snapshot benchmark");
+        index.save_to_dir(temp_dir.path()).unwrap();
+        let index_bytes = dir_size_bytes(temp_dir.path()).ok();
+        let load_start = Instant::now();
+        let loaded = RPTreeIndex::load_from_dir(temp_dir.path()).unwrap();
+        let load_time_s = load_start.elapsed().as_secs_f64();
+        let loaded_result = evaluate(&|q, k| loaded.search(q, k).unwrap(), test, neighbors, 10);
+        if cfg.json {
+            emit_result(
+                &cfg.results_path,
+                &json_line_with_storage(
+                    "rptree",
+                    &params_json,
+                    build_time_s,
+                    rss,
+                    &loaded_result,
+                    &snapshot_storage(load_time_s, index_bytes),
+                ),
+            );
+        } else {
+            print_row("snapshot_loaded", &loaded_result);
+        }
+    }
+
+    if !cfg.json {
         println!();
     }
 }
@@ -1907,17 +2013,46 @@ fn run_rp_forest(
     }
 
     let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
+    let params_json = format!(
+        "{{\"num_trees\":{},\"max_leaf_size\":{}}}",
+        params.num_trees, params.tree_params.max_leaf_size
+    );
     if cfg.json {
-        let params_json = format!(
-            "{{\"num_trees\":{},\"max_leaf_size\":{}}}",
-            params.num_trees, params.tree_params.max_leaf_size
-        );
         emit_result(
             &cfg.results_path,
             &json_line("rp_forest", &params_json, build_time_s, rss, &result),
         );
     } else {
         print_row("--", &result);
+    }
+
+    if cfg.snapshot_load {
+        let temp_dir =
+            tempfile::tempdir().expect("create temp dir for RP-forest snapshot benchmark");
+        index.save_to_dir(temp_dir.path()).unwrap();
+        let index_bytes = dir_size_bytes(temp_dir.path()).ok();
+        let load_start = Instant::now();
+        let loaded = RpForestIndex::load_from_dir(temp_dir.path()).unwrap();
+        let load_time_s = load_start.elapsed().as_secs_f64();
+        let loaded_result = evaluate(&|q, k| loaded.search(q, k).unwrap(), test, neighbors, 10);
+        if cfg.json {
+            emit_result(
+                &cfg.results_path,
+                &json_line_with_storage(
+                    "rp_forest",
+                    &params_json,
+                    build_time_s,
+                    rss,
+                    &loaded_result,
+                    &snapshot_storage(load_time_s, index_bytes),
+                ),
+            );
+        } else {
+            print_row("snapshot_loaded", &loaded_result);
+        }
+    }
+
+    if !cfg.json {
         println!();
     }
 }
@@ -1956,17 +2091,46 @@ fn run_kmeans_tree(
     }
 
     let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
+    let params_json = format!(
+        "{{\"num_clusters\":{},\"max_leaf_size\":{},\"max_depth\":{},\"max_iterations\":{}}}",
+        params.num_clusters, params.max_leaf_size, params.max_depth, params.max_iterations
+    );
     if cfg.json {
-        let params_json = format!(
-            "{{\"num_clusters\":{},\"max_leaf_size\":{},\"max_depth\":{},\"max_iterations\":{}}}",
-            params.num_clusters, params.max_leaf_size, params.max_depth, params.max_iterations
-        );
         emit_result(
             &cfg.results_path,
             &json_line("kmeans_tree", &params_json, build_time_s, rss, &result),
         );
     } else {
         print_row("--", &result);
+    }
+
+    if cfg.snapshot_load {
+        let temp_dir =
+            tempfile::tempdir().expect("create temp dir for K-means tree snapshot benchmark");
+        index.save_to_dir(temp_dir.path()).unwrap();
+        let index_bytes = dir_size_bytes(temp_dir.path()).ok();
+        let load_start = Instant::now();
+        let loaded = KMeansTreeIndex::load_from_dir(temp_dir.path()).unwrap();
+        let load_time_s = load_start.elapsed().as_secs_f64();
+        let loaded_result = evaluate(&|q, k| loaded.search(q, k).unwrap(), test, neighbors, 10);
+        if cfg.json {
+            emit_result(
+                &cfg.results_path,
+                &json_line_with_storage(
+                    "kmeans_tree",
+                    &params_json,
+                    build_time_s,
+                    rss,
+                    &loaded_result,
+                    &snapshot_storage(load_time_s, index_bytes),
+                ),
+            );
+        } else {
+            print_row("snapshot_loaded", &loaded_result);
+        }
+    }
+
+    if !cfg.json {
         println!();
     }
 }
