@@ -7,11 +7,14 @@
 //!
 //! ```bash
 //! cargo run --example acorn_selectivity --release --features hnsw
-//! cargo run --example acorn_selectivity --release --features hnsw -- --json
-//! cargo run --example acorn_selectivity --release --features hnsw,filtered_graph,range_filtered,curator -- --json
+//! cargo run --example acorn_selectivity --release --features hnsw -- --json --fresh
+//! cargo run --example acorn_selectivity --release --features hnsw,filtered_graph,range_filtered,curator -- --json --resume
 //! ```
 
 use std::collections::HashSet;
+use std::fs::{File, OpenOptions};
+use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use vicinity::distance::cosine_distance_normalized;
@@ -24,7 +27,7 @@ const DEFAULT_K: usize = 10;
 const DEFAULT_NEIGHBORS: usize = 32;
 const SELECTIVITIES: [f64; 6] = [0.50, 0.20, 0.10, 0.05, 0.02, 0.01];
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Config {
     n: usize,
     dim: usize,
@@ -32,6 +35,9 @@ struct Config {
     k: usize,
     neighbors: usize,
     json: bool,
+    results_path: PathBuf,
+    fresh: bool,
+    resume: bool,
 }
 
 impl Default for Config {
@@ -43,6 +49,9 @@ impl Default for Config {
             k: DEFAULT_K,
             neighbors: DEFAULT_NEIGHBORS,
             json: false,
+            results_path: PathBuf::new(),
+            fresh: false,
+            resume: false,
         }
     }
 }
@@ -61,7 +70,19 @@ struct BenchResult {
 }
 
 fn main() {
-    let cfg = parse_args();
+    let mut cfg = parse_args();
+    if cfg.results_path.as_os_str().is_empty() {
+        cfg.results_path = default_results_path(&cfg);
+    }
+    if cfg.fresh {
+        std::fs::remove_file(&cfg.results_path).ok();
+    }
+    let completed = if cfg.resume {
+        load_completed_results(&cfg.results_path)
+    } else {
+        Vec::new()
+    };
+
     let vectors = make_vectors(cfg.n, cfg.dim, 0x5eed);
     let queries = make_vectors(cfg.queries, cfg.dim, 0x9e3779b97f4a7c15);
 
@@ -77,10 +98,9 @@ fn main() {
     let curator = build_curator_index(&cfg, &vectors);
 
     if cfg.json {
-        println!(
-            "{{\"_meta\":{{\"n\":{},\"dim\":{},\"queries\":{},\"k\":{},\"neighbors\":{},\"graph_build_s\":{:.3}}}}}",
-            cfg.n, cfg.dim, cfg.queries, cfg.k, cfg.neighbors, build_time_s
-        );
+        if !cfg.results_path.exists() {
+            emit_json_line(&cfg, &meta_line(&cfg, Some(build_time_s)));
+        }
     } else {
         println!("ACORN selectivity sweep");
         println!(
@@ -106,7 +126,14 @@ fn main() {
     for target_count in selectivity_target_counts(&cfg) {
         let result = run_selectivity(&cfg, &vectors, &queries, &graph, target_count);
         let actual_selectivity = target_count as f64 / cfg.n as f64;
-        emit_result(&cfg, "acorn", actual_selectivity, target_count, &result);
+        emit_result(
+            &cfg,
+            &completed,
+            "acorn",
+            actual_selectivity,
+            target_count,
+            &result,
+        );
 
         #[cfg(feature = "filtered_graph")]
         {
@@ -119,6 +146,7 @@ fn main() {
             );
             emit_result(
                 &cfg,
+                &completed,
                 "filtered_graph",
                 actual_selectivity,
                 target_count,
@@ -137,6 +165,7 @@ fn main() {
             );
             emit_result(
                 &cfg,
+                &completed,
                 "range_filtered",
                 actual_selectivity,
                 target_count,
@@ -147,25 +176,39 @@ fn main() {
         #[cfg(feature = "curator")]
         {
             let result = run_curator_selectivity(&cfg, &vectors, &queries, &curator, target_count);
-            emit_result(&cfg, "curator", actual_selectivity, target_count, &result);
+            emit_result(
+                &cfg,
+                &completed,
+                "curator",
+                actual_selectivity,
+                target_count,
+                &result,
+            );
         }
     }
 }
 
 fn emit_result(
     cfg: &Config,
+    completed: &[String],
     algorithm: &str,
     actual_selectivity: f64,
     target_count: usize,
     result: &BenchResult,
 ) {
     if cfg.json {
-        println!(
-            "{{\"algorithm\":\"{}\",\"params\":{{\"selectivity\":{:.4},\"target_count\":{},\"neighbors\":{}}},\"recall_at_{}\":{:.4},\"qps\":{:.1},\"latency_us\":{:.1},\"p50_us\":{:.1},\"p95_us\":{:.1},\"p99_us\":{:.1},\"mean_returned\":{:.1},\"two_hop_invocations\":{},\"two_hop_nodes_examined\":{}}}",
+        if cfg.resume && row_completed(cfg, completed, algorithm, target_count) {
+            return;
+        }
+        let line = format!(
+            "{{\"algorithm\":\"{}\",\"params\":{{\"selectivity\":{:.4},\"target_count\":{},\"neighbors\":{},\"n\":{},\"dim\":{},\"queries\":{}}},\"recall_at_{}\":{:.4},\"qps\":{:.1},\"latency_us\":{:.1},\"p50_us\":{:.1},\"p95_us\":{:.1},\"p99_us\":{:.1},\"mean_returned\":{:.1},\"two_hop_invocations\":{},\"two_hop_nodes_examined\":{}}}",
             algorithm,
             actual_selectivity,
             target_count,
             cfg.neighbors,
+            cfg.n,
+            cfg.dim,
+            cfg.queries,
             cfg.k,
             result.recall,
             result.qps,
@@ -177,6 +220,7 @@ fn emit_result(
             result.two_hop_invocations,
             result.two_hop_nodes_examined
         );
+        emit_json_line(cfg, &line);
     } else {
         println!(
             "{:>14} {:>10.1}% {:>8.3} {:>10.0} {:>10.1} {:>10.1} {:>10.1} {:>12.1} {:>12} {:>12}",
@@ -192,6 +236,56 @@ fn emit_result(
             result.two_hop_nodes_examined
         );
     }
+}
+
+fn meta_line(cfg: &Config, graph_build_s: Option<f64>) -> String {
+    let mut line = format!(
+        "{{\"_meta\":{{\"workload\":\"acorn_selectivity\",\"result_schema\":1,\"n\":{},\"dim\":{},\"queries\":{},\"k\":{},\"neighbors\":{}",
+        cfg.n, cfg.dim, cfg.queries, cfg.k, cfg.neighbors
+    );
+    if let Some(graph_build_s) = graph_build_s {
+        line.push_str(&format!(",\"graph_build_s\":{graph_build_s:.3}"));
+    }
+    line.push_str("}}");
+    line
+}
+
+fn default_results_path(cfg: &Config) -> PathBuf {
+    let path = Path::new("data/ann-benchmarks/results");
+    std::fs::create_dir_all(path).ok();
+    path.join(format!(
+        "acorn-selectivity-n{}-d{}-q{}.jsonl",
+        cfg.n, cfg.dim, cfg.queries
+    ))
+}
+
+fn emit_json_line(cfg: &Config, line: &str) {
+    println!("{line}");
+    if let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&cfg.results_path)
+    {
+        let _ = writeln!(file, "{line}");
+    }
+}
+
+fn load_completed_results(path: &Path) -> Vec<String> {
+    let Ok(file) = File::open(path) else {
+        return Vec::new();
+    };
+    BufReader::new(file).lines().map_while(Result::ok).collect()
+}
+
+fn row_completed(cfg: &Config, lines: &[String], algorithm: &str, target_count: usize) -> bool {
+    lines.iter().any(|line| {
+        line.contains(&format!("\"algorithm\":\"{algorithm}\""))
+            && line.contains(&format!("\"target_count\":{target_count}"))
+            && line.contains(&format!("\"neighbors\":{}", cfg.neighbors))
+            && line.contains(&format!("\"n\":{}", cfg.n))
+            && line.contains(&format!("\"dim\":{}", cfg.dim))
+            && line.contains(&format!("\"queries\":{}", cfg.queries))
+    })
 }
 
 fn parse_args() -> Config {
@@ -231,6 +325,14 @@ fn parse_args() -> Config {
                 }
             }
             "--json" => cfg.json = true,
+            "--results" => {
+                i += 1;
+                if i < args.len() {
+                    cfg.results_path = PathBuf::from(&args[i]);
+                }
+            }
+            "--fresh" => cfg.fresh = true,
+            "--resume" => cfg.resume = true,
             other => eprintln!("unknown flag: {other}"),
         }
         i += 1;

@@ -52,6 +52,10 @@ cargo run --example ann_benchmark --release --features hnsw -- \
 # LSM-tiered streaming churn, scored against a live active-set oracle.
 cargo run --example ann_benchmark --release --features hnsw -- \
   data/ann-benchmarks/glove-25-angular --algo lsm_churn --json --fresh
+
+# Filtered-search selectivity sweep. This is synthetic and writes its own JSONL.
+cargo run --example acorn_selectivity --release \
+  --features hnsw,filtered_graph,range_filtered,curator -- --json --fresh
 ```
 
 These commands intentionally separate low-recall, high-throughput operating

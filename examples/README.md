@@ -38,7 +38,10 @@ Synthetic workloads for algorithm behavior and parameter effects.
 ```sh
 cargo run --example semantic_search_demo --release
 cargo run --example acorn_selectivity --release --features hnsw
-cargo run --example acorn_selectivity --release --features hnsw,filtered_graph,range_filtered,curator -- --json
+cargo run --example acorn_selectivity --release --features hnsw,filtered_graph,range_filtered,curator -- \
+  --json --fresh
+cargo run --example acorn_selectivity --release --features hnsw,filtered_graph,range_filtered,curator -- \
+  --json --resume --results data/ann-benchmarks/results/acorn-selectivity-n1200-d32-q100.jsonl
 cargo run --example ivf_pq_demo --release --features ivf_pq
 cargo run --example lid_demo --release
 cargo run --example rabitq_demo --release --features "rabitq,hnsw,quantization"
