@@ -15,6 +15,9 @@
 //! cargo run --example ann_benchmark --release --all-features -- \
 //!   data/ann-benchmarks/glove-25-angular --algo hnsw --algo nsw --resume --json
 //!
+//! cargo run --example ann_benchmark --release --features hnsw -- \
+//!   data/ann-benchmarks/glove-25-angular --algo hnsw --max-queries 1000 --json
+//!
 //! RAYON_NUM_THREADS=4 cargo run --example ann_benchmark --release --features hnsw,parallel -- \
 //!   data/ann-benchmarks/glove-25-angular --algo hnsw --batch --json
 //!
@@ -3010,25 +3013,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Data: {}\n", cfg.data_dir);
     }
 
+    let (train, dim) = common::load_vectors(&format!("{}/train.bin", cfg.data_dir))?;
+    let (mut test, _) = common::load_vectors(&format!("{}/test.bin", cfg.data_dir))?;
+    let (mut neighbors, k_gt) = common::load_neighbors(&format!("{}/neighbors.bin", cfg.data_dir))?;
+
+    if let Some(max_queries) = cfg.max_queries {
+        if max_queries == 0 {
+            return Err("--max-queries must be greater than zero".into());
+        }
+        let capped_len = max_queries.min(test.len()).min(neighbors.len());
+        test.truncate(capped_len);
+        neighbors.truncate(capped_len);
+    }
+
     let meta = || {
         format!(
-            "{{\"_meta\":{{\"dataset\":\"{}\",\"metric\":\"{}\",\"result_schema\":2,\"rustc\":\"{}\",\"rust_msrv\":\"{}\",\"vicinity\":\"{}\"}}}}",
+            "{{\"_meta\":{{\"dataset\":\"{}\",\"metric\":\"{}\",\"result_schema\":2,\"rustc\":\"{}\",\"rust_msrv\":\"{}\",\"vicinity\":\"{}\",\"query_limit\":{},\"queries\":{}}}}}",
             cfg.data_dir,
             if cfg.is_euclidean { "l2" } else { "cosine" },
             rustc_version(),
             env!("CARGO_PKG_RUST_VERSION"),
             env!("CARGO_PKG_VERSION"),
+            cfg.max_queries
+                .map(|limit| limit.to_string())
+                .unwrap_or_else(|| "null".to_string()),
+            test.len(),
         )
     };
 
-    // Emit hardware metadata as first line of new result files.
+    // Emit run metadata as first line of new result files.
     if cfg.json && !cfg.results_path.exists() {
         emit_result(&cfg.results_path, &meta());
     }
-
-    let (train, dim) = common::load_vectors(&format!("{}/train.bin", cfg.data_dir))?;
-    let (test, _) = common::load_vectors(&format!("{}/test.bin", cfg.data_dir))?;
-    let (neighbors, k_gt) = common::load_neighbors(&format!("{}/neighbors.bin", cfg.data_dir))?;
 
     if !cfg.json {
         println!("Train: {} vectors x {} dims", train.len(), dim);
@@ -3037,7 +3053,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let completed = if cfg.resume {
-        load_completed_results(&cfg.results_path, &cfg.data_dir)
+        load_completed_results(&cfg.results_path, &cfg.data_dir, cfg.max_queries)
     } else {
         Default::default()
     };

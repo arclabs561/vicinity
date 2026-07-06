@@ -33,6 +33,7 @@ pub(crate) struct Config {
     pub(crate) batch: bool,
     pub(crate) resume: bool,
     pub(crate) snapshot_load: bool,
+    pub(crate) max_queries: Option<usize>,
     pub(crate) churn_base_size: usize,
     pub(crate) churn_cycles: usize,
     pub(crate) churn_queries: usize,
@@ -66,6 +67,7 @@ impl Default for Config {
             batch: false,
             resume: false,
             snapshot_load: false,
+            max_queries: None,
             churn_base_size: 50_000,
             churn_cycles: 5_000,
             churn_queries: 1_000,
@@ -148,7 +150,19 @@ fn json_value_field<'a>(line: &'a str, field: &str) -> Option<&'a str> {
     }
 }
 
-pub(crate) fn load_completed_results(path: &Path, expected_dataset: &str) -> CompletedResults {
+fn meta_query_limit_matches(line: &str, expected_query_limit: Option<usize>) -> bool {
+    match json_value_field(line, "query_limit").map(str::trim) {
+        None => expected_query_limit.is_none(),
+        Some("null") => expected_query_limit.is_none(),
+        Some(raw) => raw.parse::<usize>().ok() == expected_query_limit,
+    }
+}
+
+pub(crate) fn load_completed_results(
+    path: &Path,
+    expected_dataset: &str,
+    expected_query_limit: Option<usize>,
+) -> CompletedResults {
     let mut counts = HashMap::new();
     let mut lines = Vec::new();
     let mut seen_meta = false;
@@ -163,7 +177,9 @@ pub(crate) fn load_completed_results(path: &Path, expected_dataset: &str) -> Com
         if line.contains("\"_meta\":") {
             if let Some(dataset) = json_string_field(&line, "dataset") {
                 seen_meta = true;
-                if dataset != expected_dataset {
+                if dataset != expected_dataset
+                    || !meta_query_limit_matches(&line, expected_query_limit)
+                {
                     has_mismatched_meta = true;
                     active_dataset_matches = false;
                 } else {
@@ -175,8 +191,8 @@ pub(crate) fn load_completed_results(path: &Path, expected_dataset: &str) -> Com
             if let Some(algorithm) = json_string_field(&line, "algorithm") {
                 *counts.entry(algorithm).or_insert(0) += 1;
             }
+            lines.push(line);
         }
-        lines.push(line);
     }
     CompletedResults {
         counts,
@@ -1009,6 +1025,12 @@ pub(crate) fn parse_args() -> Config {
             "--snapshot-load" => {
                 cfg.snapshot_load = true;
             }
+            "--max-queries" => {
+                i += 1;
+                if i < args.len() {
+                    cfg.max_queries = args[i].parse().ok();
+                }
+            }
             "--churn-base-size" => {
                 i += 1;
                 if i < args.len() {
@@ -1513,6 +1535,75 @@ mod tests {
         };
 
         assert_eq!(nprobe_values(&cfg, 10), vec![3, 7]);
+    }
+
+    #[test]
+    fn load_completed_results_matches_query_limit_metadata() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            file.as_file(),
+            "{{\"_meta\":{{\"dataset\":\"data/a\",\"query_limit\":100}}}}"
+        )
+        .unwrap();
+        writeln!(
+            file.as_file(),
+            "{{\"algorithm\":\"hnsw\",\"params\":{{\"m\":16,\"ef_construction\":200,\"ef_search\":10}},\"storage_mode\":\"in_memory\",\"recall_at_10\":1.0,\"qps\":1.0}}"
+        )
+        .unwrap();
+
+        let matching = load_completed_results(file.path(), "data/a", Some(100));
+        assert!(matching.has_matching_meta);
+        assert_eq!(matching.counts.get("hnsw"), Some(&1));
+
+        let mismatched = load_completed_results(file.path(), "data/a", Some(200));
+        assert!(!mismatched.has_matching_meta);
+        assert!(mismatched.has_mismatched_meta);
+        assert!(mismatched.counts.is_empty());
+    }
+
+    #[test]
+    fn load_completed_results_ignores_rows_under_mismatched_meta() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            file.as_file(),
+            "{{\"_meta\":{{\"dataset\":\"data/a\",\"query_limit\":100}}}}"
+        )
+        .unwrap();
+        writeln!(
+            file.as_file(),
+            "{{\"algorithm\":\"hnsw\",\"params\":{{\"m\":16,\"ef_construction\":200,\"ef_search\":10}},\"storage_mode\":\"in_memory\",\"recall_at_10\":1.0,\"qps\":1.0}}"
+        )
+        .unwrap();
+        writeln!(
+            file.as_file(),
+            "{{\"_meta\":{{\"dataset\":\"data/a\",\"query_limit\":null}}}}"
+        )
+        .unwrap();
+        writeln!(
+            file.as_file(),
+            "{{\"algorithm\":\"hnsw\",\"params\":{{\"m\":16,\"ef_construction\":200,\"ef_search\":20}},\"storage_mode\":\"in_memory\",\"recall_at_10\":1.0,\"qps\":1.0}}"
+        )
+        .unwrap();
+
+        let cfg = Config {
+            ef_search_values: vec![10],
+            max_queries: Some(100),
+            ..Config::default()
+        };
+        let completed = load_completed_results(file.path(), "data/a", cfg.max_queries);
+
+        assert!(request_completed(&completed, "hnsw", &cfg, 25, 1_000, 100));
+
+        let full_cfg = Config {
+            ef_search_values: vec![20],
+            ..Config::default()
+        };
+        let completed = load_completed_results(file.path(), "data/a", full_cfg.max_queries);
+
+        assert!(request_completed(
+            &completed, "hnsw", &full_cfg, 25, 1_000, 100
+        ));
+        assert!(!request_completed(&completed, "hnsw", &cfg, 25, 1_000, 100));
     }
 
     #[test]

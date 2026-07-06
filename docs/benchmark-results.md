@@ -4,9 +4,10 @@ Historical benchmark tables for standard ANN datasets.
 
 Current benchmark runs should use `examples/ann_benchmark.rs`, which writes one
 `_meta` JSON line with the dataset, metric, actual `rustc --version`, MSRV, and
-crate version, followed by one JSON line per measurement with build time, RSS,
-storage mode, cache state, and p50/p95/p99 latency. Use `--resume` to skip
-completed rows and `--fresh` to recreate the result file.
+crate version, query limit, and measured query count, followed by one JSON line
+per measurement with build time, RSS, storage mode, cache state, and
+p50/p95/p99 latency. Use `--resume` to skip completed rows and `--fresh` to
+recreate the result file.
 
 QPS below is sequential single-query throughput (queries / wall-clock seconds)
 from older single-run `--release` measurements on Apple Silicon. The exact CPU
@@ -21,6 +22,12 @@ Recommended current commands:
 cargo run --example ann_benchmark --release --features hnsw,ivf_pq,ivf_avq -- \
   data/ann-benchmarks/glove-25-angular \
   --algo hnsw --algo ivfpq --algo ivf_avq --json --fresh
+
+# Bounded probe for fast iteration. The query limit is recorded in `_meta`, and
+# `--resume` will not mix these rows with full-query runs.
+cargo run --example ann_benchmark --release --features hnsw -- \
+  data/ann-benchmarks/glove-25-angular --algo hnsw \
+  --ef-search 10,20,30,40,50 --max-queries 1000 --json --fresh
 
 # HNSW single-query plus parallel-query throughput.
 RAYON_NUM_THREADS=4 cargo run --example ann_benchmark --release --features hnsw,parallel -- \
@@ -90,6 +97,23 @@ cargo run --example ann_benchmark --release \
 These commands intentionally separate low-recall, high-throughput operating
 points from high-recall runs. External comparisons should use a recall/QPS
 curve, not only the `Recall@10 = 100%` row.
+
+## Current Validation Notes
+
+On 2026-07-06, a full GloVe-25 HNSW M=16 run with
+`ef_construction=500` confirmed the expected lower-recall throughput behavior:
+
+| ef_search | Recall@10 | QPS | p95 us |
+| --- | --- | --- | --- |
+| 10 | 63.1% | 87,800 | 15.8 |
+| 20 | 76.0% | 57,726 | 23.2 |
+| 30 | 82.5% | 44,230 | 29.2 |
+| 40 | 86.2% | 35,939 | 35.7 |
+| 50 | 88.8% | 27,950 | 48.5 |
+
+This validates the basic Perplexity finding: the old 100% recall row is not the
+right operating point for QPS expectations. The 95% recall point still requires
+a sweep above `ef_search=50` for this build configuration.
 
 ## Benchmark Coverage
 
