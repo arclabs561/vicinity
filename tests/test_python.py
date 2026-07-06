@@ -400,6 +400,43 @@ def test_ann_benchmarks_ivfpq_rejects_non_cosine_metric() -> None:
         VicinityIVFPQ("euclidean", {})
 
 
+def test_ann_benchmarks_ivfpq_preserves_constructor_rerank_pool() -> None:
+    from pyvicinity.ann_benchmarks import VicinityIVFPQ
+
+    algo = VicinityIVFPQ(
+        "cosine",
+        {
+            "num_clusters": 8,
+            "num_codebooks": 4,
+            "codebook_size": 8,
+            "rerank_pool": 64,
+        },
+    )
+
+    algo.set_query_arguments(4)
+
+    assert algo._nprobe == 4
+    assert algo._rerank_pool == 64
+
+
+def test_ann_benchmarks_ivfpq_zero_rerank_pool_disables_rerank() -> None:
+    from pyvicinity.ann_benchmarks import VicinityIVFPQ
+
+    algo = VicinityIVFPQ(
+        "cosine",
+        {
+            "num_clusters": 8,
+            "num_codebooks": 4,
+            "codebook_size": 8,
+            "rerank_pool": 64,
+        },
+    )
+
+    algo.set_query_arguments(4, rerank_pool=0)
+
+    assert algo._rerank_pool is None
+
+
 def _build_ivfpq(
     n: int = 128,
     dim: int = 8,

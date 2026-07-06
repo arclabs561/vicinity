@@ -142,7 +142,7 @@ class VicinityIVFPQ:
         self._use_opq = bool(method_param.get("use_opq", False))
         self._seed = int(cast(int, method_param.get("seed", 42)))
         self._nprobe = int(cast(int, method_param.get("nprobe", 1)))
-        self._rerank_pool = _optional_int(method_param.get("rerank_pool"))
+        self._rerank_pool = _normalize_rerank_pool(method_param.get("rerank_pool"))
         self._index: IVFPQIndex | None = None
         self._batch_results: np.ndarray | None = None
 
@@ -176,7 +176,8 @@ class VicinityIVFPQ:
     ) -> None:
         """Set nprobe and optional rerank pool for subsequent queries."""
         self._nprobe = int(nprobe)
-        self._rerank_pool = None if rerank_pool is None else int(rerank_pool)
+        if rerank_pool is not None:
+            self._rerank_pool = _normalize_rerank_pool(rerank_pool)
         if self._index is not None:
             self._index.set_nprobe(self._nprobe)
 
@@ -268,3 +269,10 @@ def _optional_int(value: object) -> int | None:
     if value is None:
         return None
     return int(cast(int, value))
+
+
+def _normalize_rerank_pool(value: object) -> int | None:
+    pool = _optional_int(value)
+    if pool is None or pool <= 0:
+        return None
+    return pool
