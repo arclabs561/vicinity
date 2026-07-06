@@ -213,7 +213,13 @@ pub mod prt;
 
 pub mod distance;
 pub mod filtering;
-#[cfg(any(feature = "nsw", feature = "sng", feature = "vamana", feature = "nsg"))]
+#[cfg(any(
+    feature = "nsw",
+    feature = "sng",
+    feature = "vamana",
+    feature = "nsg",
+    feature = "finger"
+))]
 pub(crate) mod graph_snapshot;
 #[cfg(any(
     feature = "finger",

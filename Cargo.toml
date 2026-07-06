@@ -118,7 +118,7 @@ python = ["dep:pyo3", "dep:numpy", "hnsw"]
 # Feature names referenced by cfgs in the extracted code.
 # These are currently mostly organizational toggles.
 nsg = ["dep:serde", "dep:serde_json"]
-finger = []
+finger = ["dep:serde", "dep:serde_json"]
 filtered_graph = ["dep:serde", "dep:serde_json", "smallvec/serde"]
 rp_quant = []
 sparse_mips = []
