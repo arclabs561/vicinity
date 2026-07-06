@@ -59,6 +59,7 @@ def test_len_and_getters() -> None:
     assert idx.ef_search == 50
     assert idx.metric == DistanceMetric.Cosine
     assert idx.auto_normalize is True
+    assert idx.memory_usage_bytes > 0
 
 
 def test_repr_is_pythonic() -> None:
@@ -167,6 +168,14 @@ def test_dimension_mismatch_raises_valueerror() -> None:
         idx.search(np.zeros(7, dtype=np.float32), k=3)
     with pytest.raises(ValueError, match="dimension"):
         idx.batch_search(np.zeros((2, 7), dtype=np.float32), k=3)
+
+
+def test_batch_search_on_unbuilt_index_raises() -> None:
+    idx = HNSWIndex(dim=4, metric=DistanceMetric.L2)
+    queries = np.zeros((2, 4), dtype=np.float32)
+
+    with pytest.raises(ValueError, match="built"):
+        idx.batch_search(queries, k=3)
 
 
 def test_explicit_ids_round_trip() -> None:

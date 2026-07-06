@@ -323,18 +323,19 @@ impl PyHNSWIndex {
         let metric = self.metric;
         let auto_normalize = self.auto_normalize;
 
-        py.detach(|| {
+        py.detach(|| -> Result<(), crate::RetrieveError> {
             for i in 0..nq {
                 let q = &data[i * dim..(i + 1) * dim];
                 let prepared = prep_query(q, metric, auto_normalize);
-                if let Ok(results) = self.inner.search(prepared.as_ref(), k, ef) {
-                    for (j, (id, dist)) in results.iter().enumerate() {
-                        all_ids[i * k + j] = *id as i64;
-                        all_dists[i * k + j] = *dist;
-                    }
+                let results = self.inner.search(prepared.as_ref(), k, ef)?;
+                for (j, (id, dist)) in results.iter().enumerate() {
+                    all_ids[i * k + j] = *id as i64;
+                    all_dists[i * k + j] = *dist;
                 }
             }
-        });
+            Ok(())
+        })
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
 
         let ids_arr = numpy::ndarray::Array2::from_shape_vec((nq, k), all_ids)
             .map_err(|e| PyValueError::new_err(format!("failed to reshape ids: {e}")))?;
@@ -384,6 +385,12 @@ impl PyHNSWIndex {
     #[getter]
     fn ef_search(&self) -> usize {
         self.ef_search
+    }
+
+    /// Estimated memory used by this index, in bytes.
+    #[getter]
+    fn memory_usage_bytes(&self) -> usize {
+        self.inner.memory_usage().total()
     }
 
     /// Number of vectors in the index. Enables ``len(index)``.

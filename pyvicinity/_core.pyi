@@ -184,5 +184,9 @@ class HNSWIndex:
     def ef_search(self) -> int:
         """Default search width for queries."""
 
+    @property
+    def memory_usage_bytes(self) -> int:
+        """Estimated memory used by this index, in bytes."""
+
     def __len__(self) -> int: ...
     def __repr__(self) -> str: ...
