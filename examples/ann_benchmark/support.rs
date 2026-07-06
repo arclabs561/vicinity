@@ -372,13 +372,12 @@ fn diskann_checks(cfg: &Config) -> Vec<ExpectedResult> {
     STORAGE_ROWS
         .into_iter()
         .flat_map(|(algorithm, storage, storage_mode)| {
-            ef_checks(algorithm, cfg, |_| {
-                vec![
-                    format!("\"m\":{}", cfg.m),
-                    format!("\"ef_construction\":{}", cfg.ef_construction),
-                    format!("\"storage\":\"{}\"", storage),
-                    format!("\"storage_mode\":\"{}\"", storage_mode),
-                ]
+            cfg.ef_search_values.iter().map(move |&ef| {
+                ExpectedResult::with_params_and_storage(
+                    algorithm,
+                    &diskann_params_json(cfg, ef, storage),
+                    storage_mode,
+                )
             })
         })
         .collect()
@@ -690,6 +689,13 @@ pub(crate) fn kmeans_tree_params_json(
     format!(
         "{{\"num_clusters\":{},\"max_leaf_size\":{},\"max_depth\":{},\"max_iterations\":{}}}",
         num_clusters, max_leaf_size, max_depth, max_iterations
+    )
+}
+
+fn diskann_params_json(cfg: &Config, ef_search: usize, storage: &str) -> String {
+    format!(
+        "{{\"m\":{},\"ef_construction\":{},\"alpha\":1.2,\"ef_search\":{},\"storage\":\"{}\"}}",
+        cfg.m, cfg.ef_construction, ef_search, storage
     )
 }
 
