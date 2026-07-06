@@ -1,9 +1,9 @@
-"""pyvicinity: HNSW approximate nearest-neighbor search.
+"""pyvicinity: approximate nearest-neighbor search.
 
 Python bindings for the ``vicinity`` Rust crate (crates.io). The PyPI
 distribution is named ``pyvicinity`` because the bare ``vicinity`` name
-is held on PyPI by an unrelated project. The current Python API exposes HNSW;
-other vicinity algorithms are Rust-only for now.
+is held on PyPI by an unrelated project. The current Python API exposes HNSW
+and IVF-PQ.
 
 Quick start::
 
@@ -31,6 +31,7 @@ from pyvicinity._core import (
     MISSING_LABEL,
     DistanceMetric,
     HNSWIndex,
+    IVFPQIndex,
 )
 from pyvicinity._core import __version__ as __version__
 
@@ -39,5 +40,6 @@ __all__ = [
     "MISSING_LABEL",
     "DistanceMetric",
     "HNSWIndex",
+    "IVFPQIndex",
     "__version__",
 ]

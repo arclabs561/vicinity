@@ -93,8 +93,8 @@ See [`examples/ivf_pq_demo.rs`](examples/ivf_pq_demo.rs) for a runnable end-to-e
 
 ### Python (pyvicinity)
 
-The Python bindings expose HNSW search over NumPy `float32` arrays. Wheels
-built from this source tree use abi3 for CPython 3.10+. The published
+The Python bindings expose HNSW and IVF-PQ search over NumPy `float32` arrays.
+Wheels built from this source tree use abi3 for CPython 3.10+. The published
 [`pyvicinity`](https://pypi.org/project/pyvicinity/) package may lag this
 repository.
 
@@ -124,6 +124,17 @@ ids, dists = index.search(embeddings[0], k=10)
 # batch: same shape, one row per query.
 queries = embeddings[:32]
 batch_ids, batch_dists = index.batch_search(queries, k=10)  # (32, 10) int64
+```
+
+For compressed in-memory search, use `IVFPQIndex`:
+
+```python
+from pyvicinity import IVFPQIndex
+
+pq = IVFPQIndex(dim=384, num_clusters=256, num_codebooks=8, codebook_size=256)
+pq.add_items(embeddings)
+pq.build(training_sample_size=100_000, kmeans_max_iter=20)
+ids, dists = pq.search(embeddings[0], k=10, nprobe=16, rerank_pool=500)
 ```
 
 Runnable examples (in the [source repo](https://github.com/arclabs561/vicinity),

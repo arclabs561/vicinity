@@ -16,6 +16,7 @@ from pyvicinity import (
     MISSING_LABEL,
     DistanceMetric,
     HNSWIndex,
+    IVFPQIndex,
     __version__,
 )
 
@@ -360,3 +361,75 @@ def test_ann_benchmarks_unknown_metric_raises() -> None:
 
     with pytest.raises(ValueError, match="unknown metric"):
         VicinityHNSW("hamming", {})
+
+
+def _build_ivfpq(
+    n: int = 128,
+    dim: int = 8,
+    *,
+    seed: int = 0,
+) -> tuple[IVFPQIndex, np.ndarray]:
+    rng = np.random.default_rng(seed)
+    x = rng.standard_normal((n, dim), dtype=np.float32)
+    index = IVFPQIndex(
+        dim=dim,
+        num_clusters=8,
+        num_codebooks=4,
+        codebook_size=8,
+        nprobe=8,
+        seed=seed,
+    )
+    index.add_items(x)
+    index.build(training_sample_size=min(n, 64), kmeans_max_iter=5)
+    return index, x
+
+
+def test_ivfpq_search_with_rerank_finds_self() -> None:
+    index, x = _build_ivfpq()
+
+    ids, dists = index.search(x[0], k=5, nprobe=8, rerank_pool=len(x))
+
+    assert ids.dtype == np.int64
+    assert dists.dtype == np.float32
+    assert ids[0] == 0
+    assert abs(float(dists[0])) < 1e-4
+    assert index.num_vectors == len(x)
+    assert index.dimension == x.shape[1]
+    assert index.num_clusters == 8
+    assert index.num_codebooks == 4
+    assert index.codebook_size == 8
+    assert index.nprobe == 8
+    assert index.use_opq is False
+
+
+def test_ivfpq_batch_search_padding() -> None:
+    index, x = _build_ivfpq(n=16)
+
+    ids, dists = index.batch_search(x[:2], k=20, nprobe=8, rerank_pool=16)
+
+    assert ids.shape == (2, 20)
+    assert dists.shape == (2, 20)
+    assert np.all(ids[:, 16:] == MISSING_LABEL)
+    assert np.all(dists[:, 16:] == MISSING_DISTANCE)
+
+
+def test_ivfpq_compact_before_build_raises() -> None:
+    index = IVFPQIndex(dim=8, num_clusters=8, num_codebooks=4, codebook_size=8)
+
+    with pytest.raises(ValueError, match="built before compact"):
+        index.compact()
+
+
+def test_ivfpq_save_load_round_trip(tmp_path) -> None:
+    index, x = _build_ivfpq(seed=11)
+    path = tmp_path / "ivfpq"
+    index.save(path)
+
+    loaded = IVFPQIndex.load(path)
+
+    assert len(loaded) == len(index)
+    assert loaded.dimension == index.dimension
+    assert loaded.nprobe == index.nprobe
+    ids, dists = loaded.search(x[0], k=5, nprobe=8, rerank_pool=len(x))
+    assert ids[0] == 0
+    assert abs(float(dists[0])) < 1e-4

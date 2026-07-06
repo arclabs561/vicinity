@@ -14,6 +14,7 @@ use pyo3::prelude::*;
 
 use crate::distance::{self, DistanceMetric as RustMetric};
 use crate::hnsw::{HNSWIndex as RustHNSW, HNSWParams};
+use crate::ivf_pq::{IVFPQIndex as RustIVFPQ, IVFPQParams};
 
 /// Distance metric for vector comparison.
 #[pyclass(name = "DistanceMetric", module = "pyvicinity", eq, eq_int)]
@@ -73,6 +74,21 @@ pub struct PyHNSWIndex {
     metric: PyDistanceMetric,
     m: usize,
     ef_construction: usize,
+}
+
+/// IVF-PQ index for compressed approximate nearest-neighbor search.
+///
+/// Vectors and queries are L2-normalized internally; this index is intended
+/// for cosine-style dense vector search. Use `rerank_pool` in `search` or
+/// `batch_search` when exact f32 reranking is needed.
+#[pyclass(name = "IVFPQIndex", module = "pyvicinity")]
+pub struct PyIVFPQIndex {
+    inner: RustIVFPQ,
+    nprobe: usize,
+    num_clusters: usize,
+    num_codebooks: usize,
+    codebook_size: usize,
+    use_opq: bool,
 }
 
 #[pymethods]
@@ -431,6 +447,388 @@ impl PyHNSWIndex {
     }
 }
 
+#[pymethods]
+impl PyIVFPQIndex {
+    /// Create a new IVF-PQ index.
+    ///
+    /// Args:
+    ///     dim: Vector dimension.
+    ///     num_clusters: Number of IVF coarse clusters.
+    ///     num_codebooks: Number of PQ codebooks. Defaults to the largest
+    ///         divisor of ``dim`` up to 8.
+    ///     codebook_size: Number of centroids per PQ codebook, in ``1..=256``.
+    ///     nprobe: Number of coarse clusters to scan per query.
+    ///     use_opq: Enable OPQ rotation during build.
+    ///     seed: RNG seed for reproducible training.
+    #[new]
+    #[pyo3(signature = (dim, num_clusters=256, num_codebooks=None, codebook_size=256, nprobe=1, use_opq=false, seed=42))]
+    fn new(
+        dim: usize,
+        num_clusters: usize,
+        num_codebooks: Option<usize>,
+        codebook_size: usize,
+        nprobe: usize,
+        use_opq: bool,
+        seed: u64,
+    ) -> PyResult<Self> {
+        let num_codebooks = num_codebooks.unwrap_or_else(|| default_ivfpq_codebooks(dim));
+        validate_ivfpq_shape(dim, num_clusters, num_codebooks, codebook_size, nprobe)?;
+        let params = IVFPQParams {
+            num_clusters,
+            nprobe,
+            num_codebooks,
+            codebook_size,
+            use_opq,
+            seed,
+            #[cfg(feature = "id-compression")]
+            id_compression: None,
+            #[cfg(feature = "id-compression")]
+            compression_threshold: IVFPQParams::default().compression_threshold,
+        };
+        let inner =
+            RustIVFPQ::new(dim, params).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(Self {
+            inner,
+            nprobe,
+            num_clusters,
+            num_codebooks,
+            codebook_size,
+            use_opq,
+        })
+    }
+
+    /// Add vectors with optional explicit IDs.
+    ///
+    /// Args:
+    ///     vectors: 2-D float32 array of shape ``(n, dim)``.
+    ///     ids: Optional 1-D int64 array of IDs. Each value must be in
+    ///         ``[0, 2**32)``. If None, sequential IDs are assigned
+    ///         starting from the current ``len(index)``.
+    #[pyo3(signature = (vectors, ids=None))]
+    fn add_items<'py>(
+        &mut self,
+        vectors: PyReadonlyArray2<'py, f32>,
+        ids: Option<PyReadonlyArray1<'py, i64>>,
+    ) -> PyResult<()> {
+        let arr = vectors.as_array();
+        let (n, d) = (arr.nrows(), arr.ncols());
+
+        if d != self.inner.dimension {
+            return Err(PyValueError::new_err(format!(
+                "dimension mismatch: index expects {}, got {d}",
+                self.inner.dimension
+            )));
+        }
+
+        let data = vectors
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("vectors must be contiguous (C-order)"))?;
+
+        let id_u32 = match ids {
+            Some(id_arr) => {
+                let id_slice = id_arr
+                    .as_slice()
+                    .map_err(|_| PyValueError::new_err("ids must be contiguous"))?;
+                checked_ids(id_slice, n)?
+            }
+            None => {
+                let base = self.inner.num_vectors as u32;
+                (base..base + n as u32).collect()
+            }
+        };
+
+        for (row, &doc_id) in data.chunks_exact(d).zip(id_u32.iter()) {
+            self.inner
+                .add_slice(doc_id, row)
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    /// Finalize the index.
+    ///
+    /// Args:
+    ///     training_sample_size: Optional deterministic sample size for
+    ///         IVF/PQ k-means training. All added vectors remain searchable.
+    ///     kmeans_max_iter: Maximum Lloyd iterations for IVF and PQ training.
+    #[pyo3(signature = (training_sample_size=None, kmeans_max_iter=100))]
+    fn build(
+        &mut self,
+        training_sample_size: Option<usize>,
+        kmeans_max_iter: usize,
+    ) -> PyResult<()> {
+        self.inner
+            .build_with_training_options(training_sample_size, kmeans_max_iter)
+            .map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
+    /// Set the default ``nprobe`` parameter for subsequent queries.
+    fn set_nprobe(&mut self, nprobe: usize) {
+        self.nprobe = nprobe;
+        self.inner.set_nprobe(nprobe);
+    }
+
+    /// Drop raw f32 vectors after build. Approximate search still works, but
+    /// exact reranking is no longer available.
+    fn compact(&mut self) -> PyResult<()> {
+        if !self.inner.is_built() {
+            return Err(PyValueError::new_err("index must be built before compact"));
+        }
+        self.inner.compact();
+        Ok(())
+    }
+
+    /// Save this index to a directory snapshot.
+    fn save(&self, path: PathBuf) -> PyResult<()> {
+        self.inner
+            .save_to_dir(path)
+            .map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
+    /// Load an index from a directory snapshot written by `save`.
+    #[staticmethod]
+    fn load(path: PathBuf) -> PyResult<Self> {
+        let inner =
+            RustIVFPQ::load_from_dir(path).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(Self {
+            nprobe: inner.nprobe(),
+            num_clusters: inner.num_clusters(),
+            num_codebooks: inner.num_codebooks(),
+            codebook_size: inner.codebook_size(),
+            use_opq: inner.use_opq(),
+            inner,
+        })
+    }
+
+    /// Search for k nearest neighbors of a single query vector.
+    ///
+    /// Args:
+    ///     query: 1-D float32 array of shape ``(dim,)``.
+    ///     k: Number of neighbors to return.
+    ///     nprobe: Number of IVF clusters to scan for this call. Defaults to
+    ///         ``self.nprobe`` and does not change the default.
+    ///     rerank_pool: If provided, rerank this many approximate candidates
+    ///         using exact f32 cosine distance.
+    #[pyo3(signature = (query, k, nprobe=None, rerank_pool=None))]
+    fn search<'py>(
+        &mut self,
+        py: Python<'py>,
+        query: PyReadonlyArray1<'py, f32>,
+        k: usize,
+        nprobe: Option<usize>,
+        rerank_pool: Option<usize>,
+    ) -> PyResult<(Bound<'py, PyArray1<i64>>, Bound<'py, PyArray1<f32>>)> {
+        let q = query
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("query must be contiguous"))?;
+        if q.len() != self.inner.dimension {
+            return Err(PyValueError::new_err(format!(
+                "query dimension mismatch: index expects {}, got {}",
+                self.inner.dimension,
+                q.len()
+            )));
+        }
+
+        let results = self.search_one(py, q, k, nprobe, rerank_pool)?;
+        let n = results.len();
+        let mut ids = Vec::with_capacity(n);
+        let mut dists = Vec::with_capacity(n);
+        for (id, dist) in &results {
+            ids.push(*id as i64);
+            dists.push(*dist);
+        }
+        Ok((ids.into_pyarray(py), dists.into_pyarray(py)))
+    }
+
+    /// Batch search: find k nearest neighbors for each query.
+    ///
+    /// Rows with fewer than k results are padded with ``MISSING_LABEL`` and
+    /// ``MISSING_DISTANCE``.
+    #[pyo3(signature = (queries, k, nprobe=None, rerank_pool=None))]
+    fn batch_search<'py>(
+        &mut self,
+        py: Python<'py>,
+        queries: PyReadonlyArray2<'py, f32>,
+        k: usize,
+        nprobe: Option<usize>,
+        rerank_pool: Option<usize>,
+    ) -> PyResult<(Bound<'py, PyArray2<i64>>, Bound<'py, PyArray2<f32>>)> {
+        let arr = queries.as_array();
+        let nq = arr.nrows();
+        let dim = arr.ncols();
+        if dim != self.inner.dimension {
+            return Err(PyValueError::new_err(format!(
+                "queries dimension mismatch: index expects {}, got {dim}",
+                self.inner.dimension
+            )));
+        }
+
+        let data = queries
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("queries must be contiguous (C-order)"))?;
+
+        let mut all_ids = vec![-1i64; nq * k];
+        let mut all_dists = vec![f32::INFINITY; nq * k];
+        for i in 0..nq {
+            let q = &data[i * dim..(i + 1) * dim];
+            let results = self.search_one(py, q, k, nprobe, rerank_pool)?;
+            for (j, (id, dist)) in results.iter().enumerate() {
+                all_ids[i * k + j] = *id as i64;
+                all_dists[i * k + j] = *dist;
+            }
+        }
+
+        let ids_arr = numpy::ndarray::Array2::from_shape_vec((nq, k), all_ids)
+            .map_err(|e| PyValueError::new_err(format!("failed to reshape ids: {e}")))?;
+        let dists_arr = numpy::ndarray::Array2::from_shape_vec((nq, k), all_dists)
+            .map_err(|e| PyValueError::new_err(format!("failed to reshape dists: {e}")))?;
+
+        Ok((ids_arr.into_pyarray(py), dists_arr.into_pyarray(py)))
+    }
+
+    /// Number of vectors in the index.
+    #[getter]
+    fn num_vectors(&self) -> usize {
+        self.inner.num_vectors
+    }
+
+    /// Vector dimension.
+    #[getter]
+    fn dimension(&self) -> usize {
+        self.inner.dimension
+    }
+
+    /// Number of IVF coarse clusters.
+    #[getter]
+    fn num_clusters(&self) -> usize {
+        self.num_clusters
+    }
+
+    /// Number of PQ codebooks.
+    #[getter]
+    fn num_codebooks(&self) -> usize {
+        self.num_codebooks
+    }
+
+    /// Number of centroids per PQ codebook.
+    #[getter]
+    fn codebook_size(&self) -> usize {
+        self.codebook_size
+    }
+
+    /// Default IVF clusters scanned per query.
+    #[getter]
+    fn nprobe(&self) -> usize {
+        self.nprobe
+    }
+
+    /// Whether OPQ rotation is enabled.
+    #[getter]
+    fn use_opq(&self) -> bool {
+        self.use_opq
+    }
+
+    /// Number of vectors in the index. Enables ``len(index)``.
+    fn __len__(&self) -> usize {
+        self.inner.num_vectors
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "IVFPQIndex(dim={}, n={}, num_clusters={}, num_codebooks={}, codebook_size={}, nprobe={}, use_opq={})",
+            self.inner.dimension,
+            self.inner.num_vectors,
+            self.num_clusters,
+            self.num_codebooks,
+            self.codebook_size,
+            self.nprobe,
+            if self.use_opq { "True" } else { "False" },
+        )
+    }
+}
+
+impl PyIVFPQIndex {
+    fn search_one(
+        &mut self,
+        py: Python<'_>,
+        query: &[f32],
+        k: usize,
+        nprobe: Option<usize>,
+        rerank_pool: Option<usize>,
+    ) -> PyResult<Vec<(u32, f32)>> {
+        let saved_nprobe = self.nprobe;
+        if let Some(nprobe) = nprobe {
+            self.inner.set_nprobe(nprobe);
+        }
+
+        let result = py.detach(|| match rerank_pool {
+            Some(pool) => self.inner.search_reranked(query, k, pool),
+            None => self.inner.search(query, k),
+        });
+
+        if nprobe.is_some() {
+            self.inner.set_nprobe(saved_nprobe);
+        }
+
+        result.map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+}
+
+fn default_ivfpq_codebooks(dim: usize) -> usize {
+    (1..=8.min(dim))
+        .rev()
+        .find(|&codebooks| dim.is_multiple_of(codebooks))
+        .unwrap_or(1)
+}
+
+fn validate_ivfpq_shape(
+    dim: usize,
+    num_clusters: usize,
+    num_codebooks: usize,
+    codebook_size: usize,
+    nprobe: usize,
+) -> PyResult<()> {
+    if dim == 0 {
+        return Err(PyValueError::new_err("dim must be greater than 0"));
+    }
+    if num_clusters == 0 {
+        return Err(PyValueError::new_err("num_clusters must be greater than 0"));
+    }
+    if num_codebooks == 0 || !dim.is_multiple_of(num_codebooks) {
+        return Err(PyValueError::new_err(format!(
+            "num_codebooks must be a non-zero divisor of dim (dim={dim}, num_codebooks={num_codebooks})"
+        )));
+    }
+    if codebook_size == 0 || codebook_size > 256 {
+        return Err(PyValueError::new_err(
+            "codebook_size must be in the range 1..=256",
+        ));
+    }
+    if nprobe == 0 {
+        return Err(PyValueError::new_err("nprobe must be greater than 0"));
+    }
+    Ok(())
+}
+
+fn checked_ids(ids: &[i64], expected_len: usize) -> PyResult<Vec<u32>> {
+    if ids.len() != expected_len {
+        return Err(PyValueError::new_err(format!(
+            "ids length {} != vectors rows {expected_len}",
+            ids.len()
+        )));
+    }
+    let mut id_u32 = Vec::with_capacity(ids.len());
+    for (i, &id) in ids.iter().enumerate() {
+        if !(0..=u32::MAX as i64).contains(&id) {
+            return Err(PyValueError::new_err(format!(
+                "ids[{i}] = {id} out of range [0, 2**32); pyvicinity stores IDs as u32 internally",
+            )));
+        }
+        id_u32.push(id as u32);
+    }
+    Ok(id_u32)
+}
+
 /// Normalize the query if `auto_normalize` is on and the metric supports it.
 ///
 /// Cosine *requires* query normalization: the index uses the dot-only fast
@@ -488,5 +886,6 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("MISSING_DISTANCE", f32::INFINITY)?;
     m.add_class::<PyDistanceMetric>()?;
     m.add_class::<PyHNSWIndex>()?;
+    m.add_class::<PyIVFPQIndex>()?;
     Ok(())
 }

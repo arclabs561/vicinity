@@ -18,6 +18,7 @@ __all__ = [
     "MISSING_LABEL",
     "DistanceMetric",
     "HNSWIndex",
+    "IVFPQIndex",
     "__version__",
 ]
 
@@ -187,6 +188,96 @@ class HNSWIndex:
     @property
     def memory_usage_bytes(self) -> int:
         """Estimated memory used by this index, in bytes."""
+
+    def __len__(self) -> int: ...
+    def __repr__(self) -> str: ...
+
+@final
+class IVFPQIndex:
+    """IVF-PQ index for compressed approximate nearest-neighbor search."""
+
+    def __new__(
+        cls,
+        dim: int,
+        num_clusters: int = 256,
+        num_codebooks: int | None = None,
+        codebook_size: int = 256,
+        nprobe: int = 1,
+        use_opq: bool = False,
+        seed: int = 42,
+    ) -> IVFPQIndex: ...
+    def add_items(
+        self,
+        vectors: NDArray[np.float32],
+        ids: NDArray[np.int64] | None = None,
+    ) -> None:
+        """Add a batch of dense vectors."""
+
+    def build(
+        self,
+        training_sample_size: int | None = None,
+        kmeans_max_iter: int = 100,
+    ) -> None:
+        """Finalize the index."""
+
+    def set_nprobe(self, nprobe: int) -> None:
+        """Set the default number of IVF clusters scanned per query."""
+
+    def compact(self) -> None:
+        """Drop raw f32 vectors. Approximate search still works."""
+
+    def save(self, path: str | PathLike[str]) -> None:
+        """Save this index to a directory snapshot."""
+
+    @staticmethod
+    def load(path: str | PathLike[str]) -> IVFPQIndex:
+        """Load an index from a directory snapshot written by :meth:`save`."""
+
+    def search(
+        self,
+        query: NDArray[np.float32],
+        k: int,
+        nprobe: int | None = None,
+        rerank_pool: int | None = None,
+    ) -> tuple[NDArray[np.int64], NDArray[np.float32]]:
+        """Search one query vector."""
+
+    def batch_search(
+        self,
+        queries: NDArray[np.float32],
+        k: int,
+        nprobe: int | None = None,
+        rerank_pool: int | None = None,
+    ) -> tuple[NDArray[np.int64], NDArray[np.float32]]:
+        """Search a batch of query vectors."""
+
+    @property
+    def num_vectors(self) -> int:
+        """Number of vectors currently in the index."""
+
+    @property
+    def dimension(self) -> int:
+        """Vector dimension."""
+
+    @property
+    def num_clusters(self) -> int:
+        """Number of IVF coarse clusters."""
+
+    @property
+    def num_codebooks(self) -> int:
+        """Number of PQ codebooks."""
+
+    @property
+    def codebook_size(self) -> int:
+        """Number of centroids per PQ codebook."""
+
+    @property
+    def nprobe(self) -> int:
+        """Default IVF clusters scanned per query."""
+
+    @property
+    def use_opq(self) -> bool:
+        """Whether OPQ rotation is enabled."""
 
     def __len__(self) -> int: ...
     def __repr__(self) -> str: ...

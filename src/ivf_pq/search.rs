@@ -424,6 +424,36 @@ impl IVFPQIndex {
         self.params.nprobe = nprobe;
     }
 
+    /// Number of IVF clusters searched per query.
+    pub fn nprobe(&self) -> usize {
+        self.params.nprobe
+    }
+
+    /// Number of IVF clusters.
+    pub fn num_clusters(&self) -> usize {
+        self.params.num_clusters
+    }
+
+    /// Number of PQ subquantizers.
+    pub fn num_codebooks(&self) -> usize {
+        self.params.num_codebooks
+    }
+
+    /// Number of entries in each PQ codebook.
+    pub fn codebook_size(&self) -> usize {
+        self.params.codebook_size
+    }
+
+    /// Whether OPQ rotation is enabled.
+    pub fn use_opq(&self) -> bool {
+        self.params.use_opq
+    }
+
+    /// Whether the index has been built and is ready to search.
+    pub fn is_built(&self) -> bool {
+        self.built
+    }
+
     /// Create a new IVF-PQ index.
     pub fn new(dimension: usize, params: IVFPQParams) -> Result<Self, RetrieveError> {
         if dimension == 0 {
