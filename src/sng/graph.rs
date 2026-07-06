@@ -1,7 +1,12 @@
 //! OPT-SNG graph structure.
 
 use crate::RetrieveError;
+use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
+use std::path::Path;
+
+const SNG_FORMAT_VERSION: u32 = 1;
+const SNG_NEIGHBORS_MAGIC: &[u8; 8] = b"SNGGRPH1";
 
 /// OPT-SNG index for approximate nearest neighbor search.
 ///
@@ -28,7 +33,7 @@ pub struct SNGIndex {
 }
 
 /// OPT-SNG parameters.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SNGParams {
     /// Maximum out-degree (automatically optimized, but can set initial value)
     pub max_degree: Option<usize>,
@@ -44,6 +49,15 @@ impl Default for SNGParams {
             num_hash_functions: 10,
         }
     }
+}
+
+#[derive(Deserialize, Serialize)]
+struct SNGSnapshot {
+    version: u32,
+    dimension: usize,
+    num_vectors: usize,
+    params: SNGParams,
+    truncation_r: f32,
 }
 
 impl SNGIndex {
@@ -118,6 +132,78 @@ impl SNGIndex {
 
         self.built = true;
         Ok(())
+    }
+
+    /// Save a built SNG index to a directory.
+    pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<(), RetrieveError> {
+        if !self.built {
+            return Err(RetrieveError::InvalidParameter(
+                "cannot save unbuilt SNG index".into(),
+            ));
+        }
+        let output_dir = output_dir.as_ref();
+        std::fs::create_dir_all(output_dir)?;
+        let snapshot = SNGSnapshot {
+            version: SNG_FORMAT_VERSION,
+            dimension: self.dimension,
+            num_vectors: self.num_vectors,
+            params: self.params.clone(),
+            truncation_r: self.truncation_r,
+        };
+        crate::graph_snapshot::write_json_atomic(&output_dir.join("manifest.json"), &snapshot)?;
+        crate::graph_snapshot::write_f32_atomic(&output_dir.join("vectors.bin"), &self.vectors)?;
+        crate::graph_snapshot::write_u32_atomic(&output_dir.join("doc_ids.bin"), &self.doc_ids)?;
+        crate::graph_snapshot::write_neighbors_atomic(
+            &output_dir.join("neighbors.bin"),
+            SNG_NEIGHBORS_MAGIC,
+            &self.neighbors,
+        )?;
+        Ok(())
+    }
+
+    /// Load an SNG index saved by [`Self::save_to_dir`].
+    pub fn load_from_dir(input_dir: impl AsRef<Path>) -> Result<Self, RetrieveError> {
+        let input_dir = input_dir.as_ref();
+        let snapshot: SNGSnapshot =
+            crate::graph_snapshot::read_json(&input_dir.join("manifest.json"))?;
+        if snapshot.version != SNG_FORMAT_VERSION {
+            return Err(RetrieveError::FormatError(format!(
+                "unsupported SNG format version {}",
+                snapshot.version
+            )));
+        }
+        let vectors = crate::graph_snapshot::read_f32_exact(
+            &input_dir.join("vectors.bin"),
+            snapshot.num_vectors * snapshot.dimension,
+        )?;
+        let doc_ids = crate::graph_snapshot::read_u32_exact(
+            &input_dir.join("doc_ids.bin"),
+            snapshot.num_vectors,
+        )?;
+        let neighbors = crate::graph_snapshot::read_neighbors(
+            &input_dir.join("neighbors.bin"),
+            SNG_NEIGHBORS_MAGIC,
+            snapshot.num_vectors,
+        )?;
+        crate::graph_snapshot::validate_graph_shape(
+            "SNG",
+            snapshot.dimension,
+            snapshot.num_vectors,
+            &vectors,
+            &doc_ids,
+            &neighbors,
+            None,
+        )?;
+        Ok(Self {
+            vectors,
+            dimension: snapshot.dimension,
+            num_vectors: snapshot.num_vectors,
+            doc_ids,
+            params: snapshot.params,
+            built: true,
+            neighbors,
+            truncation_r: snapshot.truncation_r,
+        })
     }
 
     /// Search for k nearest neighbors.
@@ -252,6 +338,25 @@ mod tests {
 
         assert!(!results.is_empty());
         assert!(results.len() <= 3);
+    }
+
+    #[test]
+    fn save_load_roundtrip_preserves_search() {
+        let mut index = SNGIndex::new(4, SNGParams::default()).unwrap();
+        for i in 0..18u32 {
+            let mut v = vec![i as f32 + 1.0, (i as f32) * 0.5, 1.0, 0.5];
+            normalize(&mut v);
+            index.add(i + 2000, v).unwrap();
+        }
+        index.build().unwrap();
+        let mut query = vec![1.0, 0.0, 1.0, 0.5];
+        normalize(&mut query);
+        let before = index.search(&query, 5).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        index.save_to_dir(dir.path()).unwrap();
+        let loaded = SNGIndex::load_from_dir(dir.path()).unwrap();
+        assert_eq!(loaded.search(&query, 5).unwrap(), before);
     }
 
     #[test]

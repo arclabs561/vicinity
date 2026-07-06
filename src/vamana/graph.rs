@@ -1,11 +1,16 @@
 //! Vamana graph structure and core types.
 
 use crate::RetrieveError;
+use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
+use std::path::Path;
+
+const VAMANA_FORMAT_VERSION: u32 = 1;
+const VAMANA_NEIGHBORS_MAGIC: &[u8; 8] = b"VAMANAG1";
 
 #[cfg(feature = "vamana")]
 /// Vamana parameters controlling graph structure and search behavior.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct VamanaParams {
     /// Maximum out-degree per node (typically 64-128, higher for SSD serving)
     pub max_degree: usize,
@@ -73,6 +78,15 @@ pub struct VamanaIndex {
     /// Medoid (closest point to centroid), used as search entry point.
     /// Computed during build.
     pub(crate) medoid: u32,
+}
+
+#[derive(Deserialize, Serialize)]
+struct VamanaSnapshot {
+    version: u32,
+    dimension: usize,
+    num_vectors: usize,
+    params: VamanaParams,
+    medoid: u32,
 }
 
 #[cfg(feature = "vamana")]
@@ -144,6 +158,81 @@ impl VamanaIndex {
         self.reorder_for_locality();
 
         Ok(())
+    }
+
+    /// Save a built Vamana index to a directory.
+    ///
+    /// The saved format stores the post-build, locality-reordered graph state.
+    /// Loading restores that graph directly; it does not rebuild.
+    pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<(), RetrieveError> {
+        if !self.built {
+            return Err(RetrieveError::InvalidParameter(
+                "cannot save unbuilt Vamana index".into(),
+            ));
+        }
+        let output_dir = output_dir.as_ref();
+        std::fs::create_dir_all(output_dir)?;
+        let snapshot = VamanaSnapshot {
+            version: VAMANA_FORMAT_VERSION,
+            dimension: self.dimension,
+            num_vectors: self.num_vectors,
+            params: self.params.clone(),
+            medoid: self.medoid,
+        };
+        crate::graph_snapshot::write_json_atomic(&output_dir.join("manifest.json"), &snapshot)?;
+        crate::graph_snapshot::write_f32_atomic(&output_dir.join("vectors.bin"), &self.vectors)?;
+        crate::graph_snapshot::write_u32_atomic(&output_dir.join("doc_ids.bin"), &self.doc_ids)?;
+        crate::graph_snapshot::write_neighbors_atomic(
+            &output_dir.join("neighbors.bin"),
+            VAMANA_NEIGHBORS_MAGIC,
+            &self.neighbors,
+        )?;
+        Ok(())
+    }
+
+    /// Load a Vamana index saved by [`Self::save_to_dir`].
+    pub fn load_from_dir(input_dir: impl AsRef<Path>) -> Result<Self, RetrieveError> {
+        let input_dir = input_dir.as_ref();
+        let snapshot: VamanaSnapshot =
+            crate::graph_snapshot::read_json(&input_dir.join("manifest.json"))?;
+        if snapshot.version != VAMANA_FORMAT_VERSION {
+            return Err(RetrieveError::FormatError(format!(
+                "unsupported Vamana format version {}",
+                snapshot.version
+            )));
+        }
+        let vectors = crate::graph_snapshot::read_f32_exact(
+            &input_dir.join("vectors.bin"),
+            snapshot.num_vectors * snapshot.dimension,
+        )?;
+        let doc_ids = crate::graph_snapshot::read_u32_exact(
+            &input_dir.join("doc_ids.bin"),
+            snapshot.num_vectors,
+        )?;
+        let neighbors = crate::graph_snapshot::read_neighbors(
+            &input_dir.join("neighbors.bin"),
+            VAMANA_NEIGHBORS_MAGIC,
+            snapshot.num_vectors,
+        )?;
+        crate::graph_snapshot::validate_graph_shape(
+            "Vamana",
+            snapshot.dimension,
+            snapshot.num_vectors,
+            &vectors,
+            &doc_ids,
+            &neighbors,
+            Some(snapshot.medoid),
+        )?;
+        Ok(Self {
+            dimension: snapshot.dimension,
+            vectors,
+            neighbors,
+            params: snapshot.params,
+            num_vectors: snapshot.num_vectors,
+            doc_ids,
+            built: true,
+            medoid: snapshot.medoid,
+        })
     }
 
     /// Build using parallel batched construction (requires `parallel` feature).
@@ -387,6 +476,32 @@ mod tests {
                 idx, k, results
             );
         }
+    }
+
+    #[test]
+    fn test_save_load_roundtrip_preserves_search() {
+        let dim = 16;
+        let n = 80;
+        let vectors = generate_normalized_vectors(n, dim, 99);
+        let params = VamanaParams {
+            max_degree: 16,
+            ef_construction: 60,
+            ef_search: 40,
+            seed: None,
+            ..VamanaParams::default()
+        };
+        let mut index = VamanaIndex::new(dim, params).unwrap();
+        for (i, v) in vectors.iter().enumerate() {
+            index.add(3000 + i as u32, v.clone()).unwrap();
+        }
+        index.build().unwrap();
+        let query = &vectors[7];
+        let before = index.search(query, 8, 40).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        index.save_to_dir(dir.path()).unwrap();
+        let loaded = VamanaIndex::load_from_dir(dir.path()).unwrap();
+        assert_eq!(loaded.search(query, 8, 40).unwrap(), before);
     }
 
     #[test]

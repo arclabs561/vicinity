@@ -1,7 +1,12 @@
 //! Flat NSW graph structure.
 
 use crate::RetrieveError;
+use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
+use std::path::Path;
+
+const NSW_FORMAT_VERSION: u32 = 1;
+const NSW_NEIGHBORS_MAGIC: &[u8; 8] = b"NSWGRPH1";
 
 /// Flat Navigable Small World index.
 ///
@@ -35,7 +40,7 @@ pub struct NSWIndex {
 }
 
 /// NSW parameters.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct NSWParams {
     /// Maximum number of connections per node (typically 16)
     pub m: usize,
@@ -62,6 +67,15 @@ impl Default for NSWParams {
             ef_construction: 100,
         }
     }
+}
+
+#[derive(Deserialize, Serialize)]
+struct NSWSnapshot {
+    version: u32,
+    dimension: usize,
+    num_vectors: usize,
+    params: NSWParams,
+    entry_point: u32,
 }
 
 impl NSWIndex {
@@ -196,6 +210,84 @@ impl NSWIndex {
         Ok(())
     }
 
+    /// Save a built NSW index to a directory.
+    ///
+    /// The saved format stores the built in-memory graph. Loading restores the
+    /// graph directly; it does not rebuild or provide file-backed search.
+    pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<(), RetrieveError> {
+        let entry_point = self.entry_point.ok_or_else(|| {
+            RetrieveError::InvalidParameter("cannot save NSW index without entry point".into())
+        })?;
+        if !self.built {
+            return Err(RetrieveError::InvalidParameter(
+                "cannot save unbuilt NSW index".into(),
+            ));
+        }
+        let output_dir = output_dir.as_ref();
+        std::fs::create_dir_all(output_dir)?;
+        let snapshot = NSWSnapshot {
+            version: NSW_FORMAT_VERSION,
+            dimension: self.dimension,
+            num_vectors: self.num_vectors,
+            params: self.params.clone(),
+            entry_point,
+        };
+        crate::graph_snapshot::write_json_atomic(&output_dir.join("manifest.json"), &snapshot)?;
+        crate::graph_snapshot::write_f32_atomic(&output_dir.join("vectors.bin"), &self.vectors)?;
+        crate::graph_snapshot::write_u32_atomic(&output_dir.join("doc_ids.bin"), &self.doc_ids)?;
+        crate::graph_snapshot::write_neighbors_atomic(
+            &output_dir.join("neighbors.bin"),
+            NSW_NEIGHBORS_MAGIC,
+            &self.neighbors,
+        )?;
+        Ok(())
+    }
+
+    /// Load an NSW index saved by [`Self::save_to_dir`].
+    pub fn load_from_dir(input_dir: impl AsRef<Path>) -> Result<Self, RetrieveError> {
+        let input_dir = input_dir.as_ref();
+        let snapshot: NSWSnapshot =
+            crate::graph_snapshot::read_json(&input_dir.join("manifest.json"))?;
+        if snapshot.version != NSW_FORMAT_VERSION {
+            return Err(RetrieveError::FormatError(format!(
+                "unsupported NSW format version {}",
+                snapshot.version
+            )));
+        }
+        let vectors = crate::graph_snapshot::read_f32_exact(
+            &input_dir.join("vectors.bin"),
+            snapshot.num_vectors * snapshot.dimension,
+        )?;
+        let doc_ids = crate::graph_snapshot::read_u32_exact(
+            &input_dir.join("doc_ids.bin"),
+            snapshot.num_vectors,
+        )?;
+        let neighbors = crate::graph_snapshot::read_neighbors(
+            &input_dir.join("neighbors.bin"),
+            NSW_NEIGHBORS_MAGIC,
+            snapshot.num_vectors,
+        )?;
+        crate::graph_snapshot::validate_graph_shape(
+            "NSW",
+            snapshot.dimension,
+            snapshot.num_vectors,
+            &vectors,
+            &doc_ids,
+            &neighbors,
+            Some(snapshot.entry_point),
+        )?;
+        Ok(Self {
+            vectors,
+            dimension: snapshot.dimension,
+            num_vectors: snapshot.num_vectors,
+            neighbors,
+            params: snapshot.params,
+            doc_ids,
+            built: true,
+            entry_point: Some(snapshot.entry_point),
+        })
+    }
+
     /// Search for k nearest neighbors.
     pub fn search(
         &self,
@@ -305,5 +397,22 @@ mod tests {
             RetrieveError::InvalidParameter(_) => {}
             other => panic!("Expected InvalidParameter, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn save_load_roundtrip_preserves_search() {
+        let mut index = NSWIndex::new(4, 8, 8).unwrap();
+        for i in 0..40u32 {
+            let v = crate::distance::normalize(&[i as f32 + 1.0, (i as f32) * 0.5, 1.0, 0.5]);
+            index.add(i + 1000, v).unwrap();
+        }
+        index.build().unwrap();
+        let query = index.get_vector(3).to_vec();
+        let before = index.search(&query, 5, 20).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        index.save_to_dir(dir.path()).unwrap();
+        let loaded = NSWIndex::load_from_dir(dir.path()).unwrap();
+        assert_eq!(loaded.search(&query, 5, 20).unwrap(), before);
     }
 }

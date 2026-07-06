@@ -31,7 +31,8 @@ only after the interface has two real consumers.
 | HNSW | JSON via `serde`; binary segments via `persistence` | Yes | No | No | Tombstones and repair; `store` for durable segments | Keep JSON and binary segment paths. Use `store` for durable segmented HNSW. |
 | `store::UpdatableIndex` | Yes, via `segstore` + HNSW sidecars | Segment sidecars loaded into memory | No | No | Add/delete/compact/checkpoint | Keep on `segstore`; this is the segmented-HNSW path. |
 | DiskANN | Yes, graph + vector files | Yes | Yes | Yes | Build-once | Mmap exists for current separate graph/vector files. Page/co-location layout remains next. Do not route through `segstore`. |
-| NSW / SNG / Vamana / NSG / EMG / FINGER / PiPNN | No | Yes | No | No | Build-once | Add graph snapshot formats after the benchmark matrix proves which variants are worth file compatibility. Reuse HNSW/FreshGraph graph snapshot ideas, not `segstore`. |
+| NSW / SNG / Vamana / NSG | Yes, directory format | Yes | No | No | Build-once | Persists the built in-memory graph state and restores it directly. This is snapshot-memory persistence, not file-backed search. |
+| EMG / FINGER / PiPNN | No | Yes | No | No | Build-once | Add graph snapshot formats after each variant's derived state is audited. Reuse the shared graph snapshot helpers, not `segstore`. |
 | HNSW quantized variants | No | Yes | No | No | Build-once | Persist derived quantization payloads only after the in-memory search mode is benchmarked and promoted. |
 | IVF-PQ | Yes, directory format | Yes | No | No | Build-once | Persists centroids, PQ codebooks, posting lists, codes, and optional raw vectors for rerank. |
 | IVF-AVQ | Yes, directory format | Yes | No | No | Build-once | Persists centroids, AVQ codebooks, partitions, codes, and raw vectors for rerank. |

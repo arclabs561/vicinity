@@ -30,7 +30,7 @@
 //! |-----------|----------------|---------|-------------|
 //! | **General Purpose** (Best Recall/Speed) | [`hnsw::HNSWIndex`] | `hnsw` (default) | Yes: JSON via `serde` (`save_to_file`); binary via `persistence` (segment writer) |
 //! | **Memory Constrained** (compressed in-memory search) | `ivf_pq::IVFPQIndex` | `ivf_pq` | Yes: snapshot reloads into memory |
-//! | **Flat Graph** (Simpler, competitive on high-d) | `nsw::NSWIndex` | `nsw` | No |
+//! | **Flat Graph** (Simpler, competitive on high-d) | `nsw::NSWIndex` | `nsw` | Yes: snapshot reloads into memory |
 //! | **Label Filtering** (Low selectivity) | `curator::CuratorIndex` | `curator` | Yes: snapshot reloads and rebuilds tree |
 //! | **Complex Predicates** (AND/OR filters) | `filtered_graph::FilteredGraphIndex` | `filtered_graph` | Yes: snapshot reloads into memory |
 //! | **Range Filtering** (Numeric attributes) | `range_filtered::RangeFilteredIndex` | `range_filtered` | Yes: snapshot reloads and rebuilds HNSW |
@@ -213,6 +213,8 @@ pub mod prt;
 
 pub mod distance;
 pub mod filtering;
+#[cfg(any(feature = "nsw", feature = "sng", feature = "vamana", feature = "nsg"))]
+pub(crate) mod graph_snapshot;
 #[cfg(any(
     feature = "finger",
     feature = "filtered_graph",

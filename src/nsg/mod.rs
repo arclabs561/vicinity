@@ -44,11 +44,16 @@
 use crate::distance::cosine_distance_normalized;
 use crate::distance::FloatOrd;
 use crate::RetrieveError;
+use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 use std::collections::BinaryHeap;
+use std::path::Path;
+
+const NSG_FORMAT_VERSION: u32 = 1;
+const NSG_NEIGHBORS_MAGIC: &[u8; 8] = b"NSGGRPH1";
 
 /// NSG parameters.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct NsgParams {
     /// Maximum out-degree (R in the paper). Default: 32.
     pub max_degree: usize,
@@ -69,6 +74,15 @@ impl Default for NsgParams {
             ef_search: 100,
         }
     }
+}
+
+#[derive(Deserialize, Serialize)]
+struct NsgSnapshot {
+    version: u32,
+    dimension: usize,
+    num_vectors: usize,
+    params: NsgParams,
+    medoid: u32,
 }
 
 /// NSG index.
@@ -102,6 +116,78 @@ impl NsgIndex {
             doc_ids: Vec::new(),
             neighbors: Vec::new(),
             medoid: 0,
+        })
+    }
+
+    /// Save a built NSG index to a directory.
+    pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<(), RetrieveError> {
+        if !self.built {
+            return Err(RetrieveError::InvalidParameter(
+                "cannot save unbuilt NSG index".into(),
+            ));
+        }
+        let output_dir = output_dir.as_ref();
+        std::fs::create_dir_all(output_dir)?;
+        let snapshot = NsgSnapshot {
+            version: NSG_FORMAT_VERSION,
+            dimension: self.dimension,
+            num_vectors: self.num_vectors,
+            params: self.params.clone(),
+            medoid: self.medoid,
+        };
+        crate::graph_snapshot::write_json_atomic(&output_dir.join("manifest.json"), &snapshot)?;
+        crate::graph_snapshot::write_f32_atomic(&output_dir.join("vectors.bin"), &self.vectors)?;
+        crate::graph_snapshot::write_u32_atomic(&output_dir.join("doc_ids.bin"), &self.doc_ids)?;
+        crate::graph_snapshot::write_neighbors_atomic(
+            &output_dir.join("neighbors.bin"),
+            NSG_NEIGHBORS_MAGIC,
+            &self.neighbors,
+        )?;
+        Ok(())
+    }
+
+    /// Load an NSG index saved by [`Self::save_to_dir`].
+    pub fn load_from_dir(input_dir: impl AsRef<Path>) -> Result<Self, RetrieveError> {
+        let input_dir = input_dir.as_ref();
+        let snapshot: NsgSnapshot =
+            crate::graph_snapshot::read_json(&input_dir.join("manifest.json"))?;
+        if snapshot.version != NSG_FORMAT_VERSION {
+            return Err(RetrieveError::FormatError(format!(
+                "unsupported NSG format version {}",
+                snapshot.version
+            )));
+        }
+        let vectors = crate::graph_snapshot::read_f32_exact(
+            &input_dir.join("vectors.bin"),
+            snapshot.num_vectors * snapshot.dimension,
+        )?;
+        let doc_ids = crate::graph_snapshot::read_u32_exact(
+            &input_dir.join("doc_ids.bin"),
+            snapshot.num_vectors,
+        )?;
+        let neighbors = crate::graph_snapshot::read_neighbors(
+            &input_dir.join("neighbors.bin"),
+            NSG_NEIGHBORS_MAGIC,
+            snapshot.num_vectors,
+        )?;
+        crate::graph_snapshot::validate_graph_shape(
+            "NSG",
+            snapshot.dimension,
+            snapshot.num_vectors,
+            &vectors,
+            &doc_ids,
+            &neighbors,
+            Some(snapshot.medoid),
+        )?;
+        Ok(Self {
+            dimension: snapshot.dimension,
+            params: snapshot.params,
+            built: true,
+            vectors,
+            num_vectors: snapshot.num_vectors,
+            doc_ids,
+            neighbors,
+            medoid: snapshot.medoid,
         })
     }
 
@@ -646,6 +732,39 @@ mod tests {
         let results = index.search(query, 5).unwrap();
         assert!(!results.is_empty());
         assert!(results.iter().any(|(id, _)| *id == 0));
+    }
+
+    #[test]
+    fn save_load_roundtrip_preserves_search() {
+        let dim = 16;
+        let n = 40;
+        let data = make_vectors(n, dim, 42);
+
+        let mut index = NsgIndex::new(
+            dim,
+            NsgParams {
+                max_degree: 16,
+                pool_size: 32,
+                knn_degree: 16,
+                ef_search: 50,
+            },
+        )
+        .unwrap();
+
+        for i in 0..n {
+            let start = i * dim;
+            index
+                .add_slice(4000 + i as u32, &data[start..start + dim])
+                .unwrap();
+        }
+        index.build().unwrap();
+        let query = &data[0..dim];
+        let before = index.search(query, 5).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        index.save_to_dir(dir.path()).unwrap();
+        let loaded = NsgIndex::load_from_dir(dir.path()).unwrap();
+        assert_eq!(loaded.search(query, 5).unwrap(), before);
     }
 
     #[test]
