@@ -37,10 +37,10 @@
 //! | **Dynamic Insert/Delete** (per-op latency) | `fresh_graph::FreshGraphIndex` | `fresh_graph` | Yes: snapshot reloads into memory |
 //! | **Streaming Bulk Writes** (write throughput) | `streaming::lsm::LsmIndex` | `hnsw` (LSM is built-in) | No |
 //! | **Sparse Vectors** (SPLADE/BM25) | `sparse_mips::SparseMipsIndex` | `sparse_mips` | No |
-//! | **High-d Compression** (768d+) | `rp_quant::RpQuantIndex` | `rp_quant` | No |
+//! | **High-d Compression** (768d+) | `rp_quant::RpQuantIndex` | `rp_quant` | Yes: snapshot reloads into memory |
 //! | **Quantized Graph** (HNSW + RaBitQ, cosine) | `hnsw::SymphonyQGIndex` | `hnsw` + `ivf_rabitq` | No |
 //! | **Quantized Graph** (HNSW + RaBitQ, cosine + L2) | `hnsw::SymphonyQGVRIndex` | `hnsw` + `ivf_rabitq` | No |
-//! | **Binary Quantization** (1-bit + rerank) | `binary_index::BinaryFlatIndex` | `binary_index` | No |
+//! | **Binary Quantization** (1-bit + rerank) | `binary_index::BinaryFlatIndex` | `binary_index` | Yes: snapshot reloads into memory |
 //! | **File-Backed Search** (SSD-based, experimental) | `diskann` | `diskann` (experimental) | Yes: file and mmap searcher |
 //! | **4-bit Scalar Quant** (8x compression) | `sq4::SQ4Index` | `sq4` | No |
 //! | **8-bit Scalar Quant** (4x compression) | `hnsw::HNSWSq8Index` | `hnsw` + `sq8` | No |
@@ -220,7 +220,9 @@ pub mod filtering;
     feature = "nsg",
     feature = "finger",
     feature = "pipnn",
-    feature = "emg"
+    feature = "emg",
+    feature = "binary_index",
+    feature = "rp_quant"
 ))]
 pub(crate) mod graph_snapshot;
 #[cfg(any(

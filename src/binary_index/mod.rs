@@ -35,9 +35,13 @@
 use crate::distance::cosine_distance;
 use crate::RetrieveError;
 use qntz::binary::BinaryQuantizer;
+use serde::{Deserialize, Serialize};
+use std::path::Path;
+
+const BINARY_FLAT_FORMAT_VERSION: u32 = 1;
 
 /// Construction and search parameters for [`BinaryFlatIndex`].
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct BinaryFlatParams {
     /// Number of dimensions after rotation. May be less than the input
     /// dimension for simultaneous compression. Default: same as input `dim`.
@@ -82,6 +86,14 @@ pub struct BinaryFlatIndex {
 
     /// Bytes per code (`projected_dim.div_ceil(8)`), set at build time.
     code_len: usize,
+}
+
+#[derive(Deserialize, Serialize)]
+struct BinaryFlatSnapshot {
+    version: u32,
+    dimension: usize,
+    num_vectors: usize,
+    params: BinaryFlatParams,
 }
 
 impl BinaryFlatIndex {
@@ -160,6 +172,74 @@ impl BinaryFlatIndex {
         self.code_len = code_len;
         self.built = true;
         Ok(())
+    }
+
+    /// Save a built BinaryFlat index to a directory.
+    ///
+    /// The saved format stores full-precision vectors and params. Loading
+    /// rebuilds the quantizer and binary codes.
+    pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<(), RetrieveError> {
+        if !self.built {
+            return Err(RetrieveError::InvalidParameter(
+                "cannot save unbuilt BinaryFlat index".into(),
+            ));
+        }
+        let output_dir = output_dir.as_ref();
+        std::fs::create_dir_all(output_dir)?;
+        let snapshot = BinaryFlatSnapshot {
+            version: BINARY_FLAT_FORMAT_VERSION,
+            dimension: self.dimension,
+            num_vectors: self.num_vectors,
+            params: self.params.clone(),
+        };
+        crate::graph_snapshot::write_json_atomic(&output_dir.join("manifest.json"), &snapshot)?;
+        crate::graph_snapshot::write_f32_atomic(&output_dir.join("vectors.bin"), &self.vectors)?;
+        crate::graph_snapshot::write_u32_atomic(&output_dir.join("doc_ids.bin"), &self.doc_ids)?;
+        Ok(())
+    }
+
+    /// Load a BinaryFlat index saved by [`Self::save_to_dir`].
+    pub fn load_from_dir(input_dir: impl AsRef<Path>) -> Result<Self, RetrieveError> {
+        let input_dir = input_dir.as_ref();
+        let snapshot: BinaryFlatSnapshot =
+            crate::graph_snapshot::read_json(&input_dir.join("manifest.json"))?;
+        if snapshot.version != BINARY_FLAT_FORMAT_VERSION {
+            return Err(RetrieveError::FormatError(format!(
+                "unsupported BinaryFlat format version {}",
+                snapshot.version
+            )));
+        }
+        if snapshot.dimension == 0 {
+            return Err(RetrieveError::FormatError(
+                "BinaryFlat manifest has zero dimension".into(),
+            ));
+        }
+        if snapshot.num_vectors == 0 {
+            return Err(RetrieveError::FormatError(
+                "BinaryFlat manifest has zero vectors".into(),
+            ));
+        }
+        let vectors = crate::graph_snapshot::read_f32_exact(
+            &input_dir.join("vectors.bin"),
+            snapshot.num_vectors * snapshot.dimension,
+        )?;
+        let doc_ids = crate::graph_snapshot::read_u32_exact(
+            &input_dir.join("doc_ids.bin"),
+            snapshot.num_vectors,
+        )?;
+        let mut index = Self {
+            dimension: snapshot.dimension,
+            params: snapshot.params,
+            built: false,
+            vectors,
+            num_vectors: snapshot.num_vectors,
+            doc_ids,
+            quantizer: None,
+            codes: Vec::new(),
+            code_len: 0,
+        };
+        index.build()?;
+        Ok(index)
     }
 
     /// Search for the `k` approximate nearest neighbors of `query`.
@@ -320,6 +400,40 @@ mod tests {
             recall > 0.5,
             "self-search recall too low: {recall:.2} ({hits}/{n})"
         );
+    }
+
+    #[test]
+    fn save_load_roundtrip_preserves_search() {
+        let dim = 64;
+        let n = 100;
+        let data = make_vectors(n, dim, 7);
+        let mut index = BinaryFlatIndex::new(
+            dim,
+            BinaryFlatParams {
+                projected_dim: 64,
+                rerank_factor: 10,
+                seed: 99,
+            },
+        )
+        .unwrap();
+
+        for i in 0..n {
+            index
+                .add_slice(30_000 + i as u32, &data[i * dim..(i + 1) * dim])
+                .unwrap();
+        }
+        index.build().unwrap();
+        let query = &data[0..dim];
+        let before = index.search(query, 10).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        index.save_to_dir(dir.path()).unwrap();
+        let loaded = BinaryFlatIndex::load_from_dir(dir.path()).unwrap();
+
+        assert_eq!(loaded.search(query, 10).unwrap(), before);
+        assert_eq!(loaded.len(), index.len());
+        assert_eq!(loaded.code_len, index.code_len);
+        assert_eq!(loaded.codes, index.codes);
     }
 
     #[test]

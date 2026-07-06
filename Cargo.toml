@@ -120,7 +120,7 @@ python = ["dep:pyo3", "dep:numpy", "hnsw"]
 nsg = ["dep:serde", "dep:serde_json"]
 finger = ["dep:serde", "dep:serde_json"]
 filtered_graph = ["dep:serde", "dep:serde_json", "smallvec/serde"]
-rp_quant = []
+rp_quant = ["dep:serde", "dep:serde_json"]
 sparse_mips = []
 lsh = ["dep:sketchir"]
 nsw = ["dep:serde", "dep:serde_json"]
@@ -141,7 +141,7 @@ ivf_rabitq = ["rabitq", "dep:clump", "dep:serde", "dep:serde_json", "hnsw"]
 saq = ["qntz", "qntz/ternary"]
 # Re-exported quantizers (from `qntz`)
 qntz = ["dep:qntz"]
-binary_index = ["dep:qntz", "qntz/binary"]
+binary_index = ["dep:qntz", "qntz/binary", "dep:serde", "dep:serde_json"]
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

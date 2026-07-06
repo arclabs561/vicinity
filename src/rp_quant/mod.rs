@@ -63,9 +63,13 @@
 
 use crate::distance::cosine_distance_normalized;
 use crate::RetrieveError;
+use serde::{Deserialize, Serialize};
+use std::path::Path;
+
+const RP_QUANT_FORMAT_VERSION: u32 = 1;
 
 /// RpQuant construction and search parameters.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RpQuantParams {
     /// Target projection dimension `d'`. Default: 64.
     pub projected_dim: usize,
@@ -109,6 +113,14 @@ pub struct RpQuantIndex {
 
     /// Per-dimension scale factors `255 / (max - min)` (length `d'`).
     scales: Vec<f32>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct RpQuantSnapshot {
+    version: u32,
+    dimension: usize,
+    num_vectors: usize,
+    params: RpQuantParams,
 }
 
 impl RpQuantIndex {
@@ -245,6 +257,76 @@ impl RpQuantIndex {
         self.quantized = quantized;
         self.built = true;
         Ok(())
+    }
+
+    /// Save a built RpQuant index to a directory.
+    ///
+    /// The saved format stores normalized full-precision vectors and params.
+    /// Loading rebuilds the projection matrix, projected quantization, and
+    /// per-dimension statistics.
+    pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<(), RetrieveError> {
+        if !self.built {
+            return Err(RetrieveError::InvalidParameter(
+                "cannot save unbuilt RpQuant index".into(),
+            ));
+        }
+        let output_dir = output_dir.as_ref();
+        std::fs::create_dir_all(output_dir)?;
+        let snapshot = RpQuantSnapshot {
+            version: RP_QUANT_FORMAT_VERSION,
+            dimension: self.dimension,
+            num_vectors: self.num_vectors,
+            params: self.params.clone(),
+        };
+        crate::graph_snapshot::write_json_atomic(&output_dir.join("manifest.json"), &snapshot)?;
+        crate::graph_snapshot::write_f32_atomic(&output_dir.join("vectors.bin"), &self.vectors)?;
+        crate::graph_snapshot::write_u32_atomic(&output_dir.join("doc_ids.bin"), &self.doc_ids)?;
+        Ok(())
+    }
+
+    /// Load an RpQuant index saved by [`Self::save_to_dir`].
+    pub fn load_from_dir(input_dir: impl AsRef<Path>) -> Result<Self, RetrieveError> {
+        let input_dir = input_dir.as_ref();
+        let snapshot: RpQuantSnapshot =
+            crate::graph_snapshot::read_json(&input_dir.join("manifest.json"))?;
+        if snapshot.version != RP_QUANT_FORMAT_VERSION {
+            return Err(RetrieveError::FormatError(format!(
+                "unsupported RpQuant format version {}",
+                snapshot.version
+            )));
+        }
+        if snapshot.dimension == 0 {
+            return Err(RetrieveError::FormatError(
+                "RpQuant manifest has zero dimension".into(),
+            ));
+        }
+        if snapshot.num_vectors == 0 {
+            return Err(RetrieveError::FormatError(
+                "RpQuant manifest has zero vectors".into(),
+            ));
+        }
+        let vectors = crate::graph_snapshot::read_f32_exact(
+            &input_dir.join("vectors.bin"),
+            snapshot.num_vectors * snapshot.dimension,
+        )?;
+        let doc_ids = crate::graph_snapshot::read_u32_exact(
+            &input_dir.join("doc_ids.bin"),
+            snapshot.num_vectors,
+        )?;
+        let mut index = Self {
+            dimension: snapshot.dimension,
+            params: snapshot.params,
+            built: false,
+            vectors,
+            num_vectors: snapshot.num_vectors,
+            doc_ids,
+            projection: Vec::new(),
+            quantized: Vec::new(),
+            mins: Vec::new(),
+            scales: Vec::new(),
+        };
+        index.build()?;
+        Ok(index)
     }
 
     /// Search for the `k` nearest neighbors of `query`.
@@ -472,6 +554,43 @@ mod tests {
             recall > 0.5,
             "self-search recall too low: {recall:.2} ({hits}/{n})"
         );
+    }
+
+    #[test]
+    fn save_load_roundtrip_preserves_search() {
+        let dim = 64;
+        let n = 100;
+        let data = make_vectors(n, dim, 7);
+        let mut index = RpQuantIndex::new(
+            dim,
+            RpQuantParams {
+                projected_dim: 16,
+                rerank_factor: 10,
+                seed: 99,
+            },
+        )
+        .unwrap();
+
+        for i in 0..n {
+            let start = i * dim;
+            index
+                .add_slice(40_000 + i as u32, &data[start..start + dim])
+                .unwrap();
+        }
+        index.build().unwrap();
+        let query = &data[0..dim];
+        let before = index.search(query, 10).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        index.save_to_dir(dir.path()).unwrap();
+        let loaded = RpQuantIndex::load_from_dir(dir.path()).unwrap();
+
+        assert_eq!(loaded.search(query, 10).unwrap(), before);
+        assert_eq!(loaded.len(), index.len());
+        assert_eq!(loaded.projection, index.projection);
+        assert_eq!(loaded.quantized, index.quantized);
+        assert_eq!(loaded.mins, index.mins);
+        assert_eq!(loaded.scales, index.scales);
     }
 
     #[test]

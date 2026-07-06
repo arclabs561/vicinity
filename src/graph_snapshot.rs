@@ -1,7 +1,26 @@
 use crate::RetrieveError;
 use serde::{de::DeserializeOwned, Serialize};
+#[cfg(any(
+    feature = "nsw",
+    feature = "sng",
+    feature = "vamana",
+    feature = "nsg",
+    feature = "finger",
+    feature = "pipnn",
+    feature = "emg"
+))]
 use smallvec::SmallVec;
-use std::io::{BufReader, BufWriter, Read, Write};
+#[cfg(any(
+    feature = "nsw",
+    feature = "sng",
+    feature = "vamana",
+    feature = "nsg",
+    feature = "finger",
+    feature = "pipnn",
+    feature = "emg"
+))]
+use std::io::Read;
+use std::io::{BufReader, BufWriter, Write};
 use std::path::Path;
 
 pub(crate) fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), RetrieveError> {
@@ -35,6 +54,15 @@ pub(crate) fn write_u32_atomic(path: &Path, values: &[u32]) -> Result<(), Retrie
     })
 }
 
+#[cfg(any(
+    feature = "nsw",
+    feature = "sng",
+    feature = "vamana",
+    feature = "nsg",
+    feature = "finger",
+    feature = "pipnn",
+    feature = "emg"
+))]
 pub(crate) fn write_neighbors_atomic(
     path: &Path,
     magic: &[u8; 8],
@@ -106,6 +134,15 @@ pub(crate) fn read_u32_exact(path: &Path, expected_len: usize) -> Result<Vec<u32
         .collect())
 }
 
+#[cfg(any(
+    feature = "nsw",
+    feature = "sng",
+    feature = "vamana",
+    feature = "nsg",
+    feature = "finger",
+    feature = "pipnn",
+    feature = "emg"
+))]
 pub(crate) fn read_neighbors(
     path: &Path,
     magic: &[u8; 8],
@@ -159,6 +196,15 @@ pub(crate) fn read_neighbors(
     Ok(neighbors)
 }
 
+#[cfg(any(
+    feature = "nsw",
+    feature = "sng",
+    feature = "vamana",
+    feature = "nsg",
+    feature = "finger",
+    feature = "pipnn",
+    feature = "emg"
+))]
 pub(crate) fn validate_graph_shape(
     name: &str,
     dimension: usize,
@@ -210,12 +256,30 @@ pub(crate) fn validate_graph_shape(
     Ok(())
 }
 
+#[cfg(any(
+    feature = "nsw",
+    feature = "sng",
+    feature = "vamana",
+    feature = "nsg",
+    feature = "finger",
+    feature = "pipnn",
+    feature = "emg"
+))]
 fn read_u64(reader: &mut impl Read) -> Result<u64, RetrieveError> {
     let mut bytes = [0u8; 8];
     reader.read_exact(&mut bytes)?;
     Ok(u64::from_le_bytes(bytes))
 }
 
+#[cfg(any(
+    feature = "nsw",
+    feature = "sng",
+    feature = "vamana",
+    feature = "nsg",
+    feature = "finger",
+    feature = "pipnn",
+    feature = "emg"
+))]
 fn read_u32(reader: &mut impl Read) -> Result<u32, RetrieveError> {
     let mut bytes = [0u8; 4];
     reader.read_exact(&mut bytes)?;
