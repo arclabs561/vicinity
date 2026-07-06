@@ -330,6 +330,16 @@ impl DEGIndex {
 
     /// Search for k nearest neighbors with density-aware navigation.
     pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, RetrieveError> {
+        self.search_with_ef(query, k, self.config.ef_search)
+    }
+
+    /// Search for k nearest neighbors with an explicit query-time beam width.
+    pub fn search_with_ef(
+        &self,
+        query: &[f32],
+        k: usize,
+        ef_search: usize,
+    ) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if query.len() != self.dim {
             return Err(RetrieveError::DimensionMismatch {
                 query_dim: query.len(),
@@ -400,7 +410,7 @@ impl DEGIndex {
 
                     // Add to candidates (with expansion factor)
                     for _ in 0..expansion {
-                        if candidates.len() < self.config.ef_search {
+                        if candidates.len() < ef_search {
                             candidates.push(Candidate {
                                 id: neighbor,
                                 distance: -dist,

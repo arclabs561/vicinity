@@ -588,6 +588,40 @@ fn required_result_checks(
         "emg" | "nsg" | "fresh_graph" => {
             ef_checks(algo, cfg, |_| vec!["\"max_degree\":32".to_string()])
         }
+        "dual_branch" => cfg
+            .ef_search_values
+            .iter()
+            .flat_map(|&ef| {
+                snapshot_check(
+                    "dual_branch",
+                    &format!(
+                        "{{\"m\":{},\"m_high_lid\":{},\"ef_construction\":{},\"ef_search\":{}}}",
+                        cfg.m,
+                        (cfg.m + cfg.m / 2).max(cfg.m + 1),
+                        cfg.ef_construction,
+                        ef
+                    ),
+                    cfg,
+                )
+            })
+            .collect(),
+        "deg" => {
+            let indexed_vectors = train_len.min(10_000);
+            let capped = train_len > indexed_vectors;
+            cfg.ef_search_values
+                .iter()
+                .flat_map(|&ef| {
+                    snapshot_check(
+                        "deg",
+                        &format!(
+                            "{{\"base_edges\":16,\"max_edges\":32,\"min_edges\":8,\"density_k\":10,\"alpha\":1.2,\"ef_search\":{},\"indexed_vectors\":{},\"capped\":{}}}",
+                            ef, indexed_vectors, capped
+                        ),
+                        cfg,
+                    )
+                })
+                .collect()
+        }
         "filtered_graph" => ef_checks("filtered_graph", cfg, |_| {
             vec![
                 "\"max_degree\":32".to_string(),
@@ -1752,6 +1786,60 @@ mod tests {
             2_000,
             200
         ));
+    }
+
+    #[test]
+    fn hnsw_variant_resume_requires_snapshot_rows() {
+        let cfg = Config {
+            ef_search_values: vec![50],
+            snapshot_load: true,
+            ..Config::default()
+        };
+        let dual_params = "{\"m\":16,\"m_high_lid\":24,\"ef_construction\":200,\"ef_search\":50}";
+        let deg_params =
+            "{\"base_edges\":16,\"max_edges\":32,\"min_edges\":8,\"density_k\":10,\"alpha\":1.2,\"ef_search\":50,\"indexed_vectors\":2000,\"capped\":false}";
+        let missing_snapshot = CompletedResults {
+            lines: vec![
+                single_line("dual_branch", dual_params),
+                single_line("deg", deg_params),
+            ],
+            ..CompletedResults::default()
+        };
+        let completed = CompletedResults {
+            lines: vec![
+                single_line("dual_branch", dual_params),
+                single_line_with_storage("dual_branch", dual_params, "snapshot_loaded"),
+                single_line("deg", deg_params),
+                single_line_with_storage("deg", deg_params, "snapshot_loaded"),
+            ],
+            ..CompletedResults::default()
+        };
+
+        assert!(!request_completed(
+            &missing_snapshot,
+            "dual_branch",
+            &cfg,
+            25,
+            2_000,
+            200
+        ));
+        assert!(!request_completed(
+            &missing_snapshot,
+            "deg",
+            &cfg,
+            25,
+            2_000,
+            200
+        ));
+        assert!(request_completed(
+            &completed,
+            "dual_branch",
+            &cfg,
+            25,
+            2_000,
+            200
+        ));
+        assert!(request_completed(&completed, "deg", &cfg, 25, 2_000, 200));
     }
 
     #[test]

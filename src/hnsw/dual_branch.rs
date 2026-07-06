@@ -519,6 +519,16 @@ impl DualBranchHNSW {
     /// to escape local minima in sparse regions. This is the key search-time optimization
     /// from HNSW++ (arXiv:2501.13992).
     pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, RetrieveError> {
+        self.search_with_ef(query, k, self.config.ef_search)
+    }
+
+    /// Search for k nearest neighbors with an explicit query-time beam width.
+    pub fn search_with_ef(
+        &self,
+        query: &[f32],
+        k: usize,
+        ef_search: usize,
+    ) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
             return Err(RetrieveError::InvalidParameter("index not built".into()));
         }
@@ -535,7 +545,7 @@ impl DualBranchHNSW {
         let mut visited = HashSet::new();
         let mut candidates = BinaryHeap::new();
         let mut results = BinaryHeap::new();
-        let ef = self.config.ef_search.max(k);
+        let ef = ef_search.max(k);
 
         // Precompute the LID threshold and skip-bridge activation epsilon.
         let lid_threshold = self

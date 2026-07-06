@@ -306,6 +306,251 @@ fn run_hnsw(
     }
 }
 
+#[cfg(feature = "hnsw")]
+fn run_dual_branch(
+    cfg: &Config,
+    train: &[Vec<f32>],
+    test: &[Vec<f32>],
+    neighbors: &[Vec<i32>],
+    dim: usize,
+) {
+    use vicinity::hnsw::dual_branch::{DualBranchConfig, DualBranchHNSW};
+
+    let params = DualBranchConfig {
+        m: cfg.m,
+        m_high_lid: (cfg.m + cfg.m / 2).max(cfg.m + 1),
+        ef_construction: cfg.ef_construction,
+        ef_search: 50,
+        seed: Some(42),
+        ..Default::default()
+    };
+
+    if !cfg.json {
+        println!(
+            "--- DualBranchHNSW (m={}, m_high_lid={}, ef_c={}) ---",
+            params.m, params.m_high_lid, params.ef_construction
+        );
+    }
+
+    let flat: Vec<f32> = train.iter().flatten().copied().collect();
+    let build_start = Instant::now();
+    let mut index = DualBranchHNSW::new(dim, params.clone());
+    index.add_vectors(&flat).unwrap();
+    index.build().unwrap();
+    let build_time_s = build_start.elapsed().as_secs_f64();
+    let rss = current_rss_kb();
+
+    #[cfg(feature = "serde")]
+    let snapshot_index = if cfg.snapshot_load {
+        let temp_dir =
+            tempfile::tempdir().expect("create temp dir for DualBranchHNSW snapshot benchmark");
+        let path = temp_dir.path().join("dual_branch.json");
+        index.save_to_file(&path).unwrap();
+        let index_bytes = std::fs::metadata(&path).ok().map(|metadata| metadata.len());
+        let load_start = Instant::now();
+        let loaded = DualBranchHNSW::load_from_file(&path).unwrap();
+        let load_time_s = load_start.elapsed().as_secs_f64();
+        Some((temp_dir, loaded, load_time_s, index_bytes))
+    } else {
+        None
+    };
+    #[cfg(not(feature = "serde"))]
+    let snapshot_index: Option<(tempfile::TempDir, DualBranchHNSW, f64, Option<u64>)> = {
+        if cfg.snapshot_load {
+            eprintln!("dual_branch --snapshot-load requested but serde feature is not enabled");
+        }
+        None
+    };
+
+    if !cfg.json {
+        println!(
+            "Build: {:.2}s ({:.0} vectors/sec)\n",
+            build_time_s,
+            train.len() as f64 / build_time_s
+        );
+        print_header();
+    }
+
+    for &ef in &cfg.ef_search_values {
+        let result = evaluate(
+            &|q, k| index.search_with_ef(q, k, ef).unwrap(),
+            test,
+            neighbors,
+            10,
+        );
+        let params_json = format!(
+            "{{\"m\":{},\"m_high_lid\":{},\"ef_construction\":{},\"ef_search\":{}}}",
+            cfg.m,
+            (cfg.m + cfg.m / 2).max(cfg.m + 1),
+            cfg.ef_construction,
+            ef
+        );
+        if cfg.json {
+            emit_result(
+                &cfg.results_path,
+                &json_line("dual_branch", &params_json, build_time_s, rss, &result),
+            );
+        } else {
+            print_row(&format!("ef={}", ef), &result);
+        }
+
+        if let Some((_, loaded, load_time_s, index_bytes)) = &snapshot_index {
+            let loaded_result = evaluate(
+                &|q, k| loaded.search_with_ef(q, k, ef).unwrap(),
+                test,
+                neighbors,
+                10,
+            );
+            if cfg.json {
+                emit_result(
+                    &cfg.results_path,
+                    &json_line_with_storage(
+                        "dual_branch",
+                        &params_json,
+                        build_time_s,
+                        rss,
+                        &loaded_result,
+                        &snapshot_storage(*load_time_s, *index_bytes),
+                    ),
+                );
+            } else {
+                print_row(&format!("ef={} snapshot_loaded", ef), &loaded_result);
+            }
+        }
+    }
+
+    if !cfg.json {
+        println!();
+    }
+}
+
+#[cfg(feature = "hnsw")]
+fn run_deg(
+    cfg: &Config,
+    train: &[Vec<f32>],
+    test: &[Vec<f32>],
+    neighbors: &[Vec<i32>],
+    dim: usize,
+) {
+    use vicinity::hnsw::deg::{DEGConfig, DEGIndex};
+
+    const DEG_BENCH_LIMIT: usize = 10_000;
+    let n = train.len().min(DEG_BENCH_LIMIT);
+    let capped = train.len() > n;
+    if capped {
+        eprintln!(
+            "DEG: capping at {DEG_BENCH_LIMIT} vectors (got {}); O(n^2) construction",
+            train.len()
+        );
+    }
+    let capped_neighbors = capped_neighbors_if_needed(cfg, train, test, n);
+    let eval_neighbors = capped_neighbors.as_deref().unwrap_or(neighbors);
+    let train = &train[..n];
+
+    let params = DEGConfig::default();
+    if !cfg.json {
+        println!("--- DEG (base_edges={}, n={}) ---", params.base_edges, n);
+    }
+
+    let build_start = Instant::now();
+    let mut index = DEGIndex::new(dim, params.clone());
+    for vec in train {
+        index.add(vec.clone()).unwrap();
+    }
+    index.build().unwrap();
+    let build_time_s = build_start.elapsed().as_secs_f64();
+    let rss = current_rss_kb();
+
+    #[cfg(feature = "serde")]
+    let snapshot_index = if cfg.snapshot_load {
+        let temp_dir = tempfile::tempdir().expect("create temp dir for DEG snapshot benchmark");
+        let path = temp_dir.path().join("deg.json");
+        index.save_to_file(&path).unwrap();
+        let index_bytes = std::fs::metadata(&path).ok().map(|metadata| metadata.len());
+        let load_start = Instant::now();
+        let loaded = DEGIndex::load_from_file(&path).unwrap();
+        let load_time_s = load_start.elapsed().as_secs_f64();
+        Some((temp_dir, loaded, load_time_s, index_bytes))
+    } else {
+        None
+    };
+    #[cfg(not(feature = "serde"))]
+    let snapshot_index: Option<(tempfile::TempDir, DEGIndex, f64, Option<u64>)> = {
+        if cfg.snapshot_load {
+            eprintln!("deg --snapshot-load requested but serde feature is not enabled");
+        }
+        None
+    };
+
+    if !cfg.json {
+        println!(
+            "Build: {:.2}s ({:.0} vectors/sec)\n",
+            build_time_s,
+            train.len() as f64 / build_time_s
+        );
+        print_header();
+    }
+
+    for &ef in &cfg.ef_search_values {
+        let params_json = format!(
+            "{{\"base_edges\":{},\"max_edges\":{},\"min_edges\":{},\"density_k\":{},\"alpha\":1.2,\"ef_search\":{},\"indexed_vectors\":{},\"capped\":{}}}",
+            params.base_edges,
+            params.max_edges,
+            params.min_edges,
+            params.density_k,
+            ef,
+            n,
+            capped
+        );
+        let result = evaluate(
+            &|q, k| index.search_with_ef(q, k, ef).unwrap(),
+            test,
+            eval_neighbors,
+            10,
+        );
+        if cfg.json {
+            emit_result(
+                &cfg.results_path,
+                &json_line("deg", &params_json, build_time_s, rss, &result),
+            );
+            if let Some((_, loaded, load_time_s, index_bytes)) = &snapshot_index {
+                let loaded_result = evaluate(
+                    &|q, k| loaded.search_with_ef(q, k, ef).unwrap(),
+                    test,
+                    eval_neighbors,
+                    10,
+                );
+                emit_result(
+                    &cfg.results_path,
+                    &json_line_with_storage(
+                        "deg",
+                        &params_json,
+                        build_time_s,
+                        rss,
+                        &loaded_result,
+                        &snapshot_storage(*load_time_s, *index_bytes),
+                    ),
+                );
+            }
+        } else {
+            print_row(&format!("ef={}", ef), &result);
+            if let Some((_, loaded, _, _)) = &snapshot_index {
+                let loaded_result = evaluate(
+                    &|q, k| loaded.search_with_ef(q, k, ef).unwrap(),
+                    test,
+                    eval_neighbors,
+                    10,
+                );
+                print_row(&format!("ef={} snapshot_loaded", ef), &loaded_result);
+            }
+        }
+    }
+
+    if !cfg.json {
+        println!();
+    }
+}
+
 #[cfg(feature = "nsw")]
 fn run_nsw(
     cfg: &Config,
@@ -2360,6 +2605,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             #[cfg(not(feature = "nsg"))]
             "nsg" => eprintln!("NSG not available (compile with --features nsg)"),
 
+            #[cfg(feature = "hnsw")]
+            "dual_branch" => run_dual_branch(&cfg, &train, &test, &neighbors, dim),
+            #[cfg(not(feature = "hnsw"))]
+            "dual_branch" => {
+                eprintln!("DualBranchHNSW not available (compile with --features hnsw)");
+            }
+
+            #[cfg(feature = "hnsw")]
+            "deg" => run_deg(&cfg, &train, &test, &neighbors, dim),
+            #[cfg(not(feature = "hnsw"))]
+            "deg" => eprintln!("DEG not available (compile with --features hnsw)"),
+
             #[cfg(feature = "pipnn")]
             "pipnn" if !cfg.is_euclidean => run_pipnn(&cfg, &train, &test, &neighbors, dim),
             #[cfg(feature = "pipnn")]
@@ -2587,7 +2844,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             other => {
                 eprintln!(
-                    "Unknown algorithm: {}. Options: hnsw, nsw, ivfpq, ivf_avq, emg, nsg, pipnn, sng, vamana, diskann, ivf_rabitq, symphony_qg, symphony_qg_vr, finger, fresh_graph, fresh_graph_churn, inplace, inplace_churn, lsm_churn, filtered_graph, rp_quant, sparse_mips, curator, range_filtered, binary_index, sq4, sq4u, sq8u, adsampling, lsh, hnsw_prt, kdtree, balltree, rptree, rp_forest, kmeans_tree, brute",
+                    "Unknown algorithm: {}. Options: hnsw, nsw, ivfpq, ivf_avq, emg, nsg, dual_branch, deg, pipnn, sng, vamana, diskann, ivf_rabitq, symphony_qg, symphony_qg_vr, finger, fresh_graph, fresh_graph_churn, inplace, inplace_churn, lsm_churn, filtered_graph, rp_quant, sparse_mips, curator, range_filtered, binary_index, sq4, sq4u, sq8u, adsampling, lsh, hnsw_prt, kdtree, balltree, rptree, rp_forest, kmeans_tree, brute",
                     other
                 );
             }
