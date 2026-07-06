@@ -119,9 +119,9 @@ cargo run --example ann_benchmark --release --features hnsw,serde -- \
 # Add --snapshot-load to also measure saved-and-reopened raw and reranked rows.
 cargo run --example ann_benchmark --release --features hnsw,ivf_pq -- \
   data/ann-benchmarks/glove-25-angular --algo ivfpq \
-  --pq-clusters 1024 --pq-codebooks 5 --pq-codebook-size 16 \
+  --pq-clusters 1024 --pq-codebooks 25 --pq-codebook-size 256 \
   --pq-training-sample-size 100000 --pq-kmeans-max-iter 20 \
-  --pq-nprobes 5,10,20 --pq-rerank-pools 100,500 --json
+  --pq-nprobes 16,32,64,128,256 --pq-rerank-pools 500,5000,20000 --json
 
 # FreshGraph delete/insert churn, scored against a live active-set oracle
 cargo run --example ann_benchmark --release --features hnsw,fresh_graph -- \

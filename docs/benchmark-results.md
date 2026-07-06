@@ -35,9 +35,9 @@ cargo run --example ann_benchmark --release --features hnsw,serde -- \
 # persistence; it doubles the emitted IVF-PQ rows.
 cargo run --example ann_benchmark --release --features ivf_pq,hnsw -- \
   data/ann-benchmarks/glove-25-angular --algo ivfpq \
-  --pq-clusters 1024 --pq-codebooks 5 --pq-codebook-size 16 \
+  --pq-clusters 1024 --pq-codebooks 25 --pq-codebook-size 256 \
   --pq-training-sample-size 100000 --pq-kmeans-max-iter 20 \
-  --pq-nprobes 5,10,20 --pq-rerank-pools 100,500 --json --fresh
+  --pq-nprobes 16,32,64,128,256 --pq-rerank-pools 500,5000,20000 --json --fresh
 
 # DiskANN in-memory graph search plus file and mmap search from the same build.
 cargo run --example ann_benchmark --release --features hnsw,diskann -- \
