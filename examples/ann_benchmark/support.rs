@@ -728,6 +728,17 @@ fn required_result_checks(
         }),
         "vamana" => ef_snapshot_checks("vamana", cfg, |ef| format!("{{\"ef_search\":{}}}", ef)),
         "diskann" => diskann_checks(cfg),
+        "store" => cfg
+            .ef_search_values
+            .iter()
+            .map(|&ef| {
+                ExpectedResult::with_params_and_storage(
+                    "store",
+                    &store_params_json(cfg, train_len, ef),
+                    "segmented_store",
+                )
+            })
+            .collect(),
         "finger" => {
             let indexed_vectors = train_len.min(50_000);
             let capped = train_len > indexed_vectors;
@@ -878,6 +889,20 @@ fn diskann_params_json(cfg: &Config, ef_search: usize, storage: &str) -> String 
     format!(
         "{{\"m\":{},\"ef_construction\":{},\"alpha\":1.2,\"ef_search\":{},\"storage\":\"{}\"}}",
         cfg.m, cfg.ef_construction, ef_search, storage
+    )
+}
+
+pub(crate) fn store_flush_threshold(train_len: usize) -> usize {
+    (train_len / 8).clamp(1, 10_000)
+}
+
+pub(crate) fn store_params_json(cfg: &Config, train_len: usize, ef_search: usize) -> String {
+    format!(
+        "{{\"m\":{},\"m_max\":{},\"flush_threshold\":{},\"ef_search\":{}}}",
+        cfg.m,
+        cfg.m * 2,
+        store_flush_threshold(train_len),
+        ef_search
     )
 }
 
@@ -1404,6 +1429,7 @@ pub(crate) fn current_rss_kb() -> Option<u64> {
     feature = "sng",
     feature = "sq4",
     feature = "sq8",
+    feature = "store",
     all(feature = "hnsw", feature = "ivf_rabitq", feature = "serde"),
     feature = "vamana"
 ))]
@@ -1788,6 +1814,37 @@ mod tests {
         assert!(request_completed(
             &completed, "kdtree", &cfg, 25, 1_000, 100
         ));
+    }
+
+    #[test]
+    fn store_resume_requires_segmented_storage_row() {
+        let cfg = Config {
+            ef_search_values: vec![10],
+            ..Config::default()
+        };
+        let params = store_params_json(&cfg, 64, 10);
+        let missing_segmented = CompletedResults {
+            lines: vec![single_line_with_storage("store", &params, "in_memory")],
+            ..CompletedResults::default()
+        };
+        let completed = CompletedResults {
+            lines: vec![single_line_with_storage(
+                "store",
+                &params,
+                "segmented_store",
+            )],
+            ..CompletedResults::default()
+        };
+
+        assert!(!request_completed(
+            &missing_segmented,
+            "store",
+            &cfg,
+            8,
+            64,
+            12
+        ));
+        assert!(request_completed(&completed, "store", &cfg, 8, 64, 12));
     }
 
     #[cfg(feature = "serde")]

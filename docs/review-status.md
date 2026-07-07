@@ -26,8 +26,9 @@ benchmarking, persistence, Python bindings, and performance work.
 - The benchmark resume contract is storage-aware for the implemented storage
   modes. DiskANN requires memory, file, and mmap rows. IVF-PQ requires
   snapshot-loaded and file rows, plus mmap rows when the `persistence` feature
-  is compiled. Other snapshot-capable families require `snapshot_loaded` rows
-  when `--snapshot-load` is requested.
+  is compiled. `store::UpdatableIndex` requires a `segmented_store` row. Other
+  snapshot-capable families require `snapshot_loaded` rows when
+  `--snapshot-load` is requested.
 - Benchmark result coverage can be summarized from JSONL with
   `uv run scripts/summarize_ann_results.py data/ann-benchmarks/results/*.jsonl`.
   Use this before making claims about which algorithms, datasets, and storage
@@ -47,9 +48,9 @@ benchmarking, persistence, Python bindings, and performance work.
 | --- | --- | --- |
 | 1 | Storage-mode matrix | Verify every algorithm row in `docs/persistence.md` against public APIs and `ann_benchmark` support. Keep heap, snapshot-loaded heap, file, mmap, and segmented-store modes separate. |
 | 2 | Benchmark coverage | Use `scripts/summarize_ann_results.py` to generate the live measured matrix, then add explicit missing-coverage rows for implemented algorithms with no standard-dataset measurements. |
-| 3 | CI benchmark smoke breadth | CI now runs cheap smoke rows for DiskANN file/mmap, Vamana, filtered dense rows, FreshGraph, churn modes, and classical baselines. Keep adding rows when new implemented algorithms enter `ann_benchmark`. |
+| 3 | CI benchmark smoke breadth | CI now runs cheap smoke rows for DiskANN file/mmap, Vamana, `store::UpdatableIndex`, filtered dense rows, FreshGraph, churn modes, and classical baselines. Keep adding rows when new implemented algorithms enter `ann_benchmark`. |
 | 4 | Dataset source pinning | Add expected SHA-256 values for GloVe-50, GloVe-200, MNIST, and Deep Image after direct verification. Decide whether stable mirrors are needed beyond `ann-benchmarks.com`. |
-| 5 | Segmented-store benchmark row | `store::UpdatableIndex` has Criterion coverage but no dense `ann_benchmark` row. Add one if segmented durable HNSW is a serving target. |
+| 5 | Segmented-store benchmark row | Added `--algo store` with `storage_mode=segmented_store`; next review is dataset-scale comparison against HNSW, FreshGraph, in-place graph, and LSM churn. |
 | 6 | File-backed raw-vector locality | IVF-PQ approximate file/mmap search is now list-contiguous for PQ codes; exact rerank still reads raw vectors by vector ID. Review whether batching, page layout, or a separate list-local raw-vector sidecar is the right next step. |
 | 7 | DiskANN storage layout | Callback-based neighbor reading was measured and rejected. Next review should focus on graph/vector page co-location, syscall count, mmap page behavior, and cache-state reporting. |
 | 8 | Classical methods | Treat KD-tree, ball tree, RP-tree, RP-forest, and K-means tree as first-class baselines. Review persistence, benchmark rows, dimensionality gates, and docs together. |

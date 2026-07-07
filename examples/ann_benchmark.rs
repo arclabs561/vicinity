@@ -73,6 +73,7 @@ use std::path::Path;
     feature = "range_filtered",
     feature = "rptree",
     feature = "sng",
+    feature = "store",
     feature = "vamana"
 ))]
 use std::time::Instant;
@@ -104,6 +105,7 @@ use support::brute_force_search_ids;
     all(feature = "range_filtered", feature = "hnsw"),
     feature = "rptree",
     feature = "sng",
+    feature = "store",
     feature = "vamana"
 ))]
 use support::dir_size_bytes;
@@ -130,6 +132,7 @@ use support::{
     all(feature = "range_filtered", feature = "hnsw"),
     feature = "rptree",
     feature = "sng",
+    feature = "store",
     feature = "vamana"
 ))]
 use support::{json_line_with_storage, ResultStorage};
@@ -140,6 +143,8 @@ use support::{json_line_with_storage, ResultStorage};
     feature = "rptree"
 ))]
 use support::{kmeans_tree_params_json, rp_forest_params_json, tree_params_json};
+#[cfg(feature = "store")]
+use support::{store_flush_threshold, store_params_json};
 #[cfg(feature = "diskann")]
 use support::{BenchResult, StorageDiagnostics};
 
@@ -1546,6 +1551,89 @@ fn run_finger(
                 );
                 print_row(&format!("ef={} snapshot_loaded", ef), &loaded_result);
             }
+        }
+    }
+
+    if !cfg.json {
+        println!();
+    }
+}
+
+#[cfg(feature = "store")]
+fn run_store(
+    cfg: &Config,
+    train: &[Vec<f32>],
+    test: &[Vec<f32>],
+    neighbors: &[Vec<i32>],
+    dim: usize,
+) {
+    use durability::FsDirectory;
+    use vicinity::store::UpdatableIndex;
+
+    if cfg.is_euclidean {
+        eprintln!("store: skipping (cosine-only, dataset is euclidean)");
+        return;
+    }
+
+    let flush_threshold = store_flush_threshold(train.len());
+    let temp_dir = tempfile::tempdir().expect("create temp dir for store benchmark");
+    let dir = FsDirectory::arc(temp_dir.path()).expect("open store benchmark directory");
+
+    if !cfg.json {
+        println!(
+            "--- Store (segmented HNSW, m={}, flush={}) ---",
+            cfg.m, flush_threshold
+        );
+    }
+
+    let build_start = Instant::now();
+    let mut index = UpdatableIndex::open(dir, flush_threshold, dim, cfg.m, cfg.m * 2)
+        .expect("open store index");
+    index
+        .extend(
+            train
+                .iter()
+                .enumerate()
+                .map(|(id, vector)| (id as u32, vector.clone())),
+        )
+        .expect("ingest store benchmark vectors");
+    index.checkpoint().expect("checkpoint store benchmark");
+    let build_time_s = build_start.elapsed().as_secs_f64();
+    let rss = current_rss_kb();
+    let index_bytes = dir_size_bytes(temp_dir.path()).ok();
+
+    if !cfg.json {
+        println!(
+            "Build: {:.2}s ({:.0} vectors/sec)\n",
+            build_time_s,
+            train.len() as f64 / build_time_s
+        );
+        print_header();
+    }
+
+    for &ef in &cfg.ef_search_values {
+        let result = evaluate(&|q, k| index.search(q, k, ef), test, neighbors, 10);
+        if cfg.json {
+            let params_json = store_params_json(cfg, train.len(), ef);
+            emit_result(
+                &cfg.results_path,
+                &json_line_with_storage(
+                    "store",
+                    &params_json,
+                    build_time_s,
+                    rss,
+                    &result,
+                    &ResultStorage {
+                        storage_mode: "segmented_store",
+                        cache_state: "warm_after_checkpoint",
+                        load_time_s: None,
+                        index_bytes,
+                        diagnostics: None,
+                    },
+                ),
+            );
+        } else {
+            print_row(&format!("ef={}", ef), &result);
         }
     }
 
@@ -3295,6 +3383,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 eprintln!("FreshGraph not available (compile with --features fresh_graph)");
             }
 
+            #[cfg(feature = "store")]
+            "store" => run_store(&cfg, &train, &test, &neighbors, dim),
+
+            #[cfg(not(feature = "store"))]
+            "store" => {
+                eprintln!("Store not available (compile with --features store)");
+            }
+
             #[cfg(feature = "fresh_graph")]
             "fresh_graph_churn" => run_fresh_graph_churn(&cfg, &train, &test, dim),
 
@@ -3469,7 +3565,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             other => {
                 eprintln!(
-                    "Unknown algorithm: {}. Options: hnsw, nsw, ivfpq, ivf_avq, emg, nsg, dual_branch, deg, pipnn, sng, vamana, diskann, ivf_rabitq, symphony_qg, symphony_qg_vr, finger, fresh_graph, fresh_graph_churn, inplace, inplace_churn, lsm_churn, filtered_graph, rp_quant, sparse_mips, curator, range_filtered, binary_index, sq4, sq4u, sq8u, adsampling, lsh, hnsw_prt, kdtree, balltree, rptree, rp_forest, kmeans_tree, brute",
+                    "Unknown algorithm: {}. Options: hnsw, nsw, ivfpq, ivf_avq, emg, nsg, dual_branch, deg, pipnn, sng, vamana, diskann, ivf_rabitq, symphony_qg, symphony_qg_vr, finger, fresh_graph, store, fresh_graph_churn, inplace, inplace_churn, lsm_churn, filtered_graph, rp_quant, sparse_mips, curator, range_filtered, binary_index, sq4, sq4u, sq8u, adsampling, lsh, hnsw_prt, kdtree, balltree, rptree, rp_forest, kmeans_tree, brute",
                     other
                 );
             }

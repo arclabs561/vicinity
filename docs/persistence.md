@@ -134,6 +134,7 @@ Persistence work is not complete until the benchmark harness can distinguish:
 - `storage_mode=snapshot_loaded`
 - `storage_mode=file`
 - `storage_mode=mmap`
+- `storage_mode=segmented_store`
 
 Rows must include recall, QPS, build time, p50/p95/p99 latency, cache state, and
 RSS. File and mmap rows should also include `load_time_s` and `index_bytes`
@@ -163,6 +164,10 @@ Storage rows are not interchangeable:
 - `storage_mode=mmap` measures a searcher opened over memory-mapped persisted
   structures. Treat OS page-cache state as part of the workload description,
   not as a hidden constant.
+- `storage_mode=segmented_store` measures a durable multi-segment index whose
+  WAL, checkpoint, source segments, and per-segment HNSW sidecars live in the
+  lower storage layer while query-time search merges warm per-segment indexes.
+  It is not equivalent to direct file or mmap search.
 
 Large datasets that do not fit comfortably in RAM should be benchmarked as
 storage workloads first. An in-memory row is still useful as an upper bound, but
