@@ -44,9 +44,8 @@ fn bench_diskann_search_only(c: &mut Criterion) {
     let n_vectors = 5_000;
     let n_queries = 100;
     let k = 10;
-    let ef_search = 50;
     let queries = random_vectors(n_queries, dim, 123);
-    let (index, _vectors) = build_index(n_vectors, dim, ef_search);
+    let (index, _vectors) = build_index(n_vectors, dim, 75);
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let index_dir = temp_dir.path().join("diskann");
     index.save(&index_dir).expect("save DiskANN index");
@@ -54,42 +53,44 @@ fn bench_diskann_search_only(c: &mut Criterion) {
     let mmap_searcher = RefCell::new(DiskANNSearcher::load_mmap(&index_dir).unwrap());
 
     group.throughput(Throughput::Elements(n_queries as u64));
-    group.bench_function("memory_ef50", |bench| {
-        bench.iter(|| {
-            queries
-                .iter()
-                .map(|query| index.search(black_box(query), k, ef_search).unwrap().len())
-                .sum::<usize>()
+    for ef_search in [50, 75] {
+        group.bench_function(format!("memory_ef{ef_search}"), |bench| {
+            bench.iter(|| {
+                queries
+                    .iter()
+                    .map(|query| index.search(black_box(query), k, ef_search).unwrap().len())
+                    .sum::<usize>()
+            });
         });
-    });
-    group.bench_function("file_ef50", |bench| {
-        bench.iter(|| {
-            queries
-                .iter()
-                .map(|query| {
-                    file_searcher
-                        .borrow_mut()
-                        .search(black_box(query), k, ef_search)
-                        .unwrap()
-                        .len()
-                })
-                .sum::<usize>()
+        group.bench_function(format!("file_ef{ef_search}"), |bench| {
+            bench.iter(|| {
+                queries
+                    .iter()
+                    .map(|query| {
+                        file_searcher
+                            .borrow_mut()
+                            .search(black_box(query), k, ef_search)
+                            .unwrap()
+                            .len()
+                    })
+                    .sum::<usize>()
+            });
         });
-    });
-    group.bench_function("mmap_ef50", |bench| {
-        bench.iter(|| {
-            queries
-                .iter()
-                .map(|query| {
-                    mmap_searcher
-                        .borrow_mut()
-                        .search(black_box(query), k, ef_search)
-                        .unwrap()
-                        .len()
-                })
-                .sum::<usize>()
+        group.bench_function(format!("mmap_ef{ef_search}"), |bench| {
+            bench.iter(|| {
+                queries
+                    .iter()
+                    .map(|query| {
+                        mmap_searcher
+                            .borrow_mut()
+                            .search(black_box(query), k, ef_search)
+                            .unwrap()
+                            .len()
+                    })
+                    .sum::<usize>()
+            })
         });
-    });
+    }
 
     group.finish();
 }
