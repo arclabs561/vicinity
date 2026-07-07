@@ -180,6 +180,36 @@ QPS result is the recall curve: on this capped corpus, HNSW is above 200K QPS at
 low recall and around 68K QPS just below 95% recall. Full GloVe-25 still needs
 the corresponding higher-`ef_search` snapshot sweep.
 
+A full-train HNSW storage sweep on 2026-07-07 indexed all 1,183,514
+GloVe-25 vectors and capped only queries at 1,000. This is the stronger
+full-corpus fixed-recall check for the Perplexity HNSW target.
+
+```bash
+cargo run --release --example ann_benchmark --no-default-features --features hnsw,serde -- \
+  data/ann-benchmarks/glove-25-angular --algo hnsw \
+  --ef-search 75,100,150,200 --max-queries 1000 \
+  --snapshot-load --json \
+  --results data/ann-benchmarks/results/glove-25-hnsw-fulltrain-storage-20260707.jsonl
+```
+
+| ef_search | Storage mode | Recall@10 | QPS | p50 us | p95 us | p99 us | Load s | Index bytes |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 75 | in_memory | 91.72% | 20,385.7 | 47.9 | 67.7 | 81.9 | n/a | n/a |
+| 75 | snapshot_loaded | 91.72% | 20,247.9 | 47.8 | 69.9 | 80.7 | 1.6267 | 512,409,052 |
+| 100 | in_memory | 93.91% | 16,604.1 | 57.8 | 83.5 | 93.4 | n/a | n/a |
+| 100 | snapshot_loaded | 93.91% | 18,681.4 | 53.5 | 67.1 | 77.8 | 1.6267 | 512,409,052 |
+| 150 | in_memory | 96.17% | 11,870.8 | 82.8 | 116.3 | 127.0 | n/a | n/a |
+| 150 | snapshot_loaded | 96.17% | 11,826.4 | 82.2 | 118.5 | 131.1 | 1.6267 | 512,409,052 |
+| 200 | in_memory | 97.44% | 10,260.5 | 98.5 | 120.7 | 132.8 | n/a | n/a |
+| 200 | snapshot_loaded | 97.44% | 10,240.8 | 97.8 | 121.5 | 140.0 | 1.6267 | 512,409,052 |
+
+This confirms the lower-recall shape but narrows the HNSW performance gap:
+with `ef_construction=200`, the full-corpus 95% recall operating point is
+between `ef_search=100` and `ef_search=150`, and the first measured point above
+95% recall is about 11.9K QPS. Snapshot-loaded search again preserves recall
+and warm-cache QPS, so the remaining HNSW gap is a search/layout/tuning problem,
+not a persistence problem.
+
 On 2026-07-07, a bounded DiskANN storage probe used 50,000 indexed GloVe-25
 vectors and 1,000 queries. Recall was recomputed against the capped corpus, so
 these rows validate the storage path and cache-state reporting but are not

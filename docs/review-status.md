@@ -70,6 +70,12 @@ benchmarking, persistence, Python bindings, and performance work.
   freshly built in-memory search. On that cap, HNSW reaches 207K QPS at 73.85%
   recall and about 68K QPS at 94.97% recall. Treat those as capped storage and
   curve-shape evidence, not full-corpus targets.
+- A full-train HNSW storage sweep on all 1.18M GloVe-25 vectors with 1,000
+  queries now covers the higher-`ef_search` fixed-recall band. With
+  `ef_construction=200`, the first measured point above 95% recall is
+  `ef_search=150` at 96.17% recall and about 11.9K QPS. Snapshot-loaded rows
+  preserve recall and warm-cache QPS, so remaining HNSW work is search/layout
+  tuning rather than persistence parity.
 - The standard storage expectation matrix now covers all current benchmark
   families at the coarse algorithm/storage level, including graph snapshots,
   file/mmap searchers, segmented store, churn rows, and sparse placeholders.
@@ -82,7 +88,7 @@ benchmarking, persistence, Python bindings, and performance work.
 | Priority | Area | Next review |
 | --- | --- | --- |
 | 1 | Storage-mode matrix | Verify every algorithm row in `docs/persistence.md` against public APIs and `ann_benchmark` support. Keep heap, snapshot-loaded heap, file, mmap, and segmented-store modes separate. |
-| 2 | Benchmark coverage | The standard storage matrix now covers every current benchmark family at the coarse algorithm/storage level. `ann_benchmark` records both `--max-train` and `--max-queries` in `_meta`, so bounded rows do not mix with full-dataset rows. Mixed historical result directories can now use observed-only storage expectations. Next review should promote selected capped rows to full-corpus runs and add fixed-recall sweeps where `qps_at_recall_floor` is still empty. |
+| 2 | Benchmark coverage | The standard storage matrix now covers every current benchmark family at the coarse algorithm/storage level. `ann_benchmark` records both `--max-train` and `--max-queries` in `_meta`, so bounded rows do not mix with full-dataset rows. Mixed historical result directories can now use observed-only storage expectations. HNSW now has a full-train higher-`ef_search` sweep; next review should promote DiskANN and IVF-PQ capped rows to full-corpus runs and add fixed-recall sweeps where `qps_at_recall_floor` is still empty. |
 | 3 | CI benchmark smoke breadth | CI now runs cheap smoke rows for DiskANN file/mmap, Vamana, `store::UpdatableIndex`, filtered dense rows, FreshGraph, churn modes, and classical baselines. Keep adding rows when new implemented algorithms enter `ann_benchmark`. |
 | 4 | Dataset source pinning | All configured ann-benchmarks HDF5 sources now have direct SHA-256 pins. Next review should decide whether stable mirrors are needed beyond `ann-benchmarks.com`. |
 | 5 | Segmented-store benchmark row | Added `--algo store` with `storage_mode=segmented_store`; capped 50K GloVe-25 row reaches 99.97% recall at 5.9K QPS. Next review is dataset-scale comparison against HNSW, FreshGraph, in-place graph, and LSM churn. |
