@@ -85,9 +85,15 @@ def coverage_rows(
     expected: list[tuple[str, str]] | None = None,
     datasets: list[str] | None = None,
     recall_floor: float = 0.95,
+    only_datasets: set[str] | None = None,
+    missing_only: bool = False,
 ) -> list[CoverageRow]:
     expected = expected or []
     dataset_names = sorted(datasets or {dataset for dataset, _, _ in summaries})
+    if only_datasets is not None:
+        dataset_names = [
+            dataset for dataset in dataset_names if dataset in only_datasets
+        ]
     keys = set(summaries)
     if expected:
         for dataset in dataset_names:
@@ -96,7 +102,11 @@ def coverage_rows(
 
     rows = []
     for dataset, algorithm, storage_mode in sorted(keys):
+        if only_datasets is not None and dataset not in only_datasets:
+            continue
         summary = summaries.get((dataset, algorithm, storage_mode))
+        if missing_only and summary:
+            continue
         rows.append(
             CoverageRow(
                 dataset=dataset,
@@ -171,6 +181,17 @@ def parse_args() -> argparse.Namespace:
         help="Dataset name to use for expected rows when no measured row exists",
     )
     parser.add_argument(
+        "--only-dataset",
+        action="append",
+        default=[],
+        help="Restrict output to one dataset name. May be repeated.",
+    )
+    parser.add_argument(
+        "--missing-only",
+        action="store_true",
+        help="Emit only expected rows that are missing",
+    )
+    parser.add_argument(
         "--recall-floor",
         type=float,
         default=0.95,
@@ -182,7 +203,15 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     summaries = load_summaries(args.paths)
-    rows = coverage_rows(summaries, args.expect, args.dataset, args.recall_floor)
+    only_datasets = set(args.only_dataset) if args.only_dataset else None
+    rows = coverage_rows(
+        summaries,
+        args.expect,
+        args.dataset,
+        args.recall_floor,
+        only_datasets=only_datasets,
+        missing_only=args.missing_only,
+    )
     if args.json:
         print(
             json.dumps(

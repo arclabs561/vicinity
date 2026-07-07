@@ -70,6 +70,29 @@ def test_coverage_rows_marks_expected_missing(tmp_path: Path) -> None:
     assert by_key[("store", "segmented_store")].best_qps is None
 
 
+def test_coverage_rows_can_filter_dataset_and_missing_only(tmp_path: Path) -> None:
+    script = load_script()
+    path = tmp_path / "rows.jsonl"
+    path.write_text(
+        '{"_meta":{"dataset":"data/ann-benchmarks/glove-25-angular"}}\n'
+        '{"algorithm":"hnsw","storage_mode":"in_memory","recall_at_10":1.0,"qps":42}\n'
+        '{"_meta":{"dataset":"data/ann-benchmarks/sift-128-euclidean"}}\n'
+        '{"algorithm":"hnsw","storage_mode":"in_memory","recall_at_10":1.0,"qps":24}\n',
+        encoding="utf-8",
+    )
+
+    rows = script.coverage_rows(
+        script.load_summaries([path]),
+        expected=[("hnsw", "in_memory"), ("store", "segmented_store")],
+        only_datasets={"glove-25-angular"},
+        missing_only=True,
+    )
+
+    assert [(row.dataset, row.algorithm, row.status) for row in rows] == [
+        ("glove-25-angular", "store", "missing")
+    ]
+
+
 def test_markdown_table_is_stable(tmp_path: Path) -> None:
     script = load_script()
     path = tmp_path / "rows.jsonl"

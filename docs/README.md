@@ -46,7 +46,8 @@ leaderboard. Pass `--expect ALGORITHM:STORAGE` to show missing rows for a
 review matrix, for example `--expect hnsw:in_memory --expect store:segmented_store`.
 The summary reports both fastest row overall and fastest row meeting
 `--recall-floor` (default `0.95`); use the thresholded QPS for fixed-recall
-claims.
+claims. Add `--only-dataset NAME --missing-only` when reviewing one dataset's
+remaining storage rows.
 
 ## Background
 
