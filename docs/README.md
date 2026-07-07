@@ -37,6 +37,10 @@ skips rows already present for the same dataset metadata and parameters;
 Plots live in `plots/` and are regenerated from JSONL via
 `scripts/plot_comparison.py`.
 
+Use `scripts/summarize_ann_results.py` to audit coverage before quoting a
+leaderboard. Pass `--expect ALGORITHM:STORAGE` to show missing rows for a
+review matrix, for example `--expect hnsw:in_memory --expect store:segmented_store`.
+
 ## Background
 
 - [landscape.md](landscape.md): ANN principles, algorithm families,

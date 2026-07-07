@@ -31,8 +31,8 @@ benchmarking, persistence, Python bindings, and performance work.
   `--snapshot-load` is requested.
 - Benchmark result coverage can be summarized from JSONL with
   `uv run scripts/summarize_ann_results.py data/ann-benchmarks/results/*.jsonl`.
-  Use this before making claims about which algorithms, datasets, and storage
-  modes have actually been measured.
+  Add `--expect ALGORITHM:STORAGE` rows when reviewing an intended matrix, so
+  missing measurements are visible instead of silently absent.
 - Python intentionally exposes the stable core today: common HNSW construction,
   HNSW JSON save/load, IVF-PQ directory save/load, IVF-PQ file/mmap search, and
   parallel batch search in release wheels. It should not mirror every
@@ -47,7 +47,7 @@ benchmarking, persistence, Python bindings, and performance work.
 | Priority | Area | Next review |
 | --- | --- | --- |
 | 1 | Storage-mode matrix | Verify every algorithm row in `docs/persistence.md` against public APIs and `ann_benchmark` support. Keep heap, snapshot-loaded heap, file, mmap, and segmented-store modes separate. |
-| 2 | Benchmark coverage | Use `scripts/summarize_ann_results.py` to generate the live measured matrix, then add explicit missing-coverage rows for implemented algorithms with no standard-dataset measurements. |
+| 2 | Benchmark coverage | Use `scripts/summarize_ann_results.py --expect ALGORITHM:STORAGE` to generate measured and missing rows for the intended algorithm x dataset x storage matrix. Next review should run that against the current standard result files and decide which missing rows are worth benchmarking first. |
 | 3 | CI benchmark smoke breadth | CI now runs cheap smoke rows for DiskANN file/mmap, Vamana, `store::UpdatableIndex`, filtered dense rows, FreshGraph, churn modes, and classical baselines. Keep adding rows when new implemented algorithms enter `ann_benchmark`. |
 | 4 | Dataset source pinning | Add expected SHA-256 values for GloVe-50, GloVe-200, MNIST, and Deep Image after direct verification. Decide whether stable mirrors are needed beyond `ann-benchmarks.com`. |
 | 5 | Segmented-store benchmark row | Added `--algo store` with `storage_mode=segmented_store`; next review is dataset-scale comparison against HNSW, FreshGraph, in-place graph, and LSM churn. |

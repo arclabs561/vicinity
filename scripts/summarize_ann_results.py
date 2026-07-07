@@ -23,6 +23,17 @@ class Summary:
         self.best_qps = max(self.best_qps, float(row.get("qps", 0.0)))
 
 
+@dataclass(frozen=True)
+class CoverageRow:
+    dataset: str
+    algorithm: str
+    storage_mode: str
+    status: str
+    rows: int
+    best_recall: float | None
+    best_qps: float | None
+
+
 def row_dataset(row: dict[str, Any], current_dataset: str | None, path: Path) -> str:
     dataset = row.get("dataset") or current_dataset
     if isinstance(dataset, str) and dataset:
@@ -56,17 +67,58 @@ def load_summaries(paths: list[Path]) -> dict[tuple[str, str, str], Summary]:
     return dict(summaries)
 
 
-def markdown_table(summaries: dict[tuple[str, str, str], Summary]) -> str:
+def coverage_rows(
+    summaries: dict[tuple[str, str, str], Summary],
+    expected: list[tuple[str, str]] | None = None,
+    datasets: list[str] | None = None,
+) -> list[CoverageRow]:
+    expected = expected or []
+    dataset_names = sorted(datasets or {dataset for dataset, _, _ in summaries})
+    keys = set(summaries)
+    if expected:
+        for dataset in dataset_names:
+            for algorithm, storage_mode in expected:
+                keys.add((dataset, algorithm, storage_mode))
+
+    rows = []
+    for dataset, algorithm, storage_mode in sorted(keys):
+        summary = summaries.get((dataset, algorithm, storage_mode))
+        rows.append(
+            CoverageRow(
+                dataset=dataset,
+                algorithm=algorithm,
+                storage_mode=storage_mode,
+                status="measured" if summary else "missing",
+                rows=summary.rows if summary else 0,
+                best_recall=summary.best_recall if summary else None,
+                best_qps=summary.best_qps if summary else None,
+            )
+        )
+    return rows
+
+
+def markdown_table(rows: list[CoverageRow]) -> str:
     lines = [
-        "| Dataset | Algorithm | Storage | Rows | Best Recall@10 | Best QPS |",
-        "| --- | --- | --- | ---: | ---: | ---: |",
+        "| Dataset | Algorithm | Storage | Status | Rows | Best Recall@10 | Best QPS |",
+        "| --- | --- | --- | --- | ---: | ---: | ---: |",
     ]
-    for (dataset, algorithm, storage_mode), summary in sorted(summaries.items()):
+    for row in rows:
+        recall = "-" if row.best_recall is None else f"{row.best_recall:.4f}"
+        qps = "-" if row.best_qps is None else f"{row.best_qps:.1f}"
         lines.append(
-            f"| {dataset} | {algorithm} | {storage_mode} | {summary.rows} | "
-            f"{summary.best_recall:.4f} | {summary.best_qps:.1f} |"
+            f"| {row.dataset} | {row.algorithm} | {row.storage_mode} | "
+            f"{row.status} | {row.rows} | {recall} | {qps} |"
         )
     return "\n".join(lines)
+
+
+def parse_expected(value: str) -> tuple[str, str]:
+    if ":" not in value:
+        raise argparse.ArgumentTypeError("expected row must be algorithm:storage_mode")
+    algorithm, storage_mode = value.split(":", 1)
+    if not algorithm or not storage_mode:
+        raise argparse.ArgumentTypeError("expected row must be algorithm:storage_mode")
+    return algorithm, storage_mode
 
 
 def parse_args() -> argparse.Namespace:
@@ -83,27 +135,48 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Emit machine-readable summary rows instead of markdown",
     )
+    parser.add_argument(
+        "--expect",
+        action="append",
+        default=[],
+        type=parse_expected,
+        metavar="ALGORITHM:STORAGE",
+        help="Mark an expected algorithm/storage row as missing when absent",
+    )
+    parser.add_argument(
+        "--dataset",
+        action="append",
+        default=[],
+        help="Dataset name to use for expected rows when no measured row exists",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     summaries = load_summaries(args.paths)
+    rows = coverage_rows(summaries, args.expect, args.dataset)
     if args.json:
-        rows = [
-            {
-                "dataset": dataset,
-                "algorithm": algorithm,
-                "storage_mode": storage_mode,
-                "rows": summary.rows,
-                "best_recall_at_10": summary.best_recall,
-                "best_qps": summary.best_qps,
-            }
-            for (dataset, algorithm, storage_mode), summary in sorted(summaries.items())
-        ]
-        print(json.dumps(rows, indent=2, sort_keys=True))
+        print(
+            json.dumps(
+                [
+                    {
+                        "dataset": row.dataset,
+                        "algorithm": row.algorithm,
+                        "storage_mode": row.storage_mode,
+                        "status": row.status,
+                        "rows": row.rows,
+                        "best_recall_at_10": row.best_recall,
+                        "best_qps": row.best_qps,
+                    }
+                    for row in rows
+                ],
+                indent=2,
+                sort_keys=True,
+            )
+        )
         return
-    print(markdown_table(summaries))
+    print(markdown_table(rows))
 
 
 if __name__ == "__main__":

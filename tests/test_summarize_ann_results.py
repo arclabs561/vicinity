@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 from types import ModuleType
+
+import pytest
 
 
 def load_script() -> ModuleType:
@@ -44,6 +47,26 @@ def test_load_summaries_groups_by_dataset_algorithm_and_storage(tmp_path: Path) 
     assert summaries[("glove-25-angular", "ivfpq", "mmap")].rows == 1
 
 
+def test_coverage_rows_marks_expected_missing(tmp_path: Path) -> None:
+    script = load_script()
+    path = tmp_path / "rows.jsonl"
+    path.write_text(
+        '{"_meta":{"dataset":"data/ann-benchmarks/glove-25-angular"}}\n'
+        '{"algorithm":"hnsw","storage_mode":"in_memory","recall_at_10":1.0,"qps":42}\n',
+        encoding="utf-8",
+    )
+
+    rows = script.coverage_rows(
+        script.load_summaries([path]),
+        expected=[("hnsw", "in_memory"), ("store", "segmented_store")],
+    )
+
+    by_key = {(row.algorithm, row.storage_mode): row for row in rows}
+    assert by_key[("hnsw", "in_memory")].status == "measured"
+    assert by_key[("store", "segmented_store")].status == "missing"
+    assert by_key[("store", "segmented_store")].best_qps is None
+
+
 def test_markdown_table_is_stable(tmp_path: Path) -> None:
     script = load_script()
     path = tmp_path / "rows.jsonl"
@@ -52,6 +75,23 @@ def test_markdown_table_is_stable(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    table = script.markdown_table(script.load_summaries([path]))
+    table = script.markdown_table(script.coverage_rows(script.load_summaries([path])))
 
-    assert "| rows | hnsw | in_memory | 1 | 1.0000 | 42.0 |" in table
+    assert "| rows | hnsw | in_memory | measured | 1 | 1.0000 | 42.0 |" in table
+
+
+def test_json_output_preserves_recall_at_10_key(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = load_script()
+    path = tmp_path / "rows.jsonl"
+    path.write_text(
+        '{"algorithm":"hnsw","recall_at_10":1.0,"qps":42}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sys, "argv", ["summarize_ann_results.py", str(path), "--json"])
+
+    script.main()
+
+    output = json.loads(capsys.readouterr().out)
+    assert output[0]["best_recall_at_10"] == 1.0
