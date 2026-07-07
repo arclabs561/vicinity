@@ -418,6 +418,15 @@ The broader variant that changed all ADC-table paths was rejected: it regressed
 change is intentionally limited to `subvector_dim == 1`, which is the GloVe-25
 `cb=25` shape where the QPS gap matters most.
 
+The bounded 500-query GloVe-25 macro run at the same R@10≈0.95 operating point
+then moved from 1,759.6 QPS to 2,149.7 QPS for approximate search, and from
+1,710.0 QPS to 2,105.5 QPS with rerank pool 500:
+
+| Algorithm | Recall@10 | QPS | p95 latency |
+|-----------|-----------|-----|-------------|
+| IVF-PQ `nprobe=32` | 95.42% | 2,149.7 | 648.2 us |
+| IVF-PQ `nprobe=32`, rerank 500 | 96.58% | 2,105.5 | 662.2 us |
+
 ## GloVe-25 (1.18M vectors, 25-d, angular distance)
 
 Ground truth: brute-force k-NN on L2-normalized vectors (angular ≡ cosine for unit vectors).
