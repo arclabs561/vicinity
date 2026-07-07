@@ -170,6 +170,95 @@ impl PackedLUT {
     }
 }
 
+/// Borrowed view over a flat ADC table.
+///
+/// Standard 8-bit IVF-PQ search already has a flat table for each probed
+/// cluster. Borrowing it avoids allocating and copying a `PackedLUT` before
+/// every batch dispatch.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PackedLUTRef<'a> {
+    data: &'a [f32],
+    num_codebooks: usize,
+    codebook_size: usize,
+}
+
+impl<'a> PackedLUTRef<'a> {
+    pub(crate) fn from_flat(table: &'a [f32], num_codebooks: usize, codebook_size: usize) -> Self {
+        debug_assert_eq!(table.len(), num_codebooks * codebook_size);
+        Self {
+            data: table,
+            num_codebooks,
+            codebook_size,
+        }
+    }
+}
+
+pub(crate) trait PackedLUTData {
+    fn data(&self) -> &[f32];
+    fn num_codebooks(&self) -> usize;
+    fn codebook_size(&self) -> usize;
+
+    #[inline]
+    fn codebook_ptr(&self, codebook_idx: usize) -> *const f32 {
+        assert!(
+            codebook_idx < self.num_codebooks(),
+            "codebook_idx {} out of bounds (num_codebooks={})",
+            codebook_idx,
+            self.num_codebooks()
+        );
+        unsafe {
+            self.data()
+                .as_ptr()
+                .add(codebook_idx * self.codebook_size())
+        }
+    }
+
+    #[inline]
+    fn adc_distance(&self, codes: &[u8]) -> f32 {
+        debug_assert_eq!(codes.len(), self.num_codebooks());
+
+        let mut sum = 0.0f32;
+        for (m, &code) in codes.iter().enumerate() {
+            sum += self.data()[m * self.codebook_size() + code as usize];
+        }
+        sum
+    }
+}
+
+impl PackedLUTData for PackedLUT {
+    #[inline]
+    fn data(&self) -> &[f32] {
+        &self.data
+    }
+
+    #[inline]
+    fn num_codebooks(&self) -> usize {
+        self.num_codebooks
+    }
+
+    #[inline]
+    fn codebook_size(&self) -> usize {
+        self.codebook_size
+    }
+}
+
+impl PackedLUTData for PackedLUTRef<'_> {
+    #[inline]
+    fn data(&self) -> &[f32] {
+        self.data
+    }
+
+    #[inline]
+    fn num_codebooks(&self) -> usize {
+        self.num_codebooks
+    }
+
+    #[inline]
+    fn codebook_size(&self) -> usize {
+        self.codebook_size
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // SIMD implementations
 // ─────────────────────────────────────────────────────────────────────────────
@@ -189,10 +278,10 @@ pub mod x86_64 {
     /// Requires AVX2. Caller must verify via runtime detection.
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx2")]
-    pub unsafe fn adc_batch_avx2(
+    pub unsafe fn adc_batch_avx2<L: PackedLUTData>(
         codes_batch: &[u8],
         num_codebooks: usize,
-        lut: &PackedLUT,
+        lut: &L,
     ) -> Vec<f32> {
         use std::arch::x86_64::{
             __m256, __m256i, _mm256_add_ps, _mm256_i32gather_ps, _mm256_setzero_ps,
@@ -248,10 +337,10 @@ pub mod x86_64 {
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx512f")]
     #[allow(clippy::incompatible_msrv)] // AVX-512 intrinsics: stable since 1.89, but only reachable on avx512f hardware
-    pub unsafe fn adc_batch_avx512(
+    pub unsafe fn adc_batch_avx512<L: PackedLUTData>(
         codes_batch: &[u8],
         num_codebooks: usize,
-        lut: &PackedLUT,
+        lut: &L,
     ) -> Vec<f32> {
         use std::arch::x86_64::{
             __m512, __m512i, _mm512_add_ps, _mm512_i32gather_ps, _mm512_setzero_ps,
@@ -312,10 +401,10 @@ pub mod aarch64 {
     ///
     /// NEON is always available on aarch64.
     #[target_feature(enable = "neon")]
-    pub unsafe fn adc_batch_neon(
+    pub unsafe fn adc_batch_neon<L: PackedLUTData>(
         codes_batch: &[u8],
         num_codebooks: usize,
-        lut: &PackedLUT,
+        lut: &L,
     ) -> Vec<f32> {
         use std::arch::aarch64::{float32x4_t, vaddq_f32, vdupq_n_f32, vsetq_lane_f32, vst1q_f32};
 
@@ -337,11 +426,12 @@ pub mod aarch64 {
                     let c2 = codes_batch[(base_idx + 2) * num_codebooks + m] as usize;
                     let c3 = codes_batch[(base_idx + 3) * num_codebooks + m] as usize;
 
-                    let lut_base = m * lut.codebook_size;
-                    let v0 = lut.data[lut_base + c0];
-                    let v1 = lut.data[lut_base + c1];
-                    let v2 = lut.data[lut_base + c2];
-                    let v3 = lut.data[lut_base + c3];
+                    let lut_base = m * lut.codebook_size();
+                    let lut_data = lut.data();
+                    let v0 = lut_data[lut_base + c0];
+                    let v1 = lut_data[lut_base + c1];
+                    let v2 = lut_data[lut_base + c2];
+                    let v3 = lut_data[lut_base + c3];
 
                     let lane0 = vsetq_lane_f32(v0, vdupq_n_f32(0.0), 0);
                     let lane01 = vsetq_lane_f32(v1, lane0, 1);
@@ -369,7 +459,11 @@ pub mod aarch64 {
 /// Auto-dispatching batch ADC computation.
 ///
 /// Selects the fastest available SIMD implementation.
-pub fn adc_batch_dispatch(codes_batch: &[u8], num_codebooks: usize, lut: &PackedLUT) -> Vec<f32> {
+pub fn adc_batch_dispatch<L: PackedLUTData>(
+    codes_batch: &[u8],
+    num_codebooks: usize,
+    lut: &L,
+) -> Vec<f32> {
     let n_candidates = codes_batch.len() / num_codebooks;
 
     #[cfg(target_arch = "x86_64")]
@@ -394,12 +488,12 @@ pub fn adc_batch_dispatch(codes_batch: &[u8], num_codebooks: usize, lut: &Packed
 }
 
 /// Convert PackedLUT back to nested Vec (for fallback).
-fn lut_to_nested(packed: &PackedLUT) -> Vec<Vec<f32>> {
-    let mut result = Vec::with_capacity(packed.num_codebooks);
-    for m in 0..packed.num_codebooks {
-        let start = m * packed.codebook_size;
-        let end = start + packed.codebook_size;
-        result.push(packed.data[start..end].to_vec());
+fn lut_to_nested<L: PackedLUTData>(packed: &L) -> Vec<Vec<f32>> {
+    let mut result = Vec::with_capacity(packed.num_codebooks());
+    for m in 0..packed.num_codebooks() {
+        let start = m * packed.codebook_size();
+        let end = start + packed.codebook_size();
+        result.push(packed.data()[start..end].to_vec());
     }
     result
 }
@@ -764,6 +858,24 @@ mod tests {
             nested_dist,
             packed_dist
         );
+    }
+
+    #[test]
+    fn test_borrowed_lut_dispatch_matches_owned_lut() {
+        let nested_lut = create_test_lut(5, 256);
+        let flat_lut: Vec<f32> = nested_lut.iter().flatten().copied().collect();
+        let owned_lut = PackedLUT::from_flat(&flat_lut, 5, 256);
+        let borrowed_lut = PackedLUTRef::from_flat(&flat_lut, 5, 256);
+        let n_candidates = 257;
+        let num_codebooks = 5;
+        let codes_batch: Vec<u8> = (0..n_candidates * num_codebooks)
+            .map(|i| ((i * 37) % 256) as u8)
+            .collect();
+
+        let owned = adc_batch_dispatch(&codes_batch, num_codebooks, &owned_lut);
+        let borrowed = adc_batch_dispatch(&codes_batch, num_codebooks, &borrowed_lut);
+
+        assert_eq!(borrowed, owned);
     }
 
     #[test]

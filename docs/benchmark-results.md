@@ -188,6 +188,26 @@ memory-stress configuration and saturates at low recall on GloVe-25. With
 gap versus FAISS-style IVF-PQ targets is QPS, so the next optimization target is
 the ADC/FastScan scan path; larger rerank pools are not helping this shape.
 
+Search-only profiling on the same day showed that the standard 8-bit ADC path
+was allocating and copying a packed LUT for every probed cluster even though the
+ADC table was already flat. Borrowing that table in the dispatch path improved
+the Criterion `ivfpq_search_only` benchmark on Apple Silicon:
+
+| Shape | Before | After | Change |
+|-------|--------|-------|--------|
+| `m25_one_dim_nprobe32_k10` | 15.25 ms / 100 queries | 13.91 ms / 100 queries | 8.8% faster |
+| `m25_one_dim_nprobe32_rerank500_k10` | 16.96 ms / 100 queries | 14.88 ms / 100 queries | 12.2% faster |
+| `m5_runner_default_nprobe32_k10` | 10.02 ms / 100 queries | 10.01 ms / 100 queries | no significant change |
+| `m5_runner_default_nprobe32_rerank500_k10` | 11.16 ms / 100 queries | 10.54 ms / 100 queries | 5.6% faster |
+
+Command:
+
+```bash
+cargo bench --bench ivfpq_search --no-default-features \
+  --features ivf_pq,benchmark -- \
+  --sample-size 10 --warm-up-time 0.1 --measurement-time 0.1
+```
+
 ## GloVe-25 (1.18M vectors, 25-d, angular distance)
 
 Ground truth: brute-force k-NN on L2-normalized vectors (angular ≡ cosine for unit vectors).

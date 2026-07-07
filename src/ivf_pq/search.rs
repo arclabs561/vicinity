@@ -2,7 +2,7 @@
 
 use super::opq::OptimizedProductQuantizer;
 use super::pq::ProductQuantizer;
-use crate::pq_simd::{adc_batch_dispatch, PackedCodes4bit, PackedLUT};
+use crate::pq_simd::{adc_batch_dispatch, PackedCodes4bit, PackedLUTRef};
 use crate::RetrieveError;
 use rand::seq::SliceRandom;
 use rand::SeedableRng;
@@ -1314,7 +1314,7 @@ impl IVFPQIndex {
                         profile.code_copy += copy_start.elapsed();
                         profile.code_copy_bytes += codes_batch.len();
                     }
-                    let packed_lut = PackedLUT::from_flat(
+                    let packed_lut = PackedLUTRef::from_flat(
                         &adc_table,
                         self.params.num_codebooks,
                         self.params.codebook_size,
