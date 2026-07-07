@@ -272,6 +272,37 @@ fn result_check_with_fragments(
     ExpectedResult::new(algorithm, fragments)
 }
 
+#[derive(Clone, Copy)]
+enum StorageExpectation {
+    SnapshotReload,
+    SnapshotReloadAndFileOpen,
+}
+
+impl StorageExpectation {
+    fn required_modes(self, cfg: &Config) -> &'static [&'static str] {
+        if !cfg.snapshot_load {
+            return &[];
+        }
+
+        match self {
+            StorageExpectation::SnapshotReload => &["snapshot_loaded"],
+            StorageExpectation::SnapshotReloadAndFileOpen => ivfpq_open_storage_modes(),
+        }
+    }
+}
+
+fn ivfpq_open_storage_modes() -> &'static [&'static str] {
+    #[cfg(feature = "persistence")]
+    {
+        &["snapshot_loaded", "file", "mmap"]
+    }
+
+    #[cfg(not(feature = "persistence"))]
+    {
+        &["snapshot_loaded", "file"]
+    }
+}
+
 fn ef_checks(
     algorithm: &str,
     cfg: &Config,
@@ -310,42 +341,39 @@ fn hnsw_quantized_snapshot_checks(algorithm: &str, cfg: &Config) -> Vec<Expected
     })
 }
 
-fn storage_checks(
+fn storage_expectation_checks(
     algorithm: &str,
     params_json: &str,
-    include_snapshot: bool,
+    cfg: &Config,
+    expectation: StorageExpectation,
 ) -> Vec<ExpectedResult> {
     let mut checks = single_result_check(algorithm, params_json);
-    if include_snapshot {
+    for storage_mode in expectation.required_modes(cfg) {
         checks.push(ExpectedResult::with_params_and_storage(
             algorithm,
             params_json,
-            "snapshot_loaded",
+            *storage_mode,
         ));
     }
     checks
 }
 
 fn snapshot_check(algorithm: &str, params_json: &str, cfg: &Config) -> Vec<ExpectedResult> {
-    storage_checks(algorithm, params_json, cfg.snapshot_load)
+    storage_expectation_checks(
+        algorithm,
+        params_json,
+        cfg,
+        StorageExpectation::SnapshotReload,
+    )
 }
 
 fn snapshot_file_checks(algorithm: &str, params_json: &str, cfg: &Config) -> Vec<ExpectedResult> {
-    let mut checks = snapshot_check(algorithm, params_json, cfg);
-    if cfg.snapshot_load {
-        checks.push(ExpectedResult::with_params_and_storage(
-            algorithm,
-            params_json,
-            "file",
-        ));
-        #[cfg(feature = "persistence")]
-        checks.push(ExpectedResult::with_params_and_storage(
-            algorithm,
-            params_json,
-            "mmap",
-        ));
-    }
-    checks
+    storage_expectation_checks(
+        algorithm,
+        params_json,
+        cfg,
+        StorageExpectation::SnapshotReloadAndFileOpen,
+    )
 }
 
 fn serde_snapshot_check(algorithm: &str, params_json: &str, cfg: &Config) -> Vec<ExpectedResult> {
@@ -357,7 +385,7 @@ fn serde_snapshot_check(algorithm: &str, params_json: &str, cfg: &Config) -> Vec
 
     #[cfg(feature = "serde")]
     {
-        storage_checks(algorithm, params_json, cfg.snapshot_load)
+        snapshot_check(algorithm, params_json, cfg)
     }
 }
 
