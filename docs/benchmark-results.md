@@ -319,11 +319,44 @@ cargo run --release --example ann_benchmark --no-default-features --features hns
 | file | 87.60% | 1,662.4 | 585.1 | 868.2 | 1,037.9 | 0.0014 | 203,564,652 | 928.74 |
 | mmap | 87.60% | 5,646.0 | 172.7 | 259.1 | 339.2 | 0.0008 | 203,564,652 | 928.74 |
 
-This full-corpus row is below the capped-corpus 95% recall point, so it is not
-a fixed-recall target row. It does confirm the storage shape at scale:
-direct-file search performs many small graph/vector reads, mmap is much closer
-to heap search, and page/co-location work remains a storage-layout problem
-rather than a benchmark harness problem.
+The next full-corpus point raised `ef_search` to 150:
+
+```bash
+cargo run --release --example ann_benchmark --no-default-features --features diskann,persistence -- \
+  data/ann-benchmarks/glove-25-angular --algo diskann \
+  --ef-search 150 --max-queries 500 --json --fresh \
+  --results data/ann-benchmarks/results/glove-25-diskann-fulltrain-storage-ef150-20260707.jsonl
+```
+
+| Storage mode | Recall@10 | QPS | p50 us | p95 us | p99 us | Load s | Index bytes | Vector reads |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| in_memory | 93.18% | 6,680.2 | 148.5 | 218.0 | 254.3 | n/a | n/a | n/a |
+| file | 93.18% | 1,024.7 | 955.0 | 1,366.7 | 1,559.8 | 0.0011 | 203,564,652 | 1,561.10 |
+| mmap | 93.18% | 3,287.8 | 293.9 | 462.3 | 516.4 | 0.0008 | 203,564,652 | 1,561.10 |
+
+The first full-corpus DiskANN point above 95% recall was `ef_search=250`, with
+`ef_search=200` kept as the near-miss control:
+
+```bash
+cargo run --release --example ann_benchmark --no-default-features --features diskann,persistence -- \
+  data/ann-benchmarks/glove-25-angular --algo diskann \
+  --ef-search 200,250 --max-queries 500 --json --fresh \
+  --results data/ann-benchmarks/results/glove-25-diskann-fulltrain-storage-ef200-250-20260707.jsonl
+```
+
+| ef_search | Storage mode | Recall@10 | QPS | p50 us | p95 us | p99 us | Load s | Index bytes | Vector reads |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 200 | in_memory | 94.96% | 5,279.2 | 189.0 | 262.5 | 301.4 | n/a | n/a | n/a |
+| 200 | file | 94.96% | 814.5 | 1,242.9 | 1,697.6 | 2,025.2 | 0.0012 | 203,564,652 | 1,963.19 |
+| 200 | mmap | 94.96% | 2,577.2 | 391.0 | 571.8 | 668.5 | 0.0009 | 203,564,652 | 1,963.19 |
+| 250 | in_memory | 95.72% | 4,134.1 | 240.2 | 348.0 | 413.6 | n/a | n/a | n/a |
+| 250 | file | 95.72% | 658.7 | 1,532.3 | 2,087.8 | 2,289.6 | 0.0012 | 203,564,652 | 2,343.51 |
+| 250 | mmap | 95.72% | 2,382.1 | 421.2 | 591.1 | 651.6 | 0.0009 | 203,564,652 | 2,343.51 |
+
+These full-corpus rows confirm the storage shape at scale: direct-file search
+performs many small graph/vector reads, mmap is much closer to heap search, and
+page/co-location work remains a storage-layout problem rather than a benchmark
+harness problem.
 
 The same local current-results directory now covers the observed standard
 storage rows for the capped HNSW storage scope:
