@@ -171,6 +171,39 @@ lowers to an aarch64 NEON loop with paired vector loads and `fmla.4s`
 accumulation. The actionable conclusion is to use `innr` for full-vector dense
 distance and spend `vicinity` work on search layout, pruning, and storage.
 
+### DiskANN File And Mmap Search
+
+The search-only DiskANN benchmark isolates in-memory, file, and mmap search
+from construction:
+
+```bash
+cargo bench --bench diskann_search --no-default-features --features diskann -- \
+  diskann_search_only --measurement-time 3 --warm-up-time 1 --sample-size 20
+```
+
+Baseline at 5,000 vectors, 64 dimensions, 100 queries, `ef=50`:
+
+| Row | Time | Throughput |
+| --- | --- | --- |
+| `memory_ef50` | 7.7394 ms / 100 queries | 12.921 Kelem/s |
+| `file_ef50` | 147.37 ms / 100 queries | 678.55 elem/s |
+| `mmap_ef50` | 19.290 ms / 100 queries | 5.1840 Kelem/s |
+
+A reusable neighbor-buffer experiment avoided allocating a `Vec<u32>` per graph
+record read, but it did not improve the measured path:
+
+| Row | Criterion change |
+| --- | --- |
+| `memory_ef50` | no change, -0.18% mean time |
+| `file_ef50` | regressed, +1.70% mean time, p < 0.05 |
+| `mmap_ef50` | no change, -0.16% mean time |
+
+That experiment was rejected. DiskANN storage work should next target record
+layout, syscall count, vector decoding, and graph/vector co-location rather
+than neighbor-list allocation alone. The `ann_benchmark` DiskANN file and mmap
+rows now emit average graph reads, vector reads, logical bytes, visited nodes,
+and retained candidates so storage changes can be compared against query work.
+
 ### IVF-PQ Search Loop
 
 The `ivfpq_search` benchmark's profiled counters show the remaining hot path is
