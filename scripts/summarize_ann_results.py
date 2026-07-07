@@ -175,10 +175,13 @@ def row_dataset(row: dict[str, Any], current_dataset: str | None, path: Path) ->
     return path.stem
 
 
-def load_summaries(paths: list[Path]) -> dict[tuple[str, str, str], Summary]:
+def load_summaries(
+    paths: list[Path], *, current_schema_only: bool = False
+) -> dict[tuple[str, str, str], Summary]:
     summaries: dict[tuple[str, str, str], Summary] = defaultdict(Summary)
     for path in paths:
         current_dataset: str | None = None
+        seen_meta = False
         with path.open(encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
@@ -189,6 +192,9 @@ def load_summaries(paths: list[Path]) -> dict[tuple[str, str, str], Summary]:
                     meta = row["_meta"]
                     if isinstance(meta, dict):
                         current_dataset = scoped_dataset_name(meta)
+                        seen_meta = True
+                    continue
+                if current_schema_only and not seen_meta:
                     continue
                 algorithm = row.get("algorithm")
                 if not isinstance(algorithm, str):
@@ -318,6 +324,13 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--current-schema-only",
+        action="store_true",
+        help=(
+            "Ignore legacy JSONL files or rows that do not follow a current _meta line"
+        ),
+    )
+    parser.add_argument(
         "--dataset",
         action="append",
         default=[],
@@ -345,7 +358,10 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    summaries = load_summaries(args.paths)
+    summaries = load_summaries(
+        args.paths,
+        current_schema_only=args.current_schema_only,
+    )
     expected = list(args.expect)
     if args.expect_standard_storage:
         expected.extend(STANDARD_STORAGE_EXPECTATIONS)

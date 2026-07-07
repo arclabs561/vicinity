@@ -69,6 +69,33 @@ def test_load_summaries_keeps_limit_scopes_separate(tmp_path: Path) -> None:
     assert capped.best_qps == 20.0
 
 
+def test_load_summaries_can_ignore_legacy_rows_without_meta(tmp_path: Path) -> None:
+    script = load_script()
+    legacy = tmp_path / "legacy.jsonl"
+    legacy.write_text(
+        '{"algorithm":"hnsw","recall_at_10":1.0,"qps":10}\n',
+        encoding="utf-8",
+    )
+    current = tmp_path / "current.jsonl"
+    current.write_text(
+        '{"_meta":{"dataset":"data/ann-benchmarks/glove-25-angular"}}\n'
+        '{"algorithm":"hnsw","storage_mode":"snapshot_loaded","recall_at_10":0.97,"qps":20}\n',
+        encoding="utf-8",
+    )
+
+    default = script.load_summaries([legacy, current])
+    current_only = script.load_summaries(
+        [legacy, current],
+        current_schema_only=True,
+    )
+
+    assert ("legacy", "hnsw", "in_memory") in default
+    assert ("legacy", "hnsw", "in_memory") not in current_only
+    assert (
+        current_only[("glove-25-angular", "hnsw", "snapshot_loaded")].best_qps == 20.0
+    )
+
+
 def test_coverage_rows_marks_expected_missing(tmp_path: Path) -> None:
     script = load_script()
     path = tmp_path / "rows.jsonl"
