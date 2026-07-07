@@ -102,6 +102,7 @@ enum DiskGraphStorage {
 /// format and avoids per-record seek/read syscalls.
 pub struct DiskGraphReader {
     storage: DiskGraphStorage,
+    read_buf: Vec<u8>,
     /// Total number of nodes in the graph.
     pub num_nodes: usize,
     /// Maximum out-degree per node.
@@ -166,6 +167,7 @@ impl DiskGraphReader {
 
         Ok(Self {
             storage: DiskGraphStorage::File(file),
+            read_buf: Vec::new(),
             num_nodes,
             max_degree,
             start_node,
@@ -213,6 +215,7 @@ impl DiskGraphReader {
 
         Ok(Self {
             storage: DiskGraphStorage::Mmap(Box::new(mapped)),
+            read_buf: Vec::new(),
             num_nodes,
             max_degree,
             start_node,
@@ -229,7 +232,9 @@ impl DiskGraphReader {
 
         let offset = self.header_size + (node_id as u64 * self.record_size);
         match &mut self.storage {
-            DiskGraphStorage::File(file) => Self::get_neighbors_file(file, offset, self.max_degree),
+            DiskGraphStorage::File(file) => {
+                Self::get_neighbors_file(file, offset, self.max_degree, &mut self.read_buf)
+            }
             DiskGraphStorage::Mmap(mapped) => Self::get_neighbors_mmap(
                 mapped.as_slice(),
                 offset,
@@ -243,6 +248,7 @@ impl DiskGraphReader {
         file: &mut File,
         offset: u64,
         max_degree: usize,
+        read_buf: &mut Vec<u8>,
     ) -> Result<Vec<u32>, RetrieveError> {
         // Seek to node record.
         // Safety: `&mut self` prevents concurrent calls. For parallel search,
@@ -260,13 +266,15 @@ impl DiskGraphReader {
             ));
         }
 
-        // Read neighbors
-        let mut neighbors = Vec::with_capacity(degree);
-        let mut neighbor_buf = [0u8; 4];
+        let neighbor_bytes = degree
+            .checked_mul(std::mem::size_of::<u32>())
+            .ok_or_else(|| RetrieveError::FormatError("neighbor byte count overflow".into()))?;
+        read_buf.resize(neighbor_bytes, 0);
+        file.read_exact(read_buf)?;
 
-        for _ in 0..degree {
-            file.read_exact(&mut neighbor_buf)?;
-            neighbors.push(u32::from_le_bytes(neighbor_buf));
+        let mut neighbors = Vec::with_capacity(degree);
+        for chunk in read_buf.chunks_exact(std::mem::size_of::<u32>()) {
+            neighbors.push(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
         }
 
         Ok(neighbors)

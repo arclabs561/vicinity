@@ -371,6 +371,49 @@ improved the same benchmark while leaving in-memory search statistically flat:
 | `file_ef50` | 141.38 ms / 100 queries | about 4.1% faster |
 | `mmap_ef50` | 13.338 ms / 100 queries | about 30.9% faster |
 
+The fixed-recall file row was then profiled with Criterion's profile mode:
+
+```bash
+CARGO_TARGET_DIR=/tmp/vicinity-diskann-debug-profile-target \
+  CARGO_PROFILE_BENCH_DEBUG=1 \
+  RUSTFLAGS='-C force-frame-pointers=yes' \
+  samply record --save-only \
+  -o /tmp/vicinity-diskann-file-ef75-debug-10s.json.gz -- \
+  cargo bench --bench diskann_search --no-default-features \
+  --features diskann -- diskann_search_only/file_ef75 --profile-time 10
+```
+
+Two setup lessons came out of this profile. A warmed target is required; a cold
+target records compiler and `sccache` samples. `CARGO_PROFILE_BENCH_DEBUG=1`
+plus a generated dSYM is also required on macOS before `atos` can resolve Rust
+frames from the saved profile. With those in place, the benchmark thread still
+reported address-only frames in the JSON, but manual symbolication worked by
+adding the Mach-O `__TEXT` base address (`0x100000000`) before calling `atos`.
+
+The useful profile finding was storage-shaped: `file_ef75` spent 9,390 of
+12,467 benchmark-thread leaf samples in `libsystem_kernel.dylib`. The Rust-side
+inclusive stack ran through `DiskANNSearcher::search_with_diagnostics`,
+`DiskGraphReader::get_neighbors`, and `DiskANNSearcher::read_vector`. That
+matched the code: the direct-file graph reader was doing one seek, one 4-byte
+degree read, and then one 4-byte read per neighbor.
+
+Batching each node's neighbor IDs into one reusable-buffer `read_exact` cut the
+direct-file rows without changing mmap or heap search:
+
+| Row | Before | After | Change |
+| --- | ---: | ---: | ---: |
+| `file_ef50` | 141.38 ms / 100 queries | 82.718 ms / 100 queries | about 41.5% faster |
+| `file_ef75` | 199.28 ms / 100 queries | 112.57 ms / 100 queries | about 43.5% faster |
+
+Control rows after the change:
+
+| Row | Time / 100 queries | Notes |
+| --- | ---: | --- |
+| `memory_ef50` | 7.8148 ms | within prior noise |
+| `memory_ef75` | 10.550 ms | fixed-recall heap control |
+| `mmap_ef50` | 13.280 ms | within prior noise |
+| `mmap_ef75` | 17.551 ms | fixed-recall mmap control |
+
 ### IVF-PQ Search Loop
 
 The `ivfpq_search` benchmark's profiled counters show the remaining hot path is
