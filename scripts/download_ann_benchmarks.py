@@ -60,6 +60,9 @@ DATASETS = {
         "recompute_ground_truth": True,
         "size_mb": 235,
         "expected_bytes": 246_711_088,
+        "expected_sha256": (
+            "388b0aedc2dad689549e6587932c8c9efeaf8a95f383f36dc567a40233a11f40"
+        ),
     },
     "glove-100-angular": {
         "url": "https://ann-benchmarks.com/glove-100-angular.hdf5",
