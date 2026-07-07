@@ -204,6 +204,42 @@ The first measured 95%+ recall operating point is `ef_search=75`, not 50.
 Future DiskANN profiles should therefore target `ef=75` when validating fixed
 recall, with `ef=50` kept only as a lower-recall throughput control.
 
+The same local current-results directory now covers the standard storage matrix
+with no missing algorithm/storage rows:
+
+```bash
+uv run scripts/summarize_ann_results.py data/ann-benchmarks/results/*.jsonl \
+  --expect-standard-storage --only-dataset glove-25-angular \
+  --missing-only --recall-floor 0.95
+```
+
+The missing-only output is an empty table. This only proves row coverage. It
+does not promote capped rows to full-dataset results, and it does not turn
+below-95% rows into fixed-recall evidence.
+
+Additional capped storage rows from 2026-07-07:
+
+| Workload | Cap | Storage row | Recall@10 | QPS | Notes |
+| --- | --- | --- | ---: | ---: | --- |
+| IVF-PQ approximate | 50K train / 500 query | in_memory | 92.70% | 12,299.0 | `nprobe=32`, below 95% on this cap |
+| IVF-PQ approximate | 50K train / 500 query | snapshot_loaded | 92.70% | 22,161.7 | persisted PQ-code sidecars rebuild scan caches on load |
+| IVF-PQ approximate | 50K train / 500 query | file | 92.70% | 12,205.3 | list-local PQ codes avoid the old file-path penalty |
+| IVF-PQ approximate | 50K train / 500 query | mmap | 92.70% | 19,933.1 | mmap remains faster than direct file reads |
+| IVF-PQ rerank | 50K train / 500 query | in_memory | 93.22% | 11,159.4 | `rerank_pool=500`, still below 95% |
+| IVF-PQ rerank | 50K train / 500 query | file | 93.22% | 2,018.2 | exact rerank still reads raw vectors by vector ID |
+| IVF-PQ rerank | 50K train / 500 query | mmap | 93.22% | 13,549.5 | raw-vector locality is the next storage issue |
+| Store | 50K train / 1K query | segmented_store | 99.97% | 5,914.5 | warm after checkpoint, `index_bytes=13,838,119` |
+| KD-tree | 5K train / 200 query | in_memory | 100.00% | 26,407.9 | capped low-dimensional baseline |
+| Ball tree | 5K train / 200 query | in_memory | 98.55% | 18,261.0 | capped low-dimensional baseline |
+| RP-tree | 5K train / 200 query | in_memory | 100.00% | 9,575.0 | current implementation traverses both subtrees |
+| RP-forest | 5K train / 200 query | in_memory | 15.10% | 420,948.1 | fast, low-recall baseline |
+| K-means tree | 5K train / 200 query | in_memory | 20.75% | 994,609.2 | fast, low-recall baseline |
+
+The classical rows are useful storage and API coverage, not full-scale ANN
+recommendations. The next fixed-recall work is to sweep IVF-PQ nprobe/rerank
+settings above this capped 92-93% recall point and to run full-corpus rows for
+the algorithms whose build time is acceptable.
+
 ## Profiling Ledger
 
 These are incremental profiling findings from the current optimization pass.
