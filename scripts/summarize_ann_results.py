@@ -87,6 +87,14 @@ def standard_storage_expectations() -> list[tuple[str, str]]:
 STANDARD_STORAGE_EXPECTATIONS = standard_storage_expectations()
 
 DISKANN_ALIASES = frozenset({"diskann", "diskann_file", "diskann_mmap"})
+DIAGNOSTIC_KEYS = (
+    "avg_visited_nodes",
+    "avg_graph_reads",
+    "avg_vector_reads",
+    "avg_graph_bytes",
+    "avg_vector_bytes",
+    "avg_retained_candidates",
+)
 
 
 def expectation_matches_observed_algorithm(
@@ -119,6 +127,7 @@ class Summary:
     rows: int = 0
     best_recall: float = 0.0
     best_qps: float = 0.0
+    best_qps_diagnostics: dict[str, float] | None = None
     recall_qps: list[tuple[float, float]] | None = None
 
     def add(self, row: dict[str, Any]) -> None:
@@ -126,7 +135,14 @@ class Summary:
         recall = float(row.get("recall_at_10", 0.0))
         qps = float(row.get("qps", 0.0))
         self.best_recall = max(self.best_recall, recall)
-        self.best_qps = max(self.best_qps, qps)
+        if qps >= self.best_qps:
+            self.best_qps = qps
+            diagnostics = {
+                key: float(row[key])
+                for key in DIAGNOSTIC_KEYS
+                if isinstance(row.get(key), int | float)
+            }
+            self.best_qps_diagnostics = diagnostics or None
         if self.recall_qps is None:
             self.recall_qps = []
         self.recall_qps.append((recall, qps))
@@ -148,6 +164,7 @@ class CoverageRow:
     best_recall: float | None
     best_qps: float | None
     qps_at_recall_floor: float | None
+    best_row_diagnostics: dict[str, float] | None
 
 
 def scoped_dataset_name(meta: dict[str, Any]) -> str | None:
@@ -255,6 +272,7 @@ def coverage_rows(
                 qps_at_recall_floor=(
                     summary.qps_at_recall(recall_floor) if summary else None
                 ),
+                best_row_diagnostics=summary.best_qps_diagnostics if summary else None,
             )
         )
     return rows
@@ -392,6 +410,7 @@ def main() -> None:
                         "rows": row.rows,
                         "best_recall_at_10": row.best_recall,
                         "best_qps": row.best_qps,
+                        "best_row_diagnostics": row.best_row_diagnostics,
                         "qps_at_recall_floor": row.qps_at_recall_floor,
                     }
                     for row in rows

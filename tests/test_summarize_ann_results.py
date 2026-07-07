@@ -200,6 +200,31 @@ def test_json_output_uses_recall_floor_for_thresholded_qps(
     assert output[0]["qps_at_recall_floor"] == 100.0
 
 
+def test_json_output_preserves_best_row_diagnostics(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = load_script()
+    path = tmp_path / "rows.jsonl"
+    path.write_text(
+        '{"algorithm":"ivfpq_rerank","storage_mode":"file","recall_at_10":0.90,"qps":10,'
+        '"avg_vector_reads":80,"avg_vector_bytes":8000,"avg_retained_candidates":80}\n'
+        '{"algorithm":"ivfpq_rerank","storage_mode":"file","recall_at_10":0.80,"qps":20,'
+        '"avg_vector_reads":20,"avg_vector_bytes":2000,"avg_retained_candidates":20}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sys, "argv", ["summarize_ann_results.py", str(path), "--json"])
+
+    script.main()
+
+    output = json.loads(capsys.readouterr().out)
+    assert output[0]["best_qps"] == 20.0
+    assert output[0]["best_row_diagnostics"] == {
+        "avg_retained_candidates": 20.0,
+        "avg_vector_bytes": 2000.0,
+        "avg_vector_reads": 20.0,
+    }
+
+
 def test_cli_can_emit_standard_storage_missing_rows(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
