@@ -1,7 +1,9 @@
 //! KD-Tree (K-Dimensional Tree) implementation.
 //!
 //! Classic space-partitioning tree for low-dimensional data (d < 20).
-//! Excellent for exact nearest neighbor search in low dimensions.
+//! Useful as a low-dimensional baseline. This implementation is bounded by
+//! leaf size and maximum depth, so benchmark rows should be treated as
+//! implementation-specific rather than a mathematical exact-search oracle.
 //!
 //! **Technical Name**: KD-Tree (K-Dimensional Tree)
 //!
@@ -9,7 +11,8 @@
 //! - Recursive space partitioning by alternating dimensions
 //! - Each node splits space along one dimension
 //! - Best for low-dimensional data (d < 20)
-//! - Can provide exact nearest neighbors in low dimensions
+//! - Can approach exact nearest neighbors in low dimensions when configured
+//!   with enough depth and small leaves
 //!
 //! **Relationships**:
 //! - Classic tree-based method (predecessor to modern methods)

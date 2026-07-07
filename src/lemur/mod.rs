@@ -32,8 +32,9 @@
 //!
 //! 1. **Offline**: Train a two-layer MLP `psi(x) = LayerNorm(GELU(W'x + b))`
 //!    that maps token embeddings to a latent space.
-//! 2. **Indexing**: For each document, compute a single weight vector via OLS
-//!    over `psi`-encoded tokens. Store as the document's MIPS embedding.
+//! 2. **Indexing**: For each document, compute a single weight vector. Current
+//!    code mean-pools `psi`-encoded tokens; the full OLS solve is the target
+//!    implementation once the shared feature matrix is available.
 //! 3. **Search**: Encode query tokens through `psi`, pool (sum), then MIPS
 //!    against document weight vectors. Rerank top candidates with exact MaxSim.
 //!
@@ -85,7 +86,7 @@ impl LemurIndex {
 
     /// Add a document with its token embeddings.
     ///
-    /// Computes the single-vector MIPS embedding via OLS over psi-encoded tokens.
+    /// Computes the single-vector MIPS embedding by mean-pooling psi-encoded tokens.
     pub fn add_document(
         &mut self,
         doc_id: u32,

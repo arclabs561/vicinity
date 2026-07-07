@@ -210,6 +210,26 @@ between `ef_search=100` and `ef_search=150`, and the first measured point above
 and warm-cache QPS, so the remaining HNSW gap is a search/layout/tuning problem,
 not a persistence problem.
 
+A follow-up `samply` profile of the synthetic `hnsw_search_only/ef/200`
+Criterion target saved `target/profiles/hnsw_search_ef200_20260707.json`.
+The profile captured 10,130 main-thread leaf samples, but exported address
+labels rather than fully symbolized Rust frames. Resolving address ranges with
+`nm` showed this split:
+
+| Range | Leaf samples | Share |
+| --- | ---: | ---: |
+| `vicinity::hnsw::search::flush_batch` | 4,074 | 40.2% |
+| `innr::dense::dot` | 3,034 | 30.0% |
+| `vicinity::hnsw::search::greedy_search_layer` | 2,360 | 23.3% |
+| other address ranges | 528 | 5.2% |
+| `vicinity::distance::cosine_distance_normalized` | 134 | 1.3% |
+
+This makes further allocator-only work low priority. The next HNSW search pass
+should focus on the batch/heap update structure around `flush_batch`, distance
+kernel dispatch/inlining, and graph/vector layout locality. Future `samply`
+runs should rebuild the bench with richer debuginfo or a sidecar dSYM before
+claiming source-line percentages.
+
 On 2026-07-07, a bounded DiskANN storage probe used 50,000 indexed GloVe-25
 vectors and 1,000 queries. Recall was recomputed against the capped corpus, so
 these rows validate the storage path and cache-state reporting but are not
@@ -797,7 +817,7 @@ target. Sorting file-mode rerank reads by vector index did not materially change
 the `m25_one_dim` row and improved the `m5_runner_default` row by about 2.5%, so
 it is a small cleanup rather than the full rerank fix.
 
-## GloVe-25 (1.18M vectors, 25-d, angular distance)
+## Legacy GloVe-25 (1.18M vectors, 25-d, angular distance)
 
 Ground truth: brute-force k-NN on L2-normalized vectors (angular ≡ cosine for unit vectors).
 
@@ -808,14 +828,14 @@ Ground truth: brute-force k-NN on L2-normalized vectors (angular ≡ cosine for 
 | HNSW (M=16) | 100.0% | 2,857 | Default choice |
 | HNSW (M=32) | 100.0% | 2,017 | Higher memory, marginal recall gain |
 | Vamana | 100.0% | 1,177 | Slow build (~2000s) |
-| DiskANN | 100.0% | 1,029 | Vamana + I/O layout |
+| DiskANN | 100.0% | 1,029 | Vamana-family graph; legacy in-memory row |
 | SQ4U | 99.9% | 1,056 | 4-bit quantized HNSW; ~3x slower than plain HNSW at d=25 |
 | NSW | 99.2% | 1,288 | |
 | IVF-PQ (cb=25) | 98.7% | 69 | 25 codebooks on 25-d (1-d subspaces) |
 | IVF-AVQ | 90.9% | 194 | ScaNN-style anisotropic VQ |
 | RP-Forest | 58.5% | 4,221 | Fast build, moderate recall |
 | IVF-PQ (cb=5) | 45.1% | 262 | 5 codebooks on 25-d (too coarse) |
-| KD-Tree | 100.0% | 22 | Exact; too slow at 1M+ |
+| KD-Tree | 100.0% | 22 | Classical low-dimensional baseline; too slow at 1M+ |
 | Brute | 100.0% | 42 | Exact baseline |
 
 SQ4U and SymphonyQG are designed for high-dimensional data. At d=25, the quantization

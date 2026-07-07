@@ -45,11 +45,15 @@
 //!
 //! HNSW/NSW require all data in memory. DiskANN keeps vectors on SSD.
 //!
-//! # How It Works
+//! # Current Storage Path
 //!
 //! Current code searches separate fixed-record graph and vector files with
-//! ordinary `seek`/`read_exact` I/O. The co-located page layout below is the
-//! design target for the next DiskANN performance pass, not the current layout.
+//! positional file reads or mmap-backed slices.
+//!
+//! # Page-Layout Target
+//!
+//! Co-locating each node's vector and neighbors in one page is the design
+//! target for the next DiskANN performance pass, not the current layout.
 //!
 //! ```text
 //! Memory:  [Cache: ~1% hot nodes] + [Beam search state]
@@ -59,8 +63,8 @@
 //! ```
 //!
 //! 1. **Vamana graph**: Single-layer (no hierarchy = sequential I/O)
-//! 2. **Co-located storage**: Vector + neighbor list in same disk block
-//! 3. **Beam search + prefetch**: Hide SSD latency with async I/O
+//! 2. **Target co-located storage**: Vector + neighbor list in same disk block
+//! 3. **Target prefetch**: Hide SSD latency with batched or async I/O
 //!
 //! # Performance (from Microsoft paper)
 //!

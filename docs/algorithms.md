@@ -103,14 +103,17 @@ These APIs are reachable but are not recommended defaults yet.
   justify using it over existing quantizers.
 - **Quantized HNSW traversal (SQ4U, SQ8U, SymphonyQG, and SymphonyQG-VR)**:
   promote when they beat plain HNSW on recall/QPS on at least two published
-  datasets. Low-dimensional GloVe-25 alone is not enough.
+  datasets. Current checked-in `data/ann-benchmarks/results` has no SQ4U or
+  SymphonyQG rows; older docs rows are legacy context. Low-dimensional GloVe-25
+  alone is not enough.
 - **LID estimation, Adaptive HNSW, AD-sampling, and HNSW-PRT**: treat these as
   diagnostics or search helpers, not standalone index recommendations. Promote
   them when they improve the same built HNSW index at fixed recall, not just raw
   QPS, and include a fallback row where the heuristic is disabled.
 - **Classical trees (KD-tree, ball tree, RP-tree, RP-forest, and K-means tree)**:
   treat as first-class baselines. Promote only for the dimensionality band where
-  they win, and keep exact KD/ball rows separate from approximate tree rows.
+  they win, and keep KD/ball rows separate from RP-tree, RP-forest, and
+  K-means approximate tree rows.
 - **LSH**: keep as a legacy dense-vector baseline until a workload needs its
   false-positive/false-negative tuning properties.
 - **SparseMIPS and LEMUR**: evaluate on sparse or late-interaction datasets,

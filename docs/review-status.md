@@ -65,6 +65,13 @@ benchmarking, persistence, Python bindings, and performance work.
   allocation in the normal `HNSWIndex::search` path. Thread-local heap reuse
   reduced the `ef=50` search-only row from 7.0 to 5.0 allocation calls/query
   and measured about 3.9% faster in Criterion.
+- HNSW `samply` profiling on `hnsw_search_only/ef/200` shifted the next search
+  target away from allocator-only work. Leaf samples were concentrated in
+  `flush_batch` (~40%), `innr::dense::dot` (~30%), and
+  `greedy_search_layer` (~23%). The profile exported address labels, so future
+  source-line claims need a richer debuginfo/dSYM profile, but the current
+  evidence points at batch/heap update structure, distance kernel
+  dispatch/inlining, and graph/vector locality.
 - A capped HNSW storage sweep on 50K GloVe-25 vectors now shows
   snapshot-loaded search at the same recall and comparable warm-cache QPS as
   freshly built in-memory search. On that cap, HNSW reaches 207K QPS at 73.85%
@@ -82,6 +89,12 @@ benchmarking, persistence, Python bindings, and performance work.
   This is stricter than the earlier shortlist. Missing rows now identify the
   remaining all-family coverage work; measured rows still need separate
   fixed-recall review because several local rows use `--max-train` caps.
+- A subagent read-only review of the experimental-status docs found DiskANN,
+  DEG, LEMUR, SQ4U/SymphonyQG, and classical coverage mostly accurate. Follow-up
+  edits narrowed stale KD-tree exactness wording, marked old GloVe-25 rows as
+  legacy context, clarified DiskANN's current file/mmap path versus target
+  co-located pages, and aligned LEMUR docs with the current mean-pool
+  implementation.
 
 ## Remaining Review Queue
 
