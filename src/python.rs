@@ -667,11 +667,20 @@ impl PyIVFPQIndex {
             .as_slice()
             .map_err(|_| PyValueError::new_err("queries must be contiguous (C-order)"))?;
 
+        let batch_results = py
+            .detach(|| -> Result<Vec<Vec<(u32, f32)>>, crate::RetrieveError> {
+                let mut results = Vec::with_capacity(nq);
+                for i in 0..nq {
+                    let q = &data[i * dim..(i + 1) * dim];
+                    results.push(self.search_one_inner(q, k, nprobe, rerank_pool)?);
+                }
+                Ok(results)
+            })
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+
         let mut all_ids = vec![-1i64; nq * k];
         let mut all_dists = vec![f32::INFINITY; nq * k];
-        for i in 0..nq {
-            let q = &data[i * dim..(i + 1) * dim];
-            let results = self.search_one(py, q, k, nprobe, rerank_pool)?;
+        for (i, results) in batch_results.iter().enumerate() {
             for (j, (id, dist)) in results.iter().enumerate() {
                 all_ids[i * k + j] = *id as i64;
                 all_dists[i * k + j] = *dist;
@@ -756,21 +765,32 @@ impl PyIVFPQIndex {
         nprobe: Option<usize>,
         rerank_pool: Option<usize>,
     ) -> PyResult<Vec<(u32, f32)>> {
+        py.detach(|| self.search_one_inner(query, k, nprobe, rerank_pool))
+            .map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
+    fn search_one_inner(
+        &mut self,
+        query: &[f32],
+        k: usize,
+        nprobe: Option<usize>,
+        rerank_pool: Option<usize>,
+    ) -> Result<Vec<(u32, f32)>, crate::RetrieveError> {
         let saved_nprobe = self.nprobe;
         if let Some(nprobe) = nprobe {
             self.inner.set_nprobe(nprobe);
         }
 
-        let result = py.detach(|| match rerank_pool {
+        let result = match rerank_pool {
             Some(pool) => self.inner.search_reranked(query, k, pool),
             None => self.inner.search(query, k),
-        });
+        };
 
         if nprobe.is_some() {
             self.inner.set_nprobe(saved_nprobe);
         }
 
-        result.map_err(|e| PyValueError::new_err(e.to_string()))
+        result
     }
 }
 
