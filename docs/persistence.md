@@ -24,6 +24,36 @@ Do not add another lower-layer crate until at least two index families share the
 same code. Keep the first shared pieces internal to `vicinity`, then extract
 only after the interface has two real consumers.
 
+## Storage Model
+
+Storage is not a binary choice between "in memory" and "on disk". Treat each
+row below as a different implementation and benchmark contract:
+
+| Mode | Meaning | Typical fit |
+| --- | --- | --- |
+| Heap-resident index | Vectors, graph, codes, and candidate buffers are owned by the process. | Small to medium datasets and algorithm upper-bound measurements. |
+| Snapshot reload | The index is serialized, loaded, then searched from process memory. | Format compatibility, restart cost, and post-load parity. |
+| Read-only mmap | Persisted bytes are mapped and paged by the OS. Query latency depends on page-cache state and access locality. | IVF posting lists, graph pages, and vector payloads whose layout is already query-friendly. |
+| File reader | Query code issues explicit file reads. This makes I/O batching, prefetch, and page layout visible. | DiskANN-style graph search where random reads dominate latency. |
+| Segmented durable store | Mutations append to a WAL and seal immutable segments; search merges per-segment indexes. | Updatable HNSW-like stores with tombstones and compaction. |
+| Disk-resident navigation | A compressed or centroid-level navigation structure stays memory-resident while full vectors or postings live on SSD. | Datasets larger than RAM where tail latency is bounded by page reads. |
+| Object-storage backed cache | Object storage is the durable source of truth; SSD and memory are caches. Query planning minimizes remote round trips. | Large multi-tenant or cold/warm workloads. |
+
+This spectrum is why `durability`, `segstore`, and algorithm-specific file
+layouts should coexist. `durability` owns byte durability and mmap. `segstore`
+owns append/checkpoint/compact semantics for immutable segments. DiskANN and
+IVF-family indexes still need layouts shaped around their access patterns:
+co-located graph pages for DiskANN, posting-list pages for IVF, and centroid or
+compressed-vector navigation for cold data.
+
+Modern systems use the same separation. Faiss exposes mmap-backed on-disk IVF
+inverted lists with list prefetching. DiskANN-style systems keep compressed
+navigation data and hot-node caches in memory while graph/vector payloads live
+on SSD. SPFresh/HFresh-style designs keep a centroid index in memory and scan
+disk postings. Object-storage systems add another tier: object storage is the
+durable source of truth, while SSD and memory are caches whose warm/cold state
+must be part of the benchmark row.
+
 ## Capability Matrix
 
 | Index family | Save/load | Memory search | File search | Mmap search | Updates | Storage direction |
@@ -107,6 +137,15 @@ when the runner opens a saved index. For a method with both memory and
 file-backed search, the harness should emit both rows from the same built index
 when possible.
 
+For storage rows, also record enough context to avoid false comparisons:
+
+- whether raw full-precision vectors are present for rerank
+- whether the process warmed the OS page cache before timing
+- whether reads go through mmap, buffered file I/O, direct I/O, or object
+  storage/cache fetches
+- how many bytes are heap-owned, mmap-backed, and persisted
+- any cache budget or beam-width parameter that changes I/O parallelism
+
 Storage rows are not interchangeable:
 
 - `storage_mode=in_memory` measures the search path after vectors and graph
@@ -124,3 +163,18 @@ Storage rows are not interchangeable:
 Large datasets that do not fit comfortably in RAM should be benchmarked as
 storage workloads first. An in-memory row is still useful as an upper bound, but
 it should not be compared directly to file or mmap rows.
+
+## References
+
+- [Faiss `OnDiskInvertedLists`](https://faiss.ai/cpp_api/file/OnDiskInvertedLists_8h.html):
+  mmap-backed IVF lists with prefetch support.
+- [DiskANN I/O optimization survey](https://arxiv.org/html/2602.21514v2):
+  memory-resident navigation, hot-node cache, SSD graph/vector payloads, and
+  page-level layout constraints.
+- [SPFresh](https://arxiv.org/html/2410.14452v1) and
+  [Weaviate HFresh](https://docs.weaviate.io/weaviate/concepts/vector-index#hfresh-index):
+  centroid navigation over disk posting lists, with local rebalancing for
+  updates in the SPFresh lineage.
+- [Turbopuffer ANN v3](https://turbopuffer.com/blog/ann-v3): object storage as
+  durable source of truth, SSD/memory as caches, and warm/cold query behavior
+  as part of the API contract.
