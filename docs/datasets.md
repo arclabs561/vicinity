@@ -12,8 +12,8 @@ Which datasets to use for benchmarking and evaluation.
 | **Standard benchmark** | SIFT-128 | 501MB | Industry standard, Euclidean |
 | **Text embeddings** | GloVe-100 | 463MB | Word vectors, Angular |
 | **Quantization checks** | GloVe-200 | 918MB | Higher dimension, Angular |
-| **High-dimensional** | GIST-960 | 3.6GB | Stress test, near modern dims |
-| **Modern embeddings** | Generate from fastembed | varies | Match your production dims |
+| **High-dimensional** | GIST-960 | 3.6GB | Stress test, near current embedding dims |
+| **Production embeddings** | Generate from fastembed | varies | Match your production dims |
 
 ## Standard ANN Benchmark Datasets
 
@@ -39,7 +39,7 @@ resume behavior, latency tails, and build-time reporting.
 | Dataset | Dims | Vectors | Distance | Size | Notes |
 |---------|------|---------|----------|------|-------|
 | Fashion-MNIST | 784 | 60K | Euclidean | 217MB | High-dim images |
-| GIST-960 | 960 | 1M | Euclidean | 3.6GB | Near modern dims |
+| GIST-960 | 960 | 1M | Euclidean | 3.6GB | Near current embedding dims |
 | Deep Image | 96 | 10M | Angular | 3.6GB | Large scale |
 
 Stress datasets should be reported with explicit storage modes. An in-memory
@@ -70,9 +70,9 @@ already have converted `.bin` files from an older checkout but no manifest, use
 `--adopt-existing` to write `dataset.json` after validating the cached HDF5 size
 and binary headers.
 
-## Modern Embedding Dimensions
+## Current Embedding Dimensions
 
-Standard benchmark datasets have lower dimensions than modern embedding models:
+Standard benchmark datasets have lower dimensions than current embedding models:
 
 | Model | Dimensions | Notes |
 |-------|------------|-------|
