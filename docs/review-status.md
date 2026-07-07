@@ -40,7 +40,9 @@ benchmarking, persistence, Python bindings, and performance work.
   dataset label, for example `glove-25-angular[train=50000,queries=1000]`. Use
   `--current-schema-only` when reviewing modern storage rows in a directory that
   also contains legacy JSONL. Use `qps_at_recall_floor` for fixed-recall QPS
-  claims; `best_qps` is the fastest row at any recall.
+  claims; `best_qps` is the fastest row at any recall. The summary also reports
+  `index_bytes` from the corresponding rows when the benchmark emitted it, so
+  QPS and footprint can be reviewed together.
 - Python intentionally exposes the stable core today: common HNSW construction,
   HNSW JSON save/load, IVF-PQ directory save/load, IVF-PQ file/mmap search, and
   parallel batch search in release wheels. It should not mirror every

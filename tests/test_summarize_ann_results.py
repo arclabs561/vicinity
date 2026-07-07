@@ -29,8 +29,8 @@ def test_load_summaries_groups_by_dataset_algorithm_and_storage(tmp_path: Path) 
         "\n".join(
             [
                 '{"_meta":{"dataset":"data/ann-benchmarks/glove-25-angular"}}',
-                '{"algorithm":"hnsw","storage_mode":"in_memory","recall_at_10":0.97,"qps":10}',
-                '{"algorithm":"hnsw","storage_mode":"in_memory","recall_at_10":0.8,"qps":20}',
+                '{"algorithm":"hnsw","storage_mode":"in_memory","recall_at_10":0.97,"qps":10,"index_bytes":1000}',
+                '{"algorithm":"hnsw","storage_mode":"in_memory","recall_at_10":0.8,"qps":20,"index_bytes":2000}',
                 '{"algorithm":"ivfpq","storage_mode":"mmap","recall_at_10":0.7,"qps":30}',
             ]
         )
@@ -44,7 +44,9 @@ def test_load_summaries_groups_by_dataset_algorithm_and_storage(tmp_path: Path) 
     assert hnsw.rows == 2
     assert hnsw.best_recall == 0.97
     assert hnsw.best_qps == 20.0
+    assert hnsw.best_qps_index_bytes == 2000
     assert hnsw.qps_at_recall(0.95) == 10.0
+    assert hnsw.index_bytes_at_recall(0.95) == 1000
     assert hnsw.qps_at_recall(0.99) is None
     assert summaries[("glove-25-angular", "ivfpq", "mmap")].rows == 1
 
@@ -144,13 +146,16 @@ def test_markdown_table_is_stable(tmp_path: Path) -> None:
     script = load_script()
     path = tmp_path / "rows.jsonl"
     path.write_text(
-        '{"algorithm":"hnsw","recall_at_10":1.0,"qps":42}\n',
+        '{"algorithm":"hnsw","recall_at_10":1.0,"qps":42,"index_bytes":4096}\n',
         encoding="utf-8",
     )
 
     table = script.markdown_table(script.coverage_rows(script.load_summaries([path])))
 
-    assert "| rows | hnsw | in_memory | measured | 1 | 1.0000 | 42.0 | 42.0 |" in table
+    assert (
+        "| rows | hnsw | in_memory | measured | 1 | 1.0000 | 42.0 | 4096 | 42.0 |"
+        in table
+    )
 
 
 def test_json_output_preserves_recall_at_10_key(
@@ -159,7 +164,7 @@ def test_json_output_preserves_recall_at_10_key(
     script = load_script()
     path = tmp_path / "rows.jsonl"
     path.write_text(
-        '{"algorithm":"hnsw","recall_at_10":1.0,"qps":42}\n',
+        '{"algorithm":"hnsw","recall_at_10":1.0,"qps":42,"index_bytes":4096}\n',
         encoding="utf-8",
     )
     monkeypatch.setattr(sys, "argv", ["summarize_ann_results.py", str(path), "--json"])
@@ -168,7 +173,9 @@ def test_json_output_preserves_recall_at_10_key(
 
     output = json.loads(capsys.readouterr().out)
     assert output[0]["best_recall_at_10"] == 1.0
+    assert output[0]["best_index_bytes"] == 4096
     assert output[0]["qps_at_recall_floor"] == 42.0
+    assert output[0]["index_bytes_at_recall_floor"] == 4096
 
 
 def test_json_output_uses_recall_floor_for_thresholded_qps(
@@ -177,8 +184,8 @@ def test_json_output_uses_recall_floor_for_thresholded_qps(
     script = load_script()
     path = tmp_path / "rows.jsonl"
     path.write_text(
-        '{"algorithm":"hnsw","recall_at_10":0.96,"qps":100}\n'
-        '{"algorithm":"hnsw","recall_at_10":0.80,"qps":1000}\n',
+        '{"algorithm":"hnsw","recall_at_10":0.96,"qps":100,"index_bytes":1000}\n'
+        '{"algorithm":"hnsw","recall_at_10":0.80,"qps":1000,"index_bytes":2000}\n',
         encoding="utf-8",
     )
     monkeypatch.setattr(
@@ -197,7 +204,9 @@ def test_json_output_uses_recall_floor_for_thresholded_qps(
 
     output = json.loads(capsys.readouterr().out)
     assert output[0]["best_qps"] == 1000.0
+    assert output[0]["best_index_bytes"] == 2000
     assert output[0]["qps_at_recall_floor"] == 100.0
+    assert output[0]["index_bytes_at_recall_floor"] == 1000
 
 
 def test_json_output_preserves_best_row_diagnostics(
