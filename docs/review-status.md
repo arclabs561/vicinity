@@ -128,6 +128,12 @@ benchmarking, persistence, Python bindings, and performance work.
   RP-forest improves to 85.22% recall with 50 trees, and K-means tree remains
   below 25% recall, so neither has a measured 95% point under the current
   sweep.
+- Dataset-level benchmark summaries still need shape and difficulty metadata.
+  Useful candidate fields are local intrinsic dimensionality distribution for
+  queries, relative contrast or nearest-neighbor margin, norm distribution,
+  duplicate rate, hubness, cluster/list imbalance, and OOD split labels. These
+  explain why a recall/QPS curve shifts across datasets or query subsets instead
+  of treating every dataset as interchangeable.
 
 ## Remaining Review Queue
 
@@ -146,7 +152,8 @@ benchmarking, persistence, Python bindings, and performance work.
 | 11 | Sparse and late-interaction harnesses | SparseMIPS needs a SPLADE/BM25-style sparse dataset harness. LEMUR needs training or reproducible model loading before storage or QPS rows matter. |
 | 12 | Python policy | Decide which Rust APIs become Python APIs. Keep the default policy narrow unless an algorithm has stable benchmarks, persistence behavior, and examples. Rust-only gaps today: DiskANN, `store`, FreshGraph, filtered search/update APIs, and HNSW binary segments. |
 | 13 | External research claims | Verify newer roadmap claims before implementation: Extended RaBitQ, VSAG layout tricks, IP-DiskANN, ACORN production behavior, PAG, SAQ, and ARM/SVE2 kernels. |
-| 14 | Profiling depth | Add profile artifacts for the next actual performance change. Record baseline, profiler target, negative controls, before/after, and rejected hypotheses in `docs/benchmark-results.md`. |
+| 14 | Dataset difficulty metadata | Add a dataset-profile script that reports intrinsic dimensionality or LID, relative contrast, neighbor-distance margins, norm distribution, duplicate rate, hubness, and partition/list imbalance. Start with cheap sampled metrics for GloVe/SIFT/Deep before adding expensive full-corpus reports. |
+| 15 | Profiling depth | Add profile artifacts for the next actual performance change. Record baseline, profiler target, negative controls, before/after, and rejected hypotheses in `docs/benchmark-results.md`. |
 
 ## Guardrails
 

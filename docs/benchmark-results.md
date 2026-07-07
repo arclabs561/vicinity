@@ -22,6 +22,16 @@ model, thread count, frequency, and thermal state were not recorded for these
 older rows, so treat absolute QPS as historical context. Re-run the harness on
 your target machine before comparing against external papers.
 
+Dataset difficulty should be reported alongside recall/QPS when the comparison
+crosses datasets or query subsets. Candidate metadata includes local intrinsic
+dimensionality (LID) for query difficulty
+([Aumuller and Ceccarello, 2019](https://arxiv.org/abs/1907.07387)), relative
+contrast or nearest-neighbor margin for separability
+([He, Kumar, and Chang, 2012](https://arxiv.org/abs/1206.6411)), norm
+distribution, duplicate rate, hubness, cluster or posting-list imbalance, and
+whether the query set is in-distribution or OOD. This is not yet emitted by the
+harness. It is a benchmark-methodology gap, not an algorithm result.
+
 Recommended current commands:
 
 ```bash
