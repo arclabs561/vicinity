@@ -65,7 +65,7 @@ must be part of the benchmark row.
 | DualBranch / DEG | Yes, JSON via `serde` | Yes | No | No | Build-once | These are HNSW-family experimental variants. Their benchmark snapshot rows require the `serde` feature and reload into memory. DEG dense benchmark rows cap indexed vectors at 10,000 because construction is O(n^2). |
 | HNSW quantized variants | Yes, for SQ4/SQ8 and non-compacted SymphonyQG | Yes | No | No | Build-once | SQ variants persist the underlying HNSW and rebuild quantization. SymphonyQG persists the underlying HNSW and RaBitQ manifest, then rebuilds quantized state on load. SymphonyQG-VR compacted snapshots are rejected because current search still needs raw parent vectors. |
 | HNSW query accelerators | No separate accelerator snapshot | Yes | No | No | Derived from HNSW | ADSampling and PRT state are derived from a built HNSW's reordered raw vectors. Persist the base HNSW first; add accelerator snapshots only if rebuild cost shows up in benchmark rows. |
-| IVF-PQ | Yes, directory format | Yes | No | No | Build-once | Persists centroids, PQ codebooks, posting lists, codes, and optional raw vectors for rerank. |
+| IVF-PQ | Yes, directory format | Yes | Yes | Yes, with `persistence` | Build-once | `load_from_dir` rebuilds an in-memory snapshot. `IVFPQFileSearcher` reads persisted PQ codes and optional raw vectors from files or mmap. Current files are snapshot arrays, not the final list-contiguous disk layout. |
 | IVF-AVQ | Yes, directory format | Yes | No | No | Build-once | Persists centroids, AVQ codebooks, partitions, codes, and raw vectors for rerank. |
 | IVF-RaBitQ | Yes, directory format for non-compacted indexes | Yes | No | No | Build-once | Persists raw vectors, centroids, and cluster membership, then rebuilds RaBitQ edge codes on load. |
 | FreshGraph / in-place graph | Yes | Yes | No | No | Insert/delete/compact | FreshGraph uses a snapshot directory with tombstones and inbound counts. `InPlaceIndex` and `MappedInPlaceIndex` use validated file snapshots that preserve free slots and external-ID maps. WAL/checkpoint durability remains separate from `segstore`. |
@@ -99,14 +99,18 @@ For file-backed searchers, recall should also be measured against ground truth.
    crate until shared storage code has two consumers.
 2. Finish DiskANN storage modes: current direct file save, file search, mmap
    graph/vector readers, then page/co-location layout.
-3. Extend IVF-PQ persistence from save/load to file-backed search. The current
-   format persists:
+3. Keep IVF-PQ file-backed search covered by benchmark rows, then replace the
+   snapshot-array reader with a list-contiguous disk layout. The current format
+   persists:
    - manifest with format version, metric, dimensions, counts, and parameters
    - centroids
    - PQ codebooks
    - cluster doc IDs and PQ codes
-   - 4-bit packed FastScan blocks rebuilt on load
+   - 4-bit packed FastScan blocks rebuilt on memory-snapshot load
    - optional raw normalized vectors when exact rerank should survive reload
+   `IVFPQFileSearcher` can query the saved codes through file I/O or mmap, but
+   it still follows the snapshot layout. The next storage layout should group
+   ids and codes by IVF list so a query can scan contiguous list ranges.
 4. Extend IVF-AVQ persistence from save/load to file-backed search.
 5. Extend IVF-RaBitQ persistence to compacted indexes only after `qntz` exposes
    a safe serialized edge-code representation.

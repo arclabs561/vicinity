@@ -4,6 +4,8 @@ use super::opq::OptimizedProductQuantizer;
 use super::pq::ProductQuantizer;
 use crate::pq_simd::{adc_batch_dispatch_into, PackedCodes4bit, PackedLUTRef};
 use crate::RetrieveError;
+#[cfg(feature = "persistence")]
+use durability::mmap::{AccessPattern, MappedFile};
 use rand::seq::SliceRandom;
 use rand::SeedableRng;
 use serde::{Deserialize, Serialize};
@@ -210,6 +212,33 @@ pub struct IVFPQIndex {
     /// Falls back to brute-force centroid scan when `None`.
     #[cfg(feature = "hnsw")]
     coarse_quantizer: Option<crate::hnsw::HNSWIndex>,
+}
+
+/// Read-only IVF-PQ searcher backed by files from [`IVFPQIndex::save_to_dir`].
+///
+/// This keeps small routing metadata in memory, but reads PQ codes and optional
+/// raw vectors from the persisted files at query time. Use this when the storage
+/// mode itself is part of the measurement. For pure in-memory search, use
+/// [`IVFPQIndex::load_from_dir`].
+pub struct IVFPQFileSearcher {
+    dimension: usize,
+    num_vectors: usize,
+    doc_ids: Vec<u32>,
+    params: IVFPQParams,
+    clusters: Vec<Cluster>,
+    centroids: Vec<f32>,
+    pq: Quantizer,
+    codes: IVFPQByteStorage,
+    raw_vectors: Option<IVFPQByteStorage>,
+    code_buf: Vec<u8>,
+    raw_byte_buf: Vec<u8>,
+    vec_buf: Vec<f32>,
+}
+
+enum IVFPQByteStorage {
+    File(std::fs::File),
+    #[cfg(feature = "persistence")]
+    Mmap(Box<MappedFile>),
 }
 
 /// IVF-PQ parameters.
@@ -1046,27 +1075,7 @@ impl IVFPQIndex {
     pub fn load_from_dir(input_dir: impl AsRef<Path>) -> Result<Self, RetrieveError> {
         let input_dir = input_dir.as_ref();
         let manifest: IVFPQManifest = read_json(&input_dir.join("manifest.json"))?;
-        if manifest.version != IVFPQ_FORMAT_VERSION {
-            return Err(RetrieveError::FormatError(format!(
-                "unsupported IVF-PQ format version {}",
-                manifest.version
-            )));
-        }
-        if manifest.dimension == 0 {
-            return Err(RetrieveError::FormatError(
-                "IVF-PQ manifest has zero dimension".into(),
-            ));
-        }
-        if manifest.num_vectors == 0 {
-            return Err(RetrieveError::FormatError(
-                "IVF-PQ manifest has zero vectors".into(),
-            ));
-        }
-        if manifest.num_centroids == 0 {
-            return Err(RetrieveError::FormatError(
-                "IVF-PQ manifest has zero centroids".into(),
-            ));
-        }
+        validate_manifest(&manifest)?;
 
         let params = manifest.params.into_params();
         let mut index = Self::new(manifest.dimension, params)?;
@@ -1573,6 +1582,268 @@ impl IVFPQIndex {
     }
 }
 
+impl IVFPQFileSearcher {
+    /// Open an IVF-PQ snapshot for file-backed search.
+    pub fn load(input_dir: impl AsRef<Path>) -> Result<Self, RetrieveError> {
+        Self::load_with_storage(input_dir.as_ref(), false)
+    }
+
+    /// Open an IVF-PQ snapshot using read-only memory maps for large byte arrays.
+    #[cfg(feature = "persistence")]
+    pub fn load_mmap(input_dir: impl AsRef<Path>) -> Result<Self, RetrieveError> {
+        Self::load_with_storage(input_dir.as_ref(), true)
+    }
+
+    #[cfg(not(feature = "persistence"))]
+    fn load_with_storage(input_dir: &Path, mmap: bool) -> Result<Self, RetrieveError> {
+        let _ = mmap;
+        Self::load_from_parts(input_dir, false)
+    }
+
+    #[cfg(feature = "persistence")]
+    fn load_with_storage(input_dir: &Path, mmap: bool) -> Result<Self, RetrieveError> {
+        Self::load_from_parts(input_dir, mmap)
+    }
+
+    fn load_from_parts(input_dir: &Path, mmap: bool) -> Result<Self, RetrieveError> {
+        let manifest: IVFPQManifest = read_json(&input_dir.join("manifest.json"))?;
+        validate_manifest(&manifest)?;
+
+        let params = manifest.params.clone().into_params();
+        let doc_ids = read_u32_exact(&input_dir.join("doc_ids.bin"), manifest.num_vectors)?;
+        let centroids_len = checked_len(
+            manifest.num_centroids,
+            manifest.dimension,
+            "IVF-PQ centroid length overflow",
+        )?;
+        let centroids = read_f32_exact(&input_dir.join("centroids.bin"), centroids_len)?;
+        let clusters = read_clusters(
+            &input_dir.join("clusters.bin"),
+            params.num_clusters,
+            manifest.num_vectors,
+        )?;
+        let codes_len = checked_len(
+            manifest.num_vectors,
+            params.num_codebooks,
+            "IVF-PQ codes length overflow",
+        )?;
+        let codes = open_byte_storage(&input_dir.join("codes.bin"), codes_len, mmap)?;
+        let raw_vectors = if manifest.raw_vectors_present {
+            let raw_floats = checked_len(
+                manifest.num_vectors,
+                manifest.dimension,
+                "IVF-PQ raw vector length overflow",
+            )?;
+            Some(open_byte_storage(
+                &input_dir.join("raw_vectors.bin"),
+                checked_len(
+                    raw_floats,
+                    std::mem::size_of::<f32>(),
+                    "IVF-PQ raw vector byte length overflow",
+                )?,
+                mmap,
+            )?)
+        } else {
+            None
+        };
+
+        let raw_vector_byte_len = checked_len(
+            manifest.dimension,
+            std::mem::size_of::<f32>(),
+            "IVF-PQ raw vector byte length overflow",
+        )?;
+
+        Ok(Self {
+            dimension: manifest.dimension,
+            num_vectors: manifest.num_vectors,
+            doc_ids,
+            params,
+            clusters,
+            centroids,
+            pq: manifest.quantizer,
+            codes,
+            raw_vectors,
+            code_buf: Vec::new(),
+            raw_byte_buf: vec![0; raw_vector_byte_len],
+            vec_buf: vec![0.0; manifest.dimension],
+        })
+    }
+
+    /// Set the number of clusters to probe during search.
+    pub fn set_nprobe(&mut self, nprobe: usize) {
+        self.params.nprobe = nprobe;
+    }
+
+    /// Number of IVF clusters searched per query.
+    pub fn nprobe(&self) -> usize {
+        self.params.nprobe
+    }
+
+    /// Number of indexed vectors.
+    pub fn num_vectors(&self) -> usize {
+        self.num_vectors
+    }
+
+    /// Search using approximate IVF-PQ distances while reading codes from storage.
+    pub fn search(&mut self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, RetrieveError> {
+        let candidates = self.search_approx_internal(query, k)?;
+        Ok(candidates
+            .into_iter()
+            .map(|(vector_idx, dist)| (self.doc_ids[vector_idx as usize], dist))
+            .collect())
+    }
+
+    /// Search with approximate retrieval followed by exact reranking from `raw_vectors.bin`.
+    pub fn search_reranked(
+        &mut self,
+        query: &[f32],
+        k: usize,
+        candidate_pool: usize,
+    ) -> Result<Vec<(u32, f32)>, RetrieveError> {
+        if self.raw_vectors.is_none() {
+            return Err(RetrieveError::InvalidParameter(
+                "search_reranked unavailable without raw_vectors.bin".into(),
+            ));
+        }
+        if query.len() != self.dimension {
+            return Err(RetrieveError::DimensionMismatch {
+                query_dim: query.len(),
+                doc_dim: self.dimension,
+            });
+        }
+
+        let pool = candidate_pool.max(k);
+        let candidates = self.search_approx_internal(query, pool)?;
+        let query_normalized = normalize_query(query);
+        let mut reranked = Vec::with_capacity(candidates.len());
+        let Some(storage) = self.raw_vectors.as_mut() else {
+            return Err(RetrieveError::InvalidParameter(
+                "search_reranked unavailable without raw_vectors.bin".into(),
+            ));
+        };
+        for (vector_idx, _approx_dist) in candidates {
+            let vector = read_vector_from_storage(
+                storage,
+                &mut self.raw_byte_buf,
+                &mut self.vec_buf,
+                vector_idx as usize,
+                self.dimension,
+            )?;
+            let exact_dist = crate::distance::cosine_distance_normalized(&query_normalized, vector);
+            reranked.push((self.doc_ids[vector_idx as usize], exact_dist));
+        }
+
+        Ok(finish_top_k_by_distance(reranked, k))
+    }
+
+    fn search_approx_internal(
+        &mut self,
+        query: &[f32],
+        k: usize,
+    ) -> Result<Vec<(u32, f32)>, RetrieveError> {
+        if query.len() != self.dimension {
+            return Err(RetrieveError::DimensionMismatch {
+                query_dim: query.len(),
+                doc_dim: self.dimension,
+            });
+        }
+
+        let query_normalized = normalize_query(query);
+        let query = query_normalized.as_slice();
+        let cluster_distances = self.find_nearest_centroids(query, self.params.nprobe);
+        let expected_candidates = cluster_distances
+            .iter()
+            .map(|(cluster_idx, _)| self.clusters[*cluster_idx].len())
+            .sum();
+        let mut candidates = Vec::with_capacity(expected_candidates);
+        let mut query_residual = vec![0.0f32; self.dimension];
+        let mut codes_batch = Vec::new();
+        let mut distances_batch = Vec::new();
+        let mut adc_table = Vec::new();
+
+        for (cluster_idx, _) in &cluster_distances {
+            let cluster = &self.clusters[*cluster_idx];
+            let ids = cluster.get_ids_ref();
+            let centroid = self.get_centroid(*cluster_idx);
+            for (i, (q, c)) in query.iter().zip(centroid.iter()).enumerate() {
+                query_residual[i] = q - c;
+            }
+            self.pq
+                .compute_adc_table_into(&query_residual, &mut adc_table)?;
+
+            if ids.len() >= SIMD_BATCH_THRESHOLD {
+                append_codes_for_ids(
+                    &mut self.codes,
+                    &mut codes_batch,
+                    ids.as_ref(),
+                    self.params.num_codebooks,
+                )?;
+
+                if self.params.codebook_size == 16 {
+                    let packed =
+                        PackedCodes4bit::pack(&codes_batch, ids.len(), self.params.num_codebooks);
+                    let distances = crate::pq_simd::fastscan_batch_flat(&packed, &adc_table);
+                    for (i, &vector_idx) in ids.iter().enumerate() {
+                        candidates.push((vector_idx, distances[i]));
+                    }
+                } else {
+                    let packed_lut = PackedLUTRef::from_flat(
+                        &adc_table,
+                        self.params.num_codebooks,
+                        self.params.codebook_size,
+                    );
+                    adc_batch_dispatch_into(
+                        &codes_batch,
+                        self.params.num_codebooks,
+                        &packed_lut,
+                        &mut distances_batch,
+                    );
+                    for (i, &vector_idx) in ids.iter().enumerate() {
+                        candidates.push((vector_idx, distances_batch[i]));
+                    }
+                }
+            } else {
+                for &vector_idx in ids.as_ref() {
+                    let codes = read_code_from_storage(
+                        &mut self.codes,
+                        &mut self.code_buf,
+                        vector_idx as usize,
+                        self.params.num_codebooks,
+                    )?;
+                    let dist = self.pq.distance_with_table(&adc_table, codes);
+                    candidates.push((vector_idx, dist));
+                }
+            }
+        }
+
+        Ok(finish_top_k_by_distance(candidates, k))
+    }
+
+    #[inline]
+    fn get_centroid(&self, idx: usize) -> &[f32] {
+        let start = idx * self.dimension;
+        let end = start + self.dimension;
+        &self.centroids[start..end]
+    }
+
+    fn find_nearest_centroids(&self, query: &[f32], nprobe: usize) -> Vec<(usize, f32)> {
+        let num_centroids = self.centroids.len() / self.dimension;
+        let mut dists: Vec<(usize, f32)> = (0..num_centroids)
+            .map(|idx| {
+                let c = self.get_centroid(idx);
+                (idx, crate::distance::cosine_distance_normalized(query, c))
+            })
+            .collect();
+        let nprobe = nprobe.min(dists.len());
+        if nprobe < dists.len() {
+            dists.select_nth_unstable_by(nprobe, |a, b| a.1.total_cmp(&b.1));
+            dists.truncate(nprobe);
+        }
+        dists.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+        dists
+    }
+}
+
 fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), RetrieveError> {
     write_atomic(path, |writer| {
         serde_json::to_writer_pretty(writer, value)
@@ -1690,6 +1961,163 @@ fn read_bytes_exact(path: &Path, expected_len: usize) -> Result<Vec<u8>, Retriev
         )));
     }
     Ok(bytes)
+}
+
+fn validate_manifest(manifest: &IVFPQManifest) -> Result<(), RetrieveError> {
+    if manifest.version != IVFPQ_FORMAT_VERSION {
+        return Err(RetrieveError::FormatError(format!(
+            "unsupported IVF-PQ format version {}",
+            manifest.version
+        )));
+    }
+    if manifest.dimension == 0 {
+        return Err(RetrieveError::FormatError(
+            "IVF-PQ manifest has zero dimension".into(),
+        ));
+    }
+    if manifest.num_vectors == 0 {
+        return Err(RetrieveError::FormatError(
+            "IVF-PQ manifest has zero vectors".into(),
+        ));
+    }
+    if manifest.num_centroids == 0 {
+        return Err(RetrieveError::FormatError(
+            "IVF-PQ manifest has zero centroids".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn checked_len(lhs: usize, rhs: usize, message: &str) -> Result<usize, RetrieveError> {
+    lhs.checked_mul(rhs)
+        .ok_or_else(|| RetrieveError::FormatError(message.into()))
+}
+
+fn open_byte_storage(
+    path: &Path,
+    expected_len: usize,
+    mmap: bool,
+) -> Result<IVFPQByteStorage, RetrieveError> {
+    let actual_len = std::fs::metadata(path)?.len() as usize;
+    if actual_len != expected_len {
+        return Err(RetrieveError::FormatError(format!(
+            "{} size mismatch: expected {} bytes, got {}",
+            path.display(),
+            expected_len,
+            actual_len
+        )));
+    }
+
+    #[cfg(feature = "persistence")]
+    if mmap {
+        let mapped = MappedFile::open(path, AccessPattern::Random).map_err(|e| {
+            RetrieveError::Io(std::sync::Arc::new(std::io::Error::other(format!(
+                "failed to mmap {}: {e}",
+                path.display()
+            ))))
+        })?;
+        if mapped.as_slice().len() != expected_len {
+            return Err(RetrieveError::FormatError(format!(
+                "{} mmap size mismatch: expected {} bytes, got {}",
+                path.display(),
+                expected_len,
+                mapped.as_slice().len()
+            )));
+        }
+        return Ok(IVFPQByteStorage::Mmap(Box::new(mapped)));
+    }
+
+    let _ = mmap;
+    Ok(IVFPQByteStorage::File(std::fs::File::open(path)?))
+}
+
+fn append_codes_for_ids(
+    storage: &mut IVFPQByteStorage,
+    out: &mut Vec<u8>,
+    ids: &[u32],
+    num_codebooks: usize,
+) -> Result<(), RetrieveError> {
+    out.clear();
+    out.reserve(ids.len() * num_codebooks);
+    for &vector_idx in ids {
+        let old_len = out.len();
+        out.resize(old_len + num_codebooks, 0);
+        read_bytes_from_storage(
+            storage,
+            vector_idx as usize * num_codebooks,
+            &mut out[old_len..old_len + num_codebooks],
+        )?;
+    }
+    Ok(())
+}
+
+fn read_code_from_storage<'a>(
+    storage: &mut IVFPQByteStorage,
+    out: &'a mut Vec<u8>,
+    vector_idx: usize,
+    num_codebooks: usize,
+) -> Result<&'a [u8], RetrieveError> {
+    out.resize(num_codebooks, 0);
+    read_bytes_from_storage(storage, vector_idx * num_codebooks, out)?;
+    Ok(out)
+}
+
+fn read_vector_from_storage<'a>(
+    storage: &mut IVFPQByteStorage,
+    bytes: &mut [u8],
+    out: &'a mut [f32],
+    vector_idx: usize,
+    dimension: usize,
+) -> Result<&'a [f32], RetrieveError> {
+    let byte_len = checked_len(
+        dimension,
+        std::mem::size_of::<f32>(),
+        "IVF-PQ vector byte length overflow",
+    )?;
+    let offset = checked_len(vector_idx, byte_len, "IVF-PQ vector byte offset overflow")?;
+    if bytes.len() != byte_len {
+        return Err(RetrieveError::InvalidParameter(format!(
+            "IVF-PQ vector byte buffer has {} bytes, expected {}",
+            bytes.len(),
+            byte_len
+        )));
+    }
+    read_bytes_from_storage(storage, offset, bytes)?;
+    for (value, chunk) in out.iter_mut().zip(bytes.chunks_exact(4)) {
+        *value = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+    }
+    Ok(out)
+}
+
+fn read_bytes_from_storage(
+    storage: &mut IVFPQByteStorage,
+    offset: usize,
+    out: &mut [u8],
+) -> Result<(), RetrieveError> {
+    #[cfg(feature = "persistence")]
+    let end = offset
+        .checked_add(out.len())
+        .ok_or_else(|| RetrieveError::FormatError("IVF-PQ byte offset overflow".into()))?;
+    match storage {
+        IVFPQByteStorage::File(file) => {
+            use std::io::{Read as _, Seek, SeekFrom};
+            file.seek(SeekFrom::Start(offset as u64))?;
+            file.read_exact(out)?;
+        }
+        #[cfg(feature = "persistence")]
+        IVFPQByteStorage::Mmap(mapped) => {
+            let bytes = mapped.as_slice();
+            if end > bytes.len() {
+                return Err(RetrieveError::FormatError(format!(
+                    "IVF-PQ storage read out of bounds: end {} > len {}",
+                    end,
+                    bytes.len()
+                )));
+            }
+            out.copy_from_slice(&bytes[offset..end]);
+        }
+    }
+    Ok(())
 }
 
 fn read_clusters(
@@ -2185,6 +2613,131 @@ mod tests {
     }
 
     #[test]
+    fn file_searcher_matches_snapshot_loaded_search() {
+        let dim = 16;
+        let n = 240;
+        use rand::{Rng, SeedableRng};
+        let mut rng = rand::rngs::StdRng::seed_from_u64(103);
+
+        let params = IVFPQParams {
+            num_clusters: 4,
+            num_codebooks: 4,
+            codebook_size: 16,
+            nprobe: 4,
+            seed: 125,
+            ..IVFPQParams::default()
+        };
+        let mut index = IVFPQIndex::new(dim, params).unwrap();
+        for i in 0..n {
+            let vector: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
+            index.add(20_000 + i as u32, vector).unwrap();
+        }
+        index.build().unwrap();
+        #[cfg(feature = "hnsw")]
+        {
+            index.coarse_quantizer = None;
+        }
+
+        let query: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
+        let dir = tempfile::tempdir().unwrap();
+        index.save_to_dir(dir.path()).unwrap();
+        let loaded = IVFPQIndex::load_from_dir(dir.path()).unwrap();
+        let mut file_searcher = IVFPQFileSearcher::load(dir.path()).unwrap();
+
+        assert_eq!(file_searcher.num_vectors(), loaded.num_vectors);
+        assert_eq!(file_searcher.nprobe(), loaded.nprobe());
+        assert_eq!(
+            file_searcher.search(&query, 10).unwrap(),
+            loaded.search(&query, 10).unwrap()
+        );
+        assert_eq!(
+            file_searcher.search_reranked(&query, 10, 80).unwrap(),
+            loaded.search_reranked(&query, 10, 80).unwrap()
+        );
+    }
+
+    #[test]
+    fn file_searcher_matches_standard_adc_snapshot_loaded_search() {
+        let dim = 16;
+        let n = 240;
+        use rand::{Rng, SeedableRng};
+        let mut rng = rand::rngs::StdRng::seed_from_u64(105);
+
+        let params = IVFPQParams {
+            num_clusters: 4,
+            num_codebooks: 4,
+            codebook_size: 32,
+            nprobe: 4,
+            seed: 127,
+            ..IVFPQParams::default()
+        };
+        let mut index = IVFPQIndex::new(dim, params).unwrap();
+        for i in 0..n {
+            let vector: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
+            index.add(40_000 + i as u32, vector).unwrap();
+        }
+        index.build().unwrap();
+        #[cfg(feature = "hnsw")]
+        {
+            index.coarse_quantizer = None;
+        }
+
+        let query: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
+        let dir = tempfile::tempdir().unwrap();
+        index.save_to_dir(dir.path()).unwrap();
+        let loaded = IVFPQIndex::load_from_dir(dir.path()).unwrap();
+        let mut file_searcher = IVFPQFileSearcher::load(dir.path()).unwrap();
+
+        assert_eq!(
+            file_searcher.search(&query, 10).unwrap(),
+            loaded.search(&query, 10).unwrap()
+        );
+    }
+
+    #[cfg(feature = "persistence")]
+    #[test]
+    fn mmap_searcher_matches_snapshot_loaded_search() {
+        let dim = 16;
+        let n = 240;
+        use rand::{Rng, SeedableRng};
+        let mut rng = rand::rngs::StdRng::seed_from_u64(104);
+
+        let params = IVFPQParams {
+            num_clusters: 4,
+            num_codebooks: 4,
+            codebook_size: 16,
+            nprobe: 4,
+            seed: 126,
+            ..IVFPQParams::default()
+        };
+        let mut index = IVFPQIndex::new(dim, params).unwrap();
+        for i in 0..n {
+            let vector: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
+            index.add(30_000 + i as u32, vector).unwrap();
+        }
+        index.build().unwrap();
+        #[cfg(feature = "hnsw")]
+        {
+            index.coarse_quantizer = None;
+        }
+
+        let query: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
+        let dir = tempfile::tempdir().unwrap();
+        index.save_to_dir(dir.path()).unwrap();
+        let loaded = IVFPQIndex::load_from_dir(dir.path()).unwrap();
+        let mut mmap_searcher = IVFPQFileSearcher::load_mmap(dir.path()).unwrap();
+
+        assert_eq!(
+            mmap_searcher.search(&query, 10).unwrap(),
+            loaded.search(&query, 10).unwrap()
+        );
+        assert_eq!(
+            mmap_searcher.search_reranked(&query, 10, 80).unwrap(),
+            loaded.search_reranked(&query, 10, 80).unwrap()
+        );
+    }
+
+    #[test]
     fn save_load_compacted_index_keeps_approximate_search_only() {
         let dim = 16;
         let n = 200;
@@ -2222,6 +2775,15 @@ mod tests {
         let err = loaded.search_reranked(&query, 10, 80).unwrap_err();
         assert!(
             err.to_string().contains("search_reranked unavailable"),
+            "unexpected error: {err}"
+        );
+
+        let mut file_searcher = IVFPQFileSearcher::load(dir.path()).unwrap();
+        assert_eq!(file_searcher.search(&query, 10).unwrap(), approx_before);
+        let err = file_searcher.search_reranked(&query, 10, 80).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("search_reranked unavailable without raw_vectors.bin"),
             "unexpected error: {err}"
         );
     }

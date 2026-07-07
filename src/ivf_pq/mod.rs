@@ -49,6 +49,10 @@
 //! `save_to_dir()` and `load_from_dir()` persist a built index as a manifest plus
 //! binary array files. Raw vectors are saved only when present; a compacted index
 //! reloads with approximate search available and reranked search unavailable.
+//! [`IVFPQFileSearcher`] opens the same saved format for file-backed search over
+//! persisted PQ codes. Its mmap opener requires the `persistence` feature. The
+//! current format is snapshot-compatible; a list-contiguous IVF layout remains
+//! the better target for large cold-storage benchmarks.
 //!
 //! # Memory Calculation
 //!
@@ -150,6 +154,6 @@ pub mod pq;
 pub mod search;
 #[cfg(feature = "benchmark")]
 pub use search::IVFPQSearchProfile;
-pub use search::{IVFPQIndex, IVFPQParams};
+pub use search::{IVFPQFileSearcher, IVFPQIndex, IVFPQParams};
 
 // OPQ (Optimized PQ) is implemented in opq.rs; enable via IVFPQParams::use_opq = true.

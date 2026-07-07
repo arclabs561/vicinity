@@ -29,7 +29,7 @@
 //! | Situation | Recommendation | Feature | Persistence |
 //! |-----------|----------------|---------|-------------|
 //! | **General Purpose** (Best Recall/Speed) | [`hnsw::HNSWIndex`] | `hnsw` (default) | Yes: JSON via `serde` (`save_to_file`); binary via `persistence` (segment writer) |
-//! | **Memory Constrained** (compressed in-memory search) | `ivf_pq::IVFPQIndex` | `ivf_pq` | Yes: snapshot reloads into memory |
+//! | **Memory Constrained** (compressed vectors; file search option) | `ivf_pq::IVFPQIndex` / `ivf_pq::IVFPQFileSearcher` | `ivf_pq` | Yes: snapshot reloads into memory; file searcher reads persisted codes; mmap with `persistence` |
 //! | **Flat Graph** (Simpler, competitive on high-d) | `nsw::NSWIndex` | `nsw` | Yes: snapshot reloads into memory |
 //! | **Label Filtering** (Low selectivity) | `curator::CuratorIndex` | `curator` | Yes: snapshot reloads and rebuilds tree |
 //! | **Complex Predicates** (AND/OR filters) | `filtered_graph::FilteredGraphIndex` | `filtered_graph` | Yes: snapshot reloads into memory |
@@ -53,8 +53,10 @@
 //!    trade-off between search speed and recall for datasets that fit in RAM.
 //!
 //! 2. **Use IVF-PQ** when raw vectors dominate memory. It compresses the vector
-//!    payload and can drop raw vectors with `compact()`, but it is still an
-//!    in-memory ANN index rather than a disk-resident search path.
+//!    payload and can drop raw vectors with `compact()`. Use
+//!    `IVFPQFileSearcher` when benchmark rows need to query persisted PQ codes
+//!    directly; treat that separately from `load_from_dir()`, which rebuilds an
+//!    in-memory index snapshot.
 //!
 //! 3. **Try NSW (Flat)** if you want a simpler graph, or you are benchmarking on
 //!    high-dimensional embeddings (hundreds/thousands of dimensions). Recent empirical work suggests the

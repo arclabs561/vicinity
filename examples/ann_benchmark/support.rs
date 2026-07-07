@@ -330,6 +330,24 @@ fn snapshot_check(algorithm: &str, params_json: &str, cfg: &Config) -> Vec<Expec
     storage_checks(algorithm, params_json, cfg.snapshot_load)
 }
 
+fn snapshot_file_checks(algorithm: &str, params_json: &str, cfg: &Config) -> Vec<ExpectedResult> {
+    let mut checks = snapshot_check(algorithm, params_json, cfg);
+    if cfg.snapshot_load {
+        checks.push(ExpectedResult::with_params_and_storage(
+            algorithm,
+            params_json,
+            "file",
+        ));
+        #[cfg(feature = "persistence")]
+        checks.push(ExpectedResult::with_params_and_storage(
+            algorithm,
+            params_json,
+            "mmap",
+        ));
+    }
+    checks
+}
+
 fn serde_snapshot_check(algorithm: &str, params_json: &str, cfg: &Config) -> Vec<ExpectedResult> {
     #[cfg(not(feature = "serde"))]
     {
@@ -535,26 +553,23 @@ fn required_result_checks(
             nprobe_values(cfg, num_clusters)
                 .into_iter()
                 .flat_map(|nprobe| {
-                    let mut markers = snapshot_check(
-                        "ivfpq",
-                        &ivfpq_params_json(
-                            num_clusters,
-                            num_codebooks,
-                            cfg.pq_codebook_size,
-                            nprobe,
-                            None,
-                            cfg.pq_training_sample_size,
-                            cfg.pq_kmeans_max_iter,
-                        ),
-                        cfg,
+                    let params_json = ivfpq_params_json(
+                        num_clusters,
+                        num_codebooks,
+                        cfg.pq_codebook_size,
+                        nprobe,
+                        None,
+                        cfg.pq_training_sample_size,
+                        cfg.pq_kmeans_max_iter,
                     );
+                    let mut markers = snapshot_file_checks("ivfpq", &params_json, cfg);
                     markers.extend(
                         cfg.pq_rerank_pools
                             .iter()
                             .copied()
                             .filter(|&rerank_pool| rerank_pool > 0)
                             .flat_map(|rerank_pool| {
-                                snapshot_check(
+                                snapshot_file_checks(
                                     "ivfpq_rerank",
                                     &ivfpq_params_json(
                                         num_clusters,
@@ -1834,6 +1849,71 @@ mod tests {
             2_000,
             200
         ));
+    }
+
+    #[test]
+    fn ivfpq_resume_requires_file_storage_rows() {
+        let cfg = Config {
+            snapshot_load: true,
+            pq_num_clusters: Some(4),
+            pq_num_codebooks: Some(4),
+            pq_codebook_size: 16,
+            pq_nprobe_values: Some(vec![1]),
+            pq_rerank_pools: vec![20],
+            ..Config::default()
+        };
+        let approx_params = ivfpq_params_json(4, 4, 16, 1, None, None, 100);
+        let rerank_params = ivfpq_params_json(4, 4, 16, 1, Some(20), None, 100);
+        let missing_file = CompletedResults {
+            lines: vec![
+                single_line_with_storage("ivfpq", &approx_params, "in_memory"),
+                single_line_with_storage("ivfpq", &approx_params, "snapshot_loaded"),
+                single_line_with_storage("ivfpq_rerank", &rerank_params, "in_memory"),
+                single_line_with_storage("ivfpq_rerank", &rerank_params, "snapshot_loaded"),
+            ],
+            ..CompletedResults::default()
+        };
+        #[cfg(not(feature = "persistence"))]
+        let completed_lines = vec![
+            single_line_with_storage("ivfpq", &approx_params, "in_memory"),
+            single_line_with_storage("ivfpq", &approx_params, "snapshot_loaded"),
+            single_line_with_storage("ivfpq", &approx_params, "file"),
+            single_line_with_storage("ivfpq_rerank", &rerank_params, "in_memory"),
+            single_line_with_storage("ivfpq_rerank", &rerank_params, "snapshot_loaded"),
+            single_line_with_storage("ivfpq_rerank", &rerank_params, "file"),
+        ];
+        #[cfg(feature = "persistence")]
+        let mut completed_lines = vec![
+            single_line_with_storage("ivfpq", &approx_params, "in_memory"),
+            single_line_with_storage("ivfpq", &approx_params, "snapshot_loaded"),
+            single_line_with_storage("ivfpq", &approx_params, "file"),
+            single_line_with_storage("ivfpq_rerank", &rerank_params, "in_memory"),
+            single_line_with_storage("ivfpq_rerank", &rerank_params, "snapshot_loaded"),
+            single_line_with_storage("ivfpq_rerank", &rerank_params, "file"),
+        ];
+        #[cfg(feature = "persistence")]
+        {
+            completed_lines.push(single_line_with_storage("ivfpq", &approx_params, "mmap"));
+            completed_lines.push(single_line_with_storage(
+                "ivfpq_rerank",
+                &rerank_params,
+                "mmap",
+            ));
+        }
+        let completed = CompletedResults {
+            lines: completed_lines,
+            ..CompletedResults::default()
+        };
+
+        assert!(!request_completed(
+            &missing_file,
+            "ivfpq",
+            &cfg,
+            16,
+            2_000,
+            200
+        ));
+        assert!(request_completed(&completed, "ivfpq", &cfg, 16, 2_000, 200));
     }
 
     #[test]
