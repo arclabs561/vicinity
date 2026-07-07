@@ -206,29 +206,42 @@ pub(crate) fn load_completed_results(
     }
 }
 
+enum ExpectedParams {
+    Any,
+    Exact(String),
+    Contains(Vec<String>),
+}
+
+impl ExpectedParams {
+    fn matches(&self, line: &str) -> bool {
+        match self {
+            Self::Any => true,
+            Self::Exact(expected) => json_value_field(line, "params") == Some(expected.as_str()),
+            Self::Contains(fragments) => fragments.iter().all(|fragment| line.contains(fragment)),
+        }
+    }
+}
+
 struct ExpectedResult {
     algorithm: String,
-    params_json: Option<String>,
+    params: ExpectedParams,
     storage_mode: Option<String>,
-    fragments: Vec<String>,
 }
 
 impl ExpectedResult {
-    fn new(algorithm: impl Into<String>, fragments: impl IntoIterator<Item = String>) -> Self {
+    fn any_params(algorithm: impl Into<String>) -> Self {
         Self {
             algorithm: algorithm.into(),
-            params_json: None,
+            params: ExpectedParams::Any,
             storage_mode: None,
-            fragments: fragments.into_iter().collect(),
         }
     }
 
     fn with_params(algorithm: impl Into<String>, params_json: &str) -> Self {
         Self {
             algorithm: algorithm.into(),
-            params_json: Some(params_json.to_string()),
+            params: ExpectedParams::Exact(params_json.to_string()),
             storage_mode: None,
-            fragments: Vec::new(),
         }
     }
 
@@ -239,9 +252,19 @@ impl ExpectedResult {
     ) -> Self {
         Self {
             algorithm: algorithm.into(),
-            params_json: Some(params_json.to_string()),
+            params: ExpectedParams::Exact(params_json.to_string()),
             storage_mode: Some(storage_mode.into()),
-            fragments: Vec::new(),
+        }
+    }
+
+    fn with_param_fragments(
+        algorithm: impl Into<String>,
+        fragments: impl IntoIterator<Item = String>,
+    ) -> Self {
+        Self {
+            algorithm: algorithm.into(),
+            params: ExpectedParams::Contains(fragments.into_iter().collect()),
+            storage_mode: None,
         }
     }
 
@@ -249,19 +272,15 @@ impl ExpectedResult {
         if json_string_field(line, "algorithm").as_deref() != Some(self.algorithm.as_str()) {
             return false;
         }
-        if let Some(expected) = &self.params_json {
-            if json_value_field(line, "params") != Some(expected.as_str()) {
-                return false;
-            }
+        if !self.params.matches(line) {
+            return false;
         }
         if let Some(expected) = &self.storage_mode {
             if json_string_field(line, "storage_mode").as_deref() != Some(expected.as_str()) {
                 return false;
             }
         }
-        self.fragments
-            .iter()
-            .all(|fragment| line.contains(fragment))
+        true
     }
 }
 
@@ -269,11 +288,11 @@ fn single_result_check(algorithm: &str, params_json: &str) -> Vec<ExpectedResult
     vec![ExpectedResult::with_params(algorithm, params_json)]
 }
 
-fn result_check_with_fragments(
+fn params_containing_check(
     algorithm: &str,
     fragments: impl IntoIterator<Item = String>,
 ) -> ExpectedResult {
-    ExpectedResult::new(algorithm, fragments)
+    ExpectedResult::with_param_fragments(algorithm, fragments)
 }
 
 #[derive(Clone, Copy)]
@@ -317,7 +336,7 @@ fn ef_checks(
         .map(|&ef| {
             let mut fragments = extra_fragments(ef);
             fragments.push(format!("\"ef_search\":{}", ef));
-            result_check_with_fragments(algorithm, fragments)
+            params_containing_check(algorithm, fragments)
         })
         .collect()
 }
@@ -551,7 +570,7 @@ fn required_result_checks(
                 {
                     let mut markers = serde_snapshot_check("hnsw", &params_json, cfg);
                     if cfg.batch {
-                        markers.push(result_check_with_fragments(
+                        markers.push(params_containing_check(
                             "hnsw_parallel",
                             [
                                 format!("\"m\":{}", cfg.m),
@@ -870,7 +889,7 @@ fn required_result_checks(
         "rptree" => tree_snapshot_checks(!cfg.is_euclidean, "rptree", cfg),
         "rp_forest" => rp_forest_snapshot_checks(!cfg.is_euclidean, cfg),
         "kmeans_tree" => kmeans_tree_snapshot_checks(cfg),
-        _ => vec![ExpectedResult::new(algo, std::iter::empty::<String>())],
+        _ => vec![ExpectedResult::any_params(algo)],
     }
 }
 
