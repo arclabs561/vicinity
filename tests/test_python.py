@@ -16,6 +16,7 @@ from pyvicinity import (
     MISSING_LABEL,
     DistanceMetric,
     HNSWIndex,
+    IVFPQFileSearcher,
     IVFPQIndex,
     __version__,
 )
@@ -534,3 +535,50 @@ def test_ivfpq_save_load_round_trip(tmp_path) -> None:
     ids, dists = loaded.search(x[0], k=5, nprobe=8, rerank_pool=len(x))
     assert ids[0] == 0
     assert abs(float(dists[0])) < 1e-4
+
+
+def test_ivfpq_file_searcher_load_round_trip(tmp_path) -> None:
+    index, x = _build_ivfpq(n=16, seed=12)
+    path = tmp_path / "ivfpq"
+    index.save(path)
+
+    loaded = IVFPQIndex.load(path)
+    searcher = IVFPQFileSearcher.load(path)
+
+    assert len(searcher) == len(index)
+    assert searcher.num_vectors == len(index)
+    assert searcher.dimension == index.dimension
+    assert searcher.num_clusters == index.num_clusters
+    assert searcher.num_codebooks == index.num_codebooks
+    assert searcher.codebook_size == index.codebook_size
+    assert searcher.nprobe == index.nprobe
+
+    ids, dists = searcher.search(x[0], k=5, nprobe=8)
+    ref_ids, ref_dists = loaded.search(x[0], k=5, nprobe=8)
+    np.testing.assert_array_equal(ids, ref_ids)
+    np.testing.assert_allclose(dists, ref_dists)
+
+    rerank_ids, rerank_dists = searcher.search(x[0], k=5, nprobe=8, rerank_pool=len(x))
+    assert rerank_ids[0] == 0
+    assert abs(float(rerank_dists[0])) < 1e-4
+
+    batch_ids, batch_dists = searcher.batch_search(
+        x[:2], k=20, nprobe=8, rerank_pool=len(x)
+    )
+    assert batch_ids.shape == (2, 20)
+    assert batch_dists.shape == (2, 20)
+    assert np.all(batch_ids[:, len(x) :] == MISSING_LABEL)
+    assert np.all(batch_dists[:, len(x) :] == MISSING_DISTANCE)
+
+    searcher.set_nprobe(4)
+    assert searcher.nprobe == 4
+    assert "IVFPQFileSearcher(" in repr(searcher)
+
+
+def test_ivfpq_file_searcher_mmap_requires_persistence_feature(tmp_path) -> None:
+    index, _ = _build_ivfpq(seed=13)
+    path = tmp_path / "ivfpq"
+    index.save(path)
+
+    with pytest.raises(ValueError, match="persistence"):
+        IVFPQFileSearcher.load(path, mmap=True)

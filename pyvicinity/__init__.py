@@ -31,6 +31,7 @@ from pyvicinity._core import (
     MISSING_LABEL,
     DistanceMetric,
     HNSWIndex,
+    IVFPQFileSearcher,
     IVFPQIndex,
 )
 from pyvicinity._core import __version__ as __version__
@@ -40,6 +41,7 @@ __all__ = [
     "MISSING_LABEL",
     "DistanceMetric",
     "HNSWIndex",
+    "IVFPQFileSearcher",
     "IVFPQIndex",
     "__version__",
 ]

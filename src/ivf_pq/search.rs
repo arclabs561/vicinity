@@ -1684,6 +1684,26 @@ impl IVFPQFileSearcher {
         self.num_vectors
     }
 
+    /// Vector dimension.
+    pub fn dimension(&self) -> usize {
+        self.dimension
+    }
+
+    /// Number of IVF coarse clusters.
+    pub fn num_clusters(&self) -> usize {
+        self.params.num_clusters
+    }
+
+    /// Number of PQ codebooks.
+    pub fn num_codebooks(&self) -> usize {
+        self.params.num_codebooks
+    }
+
+    /// Number of centroids per PQ codebook.
+    pub fn codebook_size(&self) -> usize {
+        self.params.codebook_size
+    }
+
     /// Search using approximate IVF-PQ distances while reading codes from storage.
     pub fn search(&mut self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, RetrieveError> {
         let candidates = self.search_approx_internal(query, k)?;

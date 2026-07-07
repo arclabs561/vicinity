@@ -18,6 +18,7 @@ __all__ = [
     "MISSING_LABEL",
     "DistanceMetric",
     "HNSWIndex",
+    "IVFPQFileSearcher",
     "IVFPQIndex",
     "__version__",
 ]
@@ -278,6 +279,64 @@ class IVFPQIndex:
     @property
     def use_opq(self) -> bool:
         """Whether OPQ rotation is enabled."""
+
+    def __len__(self) -> int: ...
+    def __repr__(self) -> str: ...
+
+@final
+class IVFPQFileSearcher:
+    """File-backed IVF-PQ searcher for saved index directories."""
+
+    @staticmethod
+    def load(path: str | PathLike[str], mmap: bool = False) -> IVFPQFileSearcher:
+        """Load a file-backed searcher from a directory written by
+        :meth:`IVFPQIndex.save`.
+        """
+
+    def set_nprobe(self, nprobe: int) -> None:
+        """Set the default number of IVF clusters scanned per query."""
+
+    def search(
+        self,
+        query: NDArray[np.float32],
+        k: int,
+        nprobe: int | None = None,
+        rerank_pool: int | None = None,
+    ) -> tuple[NDArray[np.int64], NDArray[np.float32]]:
+        """Search one query vector."""
+
+    def batch_search(
+        self,
+        queries: NDArray[np.float32],
+        k: int,
+        nprobe: int | None = None,
+        rerank_pool: int | None = None,
+    ) -> tuple[NDArray[np.int64], NDArray[np.float32]]:
+        """Search a batch of query vectors."""
+
+    @property
+    def num_vectors(self) -> int:
+        """Number of vectors currently in the index."""
+
+    @property
+    def dimension(self) -> int:
+        """Vector dimension."""
+
+    @property
+    def num_clusters(self) -> int:
+        """Number of IVF coarse clusters."""
+
+    @property
+    def num_codebooks(self) -> int:
+        """Number of PQ codebooks."""
+
+    @property
+    def codebook_size(self) -> int:
+        """Number of centroids per PQ codebook."""
+
+    @property
+    def nprobe(self) -> int:
+        """Default IVF clusters scanned per query."""
 
     def __len__(self) -> int: ...
     def __repr__(self) -> str: ...
