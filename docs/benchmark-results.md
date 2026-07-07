@@ -148,6 +148,38 @@ This is a persistence parity row, not a fixed-recall target row. Snapshot load
 restored the same recall and near-identical warm-cache search throughput at this
 operating point; the 95% recall point still needs a higher-`ef_search` sweep.
 
+A capped HNSW storage sweep on 2026-07-07 measured the lower-recall operating
+points on 50,000 indexed GloVe-25 vectors and 1,000 queries. Recall was
+recomputed against the capped corpus, so these rows are storage and shape
+evidence rather than full-corpus comparison rows.
+
+```bash
+cargo run --release --example ann_benchmark --no-default-features --features hnsw,serde -- \
+  data/ann-benchmarks/glove-25-angular --algo hnsw \
+  --ef-search 10,20,50,75,100 --max-train 50000 --max-queries 1000 \
+  --snapshot-load --json \
+  --results data/ann-benchmarks/results/glove-25-hnsw-storage-capped-20260707.jsonl
+```
+
+| ef_search | Storage mode | Recall@10 | QPS | p50 us | p95 us | p99 us | Load s | Index bytes |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 10 | in_memory | 73.85% | 207,883.5 | 4.4 | 8.5 | 10.7 | n/a | n/a |
+| 10 | snapshot_loaded | 73.85% | 200,651.0 | 4.5 | 8.9 | 11.7 | 0.0640 | 20,337,704 |
+| 20 | in_memory | 86.11% | 133,506.3 | 7.2 | 10.5 | 12.5 | n/a | n/a |
+| 20 | snapshot_loaded | 86.11% | 130,378.6 | 7.5 | 10.3 | 12.8 | 0.0640 | 20,337,704 |
+| 50 | in_memory | 94.97% | 67,846.2 | 14.5 | 18.2 | 20.7 | n/a | n/a |
+| 50 | snapshot_loaded | 94.97% | 67,983.8 | 14.6 | 18.5 | 20.8 | 0.0640 | 20,337,704 |
+| 75 | in_memory | 97.40% | 43,355.7 | 21.8 | 34.3 | 41.8 | n/a | n/a |
+| 75 | snapshot_loaded | 97.40% | 50,448.6 | 19.6 | 24.6 | 27.6 | 0.0640 | 20,337,704 |
+| 100 | in_memory | 98.47% | 37,267.6 | 26.5 | 33.1 | 38.9 | n/a | n/a |
+| 100 | snapshot_loaded | 98.47% | 37,545.5 | 26.5 | 32.8 | 37.8 | 0.0640 | 20,337,704 |
+
+The important storage result is parity: snapshot-loaded HNSW has the same recall
+and comparable warm-cache QPS as the freshly built heap index. The important
+QPS result is the recall curve: on this capped corpus, HNSW is above 200K QPS at
+low recall and around 68K QPS just below 95% recall. Full GloVe-25 still needs
+the corresponding higher-`ef_search` snapshot sweep.
+
 On 2026-07-07, a bounded DiskANN storage probe used 50,000 indexed GloVe-25
 vectors and 1,000 queries. Recall was recomputed against the capped corpus, so
 these rows validate the storage path and cache-state reporting but are not
