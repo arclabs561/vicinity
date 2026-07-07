@@ -118,7 +118,10 @@ These APIs are reachable but are not recommended defaults yet.
   they win, and keep KD/ball rows separate from RP-tree, RP-forest, and
   K-means approximate tree rows.
 - **LSH**: keep as a legacy dense-vector baseline until a workload needs its
-  false-positive/false-negative tuning properties.
+  false-positive/false-negative tuning properties. The `lsh` feature already
+  uses `sketchir` for cross-polytope hashing primitives; keep `sketchir` as the
+  sketch/hash crate and keep vicinity responsible for ANN storage, reranking,
+  persistence, and benchmark rows.
 - **SparseMIPS and LEMUR**: evaluate on sparse or late-interaction datasets,
   not dense GloVe rows. LEMUR also needs in-tree training or a reproducible
   model-loading path before it can be recommended.

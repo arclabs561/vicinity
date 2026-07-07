@@ -151,9 +151,10 @@ benchmarking, persistence, Python bindings, and performance work.
 | 10 | Streaming/update workloads | Review FreshGraph, in-place HNSW, LSM HNSW, tombstones, and `store::UpdatableIndex` against active-set recall, update throughput, query latency, compaction, and storage residency. |
 | 11 | Sparse and late-interaction harnesses | SparseMIPS needs a SPLADE/BM25-style sparse dataset harness. LEMUR needs training or reproducible model loading before storage or QPS rows matter. |
 | 12 | Python policy | Decide which Rust APIs become Python APIs. Keep the default policy narrow unless an algorithm has stable benchmarks, persistence behavior, and examples. Rust-only gaps today: DiskANN, `store`, FreshGraph, filtered search/update APIs, and HNSW binary segments. |
-| 13 | External research claims | Verify newer roadmap claims before implementation: Extended RaBitQ, VSAG layout tricks, IP-DiskANN, ACORN production behavior, PAG, SAQ, and ARM/SVE2 kernels. |
-| 14 | Dataset difficulty metadata | Add a dataset-profile script that reports intrinsic dimensionality or LID, relative contrast, neighbor-distance margins, norm distribution, duplicate rate, hubness, and partition/list imbalance. Start with cheap sampled metrics for GloVe/SIFT/Deep before adding expensive full-corpus reports. |
-| 15 | Profiling depth | Add profile artifacts for the next actual performance change. Record baseline, profiler target, negative controls, before/after, and rejected hypotheses in `docs/benchmark-results.md`. |
+| 13 | LSH/sketch boundary | The `lsh` feature uses `sketchir` for cross-polytope hashing primitives. Keep `sketchir` focused on MinHash/SimHash/LSH sketches and durable sketch sidecars; keep vicinity focused on ANN storage, exact reranking, persistence modes, and fixed-recall benchmark rows. Benchmark sharing is useful, but PRT, RP-tree/RP-forest, SparseMIPS, and LEMUR should stay in vicinity unless their role becomes pure sketch generation. |
+| 14 | External research claims | Verify newer roadmap claims before implementation: Extended RaBitQ, VSAG layout tricks, IP-DiskANN, ACORN production behavior, PAG, SAQ, and ARM/SVE2 kernels. |
+| 15 | Dataset difficulty metadata | Add a dataset-profile script that reports intrinsic dimensionality or LID, relative contrast, neighbor-distance margins, norm distribution, duplicate rate, hubness, and partition/list imbalance. Start with cheap sampled metrics for GloVe/SIFT/Deep before adding expensive full-corpus reports. |
+| 16 | Profiling depth | Add profile artifacts for the next actual performance change. Record baseline, profiler target, negative controls, before/after, and rejected hypotheses in `docs/benchmark-results.md`. |
 
 ## Guardrails
 
