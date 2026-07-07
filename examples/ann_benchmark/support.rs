@@ -310,9 +310,13 @@ fn hnsw_quantized_snapshot_checks(algorithm: &str, cfg: &Config) -> Vec<Expected
     })
 }
 
-fn snapshot_check(algorithm: &str, params_json: &str, cfg: &Config) -> Vec<ExpectedResult> {
+fn storage_checks(
+    algorithm: &str,
+    params_json: &str,
+    include_snapshot: bool,
+) -> Vec<ExpectedResult> {
     let mut checks = single_result_check(algorithm, params_json);
-    if cfg.snapshot_load {
+    if include_snapshot {
         checks.push(ExpectedResult::with_params_and_storage(
             algorithm,
             params_json,
@@ -320,6 +324,10 @@ fn snapshot_check(algorithm: &str, params_json: &str, cfg: &Config) -> Vec<Expec
         ));
     }
     checks
+}
+
+fn snapshot_check(algorithm: &str, params_json: &str, cfg: &Config) -> Vec<ExpectedResult> {
+    storage_checks(algorithm, params_json, cfg.snapshot_load)
 }
 
 fn serde_snapshot_check(algorithm: &str, params_json: &str, cfg: &Config) -> Vec<ExpectedResult> {
@@ -331,15 +339,7 @@ fn serde_snapshot_check(algorithm: &str, params_json: &str, cfg: &Config) -> Vec
 
     #[cfg(feature = "serde")]
     {
-        let mut checks = single_result_check(algorithm, params_json);
-        if cfg.snapshot_load {
-            checks.push(ExpectedResult::with_params_and_storage(
-                algorithm,
-                params_json,
-                "snapshot_loaded",
-            ));
-        }
-        checks
+        storage_checks(algorithm, params_json, cfg.snapshot_load)
     }
 }
 
