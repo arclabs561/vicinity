@@ -57,19 +57,19 @@ benchmarking, persistence, Python bindings, and performance work.
   reads and then switching direct-file graph/vector reads to positional reads
   moved `file_ef75` from 199.28 ms to 72.892 ms per 100 queries, with heap
   and mmap controls staying in family.
-- The local ignored result set now has no missing rows for
-  `scripts/summarize_ann_results.py --expect-standard-storage --only-dataset
-  glove-25-angular --missing-only`. This is row coverage, not full-scale
-  fixed-recall coverage: HNSW snapshot rows are still below 95% recall, and
-  several rows use `--max-train` caps. Capped IVF-PQ storage rows now do cross
-  95% recall at `nprobe=64`.
+- The standard storage expectation matrix now covers all current benchmark
+  families at the coarse algorithm/storage level, including graph snapshots,
+  file/mmap searchers, segmented store, churn rows, and sparse placeholders.
+  This is stricter than the earlier shortlist. Missing rows now identify the
+  remaining all-family coverage work; measured rows still need separate
+  fixed-recall review because several local rows use `--max-train` caps.
 
 ## Remaining Review Queue
 
 | Priority | Area | Next review |
 | --- | --- | --- |
 | 1 | Storage-mode matrix | Verify every algorithm row in `docs/persistence.md` against public APIs and `ann_benchmark` support. Keep heap, snapshot-loaded heap, file, mmap, and segmented-store modes separate. |
-| 2 | Benchmark coverage | The standard storage matrix has local current-schema rows for GloVe-25 when ignored `data/ann-benchmarks/results/*.jsonl` files are included. `ann_benchmark` records both `--max-train` and `--max-queries` in `_meta`, so bounded rows do not mix with full-dataset rows. Next review should promote selected capped rows to full-corpus runs and add fixed-recall sweeps where `qps_at_recall_floor` is still empty, especially HNSW snapshot. |
+| 2 | Benchmark coverage | The standard storage matrix now covers every current benchmark family at the coarse algorithm/storage level. `ann_benchmark` records both `--max-train` and `--max-queries` in `_meta`, so bounded rows do not mix with full-dataset rows. Next review should fill the newly visible missing rows, promote selected capped rows to full-corpus runs, and add fixed-recall sweeps where `qps_at_recall_floor` is still empty, especially HNSW snapshot. |
 | 3 | CI benchmark smoke breadth | CI now runs cheap smoke rows for DiskANN file/mmap, Vamana, `store::UpdatableIndex`, filtered dense rows, FreshGraph, churn modes, and classical baselines. Keep adding rows when new implemented algorithms enter `ann_benchmark`. |
 | 4 | Dataset source pinning | All configured ann-benchmarks HDF5 sources now have direct SHA-256 pins. Next review should decide whether stable mirrors are needed beyond `ann-benchmarks.com`. |
 | 5 | Segmented-store benchmark row | Added `--algo store` with `storage_mode=segmented_store`; capped 50K GloVe-25 row reaches 99.97% recall at 5.9K QPS. Next review is dataset-scale comparison against HNSW, FreshGraph, in-place graph, and LSM churn. |

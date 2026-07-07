@@ -183,4 +183,28 @@ def test_cli_can_emit_standard_storage_missing_rows(
     missing = {(row["algorithm"], row["storage_mode"]) for row in output}
     assert ("hnsw", "snapshot_loaded") in missing
     assert ("diskann_mmap", "mmap") in missing
+    assert ("ivfpq_rerank", "file") in missing
+    assert ("fresh_graph", "snapshot_loaded") in missing
+    assert ("kdtree", "snapshot_loaded") in missing
+    assert ("store", "segmented_store") in missing
+    assert ("sparse_mips", "in_memory") in missing
     assert ("hnsw", "in_memory") not in missing
+
+
+def test_standard_storage_expectations_cover_current_storage_classes() -> None:
+    script = load_script()
+
+    rows = set(script.standard_storage_expectations())
+
+    for algorithm in script.SNAPSHOT_RELOAD_ALGORITHMS:
+        assert (algorithm, "in_memory") in rows
+        assert (algorithm, "snapshot_loaded") in rows
+    for algorithm in script.FILE_BACKED_ALGORITHMS:
+        assert (algorithm, "in_memory") in rows
+        assert (algorithm, "snapshot_loaded") in rows
+        assert (algorithm, "file") in rows
+        assert (algorithm, "mmap") in rows
+    assert ("diskann", "in_memory") in rows
+    assert ("diskann_file", "file") in rows
+    assert ("diskann_mmap", "mmap") in rows
+    assert ("store", "segmented_store") in rows

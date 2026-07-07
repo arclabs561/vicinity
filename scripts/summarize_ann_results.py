@@ -10,24 +10,81 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-STANDARD_STORAGE_EXPECTATIONS = [
-    ("hnsw", "in_memory"),
-    ("hnsw", "snapshot_loaded"),
+SNAPSHOT_RELOAD_ALGORITHMS = (
+    "hnsw",
+    "nsw",
+    "ivf_avq",
+    "ivf_rabitq",
+    "rp_quant",
+    "binary_index",
+    "lsh",
+    "emg",
+    "nsg",
+    "fresh_graph",
+    "dual_branch",
+    "deg",
+    "filtered_graph",
+    "inplace",
+    "pipnn",
+    "vamana",
+    "finger",
+    "sng",
+    "symphony_qg",
+    "symphony_qg_vr",
+    "sq4",
+    "sq4u",
+    "sq8u",
+    "curator",
+    "range_filtered",
+    "kdtree",
+    "balltree",
+    "rptree",
+    "rp_forest",
+    "kmeans_tree",
+)
+
+IN_MEMORY_ONLY_ALGORITHMS = (
+    "brute",
+    "adsampling",
+    "hnsw_prt",
+    "fresh_graph_churn",
+    "inplace_churn",
+    "lsm_churn",
+    "sparse_mips",
+)
+
+FILE_BACKED_ALGORITHMS = (
+    "ivfpq",
+    "ivfpq_rerank",
+)
+
+SEGMENTED_STORE_ALGORITHMS = ("store",)
+
+ALIAS_STORAGE_EXPECTATIONS = (
     ("diskann", "in_memory"),
     ("diskann_file", "file"),
     ("diskann_mmap", "mmap"),
-    ("ivfpq", "in_memory"),
-    ("ivfpq", "snapshot_loaded"),
-    ("ivfpq", "file"),
-    ("ivfpq", "mmap"),
-    ("store", "segmented_store"),
-    ("balltree", "in_memory"),
-    ("balltree", "snapshot_loaded"),
-    ("rp_forest", "in_memory"),
-    ("rp_forest", "snapshot_loaded"),
-    ("kmeans_tree", "in_memory"),
-    ("kmeans_tree", "snapshot_loaded"),
-]
+)
+
+
+def standard_storage_expectations() -> list[tuple[str, str]]:
+    rows: set[tuple[str, str]] = set(ALIAS_STORAGE_EXPECTATIONS)
+    rows.update((algorithm, "in_memory") for algorithm in SNAPSHOT_RELOAD_ALGORITHMS)
+    rows.update(
+        (algorithm, "snapshot_loaded") for algorithm in SNAPSHOT_RELOAD_ALGORITHMS
+    )
+    rows.update((algorithm, "in_memory") for algorithm in IN_MEMORY_ONLY_ALGORITHMS)
+    rows.update((algorithm, "in_memory") for algorithm in FILE_BACKED_ALGORITHMS)
+    rows.update((algorithm, "snapshot_loaded") for algorithm in FILE_BACKED_ALGORITHMS)
+    rows.update((algorithm, "file") for algorithm in FILE_BACKED_ALGORITHMS)
+    rows.update((algorithm, "mmap") for algorithm in FILE_BACKED_ALGORITHMS)
+    rows.update(
+        (algorithm, "segmented_store") for algorithm in SEGMENTED_STORE_ALGORITHMS
+    )
+    return sorted(rows)
+
+
+STANDARD_STORAGE_EXPECTATIONS = standard_storage_expectations()
 
 
 @dataclass
