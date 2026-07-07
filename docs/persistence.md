@@ -58,7 +58,7 @@ must be part of the benchmark row.
 
 | Index family | Save/load | Memory search | File search | Mmap search | Updates | Storage direction |
 | --- | --- | --- | --- | --- | --- | --- |
-| HNSW | JSON via `serde`; binary segments via `persistence` | Yes | No | No | Tombstones and repair; `store` for durable segments | Keep JSON and binary segment paths. Use `store` for durable segmented HNSW. |
+| HNSW | JSON via `serde`; binary segments via `persistence` | Yes | No | No | Tombstones and repair in memory; `store` for durable segments | Keep JSON and binary segment paths. HNSW JSON snapshots do not persist tombstones; use `store` for durable segmented HNSW with deletes. |
 | `store::UpdatableIndex` | Open/checkpoint/reopen via `segstore` + HNSW sidecars | Segment sidecars loaded into memory | No | No | Add/delete/compact/checkpoint | Keep on `segstore`; this is the segmented-HNSW path. Benchmark both live post-checkpoint search and reopened `SnapshotIndex` search when validating restart behavior. |
 | DiskANN | Yes, graph + vector files | Yes | Yes | Yes | Build-once | Save writes the current graph/vector files directly. File and mmap searchers read those files, with mmap using `durability`. Page/co-location layout remains next. Do not route through `segstore`. |
 | NSW / SNG / Vamana / NSG / FINGER / PiPNN / EMG / LSH | Yes, directory format | Yes | No | No | Build-once | Persists the built in-memory graph state and restores it directly. This is snapshot-memory persistence, not file-backed search. |
@@ -68,7 +68,7 @@ must be part of the benchmark row.
 | IVF-PQ | Yes, directory format | Yes | Yes | Yes, with `persistence` | Build-once | `load_from_dir` rebuilds an in-memory snapshot. `IVFPQFileSearcher` reads persisted PQ codes and optional raw vectors from files or mmap. PQ-code sidecars are list-contiguous; exact rerank still reads optional raw vectors by vector ID. |
 | IVF-AVQ | Yes, directory format | Yes | No | No | Build-once | Persists centroids, AVQ codebooks, partitions, codes, and raw vectors for rerank. |
 | IVF-RaBitQ | Yes, directory format for non-compacted indexes | Yes | No | No | Build-once | Persists raw vectors, centroids, and cluster membership, then rebuilds RaBitQ edge codes on load. |
-| FreshGraph / in-place graph | Yes | Yes | No | No | Insert/delete/compact | FreshGraph uses a snapshot directory with tombstones and inbound counts. `InPlaceIndex` and `MappedInPlaceIndex` use validated file snapshots that preserve free slots and external-ID maps. WAL/checkpoint durability remains separate from `segstore`. |
+| FreshGraph / in-place graph | Yes | Yes | No | No | Insert/delete/compact | FreshGraph uses a snapshot directory with tombstones and inbound counts. `InPlaceIndex` and `MappedInPlaceIndex` use `serde`-gated file snapshots that preserve free slots and external-ID maps. WAL/checkpoint durability remains separate from `segstore`. |
 | Curator | Yes, directory format | Yes | No | No | Build-once | Persists normalized vectors, doc IDs, labels, and parameters, then rebuilds the tree on load. |
 | Range-filtered graph | Yes, directory format | Yes | No | No | Build-once | Persists normalized vectors and sorted attributes, then rebuilds HNSW on load. |
 | Filtered graph | Yes, directory format | Yes | No | No | Build-once | Persists normalized vectors, graph neighbors, medoid, and inverted filter payloads. |

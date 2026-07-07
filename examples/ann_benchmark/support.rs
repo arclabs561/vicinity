@@ -952,6 +952,12 @@ pub(crate) fn request_completed(
     train_len: usize,
     test_len: usize,
 ) -> bool {
+    // The dense HDF5 harness cannot construct SparseVector inputs. The runner
+    // reports a skip and emits no JSONL row until a sparse dataset harness exists.
+    if algo == "sparse_mips" {
+        return true;
+    }
+
     let checks = required_result_checks(algo, cfg, dim, train_len, test_len);
     !checks.is_empty()
         && checks
@@ -2526,6 +2532,24 @@ mod tests {
             25,
             2_000,
             200
+        ));
+    }
+
+    #[test]
+    fn sparse_mips_resume_accepts_dense_dataset_skip() {
+        let cfg = Config {
+            snapshot_load: true,
+            ..Config::default()
+        };
+        let completed = CompletedResults::default();
+
+        assert!(request_completed(
+            &completed,
+            "sparse_mips",
+            &cfg,
+            25,
+            50_000,
+            1_000
         ));
     }
 

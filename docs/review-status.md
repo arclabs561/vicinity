@@ -8,7 +8,7 @@ benchmarking, persistence, Python bindings, and performance work.
 | Area | Status | Evidence |
 | --- | --- | --- |
 | Dataset fetch/generation repeatability | Passing | `uv run pytest tests/test_download_ann_benchmarks.py tests/test_generate_ann_smoke_data.py tests/test_generate_sample_data.py tests/test_generate_multiscale_data.py` |
-| Benchmark resume/storage expectations | Passing | `cargo test --example ann_benchmark --no-default-features --features hnsw,ivf_pq,persistence,diskann,serde -- support::tests` |
+| Benchmark resume/storage expectations | Passing | `cargo test --example ann_benchmark --no-default-features --features hnsw,ivf_pq,persistence,diskann,serde -- support::tests` (25 tests, including dense SparseMIPS skip) |
 | Python exposed API | Passing | `uv run maturin develop --release --features hnsw,python,parallel`; `uv run pytest tests/test_python.py`; `uv run python -m mypy.stubtest pyvicinity._core` |
 | Algorithm recommendation docs | Updated | README and `docs/algorithms.md` distinguish brute force, in-memory, file-backed graph, and file-backed compressed search |
 
@@ -102,6 +102,11 @@ benchmarking, persistence, Python bindings, and performance work.
   This is stricter than the earlier shortlist. Missing rows now identify the
   remaining all-family coverage work; measured rows still need separate
   fixed-recall review because several local rows use `--max-train` caps.
+- A read-only storage matrix audit found no unsupported DiskANN or IVF-PQ
+  file/mmap claims. Follow-up edits made HNSW tombstone persistence explicit,
+  marked InPlace/MappedInPlace file snapshots as `serde`-gated, and taught
+  resume that SparseMIPS is an intentional dense-harness skip until a sparse
+  dataset harness exists.
 - A subagent read-only review of the experimental-status docs found DiskANN,
   DEG, LEMUR, SQ4U/SymphonyQG, and classical coverage mostly accurate. Follow-up
   edits narrowed stale KD-tree exactness wording, marked old GloVe-25 rows as
@@ -113,7 +118,7 @@ benchmarking, persistence, Python bindings, and performance work.
 
 | Priority | Area | Next review |
 | --- | --- | --- |
-| 1 | Storage-mode matrix | Verify every algorithm row in `docs/persistence.md` against public APIs and `ann_benchmark` support. Keep heap, snapshot-loaded heap, file, mmap, and segmented-store modes separate. |
+| 1 | Storage-mode matrix | Main matrix reviewed against public APIs and `ann_benchmark` support. Next pass should compile broader feature combinations and add any new storage modes as algorithms graduate. Keep heap, snapshot-loaded heap, file, mmap, and segmented-store modes separate. |
 | 2 | Benchmark coverage | The standard storage matrix now covers every current benchmark family at the coarse algorithm/storage level. `ann_benchmark` records both `--max-train` and `--max-queries` in `_meta`, so bounded rows do not mix with full-dataset rows. Mixed historical result directories can now use observed-only storage expectations and `--current-schema-only`. HNSW and IVF-PQ now have full-train fixed-recall storage sweeps; DiskANN now has a full-corpus ef=75 storage row below 95% recall. Next review should add fixed-recall sweeps where `qps_at_recall_floor` is still empty. |
 | 3 | CI benchmark smoke breadth | CI now runs cheap smoke rows for DiskANN file/mmap, Vamana, `store::UpdatableIndex`, filtered dense rows, FreshGraph, churn modes, and classical baselines. Keep adding rows when new implemented algorithms enter `ann_benchmark`. |
 | 4 | Dataset source pinning | All configured ann-benchmarks HDF5 sources now have direct SHA-256 pins. Next review should decide whether stable mirrors are needed beyond `ann-benchmarks.com`. |
