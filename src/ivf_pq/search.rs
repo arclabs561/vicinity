@@ -1232,7 +1232,11 @@ impl IVFPQIndex {
         }
 
         // Pre-allocate reusable buffers for the nprobe loop
-        let mut candidates = Vec::new();
+        let expected_candidates = cluster_distances
+            .iter()
+            .map(|(cluster_idx, _)| self.clusters[*cluster_idx].len())
+            .sum();
+        let mut candidates = Vec::with_capacity(expected_candidates);
         let mut query_residual = vec![0.0f32; self.dimension];
         let mut codes_batch = Vec::new();
         let mut distances_batch = Vec::new();

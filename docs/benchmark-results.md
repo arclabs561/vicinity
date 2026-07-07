@@ -267,6 +267,14 @@ primary bottleneck for these shapes:
 | `m25_one_dim_nprobe32_k10` | 48 alloc calls/query, 105.4 KB/query | 18 alloc calls/query, 96.4 KB/query |
 | `m5_runner_default_nprobe32_k10` | 48 alloc calls/query, 84.9 KB/query | 18 alloc calls/query, 75.9 KB/query |
 
+Preallocating the query candidate buffer from the probed cluster sizes cut the
+remaining search allocations again:
+
+| Shape | After distance-buffer reuse | After candidate preallocation |
+|-------|-----------------------------|-------------------------------|
+| `m25_one_dim_nprobe32_k10` | 18 alloc calls/query, 96.4 KB/query | 8 alloc calls/query, 50.8 KB/query |
+| `m5_runner_default_nprobe32_k10` | 18 alloc calls/query, 75.9 KB/query | 8 alloc calls/query, 30.3 KB/query |
+
 ## GloVe-25 (1.18M vectors, 25-d, angular distance)
 
 Ground truth: brute-force k-NN on L2-normalized vectors (angular ≡ cosine for unit vectors).
