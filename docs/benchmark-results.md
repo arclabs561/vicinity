@@ -157,6 +157,21 @@ inclusive time and `innr::dense::dot` as the largest leaf bucket at about
 keeping `innr` for dense distance kernels and optimizing HNSW graph traversal
 around the kernel rather than replacing the kernel in `vicinity`.
 
+The `hnsw_search` benchmark now also reports heap allocation counts per query.
+On the 10K-vector, 128-d fixture, search allocates about 7 times per query, with
+bytes scaling with `ef`:
+
+| ef_search | Alloc calls/query | Alloc bytes/query | Time / 100 queries |
+| --- | --- | --- | --- |
+| 10 | 6.9 | 813.6 | 476.42 us |
+| 50 | 7.0 | 3,796.0 | 1.9362 ms |
+| 100 | 7.0 | 7,556.0 | 3.7768 ms |
+| 200 | 7.0 | 13,156.0 | 7.3105 ms |
+
+This makes heap traffic visible for future work, but the counts are bounded and
+do not yet justify a heap-first rewrite without a profile showing allocator time
+or result-heap maintenance as the bottleneck.
+
 ### Dense Distance Kernel
 
 Direct Criterion measurements on the 128-d L2 kernel:

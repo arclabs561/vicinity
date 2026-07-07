@@ -212,7 +212,7 @@ impl PartialOrd for MaxResult {
 
 // ─── Batched distance helpers ────────────────────────────────────────────────
 
-/// Process a batch of up to 4 neighbor distance computations.
+/// Process a batch of neighbor distance computations.
 /// Computes distances for all batch entries, then inserts qualifying results
 /// into the candidate and result heaps.
 #[inline]
