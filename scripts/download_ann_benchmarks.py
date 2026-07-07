@@ -38,6 +38,9 @@ DATASETS = {
         "normalize": False,  # Keep original metric; use original ground truth
         "size_mb": 501,
         "expected_bytes": 525_128_288,
+        "expected_sha256": (
+            "dd6f0a6ed6b7ebb8934680f861a33ed01ff33991eaee4fd60914d854a0ca5984"
+        ),
     },
     "glove-25-angular": {
         "url": "https://ann-benchmarks.com/glove-25-angular.hdf5",
@@ -46,6 +49,9 @@ DATASETS = {
         "recompute_ground_truth": True,
         "size_mb": 121,
         "expected_bytes": 127_359_688,
+        "expected_sha256": (
+            "51004cb0ae962159f0db507a51fec2b395de14b166f55976c89f16bd2f8b6391"
+        ),
     },
     "glove-50-angular": {
         "url": "https://ann-benchmarks.com/glove-50-angular.hdf5",
@@ -62,6 +68,9 @@ DATASETS = {
         "recompute_ground_truth": True,
         "size_mb": 463,
         "expected_bytes": 485_413_888,
+        "expected_sha256": (
+            "544af1d5e84e112cd4749571dcfd8ca109818a572f850af75a3a09e093a953c4"
+        ),
     },
     "glove-200-angular": {
         "url": "https://ann-benchmarks.com/glove-200-angular.hdf5",
@@ -77,6 +86,9 @@ DATASETS = {
         "normalize": False,
         "size_mb": 217,
         "expected_bytes": 227_528_288,
+        "expected_sha256": (
+            "7f24e5122b71346346686a6ea80e08d9145b9c020f9f2db4c4c799dfcfc96a07"
+        ),
     },
     "nytimes-256-angular": {
         "url": "https://ann-benchmarks.com/nytimes-256-angular.hdf5",
@@ -85,6 +97,9 @@ DATASETS = {
         "recompute_ground_truth": True,
         "size_mb": 301,
         "expected_bytes": 315_208_288,
+        "expected_sha256": (
+            "6ad5d2cde6d6a6f21528d541901304ebfd40885d6ce6afae37bccbe278254a93"
+        ),
     },
     "mnist-784-euclidean": {
         "url": "https://ann-benchmarks.com/mnist-784-euclidean.hdf5",
@@ -99,6 +114,9 @@ DATASETS = {
         "normalize": False,
         "size_mb": 3600,
         "expected_bytes": 3_844_648_288,
+        "expected_sha256": (
+            "8e95831936bfdbfa0a56086942e2cf98cd703517c67f985914183eb4cdbf026a"
+        ),
     },
     "deep-image-96-angular": {
         "url": "https://ann-benchmarks.com/deep-image-96-angular.hdf5",
@@ -132,21 +150,34 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def verify_expected_sha256(path: Path, expected_sha256: str) -> None:
+    """Fail when a cached or downloaded HDF5 does not match the pinned hash."""
+    actual_sha256 = sha256_file(path)
+    if actual_sha256 != expected_sha256:
+        raise SystemExit(
+            f"{path} has SHA256 {actual_sha256}, expected {expected_sha256}. "
+            "Re-run with --redownload to replace it."
+        )
+
+
 def download_file(
     url: str,
     dest: Path,
     *,
     redownload: bool = False,
     expected_bytes: int | None = None,
+    expected_sha256: str | None = None,
 ) -> None:
     """Download with progress indicator, writing atomically on success."""
-    import requests
-
     if dest.exists() and not redownload:
         if expected_bytes is not None:
             verify_expected_size(dest, expected_bytes)
+        if expected_sha256 is not None:
+            verify_expected_sha256(dest, expected_sha256)
         print(f"Using cached {dest}")
         return
+
+    import requests
 
     print(f"Downloading {url} ...")
     tmp = dest.with_suffix(dest.suffix + ".part")
@@ -170,6 +201,8 @@ def download_file(
                     )
     if expected_bytes is not None:
         verify_expected_size(tmp, expected_bytes)
+    if expected_sha256 is not None:
+        verify_expected_sha256(tmp, expected_sha256)
     tmp.replace(dest)
     print()
 
@@ -298,6 +331,7 @@ def conversion_settings(name: str, info: dict) -> dict:
         "normalize": info.get("normalize", False),
         "recompute_ground_truth": info.get("recompute_ground_truth", False),
         "expected_bytes": info.get("expected_bytes"),
+        "expected_sha256": info.get("expected_sha256"),
     }
 
 
@@ -391,6 +425,8 @@ def adopt_existing_outputs(
         )
     if info.get("expected_bytes") is not None:
         verify_expected_size(hdf5_path, info["expected_bytes"])
+    if info.get("expected_sha256") is not None:
+        verify_expected_sha256(hdf5_path, info["expected_sha256"])
 
     write_complete_manifest_from_shapes(
         output_dir,
@@ -468,6 +504,7 @@ def convert_dataset(
         hdf5_path,
         redownload=redownload,
         expected_bytes=info.get("expected_bytes"),
+        expected_sha256=info.get("expected_sha256"),
     )
 
     try:

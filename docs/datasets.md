@@ -64,11 +64,13 @@ uv run scripts/download_ann_benchmarks.py sift-128-euclidean
 The script writes `data/ann-benchmarks/<dataset>/{train,test,neighbors}.bin`
 plus `dataset.json`. Re-running it is idempotent: existing converted files are
 reused only when their headers, byte lengths, and manifest match the current
-conversion settings. Use `--force` to rebuild the `.bin` files from the cached
+conversion settings. Cached or downloaded HDF5 files are checked against the
+expected byte size; datasets with a verified source hash are also checked against
+the pinned SHA-256. Use `--force` to rebuild the `.bin` files from the cached
 HDF5, or `--redownload` to replace the cached HDF5 before conversion. If you
 already have converted `.bin` files from an older checkout but no manifest, use
-`--adopt-existing` to write `dataset.json` after validating the cached HDF5 size
-and binary headers.
+`--adopt-existing` to write `dataset.json` after validating the cached HDF5 size,
+source hash when pinned, and binary headers.
 
 ## Current Embedding Dimensions
 

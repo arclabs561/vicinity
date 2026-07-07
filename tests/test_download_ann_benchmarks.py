@@ -40,6 +40,7 @@ def write_converted_fixture(script: ModuleType, output_dir: Path) -> dict[str, o
         "normalize": True,
         "recompute_ground_truth": True,
         "expected_bytes": hdf5_path.stat().st_size,
+        "expected_sha256": script.sha256_file(hdf5_path),
     }
 
 
@@ -127,4 +128,34 @@ def test_adopt_existing_outputs_checks_hdf5_size(tmp_path: Path) -> None:
             force=False,
             redownload=False,
             adopt_existing=True,
+        )
+
+
+def test_adopt_existing_outputs_checks_hdf5_sha256(tmp_path: Path) -> None:
+    script = load_script()
+    output_dir = tmp_path / "tiny-angular"
+    info = write_converted_fixture(script, output_dir)
+    info["expected_sha256"] = "0" * 64
+
+    with pytest.raises(SystemExit, match="SHA256"):
+        script.convert_dataset(
+            "tiny-angular",
+            info,
+            output_dir,
+            force=False,
+            redownload=False,
+            adopt_existing=True,
+        )
+
+
+def test_download_file_checks_cached_hdf5_sha256(tmp_path: Path) -> None:
+    script = load_script()
+    path = tmp_path / "tiny.hdf5"
+    path.write_bytes(b"cached-hdf5")
+
+    with pytest.raises(SystemExit, match="SHA256"):
+        script.download_file(
+            "https://example.invalid/tiny.hdf5",
+            path,
+            expected_sha256="0" * 64,
         )
