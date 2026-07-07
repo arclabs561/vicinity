@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::time::Instant;
 
 use crate::support::{
-    current_rss_kb, emit_result, evaluate, json_line, print_header, print_row, Config,
+    current_rss_kb, emit_result, evaluate, json_line, print_header, print_row, BenchResult, Config,
 };
 
 #[cfg(feature = "ivf_pq")]
@@ -23,7 +23,7 @@ use crate::support::nprobe_values;
     feature = "sq8",
     all(feature = "hnsw", feature = "ivf_rabitq", feature = "serde")
 ))]
-use crate::support::{dir_size_bytes, json_line_with_storage, ResultStorage};
+use crate::support::{dir_size_bytes, json_line_with_storage, ResultStorage, StorageDiagnostics};
 
 #[cfg(any(
     feature = "ivf_pq",
@@ -59,6 +59,87 @@ fn opened_storage(
         index_bytes,
         diagnostics: None,
     }
+}
+
+#[cfg(feature = "ivf_pq")]
+fn opened_storage_with_diagnostics(
+    storage_mode: &'static str,
+    load_time_s: f64,
+    index_bytes: Option<u64>,
+    diagnostics: StorageDiagnostics,
+) -> ResultStorage<'static> {
+    ResultStorage {
+        storage_mode,
+        cache_state: "warm_after_open",
+        load_time_s: Some(load_time_s),
+        index_bytes,
+        diagnostics: Some(diagnostics),
+    }
+}
+
+#[cfg(feature = "ivf_pq")]
+fn evaluate_ivfpq_file_reranked(
+    searcher: &RefCell<vicinity::ivf_pq::IVFPQFileSearcher>,
+    test: &[Vec<f32>],
+    neighbors: &[Vec<i32>],
+    k: usize,
+    candidate_pool: usize,
+) -> (BenchResult, StorageDiagnostics) {
+    use std::collections::HashSet;
+
+    const WARMUP_QUERIES: usize = 50;
+    let warmup_count = WARMUP_QUERIES.min(test.len());
+    for query in test.iter().take(warmup_count) {
+        let _ = searcher
+            .borrow_mut()
+            .search_reranked(query, k, candidate_pool);
+    }
+
+    let mut total_recall = 0.0;
+    let mut latencies_us: Vec<f64> = Vec::with_capacity(test.len());
+    let mut raw_vector_reads = 0usize;
+    let mut raw_vector_bytes = 0usize;
+    let mut reranked_candidates = 0usize;
+
+    for (i, query) in test.iter().enumerate() {
+        let q_start = Instant::now();
+        let (results, diagnostics) = searcher
+            .borrow_mut()
+            .search_reranked_with_diagnostics(query, k, candidate_pool)
+            .expect("IVF-PQ file-backed rerank failed");
+        let q_elapsed = q_start.elapsed();
+        latencies_us.push(q_elapsed.as_nanos() as f64 / 1000.0);
+
+        raw_vector_reads += diagnostics.raw_vector_reads;
+        raw_vector_bytes += diagnostics.raw_vector_bytes;
+        reranked_candidates += diagnostics.reranked_candidates;
+
+        let gt_set: HashSet<u32> = neighbors[i].iter().take(k).map(|&n| n as u32).collect();
+        let found: HashSet<u32> = results.iter().map(|r| r.0).collect();
+        total_recall += gt_set.intersection(&found).count() as f64 / k as f64;
+    }
+
+    latencies_us.sort_unstable_by(|a, b| a.total_cmp(b));
+    let n = latencies_us.len();
+    let total_us: f64 = latencies_us.iter().sum();
+    let queries = n.max(1) as f64;
+
+    (
+        BenchResult {
+            recall_at_k: total_recall / queries,
+            qps: queries / (total_us / 1_000_000.0),
+            latency_us: total_us / queries,
+            p50_us: latencies_us[n / 2],
+            p95_us: latencies_us[(n as f64 * 0.95) as usize],
+            p99_us: latencies_us[(n as f64 * 0.99) as usize],
+        },
+        StorageDiagnostics {
+            avg_vector_reads: raw_vector_reads as f64 / queries,
+            avg_vector_bytes: raw_vector_bytes as f64 / queries,
+            avg_retained_candidates: reranked_candidates as f64 / queries,
+            ..StorageDiagnostics::default()
+        },
+    )
 }
 
 #[cfg(feature = "ivf_pq")]
@@ -317,30 +398,20 @@ pub(crate) fn run_ivfpq(
                     neighbors,
                     10,
                 );
-                let file_result = evaluate(
-                    &|q, k| {
-                        snapshot
-                            .file_searcher
-                            .borrow_mut()
-                            .search_reranked(q, k, rerank_pool)
-                            .unwrap()
-                    },
+                let (file_result, file_diagnostics) = evaluate_ivfpq_file_reranked(
+                    &snapshot.file_searcher,
                     test,
                     neighbors,
                     10,
+                    rerank_pool,
                 );
                 #[cfg(feature = "persistence")]
-                let mmap_result = evaluate(
-                    &|q, k| {
-                        snapshot
-                            .mmap_searcher
-                            .borrow_mut()
-                            .search_reranked(q, k, rerank_pool)
-                            .unwrap()
-                    },
+                let (mmap_result, mmap_diagnostics) = evaluate_ivfpq_file_reranked(
+                    &snapshot.mmap_searcher,
                     test,
                     neighbors,
                     10,
+                    rerank_pool,
                 );
                 let params_json = ivfpq_params_json(
                     num_clusters,
@@ -371,10 +442,11 @@ pub(crate) fn run_ivfpq(
                             build_time_s,
                             rss,
                             &file_result,
-                            &opened_storage(
+                            &opened_storage_with_diagnostics(
                                 "file",
                                 snapshot.file_load_time_s,
                                 snapshot.index_bytes,
+                                file_diagnostics,
                             ),
                         ),
                     );
@@ -387,10 +459,11 @@ pub(crate) fn run_ivfpq(
                             build_time_s,
                             rss,
                             &mmap_result,
-                            &opened_storage(
+                            &opened_storage_with_diagnostics(
                                 "mmap",
                                 snapshot.mmap_load_time_s,
                                 snapshot.index_bytes,
+                                mmap_diagnostics,
                             ),
                         ),
                     );

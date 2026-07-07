@@ -236,6 +236,17 @@ pub struct IVFPQFileSearcher {
     vec_buf: Vec<f32>,
 }
 
+/// Per-query diagnostics for [`IVFPQFileSearcher`] exact reranking.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct IVFPQFileSearchDiagnostics {
+    /// Number of full-precision vectors read for exact reranking.
+    pub raw_vector_reads: usize,
+    /// Number of raw vector bytes read for exact reranking.
+    pub raw_vector_bytes: usize,
+    /// Number of approximate candidates reranked.
+    pub reranked_candidates: usize,
+}
+
 enum IVFPQByteStorage {
     File(std::fs::File),
     #[cfg(feature = "persistence")]
@@ -1735,6 +1746,18 @@ impl IVFPQFileSearcher {
         k: usize,
         candidate_pool: usize,
     ) -> Result<Vec<(u32, f32)>, RetrieveError> {
+        Ok(self
+            .search_reranked_with_diagnostics(query, k, candidate_pool)?
+            .0)
+    }
+
+    /// Search with exact reranking and return storage diagnostics for the query.
+    pub fn search_reranked_with_diagnostics(
+        &mut self,
+        query: &[f32],
+        k: usize,
+        candidate_pool: usize,
+    ) -> Result<(Vec<(u32, f32)>, IVFPQFileSearchDiagnostics), RetrieveError> {
         if self.raw_vectors.is_none() {
             return Err(RetrieveError::InvalidParameter(
                 "search_reranked unavailable without raw_vectors.bin".into(),
@@ -1749,6 +1772,20 @@ impl IVFPQFileSearcher {
 
         let pool = candidate_pool.max(k);
         let mut candidates = self.search_approx_internal(query, pool)?;
+        let raw_vector_byte_len = checked_len(
+            self.dimension,
+            std::mem::size_of::<f32>(),
+            "IVF-PQ diagnostic vector byte length overflow",
+        )?;
+        let diagnostics = IVFPQFileSearchDiagnostics {
+            raw_vector_reads: candidates.len(),
+            raw_vector_bytes: checked_len(
+                candidates.len(),
+                raw_vector_byte_len,
+                "IVF-PQ diagnostic raw-vector byte count overflow",
+            )?,
+            reranked_candidates: candidates.len(),
+        };
         let query_normalized = normalize_query(query);
         let mut reranked = Vec::with_capacity(candidates.len());
         let Some(storage) = self.raw_vectors.as_mut() else {
@@ -1771,7 +1808,7 @@ impl IVFPQFileSearcher {
             reranked.push((self.doc_ids[vector_idx as usize], exact_dist));
         }
 
-        Ok(finish_top_k_by_distance(reranked, k))
+        Ok((finish_top_k_by_distance(reranked, k), diagnostics))
     }
 
     fn search_approx_internal(
@@ -2854,6 +2891,54 @@ mod tests {
         assert_eq!(
             file_searcher.search_reranked(&query, 10, 80).unwrap(),
             loaded.search_reranked(&query, 10, 80).unwrap()
+        );
+    }
+
+    #[test]
+    fn file_rerank_diagnostics_report_raw_vector_reads() {
+        let dim = 16;
+        let n = 240;
+        use rand::{Rng, SeedableRng};
+        let mut rng = rand::rngs::StdRng::seed_from_u64(108);
+
+        let params = IVFPQParams {
+            num_clusters: 4,
+            num_codebooks: 4,
+            codebook_size: 32,
+            nprobe: 4,
+            seed: 130,
+            ..IVFPQParams::default()
+        };
+        let mut index = IVFPQIndex::new(dim, params).unwrap();
+        for i in 0..n {
+            let vector: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
+            index.add(80_000 + i as u32, vector).unwrap();
+        }
+        index.build().unwrap();
+
+        let query: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
+        let dir = tempfile::tempdir().unwrap();
+        index.save_to_dir(dir.path()).unwrap();
+        let mut file_searcher = IVFPQFileSearcher::load(dir.path()).unwrap();
+
+        let candidate_pool = 80;
+        let reranked = file_searcher
+            .search_reranked(&query, 10, candidate_pool)
+            .unwrap();
+        let (with_diagnostics, diagnostics) = file_searcher
+            .search_reranked_with_diagnostics(&query, 10, candidate_pool)
+            .unwrap();
+
+        assert_eq!(with_diagnostics, reranked);
+        assert!(diagnostics.raw_vector_reads >= with_diagnostics.len());
+        assert!(diagnostics.raw_vector_reads <= candidate_pool);
+        assert_eq!(
+            diagnostics.reranked_candidates,
+            diagnostics.raw_vector_reads
+        );
+        assert_eq!(
+            diagnostics.raw_vector_bytes,
+            diagnostics.raw_vector_reads * dim * std::mem::size_of::<f32>()
         );
     }
 
