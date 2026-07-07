@@ -231,8 +231,6 @@ pub struct IVFPQFileSearcher {
     codes: IVFPQByteStorage,
     list_codes: Option<IVFPQListCodeStorage>,
     raw_vectors: Option<IVFPQByteStorage>,
-    list_raw_vectors: Option<IVFPQListRawVectorStorage>,
-    raw_vector_locations: Vec<(u32, u32)>,
     code_buf: Vec<u8>,
     raw_byte_buf: Vec<u8>,
     vec_buf: Vec<f32>,
@@ -258,11 +256,6 @@ enum IVFPQByteStorage {
 struct IVFPQListCodeStorage {
     offsets: Vec<u64>,
     codes: IVFPQByteStorage,
-}
-
-struct IVFPQListRawVectorStorage {
-    offsets: Vec<u64>,
-    vectors: IVFPQByteStorage,
 }
 
 /// IVF-PQ parameters.
@@ -1097,10 +1090,6 @@ impl IVFPQIndex {
         write_clusters_atomic(&output_dir.join("clusters.bin"), &self.clusters)?;
         if raw_vectors_present {
             write_f32_atomic(&output_dir.join("raw_vectors.bin"), &self.vectors)?;
-            let (list_raw_offsets, list_raw_vectors) =
-                build_list_raw_vectors(&self.clusters, &self.vectors, self.dimension)?;
-            write_u64_atomic(&output_dir.join("list_raw_offsets.bin"), &list_raw_offsets)?;
-            write_f32_atomic(&output_dir.join("list_raw_vectors.bin"), &list_raw_vectors)?;
         }
 
         Ok(())
@@ -1682,19 +1671,6 @@ impl IVFPQFileSearcher {
         } else {
             None
         };
-        let list_raw_vectors = if manifest.raw_vectors_present {
-            open_list_raw_vector_storage(
-                input_dir,
-                params.num_clusters,
-                manifest.num_vectors,
-                manifest.dimension,
-                mmap,
-            )?
-        } else {
-            None
-        };
-        let raw_vector_locations =
-            build_raw_vector_locations(&clusters, manifest.num_vectors, params.num_clusters)?;
 
         let raw_vector_byte_len = checked_len(
             manifest.dimension,
@@ -1713,8 +1689,6 @@ impl IVFPQFileSearcher {
             codes,
             list_codes,
             raw_vectors,
-            list_raw_vectors,
-            raw_vector_locations,
             code_buf: Vec::new(),
             raw_byte_buf: vec![0; raw_vector_byte_len],
             vec_buf: vec![0.0; manifest.dimension],
@@ -1765,7 +1739,7 @@ impl IVFPQFileSearcher {
             .collect())
     }
 
-    /// Search with approximate retrieval followed by exact reranking from raw vector sidecars.
+    /// Search with approximate retrieval followed by exact reranking from `raw_vectors.bin`.
     pub fn search_reranked(
         &mut self,
         query: &[f32],
@@ -1784,9 +1758,9 @@ impl IVFPQFileSearcher {
         k: usize,
         candidate_pool: usize,
     ) -> Result<(Vec<(u32, f32)>, IVFPQFileSearchDiagnostics), RetrieveError> {
-        if self.raw_vectors.is_none() && self.list_raw_vectors.is_none() {
+        if self.raw_vectors.is_none() {
             return Err(RetrieveError::InvalidParameter(
-                "search_reranked unavailable without raw vector sidecars".into(),
+                "search_reranked unavailable without raw_vectors.bin".into(),
             ));
         }
         if query.len() != self.dimension {
@@ -1814,53 +1788,24 @@ impl IVFPQFileSearcher {
         };
         let query_normalized = normalize_query(query);
         let mut reranked = Vec::with_capacity(candidates.len());
-        if let Some(storage) = self.list_raw_vectors.as_ref() {
-            if matches!(&storage.vectors, IVFPQByteStorage::File(_)) {
-                candidates.sort_unstable_by_key(|(vector_idx, _)| {
-                    self.raw_vector_locations[*vector_idx as usize]
-                });
-            }
-        } else if let Some(storage) = self.raw_vectors.as_ref() {
-            if matches!(storage, IVFPQByteStorage::File(_)) {
-                candidates.sort_unstable_by_key(|(vector_idx, _)| *vector_idx);
-            }
+        let Some(storage) = self.raw_vectors.as_mut() else {
+            return Err(RetrieveError::InvalidParameter(
+                "search_reranked unavailable without raw_vectors.bin".into(),
+            ));
+        };
+        if matches!(storage, IVFPQByteStorage::File(_)) {
+            candidates.sort_unstable_by_key(|(vector_idx, _)| *vector_idx);
         }
         for (vector_idx, _approx_dist) in candidates {
-            let vector_idx_usize = vector_idx as usize;
-            let vector = if let Some(storage) = self.list_raw_vectors.as_mut() {
-                let (cluster_idx, local_idx) = *self
-                    .raw_vector_locations
-                    .get(vector_idx_usize)
-                    .ok_or_else(|| {
-                        RetrieveError::FormatError(format!(
-                            "IVF-PQ raw-vector location missing for vector {}",
-                            vector_idx_usize
-                        ))
-                    })?;
-                read_list_raw_vector_from_storage(
-                    storage,
-                    &mut self.raw_byte_buf,
-                    &mut self.vec_buf,
-                    cluster_idx as usize,
-                    local_idx as usize,
-                    self.dimension,
-                )?
-            } else {
-                let Some(storage) = self.raw_vectors.as_mut() else {
-                    return Err(RetrieveError::InvalidParameter(
-                        "search_reranked unavailable without raw vector sidecars".into(),
-                    ));
-                };
-                read_vector_from_storage(
-                    storage,
-                    &mut self.raw_byte_buf,
-                    &mut self.vec_buf,
-                    vector_idx_usize,
-                    self.dimension,
-                )?
-            };
+            let vector = read_vector_from_storage(
+                storage,
+                &mut self.raw_byte_buf,
+                &mut self.vec_buf,
+                vector_idx as usize,
+                self.dimension,
+            )?;
             let exact_dist = crate::distance::cosine_distance_normalized(&query_normalized, vector);
-            reranked.push((self.doc_ids[vector_idx_usize], exact_dist));
+            reranked.push((self.doc_ids[vector_idx as usize], exact_dist));
         }
 
         Ok((finish_top_k_by_distance(reranked, k), diagnostics))
@@ -2236,49 +2181,6 @@ fn build_list_codes(
     Ok((offsets, codes))
 }
 
-fn build_list_raw_vectors(
-    clusters: &[Cluster],
-    raw_vectors: &[f32],
-    dimension: usize,
-) -> Result<(Vec<u64>, Vec<f32>), RetrieveError> {
-    let mut offsets = Vec::with_capacity(clusters.len() + 1);
-    let mut vectors = Vec::with_capacity(raw_vectors.len());
-    offsets.push(0);
-    let vector_byte_len = checked_len(
-        dimension,
-        std::mem::size_of::<f32>(),
-        "IVF-PQ list-raw vector byte length overflow",
-    )?;
-    for cluster in clusters {
-        let ids = cluster.get_ids_ref();
-        for &vector_idx in ids.as_ref() {
-            let start = checked_len(
-                vector_idx as usize,
-                dimension,
-                "IVF-PQ list-raw vector offset overflow",
-            )?;
-            let end = start.checked_add(dimension).ok_or_else(|| {
-                RetrieveError::FormatError("IVF-PQ list-raw vector end overflow".into())
-            })?;
-            if end > raw_vectors.len() {
-                return Err(RetrieveError::FormatError(format!(
-                    "IVF-PQ cluster references raw vector range {}..{} beyond {} floats",
-                    start,
-                    end,
-                    raw_vectors.len()
-                )));
-            }
-            vectors.extend_from_slice(&raw_vectors[start..end]);
-        }
-        offsets.push(checked_len(
-            vectors.len() / dimension,
-            vector_byte_len,
-            "IVF-PQ list-raw offset overflow",
-        )? as u64);
-    }
-    Ok((offsets, vectors))
-}
-
 fn open_list_code_storage(
     input_dir: &Path,
     num_clusters: usize,
@@ -2305,43 +2207,6 @@ fn open_list_code_storage(
     Ok(Some(IVFPQListCodeStorage { offsets, codes }))
 }
 
-fn open_list_raw_vector_storage(
-    input_dir: &Path,
-    num_clusters: usize,
-    num_vectors: usize,
-    dimension: usize,
-    mmap: bool,
-) -> Result<Option<IVFPQListRawVectorStorage>, RetrieveError> {
-    let offsets_path = input_dir.join("list_raw_offsets.bin");
-    let vectors_path = input_dir.join("list_raw_vectors.bin");
-    let offsets_exists = offsets_path.exists();
-    let vectors_exists = vectors_path.exists();
-    if offsets_exists != vectors_exists {
-        return Err(RetrieveError::FormatError(
-            "partial IVF-PQ list-raw sidecar: expected both list_raw_offsets.bin and list_raw_vectors.bin"
-                .into(),
-        ));
-    }
-    if !offsets_exists {
-        return Ok(None);
-    }
-
-    let raw_floats = checked_len(
-        num_vectors,
-        dimension,
-        "IVF-PQ list-raw vector length overflow",
-    )?;
-    let expected_bytes = checked_len(
-        raw_floats,
-        std::mem::size_of::<f32>(),
-        "IVF-PQ list-raw vector byte length overflow",
-    )?;
-    let offsets = read_u64_exact(&offsets_path, num_clusters + 1)?;
-    validate_list_raw_offsets(&offsets, expected_bytes)?;
-    let vectors = open_byte_storage(&vectors_path, expected_bytes, mmap)?;
-    Ok(Some(IVFPQListRawVectorStorage { offsets, vectors }))
-}
-
 fn validate_list_code_offsets(
     offsets: &[u64],
     expected_codes_len: usize,
@@ -2366,81 +2231,6 @@ fn validate_list_code_offsets(
         )));
     }
     Ok(())
-}
-
-fn validate_list_raw_offsets(offsets: &[u64], expected_bytes: usize) -> Result<(), RetrieveError> {
-    if offsets.first().copied() != Some(0) {
-        return Err(RetrieveError::FormatError(
-            "IVF-PQ list-raw offsets must start at zero".into(),
-        ));
-    }
-    for pair in offsets.windows(2) {
-        if pair[0] > pair[1] {
-            return Err(RetrieveError::FormatError(
-                "IVF-PQ list-raw offsets must be nondecreasing".into(),
-            ));
-        }
-    }
-    if offsets.last().copied() != Some(expected_bytes as u64) {
-        return Err(RetrieveError::FormatError(format!(
-            "IVF-PQ list-raw offsets end at {}, expected {}",
-            offsets.last().copied().unwrap_or_default(),
-            expected_bytes
-        )));
-    }
-    Ok(())
-}
-
-fn build_raw_vector_locations(
-    clusters: &[Cluster],
-    num_vectors: usize,
-    num_clusters: usize,
-) -> Result<Vec<(u32, u32)>, RetrieveError> {
-    if clusters.len() != num_clusters {
-        return Err(RetrieveError::FormatError(format!(
-            "IVF-PQ cluster count mismatch while building raw-vector locations: expected {}, got {}",
-            num_clusters,
-            clusters.len()
-        )));
-    }
-    let missing = (u32::MAX, u32::MAX);
-    let mut locations = vec![missing; num_vectors];
-    for (cluster_idx, cluster) in clusters.iter().enumerate() {
-        let ids = cluster.get_ids_ref();
-        for (local_idx, &vector_idx) in ids.as_ref().iter().enumerate() {
-            let vector_idx = vector_idx as usize;
-            if vector_idx >= num_vectors {
-                return Err(RetrieveError::FormatError(format!(
-                    "IVF-PQ cluster id {} exceeds vector count {}",
-                    vector_idx, num_vectors
-                )));
-            }
-            if locations[vector_idx] != missing {
-                return Err(RetrieveError::FormatError(format!(
-                    "IVF-PQ cluster id {} appears in multiple lists",
-                    vector_idx
-                )));
-            }
-            let cluster_idx = u32::try_from(cluster_idx).map_err(|_| {
-                RetrieveError::FormatError("IVF-PQ raw-vector cluster index overflow".into())
-            })?;
-            let local_idx = u32::try_from(local_idx).map_err(|_| {
-                RetrieveError::FormatError("IVF-PQ raw-vector local index overflow".into())
-            })?;
-            locations[vector_idx] = (cluster_idx, local_idx);
-        }
-    }
-    if let Some((vector_idx, _)) = locations
-        .iter()
-        .enumerate()
-        .find(|(_, location)| **location == missing)
-    {
-        return Err(RetrieveError::FormatError(format!(
-            "IVF-PQ cluster lists do not contain vector id {}",
-            vector_idx
-        )));
-    }
-    Ok(locations)
 }
 
 fn append_codes_for_ids(
@@ -2511,51 +2301,6 @@ fn read_code_from_storage<'a>(
     Ok(out)
 }
 
-fn read_list_raw_vector_from_storage<'a>(
-    storage: &mut IVFPQListRawVectorStorage,
-    bytes: &mut [u8],
-    out: &'a mut [f32],
-    cluster_idx: usize,
-    local_idx: usize,
-    dimension: usize,
-) -> Result<&'a [f32], RetrieveError> {
-    let start = *storage.offsets.get(cluster_idx).ok_or_else(|| {
-        RetrieveError::FormatError("IVF-PQ list-raw cluster offset missing".into())
-    })?;
-    let end = *storage
-        .offsets
-        .get(cluster_idx + 1)
-        .ok_or_else(|| RetrieveError::FormatError("IVF-PQ list-raw cluster end missing".into()))?;
-    let vector_byte_len = checked_len(
-        dimension,
-        std::mem::size_of::<f32>(),
-        "IVF-PQ list-raw vector byte length overflow",
-    )?;
-    let local_offset = checked_len(
-        local_idx,
-        vector_byte_len,
-        "IVF-PQ list-raw local offset overflow",
-    )?;
-    let start = usize::try_from(start)
-        .map_err(|_| RetrieveError::FormatError("IVF-PQ list-raw start overflow".into()))?;
-    let end = usize::try_from(end)
-        .map_err(|_| RetrieveError::FormatError("IVF-PQ list-raw end overflow".into()))?;
-    let offset = start
-        .checked_add(local_offset)
-        .ok_or_else(|| RetrieveError::FormatError("IVF-PQ list-raw byte offset overflow".into()))?;
-    let read_end = offset
-        .checked_add(vector_byte_len)
-        .ok_or_else(|| RetrieveError::FormatError("IVF-PQ list-raw read end overflow".into()))?;
-    if read_end > end {
-        return Err(RetrieveError::FormatError(format!(
-            "IVF-PQ list-raw vector read ends at {}, cluster ends at {}",
-            read_end, end
-        )));
-    }
-    read_vector_bytes(&mut storage.vectors, bytes, out, offset, dimension)?;
-    Ok(out)
-}
-
 fn read_vector_from_storage<'a>(
     storage: &mut IVFPQByteStorage,
     bytes: &mut [u8],
@@ -2569,22 +2314,6 @@ fn read_vector_from_storage<'a>(
         "IVF-PQ vector byte length overflow",
     )?;
     let offset = checked_len(vector_idx, byte_len, "IVF-PQ vector byte offset overflow")?;
-    read_vector_bytes(storage, bytes, out, offset, dimension)?;
-    Ok(out)
-}
-
-fn read_vector_bytes<'a>(
-    storage: &mut IVFPQByteStorage,
-    bytes: &mut [u8],
-    out: &'a mut [f32],
-    offset: usize,
-    dimension: usize,
-) -> Result<&'a [f32], RetrieveError> {
-    let byte_len = checked_len(
-        dimension,
-        std::mem::size_of::<f32>(),
-        "IVF-PQ vector byte length overflow",
-    )?;
     if bytes.len() != byte_len {
         return Err(RetrieveError::InvalidParameter(format!(
             "IVF-PQ vector byte buffer has {} bytes, expected {}",
@@ -3153,38 +2882,8 @@ mod tests {
         let mut file_searcher = IVFPQFileSearcher::load(dir.path()).unwrap();
 
         assert!(file_searcher.list_codes.is_some());
-        assert!(file_searcher.list_raw_vectors.is_some());
         assert_eq!(file_searcher.num_vectors(), loaded.num_vectors);
         assert_eq!(file_searcher.nprobe(), loaded.nprobe());
-        assert!(dir.path().join("list_raw_offsets.bin").exists());
-        assert!(dir.path().join("list_raw_vectors.bin").exists());
-        let (expected_raw_offsets, expected_raw_vectors) =
-            build_list_raw_vectors(&index.clusters, &index.vectors, index.dimension).unwrap();
-        assert_eq!(
-            read_u64_exact(
-                &dir.path().join("list_raw_offsets.bin"),
-                index.params.num_clusters + 1
-            )
-            .unwrap(),
-            expected_raw_offsets
-        );
-        assert_eq!(
-            read_f32_exact(
-                &dir.path().join("list_raw_vectors.bin"),
-                index.vectors.len()
-            )
-            .unwrap(),
-            expected_raw_vectors
-        );
-        for (cluster_idx, cluster) in index.clusters.iter().enumerate() {
-            let ids = cluster.get_ids_ref();
-            for (local_idx, &vector_idx) in ids.as_ref().iter().enumerate() {
-                assert_eq!(
-                    file_searcher.raw_vector_locations[vector_idx as usize],
-                    (cluster_idx as u32, local_idx as u32)
-                );
-            }
-        }
         assert_eq!(
             file_searcher.search(&query, 10).unwrap(),
             loaded.search(&query, 10).unwrap()
@@ -3270,20 +2969,13 @@ mod tests {
         index.save_to_dir(dir.path()).unwrap();
         std::fs::remove_file(dir.path().join("list_offsets.bin")).unwrap();
         std::fs::remove_file(dir.path().join("list_codes.bin")).unwrap();
-        std::fs::remove_file(dir.path().join("list_raw_offsets.bin")).unwrap();
-        std::fs::remove_file(dir.path().join("list_raw_vectors.bin")).unwrap();
 
         let loaded = IVFPQIndex::load_from_dir(dir.path()).unwrap();
         let mut file_searcher = IVFPQFileSearcher::load(dir.path()).unwrap();
         assert!(file_searcher.list_codes.is_none());
-        assert!(file_searcher.list_raw_vectors.is_none());
         assert_eq!(
             file_searcher.search(&query, 10).unwrap(),
             loaded.search(&query, 10).unwrap()
-        );
-        assert_eq!(
-            file_searcher.search_reranked(&query, 10, 80).unwrap(),
-            loaded.search_reranked(&query, 10, 80).unwrap()
         );
     }
 
@@ -3324,42 +3016,6 @@ mod tests {
     }
 
     #[test]
-    fn file_searcher_rejects_partial_list_raw_sidecar() {
-        let dim = 16;
-        let n = 240;
-        use rand::{Rng, SeedableRng};
-        let mut rng = rand::rngs::StdRng::seed_from_u64(109);
-
-        let params = IVFPQParams {
-            num_clusters: 4,
-            num_codebooks: 4,
-            codebook_size: 32,
-            nprobe: 4,
-            seed: 131,
-            ..IVFPQParams::default()
-        };
-        let mut index = IVFPQIndex::new(dim, params).unwrap();
-        for i in 0..n {
-            let vector: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
-            index.add(90_000 + i as u32, vector).unwrap();
-        }
-        index.build().unwrap();
-
-        let dir = tempfile::tempdir().unwrap();
-        index.save_to_dir(dir.path()).unwrap();
-        std::fs::remove_file(dir.path().join("list_raw_vectors.bin")).unwrap();
-
-        let err = match IVFPQFileSearcher::load(dir.path()) {
-            Ok(_) => panic!("partial list-raw sidecar should fail to load"),
-            Err(err) => err,
-        };
-        assert!(
-            err.to_string().contains("partial IVF-PQ list-raw sidecar"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
     fn file_searcher_matches_standard_adc_snapshot_loaded_search() {
         let dim = 16;
         let n = 240;
@@ -3391,14 +3047,9 @@ mod tests {
         let loaded = IVFPQIndex::load_from_dir(dir.path()).unwrap();
         let mut file_searcher = IVFPQFileSearcher::load(dir.path()).unwrap();
 
-        assert!(file_searcher.list_raw_vectors.is_some());
         assert_eq!(
             file_searcher.search(&query, 10).unwrap(),
             loaded.search(&query, 10).unwrap()
-        );
-        assert_eq!(
-            file_searcher.search_reranked(&query, 10, 80).unwrap(),
-            loaded.search_reranked(&query, 10, 80).unwrap()
         );
     }
 
@@ -3435,7 +3086,6 @@ mod tests {
         let loaded = IVFPQIndex::load_from_dir(dir.path()).unwrap();
         let mut mmap_searcher = IVFPQFileSearcher::load_mmap(dir.path()).unwrap();
 
-        assert!(mmap_searcher.list_raw_vectors.is_some());
         assert_eq!(
             mmap_searcher.search(&query, 10).unwrap(),
             loaded.search(&query, 10).unwrap()
@@ -3492,7 +3142,7 @@ mod tests {
         let err = file_searcher.search_reranked(&query, 10, 80).unwrap_err();
         assert!(
             err.to_string()
-                .contains("search_reranked unavailable without raw vector sidecars"),
+                .contains("search_reranked unavailable without raw_vectors.bin"),
             "unexpected error: {err}"
         );
     }
