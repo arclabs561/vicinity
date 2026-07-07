@@ -19,7 +19,8 @@ benchmarking, persistence, Python bindings, and performance work.
   headers, use a manifest, and require `--force`, `--redownload`, or
   `--adopt-existing` for non-matching cached outputs. They also support
   `--download-only` for pinning and verifying large source HDF5 files before
-  conversion.
+  conversion, and `--all` for applying the same flow to every configured
+  ann-benchmarks dataset.
 - Dataset reproducibility is pinned for locally verified standard HDF5 files:
   SIFT-128, GloVe-25, GloVe-50, GloVe-100, GloVe-200, Fashion-MNIST, MNIST,
   NYTimes, GIST, and Deep Image now have expected SHA-256 values.
@@ -51,6 +52,10 @@ benchmarking, persistence, Python bindings, and performance work.
   measured 95%+ recall point on the 50K-vector GloVe-25 probe. Profile
   `ef=75` for fixed-recall storage work; keep `ef=50` as a lower-recall
   throughput control.
+- Profiling `diskann_search_only/file_ef75` showed the direct-file row was
+  dominated by kernel-side I/O samples. Batching file-backed graph neighbor
+  reads moved `file_ef75` from 199.28 ms to 112.57 ms per 100 queries, with
+  heap and mmap controls staying in family.
 - The local ignored result set now has no missing rows for
   `scripts/summarize_ann_results.py --expect-standard-storage --only-dataset
   glove-25-angular --missing-only`. This is row coverage, not full-scale
@@ -68,7 +73,7 @@ benchmarking, persistence, Python bindings, and performance work.
 | 4 | Dataset source pinning | All configured ann-benchmarks HDF5 sources now have direct SHA-256 pins. Next review should decide whether stable mirrors are needed beyond `ann-benchmarks.com`. |
 | 5 | Segmented-store benchmark row | Added `--algo store` with `storage_mode=segmented_store`; capped 50K GloVe-25 row reaches 99.97% recall at 5.9K QPS. Next review is dataset-scale comparison against HNSW, FreshGraph, in-place graph, and LSM churn. |
 | 6 | File-backed raw-vector locality | IVF-PQ approximate file/mmap search is now list-contiguous for PQ codes, and capped fixed-recall rows show approximate file search no longer has the old large file-path penalty. Exact rerank still reads raw vectors by vector ID; at capped fixed recall, file rerank is much slower than mmap. Review whether batching, page layout, or a separate list-local raw-vector sidecar is the right next step. |
-| 7 | DiskANN storage layout | Callback-based neighbor reading was measured and rejected. Capped rows now show heap, file, and mmap behavior from the same build. Next review should focus on full-scale rows, graph/vector page co-location, syscall count, mmap page behavior, and cold-cache reporting. |
+| 7 | DiskANN storage layout | Callback-based neighbor reading was measured and rejected. Batching file-backed graph neighbor reads was measured and kept. Next review should focus on full-scale rows, graph/vector page co-location, vector-read locality, mmap page behavior, and cold-cache reporting. |
 | 8 | Classical methods | Corrupt-snapshot rejection now covers KD-tree, ball tree, RP-tree, RP-forest, and K-means tree, and docs no longer call KD/Ball exact. Capped benchmark rows now cover all five classical methods with heap plus snapshot-loaded storage metadata. Next review should decide which classical rows need full GloVe-25 runs, then revisit dimensionality and metric gates. |
 | 9 | Filtered search | Review ACORN, FilteredGraph, RangeFiltered, and Curator with selectivity sweeps, not single dense-search rows. |
 | 10 | Streaming/update workloads | Review FreshGraph, in-place HNSW, LSM HNSW, tombstones, and `store::UpdatableIndex` against active-set recall, update throughput, query latency, compaction, and storage residency. |
