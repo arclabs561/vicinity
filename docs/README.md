@@ -4,6 +4,8 @@
 
 - [GUIDE.md](GUIDE.md): quick start, HNSW usage, distance metrics,
   LID, common pitfalls, worked examples.
+- [algorithms.md](algorithms.md): feature flags, index status, and
+  experimental promotion notes.
 
 ## Benchmark data
 
@@ -37,9 +39,8 @@ Plots live in `plots/` and are regenerated from JSONL via
 
 ## Background
 
-- [landscape.md](landscape.md): the ANN algorithmic landscape. Principles,
-  algorithm families, mathematical foundations, and where the field is heading.
-  Canonical reference updated as research evolves.
+- [landscape.md](landscape.md): ANN principles, algorithm families,
+  mathematical foundations, and research background.
 - [references.md](references.md): bibliography. Primary sources for
   every algorithm and technique referenced in the codebase.
 

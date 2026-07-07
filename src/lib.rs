@@ -11,100 +11,56 @@
     )
 )]
 
-//! vicinity: Approximate Nearest Neighbor Search primitives.
+//! Approximate nearest-neighbor search.
 //!
-//! Provides implementations of ANN algorithms:
+//! `vicinity` provides Rust indexes and Python bindings for vector search. The
+//! default feature set enables HNSW and SIMD distance kernels. Other indexes are
+//! available behind feature flags.
 //!
-//! - **Graph-based**: [`hnsw`], `nsw`, `sng`, `vamana`, `nsg`, `emg`, `finger`, `pipnn`, `fresh_graph`
-//! - **Graph + quantization**: `hnsw::symphony_qg` (RaBitQ inside HNSW beam search)
-//! - **Partition-based**: `ivf_pq`, `ivf_avq`, `ivf_rabitq`, `curator`
-//! - **Quantization**: `quantization` (RaBitQ, SAQ), `rp_quant`, `binary_index` (1-bit + rerank)
-//! - **Filtered**: `filtered_graph` (predicate filters), `range_filtered` (numeric range filters), `curator` (label filters)
-//! - **Sparse vectors**: `sparse_mips` (inner-product graph for SPLADE/BM25)
-//! - **Streaming**: `streaming::lsm` (LSM-tree tiered HNSW)
-//! - **Clustering**: `evoc` (EVoC hierarchical clustering)
-//!
-//! # Which Index Should I Use?
-//!
-//! | Situation | Recommendation | Feature | Persistence |
-//! |-----------|----------------|---------|-------------|
-//! | **General Purpose** (Best Recall/Speed) | [`hnsw::HNSWIndex`] | `hnsw` (default) | Yes: JSON via `serde` (`save_to_file`); binary via `persistence` (segment writer) |
-//! | **Memory Constrained** (compressed vectors; file search option) | `ivf_pq::IVFPQIndex` / `ivf_pq::IVFPQFileSearcher` | `ivf_pq` | Yes: snapshot reloads into memory; file searcher reads persisted codes; mmap with `persistence` |
-//! | **Flat Graph** (Simpler, competitive on high-d) | `nsw::NSWIndex` | `nsw` | Yes: snapshot reloads into memory |
-//! | **Label Filtering** (Low selectivity) | `curator::CuratorIndex` | `curator` | Yes: snapshot reloads and rebuilds tree |
-//! | **Complex Predicates** (AND/OR filters) | `filtered_graph::FilteredGraphIndex` | `filtered_graph` | Yes: snapshot reloads into memory |
-//! | **Range Filtering** (Numeric attributes) | `range_filtered::RangeFilteredIndex` | `range_filtered` | Yes: snapshot reloads and rebuilds HNSW |
-//! | **Dynamic Insert/Delete** (per-op latency) | `fresh_graph::FreshGraphIndex` | `fresh_graph` | Yes: snapshot reloads into memory |
-//! | **Streaming Bulk Writes** (write throughput) | `streaming::lsm::LsmIndex` | `hnsw` (LSM is built-in) | No |
-//! | **Sparse Vectors** (SPLADE/BM25) | `sparse_mips::SparseMipsIndex` | `sparse_mips` | Yes: snapshot reloads into memory |
-//! | **High-d Compression** (768d+) | `rp_quant::RpQuantIndex` | `rp_quant` | Yes: snapshot reloads into memory |
-//! | **Quantized Graph** (HNSW + RaBitQ, cosine) | `hnsw::SymphonyQGIndex` | `hnsw` + `ivf_rabitq` | Yes: non-compacted snapshot reloads into memory |
-//! | **Quantized Graph** (HNSW + RaBitQ, cosine + L2) | `hnsw::SymphonyQGVRIndex` | `hnsw` + `ivf_rabitq` | Yes: non-compacted snapshot reloads into memory |
-//! | **Binary Quantization** (1-bit + rerank) | `binary_index::BinaryFlatIndex` | `binary_index` | Yes: snapshot reloads into memory |
-//! | **File-Backed Search** (SSD-based, experimental) | `diskann` | `diskann` (experimental) | Yes: file and mmap searcher |
-//! | **4-bit Scalar Quant** (8x compression) | `sq4::SQ4Index` | `sq4` | Yes: snapshot reloads into memory |
-//! | **8-bit Scalar Quant** (4x compression) | `hnsw::HNSWSq8Index` | `hnsw` + `sq8` | Yes: snapshot reloads into memory |
-//!
-//! **Default features**: `hnsw`, `innr` (SIMD).
-//!
-//! ## Recommendation Logic
-//!
-//! 1. **Start with HNSW**. It's the industry standard for a reason. It offers the best
-//!    trade-off between search speed and recall for datasets that fit in RAM.
-//!
-//! 2. **Use IVF-PQ** when raw vectors dominate memory. It compresses the vector
-//!    payload and can drop raw vectors with `compact()`. Use
-//!    `IVFPQFileSearcher` when benchmark rows need to query persisted PQ codes
-//!    directly; treat that separately from `load_from_dir()`, which rebuilds an
-//!    in-memory index snapshot.
-//!
-//! 3. **Try NSW (Flat)** if you want a simpler graph, or you are benchmarking on
-//!    high-dimensional embeddings (hundreds/thousands of dimensions). Recent empirical work suggests the
-//!    hierarchy may provide less incremental value in that regime (see arXiv:2412.01940).
-//!    *Note: HNSW is the more common default in production systems, so it’s still a safe first choice.*
-//!
-//! 4. **Use DiskANN** (experimental) when you need a file-backed searcher.
-//!    Treat mmap/page-layout behavior as a separate benchmark target.
+//! # Install
 //!
 //! ```toml
-//! # Minimal (HNSW + SIMD)
-//! vicinity = "0.10.5"
-//!
-//! # With quantization support
-//! vicinity = { version = "0.10.5", features = ["ivf_pq"] }
+//! vicinity = { version = "0.10.5", features = ["hnsw"] }
 //! ```
 //!
-//! # Notes (evidence-backed)
+//! # Start With HNSW
 //!
-//! - **Flat vs hierarchical graphs**: Munyampirwa et al. (2024) empirically argue that, on
-//!   high-dimensional datasets, a flat small-world graph can match HNSW’s recall/latency
-//!   benefits because “hub” nodes provide routing power without explicit hierarchy
-//!   (arXiv:2412.01940). This doesn’t make HNSW “wrong”; it just means NSW is often a
-//!   worthwhile baseline to benchmark.
+//! HNSW is the default in-memory index for dense vectors. Cosine distance
+//! expects unit-norm vectors unless `auto_normalize(true)` is set.
 //!
-//! - **Memory**: for high-dimensional embeddings, the raw vector store (n × d × 4 bytes) can dominate.
-//!   The extra hierarchy layers and graph edges still matter, but you should measure on your
-//!   actual (n, d, M, ef) and memory layout.
+//! ```no_run
+//! # fn main() -> Result<(), vicinity::RetrieveError> {
+//! use vicinity::hnsw::HNSWIndex;
 //!
-//! - **Quantization**: IVF-PQ and related techniques trade recall for memory. `vicinity` exposes
-//!   IVF-PQ under the `ivf_pq` feature, but you should treat parameter selection as workload-
-//!   dependent (benchmark recall@k vs latency vs memory).
+//! let mut index = HNSWIndex::builder(128)
+//!     .m(16)
+//!     .ef_search(50)
+//!     .auto_normalize(true)
+//!     .build()?;
 //!
-//! ## Background (kept short; pointers to sources)
+//! index.add_slice(0, &[0.1; 128])?;
+//! index.add_slice(1, &[0.2; 128])?;
+//! index.build()?;
 //!
-//! - **Distance concentration**: in high dimensions, nearest-neighbor distances can become
-//!   less discriminative; see Beyer et al. (1999), “When Is Nearest Neighbor Meaningful?”
-//!   (DOI: 10.1007/s007780050006).
+//! let results = index.search(&[0.1; 128], 5, 50)?;
+//! # let _ = results;
+//! # Ok(())
+//! # }
+//! ```
 //!
-//! - **Hubness**: some points appear as nearest neighbors for many queries (“hubs”); see
-//!   Radovanović et al. (2010), “Hubs in Space”.
+//! # Other Indexes
 //!
-//! - **Benchmarking**: for real comparisons, report recall@k vs latency/QPS curves and include
-//!   memory and build time. When in doubt, use the `ann-benchmarks` datasets and methodology:
-//!   `http://ann-benchmarks.com/`.
+//! | Workload | Start with | Feature |
+//! | --- | --- | --- |
+//! | Dense vectors that fit in memory | `hnsw::HNSWIndex` | `hnsw` |
+//! | Raw vectors dominate RAM | `ivf_pq::IVFPQIndex` | `ivf_pq` |
+//! | Frequent writes/deletes | `store::UpdatableIndex` or FreshGraph | `store`, `fresh_graph` |
+//! | Metadata filters | HNSW post-filtering, ACORN, Curator, or FilteredGraph | `hnsw`, `curator`, `filtered_graph` |
+//! | Sparse learned retrieval | SparseMIPS | `sparse_mips` |
+//! | File-backed search | DiskANN | `diskann` |
 //!
-//! For a curated bibliography covering HNSW/NSW/NSG/DiskANN/PQ/OPQ/ScaNN and related phenomena,
-//! see `docs/references.md` in the repo.
+//! The repository README has current benchmark commands. The full feature flag
+//! table is in `docs/algorithms.md`.
 
 pub mod classic;
 
