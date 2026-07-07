@@ -348,9 +348,58 @@ Additional capped storage rows from 2026-07-07:
 | RP-forest | 5K train / 200 query | in_memory | 15.10% | 420,948.1 | fast, low-recall baseline |
 | K-means tree | 5K train / 200 query | in_memory | 20.75% | 994,609.2 | fast, low-recall baseline |
 
+Full-train IVF-PQ storage sweep from the same day, using all 1,183,514
+GloVe-25 vectors and 500 queries:
+
+```bash
+cargo run --release --example ann_benchmark --no-default-features --features ivf_pq,hnsw,persistence -- \
+  data/ann-benchmarks/glove-25-angular --algo ivfpq \
+  --pq-clusters 1024 --pq-codebooks 25 --pq-codebook-size 256 \
+  --pq-training-sample-size 100000 --pq-kmeans-max-iter 20 \
+  --pq-nprobes 32,64 --pq-rerank-pools 500 --max-queries 500 \
+  --snapshot-load --json \
+  --results data/ann-benchmarks/results/glove-25-ivfpq-fulltrain-storage-20260707.jsonl
+```
+
+| Workload | Storage row | Recall@10 | QPS | p95 latency | Notes |
+| --- | --- | ---: | ---: | ---: | --- |
+| IVF-PQ `nprobe=32` | in_memory | 95.42% | 2,640.0 | 522.2 us | first full-corpus 95%+ row in this sweep |
+| IVF-PQ `nprobe=32` | snapshot_loaded | 95.42% | 3,134.7 | 440.8 us | `load_time_s=0.0648`, `index_bytes=187,254,901` |
+| IVF-PQ `nprobe=32` | file | 95.42% | 2,552.8 | 535.0 us | direct-file PQ-code path stays in the target band |
+| IVF-PQ `nprobe=32` | mmap | 95.42% | 2,722.3 | 500.6 us | mmap is near heap at this setting |
+| IVF-PQ `nprobe=32`, rerank 500 | in_memory | 96.58% | 2,514.2 | 538.0 us | exact rerank improves recall without a large heap penalty |
+| IVF-PQ `nprobe=32`, rerank 500 | snapshot_loaded | 96.58% | 2,570.4 | 532.1 us | persisted heap row stays comparable |
+| IVF-PQ `nprobe=32`, rerank 500 | file | 96.58% | 1,453.4 | 833.0 us | still raw-vector-read bound, but no longer a 69-QPS class failure |
+| IVF-PQ `nprobe=32`, rerank 500 | mmap | 96.58% | 2,533.9 | 524.3 us | mmap avoids most direct-file raw-vector cost |
+| IVF-PQ `nprobe=64` | in_memory | 97.48% | 1,330.6 | 972.2 us | higher recall costs about 2x QPS |
+| IVF-PQ `nprobe=64` | snapshot_loaded | 97.48% | 1,399.5 | 943.4 us | persisted row stays comparable |
+| IVF-PQ `nprobe=64` | file | 97.48% | 1,281.5 | 986.2 us | direct-file approximate path remains near heap |
+| IVF-PQ `nprobe=64` | mmap | 97.48% | 1,386.2 | 930.3 us | mmap remains near heap |
+| IVF-PQ `nprobe=64`, rerank 500 | in_memory | 98.82% | 1,293.2 | 1,000.1 us | high-recall rerank row |
+| IVF-PQ `nprobe=64`, rerank 500 | snapshot_loaded | 98.82% | 1,326.3 | 973.7 us | persisted row stays comparable |
+| IVF-PQ `nprobe=64`, rerank 500 | file | 98.82% | 890.4 | 1,355.5 us | remaining direct-file locality gap |
+| IVF-PQ `nprobe=64`, rerank 500 | mmap | 98.82% | 1,314.0 | 969.8 us | mmap row stays near heap |
+
+The current-schema storage coverage check for this result scope reports no
+missing observed rows:
+
+```bash
+uv run scripts/summarize_ann_results.py data/ann-benchmarks/results/*.jsonl \
+  --current-schema-only --expect-observed-standard-storage \
+  --only-dataset 'glove-25-angular[queries=500]' \
+  --missing-only --json
+```
+
+Output:
+
+```json
+[]
+```
+
 The classical rows are useful storage and API coverage, not full-scale ANN
-recommendations. The next IVF-PQ work is to promote the capped fixed-recall
-rows to full-corpus runs and then profile the remaining direct-file rerank gap.
+recommendations. The next IVF-PQ work is to profile the remaining direct-file
+rerank gap and decide whether batching, page layout, or a list-local raw-vector
+sidecar is the right fix.
 
 ## Profiling Ledger
 
