@@ -664,6 +664,31 @@ A bounded top-k heap experiment regressed GloVe-25 IVF-PQ at the same recall:
 That experiment was rejected. The next IVF-PQ work should focus on the ADC
 table path, codebook shape, and SIMD scan layout.
 
+A file-searcher scratch-buffer reuse experiment was also rejected. It reused
+centroid-distance, residual, code-batch, distance-batch, and ADC-table buffers
+inside `IVFPQFileSearcher::search_approx_internal`, but the short Criterion run
+regressed the rows that matter most:
+
+| Row | Criterion change |
+| --- | ---: |
+| `m25_one_dim_file_nprobe32_k10` | about 10.7% faster |
+| `m25_one_dim_file_nprobe32_rerank500_k10` | about 5.3% slower |
+| `m25_one_dim_mmap_nprobe32_rerank500_k10` | about 4.1% slower |
+| `m5_runner_default_file_nprobe32_rerank500_k10` | about 3.9% slower |
+| `m5_runner_default_mmap_nprobe32_rerank500_k10` | within noise |
+
+Command:
+
+```bash
+cargo bench --bench ivfpq_search --no-default-features \
+  --features ivf_pq,persistence,benchmark -- \
+  --sample-size 10 --warm-up-time 0.1 --measurement-time 0.1
+```
+
+The regression suggests the per-query allocation cleanup is not the current
+file-rerank bottleneck. Keep the next attempt focused on ADC-table construction,
+scan layout, or file-read planning.
+
 The DiskANN positional-read helper also applies to IVF-PQ file-backed search:
 `IVFPQFileSearcher` used to seek and then read for every byte-slice fetch. Using
 the same positional-read helper moved the targeted file rerank rows without
