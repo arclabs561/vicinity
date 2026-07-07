@@ -450,6 +450,21 @@ A bounded top-k heap experiment regressed GloVe-25 IVF-PQ at the same recall:
 That experiment was rejected. The next IVF-PQ work should focus on the ADC
 table path, codebook shape, and SIMD scan layout.
 
+The DiskANN positional-read helper also applies to IVF-PQ file-backed search:
+`IVFPQFileSearcher` used to seek and then read for every byte-slice fetch. Using
+the same positional-read helper moved the targeted file rerank rows without
+touching mmap or heap paths:
+
+| Row | Current time / 100 queries | Criterion change |
+| --- | ---: | ---: |
+| `m25_one_dim_file_nprobe32_rerank500_k10` | 24.410 ms | about 36.6% faster |
+| `m5_runner_default_file_nprobe32_rerank500_k10` | 27.069 ms | about 33.0% faster |
+
+The remaining file-backed IVF-PQ locality problem is layout, not cursor
+movement: exact rerank still reads raw full-precision vectors by vector ID.
+The next storage change should batch or co-locate rerank vectors by posting
+list rather than issuing one random vector read per candidate.
+
 ## Benchmark Coverage
 
 The dense `ann_benchmark` runner covers the implemented single-vector ANN

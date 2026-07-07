@@ -2302,9 +2302,7 @@ fn read_bytes_from_storage(
         .ok_or_else(|| RetrieveError::FormatError("IVF-PQ byte offset overflow".into()))?;
     match storage {
         IVFPQByteStorage::File(file) => {
-            use std::io::{Read as _, Seek, SeekFrom};
-            file.seek(SeekFrom::Start(offset as u64))?;
-            file.read_exact(out)?;
+            crate::file_io::read_exact_at(file, offset as u64, out)?;
         }
         #[cfg(feature = "persistence")]
         IVFPQByteStorage::Mmap(mapped) => {

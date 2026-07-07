@@ -414,7 +414,7 @@ impl DiskANNSearcher {
         let offset = idx as usize * self.dimension * 4;
         match &mut self.vectors {
             VectorStorage::File(file) => {
-                super::disk_io::read_exact_at(file, offset as u64, &mut self.read_buf)?;
+                crate::file_io::read_exact_at(file, offset as u64, &mut self.read_buf)?;
                 Self::decode_vector_bytes(&self.read_buf, &mut self.vec_buf);
             }
             VectorStorage::Mmap(mapped) => {

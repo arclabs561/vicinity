@@ -170,6 +170,7 @@ pub(crate) mod pq_simd;
 pub mod prt;
 
 pub mod distance;
+pub(crate) mod file_io;
 pub mod filtering;
 #[cfg(any(
     feature = "nsw",
