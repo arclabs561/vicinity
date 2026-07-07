@@ -129,6 +129,11 @@ ids, distances = index.search(embeddings[0], k=10, nprobe=16, rerank_pool=500)
 Runnable Python examples are in [`examples/python/`](examples/python/). The
 package ships `.pyi` stubs and a `py.typed` marker.
 
+Python exposes the common HNSW constructor subset, HNSW JSON save/load, IVF-PQ
+directory save/load, and IVF-PQ file or mmap search. Rust-only surfaces include
+DiskANN, `store::UpdatableIndex`, FreshGraph, filtered search/update APIs, and
+HNSW binary segments.
+
 ## Persistence
 
 HNSW supports JSON save/load with the `serde` feature:

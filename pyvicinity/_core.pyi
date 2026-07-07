@@ -291,6 +291,9 @@ class IVFPQFileSearcher:
     def load(path: str | PathLike[str], mmap: bool = False) -> IVFPQFileSearcher:
         """Load a file-backed searcher from a directory written by
         :meth:`IVFPQIndex.save`.
+
+        ``mmap=True`` uses read-only memory maps and requires a build with
+        the Rust ``persistence`` feature. PyPI wheels enable it.
         """
 
     def set_nprobe(self, nprobe: int) -> None:

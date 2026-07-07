@@ -1,0 +1,68 @@
+# Review Status
+
+This file tracks the current review queue for implementation coverage,
+benchmarking, persistence, Python bindings, and performance work.
+
+## Checked Gates
+
+| Area | Status | Evidence |
+| --- | --- | --- |
+| Dataset fetch/generation repeatability | Passing | `uv run pytest tests/test_download_ann_benchmarks.py tests/test_generate_ann_smoke_data.py tests/test_generate_sample_data.py tests/test_generate_multiscale_data.py` |
+| Benchmark resume/storage expectations | Passing | `cargo test --example ann_benchmark --no-default-features --features hnsw,ivf_pq,persistence,diskann,serde -- support::tests` |
+| Python exposed API | Passing | `uv run maturin develop --release --features hnsw,python,parallel`; `uv run pytest tests/test_python.py`; `uv run python -m mypy.stubtest pyvicinity._core` |
+| Algorithm recommendation docs | Updated | README and `docs/algorithms.md` distinguish brute force, in-memory, file-backed graph, and file-backed compressed search |
+
+## Current Conclusions
+
+- Dataset scripts are idempotent enough for the current benchmark workflow:
+  they write atomically, verify HDF5 byte size, validate converted binary
+  headers, use a manifest, and require `--force`, `--redownload`, or
+  `--adopt-existing` for non-matching cached outputs.
+- Dataset reproducibility is not fully pinned: downloads use live
+  `ann-benchmarks.com` URLs and expected byte sizes, not pinned SHA256 values
+  or stable mirrors. The manifest records SHA256 after download, but the
+  expected source hash is not part of the dataset table.
+- The benchmark resume contract is storage-aware for the implemented storage
+  modes. DiskANN requires memory, file, and mmap rows. IVF-PQ requires
+  snapshot-loaded and file rows, plus mmap rows when the `persistence` feature
+  is compiled. Other snapshot-capable families require `snapshot_loaded` rows
+  when `--snapshot-load` is requested.
+- Python intentionally exposes the stable core today: common HNSW construction,
+  HNSW JSON save/load, IVF-PQ directory save/load, IVF-PQ file/mmap search, and
+  parallel batch search in release wheels. It should not mirror every
+  experimental Rust module until the Rust module has a clear recommendation or
+  benchmark gate.
+- The largest validated Perplexity finding so far is IVF-PQ: the old low-QPS
+  result was an implementation and layout gap. Current work has improved the
+  IVF-PQ search path and made file/mmap rows visible.
+
+## Remaining Review Queue
+
+| Priority | Area | Next review |
+| --- | --- | --- |
+| 1 | Storage-mode matrix | Verify every algorithm row in `docs/persistence.md` against public APIs and `ann_benchmark` support. Keep heap, snapshot-loaded heap, file, mmap, and segmented-store modes separate. |
+| 2 | Benchmark coverage | Generate a live matrix of algorithm x dataset x storage mode x recall/QPS/build/RSS/latency coverage. Mark algorithms that are implemented but not yet benchmarked on standard datasets. |
+| 3 | CI benchmark smoke breadth | CI checks a narrow runner slice. Add cheap smoke rows for DiskANN, Vamana, filtered dense rows, churn modes, and the broad algorithm set without downloading real datasets. |
+| 4 | Dataset source pinning | Add expected SHA256 values or an explicit mirror policy for downloaded HDF5 files. Keep `--redownload` behavior, but fail when a known dataset's source hash changes unexpectedly. |
+| 5 | Segmented-store benchmark row | `store::UpdatableIndex` has Criterion coverage but no dense `ann_benchmark` row. Add one if segmented durable HNSW is a serving target. |
+| 6 | File-backed raw-vector locality | IVF-PQ approximate file/mmap search is now list-contiguous for PQ codes; exact rerank still reads raw vectors by vector ID. Review whether batching, page layout, or a separate list-local raw-vector sidecar is the right next step. |
+| 7 | DiskANN storage layout | Callback-based neighbor reading was measured and rejected. Next review should focus on graph/vector page co-location, syscall count, mmap page behavior, and cache-state reporting. |
+| 8 | Classical methods | Treat KD-tree, ball tree, RP-tree, RP-forest, and K-means tree as first-class baselines. Review persistence, benchmark rows, dimensionality gates, and docs together. |
+| 9 | Filtered search | Review ACORN, FilteredGraph, RangeFiltered, and Curator with selectivity sweeps, not single dense-search rows. |
+| 10 | Streaming/update workloads | Review FreshGraph, in-place HNSW, LSM HNSW, tombstones, and `store::UpdatableIndex` against active-set recall, update throughput, query latency, compaction, and storage residency. |
+| 11 | Sparse and late-interaction harnesses | SparseMIPS needs a SPLADE/BM25-style sparse dataset harness. LEMUR needs training or reproducible model loading before storage or QPS rows matter. |
+| 12 | Python policy | Decide which Rust APIs become Python APIs. Keep the default policy narrow unless an algorithm has stable benchmarks, persistence behavior, and examples. Rust-only gaps today: DiskANN, `store`, FreshGraph, filtered search/update APIs, and HNSW binary segments. |
+| 13 | External research claims | Verify newer roadmap claims before implementation: Extended RaBitQ, VSAG layout tricks, IP-DiskANN, ACORN production behavior, PAG, SAQ, and ARM/SVE2 kernels. |
+| 14 | Profiling depth | Add profile artifacts for the next actual performance change. Record baseline, profiler target, negative controls, before/after, and rejected hypotheses in `docs/benchmark-results.md`. |
+
+## Guardrails
+
+- Do not compare in-memory QPS directly to file or mmap QPS. Treat storage mode
+  and cache state as part of the workload.
+- Do not promote an experimental algorithm from a single GloVe-25 row. Require
+  fixed-recall comparisons on the datasets where the algorithm's assumptions
+  apply.
+- Do not add another lower-layer storage crate until at least two index
+  families need the same extracted interface.
+- Do not broaden Python bindings to every Rust module by default. Python should
+  expose stable workflows first.

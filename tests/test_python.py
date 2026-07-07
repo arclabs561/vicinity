@@ -575,10 +575,13 @@ def test_ivfpq_file_searcher_load_round_trip(tmp_path) -> None:
     assert "IVFPQFileSearcher(" in repr(searcher)
 
 
-def test_ivfpq_file_searcher_mmap_requires_persistence_feature(tmp_path) -> None:
-    index, _ = _build_ivfpq(seed=13)
+def test_ivfpq_file_searcher_mmap_round_trip(tmp_path) -> None:
+    index, x = _build_ivfpq(seed=13)
     path = tmp_path / "ivfpq"
     index.save(path)
 
-    with pytest.raises(ValueError, match="persistence"):
-        IVFPQFileSearcher.load(path, mmap=True)
+    searcher = IVFPQFileSearcher.load(path, mmap=True)
+    ids, dists = searcher.search(x[0], k=5, nprobe=8, rerank_pool=len(x))
+
+    assert ids[0] == 0
+    assert abs(float(dists[0])) < 1e-4

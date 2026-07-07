@@ -48,3 +48,5 @@ Plots live in `plots/` and are regenerated from JSONL via
 
 - [TESTING.md](TESTING.md): test organization, feature gates, and how
   to run tests per module.
+- [review-status.md](review-status.md): current review queue for
+  benchmarks, persistence, Python bindings, and performance work.

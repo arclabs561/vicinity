@@ -259,7 +259,7 @@ jobs:
       - name: Install build + test deps
         run: python -m pip install --upgrade pip maturin pytest mypy ruff numpy
       - name: Build extension (editable)
-        run: maturin develop --release --features hnsw,python
+        run: maturin develop --release --features hnsw,python,parallel
       - name: Ruff
         run: python -m ruff check pyvicinity tests/test_python.py tests/test_download_ann_benchmarks.py examples/python scripts/generate_ann_smoke_data.py scripts/download_ann_benchmarks.py
       - name: Ruff format

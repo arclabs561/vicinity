@@ -113,7 +113,7 @@ quantization = ["qntz"]
 benchmark = []
 innr = ["dep:innr"]
 parallel = ["dep:rayon"]
-python = ["dep:pyo3", "dep:numpy", "hnsw", "ivf_pq", "serde"]
+python = ["dep:pyo3", "dep:numpy", "hnsw", "ivf_pq", "persistence", "serde"]
 
 # Feature names referenced by cfgs in the extracted code.
 # These are currently mostly organizational toggles.
