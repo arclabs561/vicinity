@@ -303,15 +303,10 @@ def test_standard_storage_expectations_cover_current_storage_classes() -> None:
 
     rows = set(script.standard_storage_expectations())
 
-    for algorithm in script.SNAPSHOT_RELOAD_ALGORITHMS:
-        assert (algorithm, "in_memory") in rows
-        assert (algorithm, "snapshot_loaded") in rows
-    for algorithm in script.FILE_BACKED_ALGORITHMS:
-        assert (algorithm, "in_memory") in rows
-        assert (algorithm, "snapshot_loaded") in rows
-        assert (algorithm, "file") in rows
-        assert (algorithm, "mmap") in rows
-    assert ("diskann", "in_memory") in rows
-    assert ("diskann_file", "file") in rows
-    assert ("diskann_mmap", "mmap") in rows
-    assert ("store", "segmented_store") in rows
+    for storage_modes, algorithms in script.STORAGE_EXPECTATION_GROUPS.items():
+        for algorithm in algorithms:
+            for storage_mode in storage_modes:
+                assert (algorithm, storage_mode) in rows
+    for algorithm, storage_modes in script.ALIAS_STORAGE_EXPECTATIONS.items():
+        for storage_mode in storage_modes:
+            assert (algorithm, storage_mode) in rows

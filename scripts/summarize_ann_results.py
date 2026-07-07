@@ -10,77 +10,72 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-SNAPSHOT_RELOAD_ALGORITHMS = (
-    "hnsw",
-    "nsw",
-    "ivf_avq",
-    "ivf_rabitq",
-    "rp_quant",
-    "binary_index",
-    "lsh",
-    "emg",
-    "nsg",
-    "fresh_graph",
-    "dual_branch",
-    "deg",
-    "filtered_graph",
-    "inplace",
-    "pipnn",
-    "vamana",
-    "finger",
-    "sng",
-    "symphony_qg",
-    "symphony_qg_vr",
-    "sq4",
-    "sq4u",
-    "sq8u",
-    "curator",
-    "range_filtered",
-    "kdtree",
-    "balltree",
-    "rptree",
-    "rp_forest",
-    "kmeans_tree",
-)
+STORAGE_EXPECTATION_GROUPS = {
+    ("in_memory", "snapshot_loaded"): (
+        "hnsw",
+        "nsw",
+        "ivf_avq",
+        "ivf_rabitq",
+        "rp_quant",
+        "binary_index",
+        "lsh",
+        "emg",
+        "nsg",
+        "fresh_graph",
+        "dual_branch",
+        "deg",
+        "filtered_graph",
+        "inplace",
+        "pipnn",
+        "vamana",
+        "finger",
+        "sng",
+        "symphony_qg",
+        "symphony_qg_vr",
+        "sq4",
+        "sq4u",
+        "sq8u",
+        "curator",
+        "range_filtered",
+        "kdtree",
+        "balltree",
+        "rptree",
+        "rp_forest",
+        "kmeans_tree",
+    ),
+    ("in_memory",): (
+        "brute",
+        "adsampling",
+        "hnsw_prt",
+        "fresh_graph_churn",
+        "inplace_churn",
+        "lsm_churn",
+        "sparse_mips",
+    ),
+    ("in_memory", "snapshot_loaded", "file", "mmap"): (
+        "ivfpq",
+        "ivfpq_rerank",
+    ),
+    ("segmented_store",): ("store", "store_snapshot"),
+}
 
-IN_MEMORY_ONLY_ALGORITHMS = (
-    "brute",
-    "adsampling",
-    "hnsw_prt",
-    "fresh_graph_churn",
-    "inplace_churn",
-    "lsm_churn",
-    "sparse_mips",
-)
-
-FILE_BACKED_ALGORITHMS = (
-    "ivfpq",
-    "ivfpq_rerank",
-)
-
-SEGMENTED_STORE_ALGORITHMS = ("store", "store_snapshot")
-
-ALIAS_STORAGE_EXPECTATIONS = (
-    ("diskann", "in_memory"),
-    ("diskann_file", "file"),
-    ("diskann_mmap", "mmap"),
-)
+ALIAS_STORAGE_EXPECTATIONS = {
+    "diskann": ("in_memory",),
+    "diskann_file": ("file",),
+    "diskann_mmap": ("mmap",),
+}
 
 
 def standard_storage_expectations() -> list[tuple[str, str]]:
-    rows: set[tuple[str, str]] = set(ALIAS_STORAGE_EXPECTATIONS)
-    rows.update((algorithm, "in_memory") for algorithm in SNAPSHOT_RELOAD_ALGORITHMS)
-    rows.update(
-        (algorithm, "snapshot_loaded") for algorithm in SNAPSHOT_RELOAD_ALGORITHMS
-    )
-    rows.update((algorithm, "in_memory") for algorithm in IN_MEMORY_ONLY_ALGORITHMS)
-    rows.update((algorithm, "in_memory") for algorithm in FILE_BACKED_ALGORITHMS)
-    rows.update((algorithm, "snapshot_loaded") for algorithm in FILE_BACKED_ALGORITHMS)
-    rows.update((algorithm, "file") for algorithm in FILE_BACKED_ALGORITHMS)
-    rows.update((algorithm, "mmap") for algorithm in FILE_BACKED_ALGORITHMS)
-    rows.update(
-        (algorithm, "segmented_store") for algorithm in SEGMENTED_STORE_ALGORITHMS
-    )
+    rows: set[tuple[str, str]] = set()
+    for storage_modes, algorithms in STORAGE_EXPECTATION_GROUPS.items():
+        rows.update(
+            (algorithm, storage_mode)
+            for algorithm in algorithms
+            for storage_mode in storage_modes
+        )
+    for algorithm, storage_modes in ALIAS_STORAGE_EXPECTATIONS.items():
+        rows.update((algorithm, storage_mode) for storage_mode in storage_modes)
     return sorted(rows)
 
 
