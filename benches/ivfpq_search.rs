@@ -9,9 +9,52 @@ use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughpu
 #[cfg(feature = "ivf_pq")]
 use rand::prelude::*;
 #[cfg(all(feature = "ivf_pq", feature = "benchmark"))]
+use std::alloc::{GlobalAlloc, Layout, System};
+#[cfg(all(feature = "ivf_pq", feature = "benchmark"))]
+use std::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(all(feature = "ivf_pq", feature = "benchmark"))]
 use vicinity::ivf_pq::IVFPQSearchProfile;
 #[cfg(feature = "ivf_pq")]
 use vicinity::ivf_pq::{IVFPQIndex, IVFPQParams};
+
+#[cfg(all(feature = "ivf_pq", feature = "benchmark"))]
+static ALLOC_CALLS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(all(feature = "ivf_pq", feature = "benchmark"))]
+static ALLOC_BYTES: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(all(feature = "ivf_pq", feature = "benchmark"))]
+struct CountingAlloc;
+
+#[cfg(all(feature = "ivf_pq", feature = "benchmark"))]
+// SAFETY: This wrapper delegates allocation behavior to `System` unchanged and
+// only records relaxed diagnostic counters for this benchmark binary.
+unsafe impl GlobalAlloc for CountingAlloc {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        ALLOC_CALLS.fetch_add(1, Ordering::Relaxed);
+        ALLOC_BYTES.fetch_add(layout.size(), Ordering::Relaxed);
+        // SAFETY: `layout` is provided by the allocator caller and is forwarded
+        // unchanged to the system allocator.
+        unsafe { System.alloc(layout) }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // SAFETY: `ptr` and `layout` are the pair previously returned to the
+        // caller; this wrapper does not alter either value.
+        unsafe { System.dealloc(ptr, layout) }
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        ALLOC_CALLS.fetch_add(1, Ordering::Relaxed);
+        ALLOC_BYTES.fetch_add(new_size, Ordering::Relaxed);
+        // SAFETY: `ptr`, `layout`, and `new_size` are forwarded unchanged to
+        // the system allocator.
+        unsafe { System.realloc(ptr, layout, new_size) }
+    }
+}
+
+#[cfg(all(feature = "ivf_pq", feature = "benchmark"))]
+#[global_allocator]
+static GLOBAL: CountingAlloc = CountingAlloc;
 
 #[cfg(feature = "ivf_pq")]
 fn random_vectors(n: usize, dim: usize, seed: u64) -> Vec<Vec<f32>> {
@@ -54,12 +97,39 @@ fn count_per_query(count: usize, queries: usize) -> f64 {
 }
 
 #[cfg(all(feature = "ivf_pq", feature = "benchmark"))]
+#[derive(Clone, Copy, Debug, Default)]
+struct AllocationProfile {
+    calls: usize,
+    bytes: usize,
+}
+
+#[cfg(all(feature = "ivf_pq", feature = "benchmark"))]
+impl AllocationProfile {
+    fn record_search<T>(f: impl FnOnce() -> T) -> (T, Self) {
+        ALLOC_CALLS.store(0, Ordering::Relaxed);
+        ALLOC_BYTES.store(0, Ordering::Relaxed);
+        let out = f();
+        let calls = ALLOC_CALLS.load(Ordering::Relaxed);
+        let bytes = ALLOC_BYTES.load(Ordering::Relaxed);
+        (out, Self { calls, bytes })
+    }
+
+    fn add_assign(&mut self, other: Self) {
+        self.calls += other.calls;
+        self.bytes += other.bytes;
+    }
+}
+
+#[cfg(all(feature = "ivf_pq", feature = "benchmark"))]
 fn print_profile_summary(label: &str, index: &IVFPQIndex, queries: &[Vec<f32>], k: usize) {
     let mut total = IVFPQSearchProfile::default();
+    let mut alloc_total = AllocationProfile::default();
     let mut result_count = 0usize;
 
     for query in queries {
-        let (results, profile) = index.search_profiled(query, k).unwrap();
+        let ((results, profile), alloc_profile) =
+            AllocationProfile::record_search(|| index.search_profiled(query, k).unwrap());
+        alloc_total.add_assign(alloc_profile);
         result_count += results.len();
         total.add_assign(&profile);
     }
@@ -80,6 +150,8 @@ fn print_profile_summary(label: &str, index: &IVFPQIndex, queries: &[Vec<f32>], 
             "scanned={scanned:.1}/query ",
             "candidates={candidates:.1}/query ",
             "copy_bytes={copy_bytes:.1}/query ",
+            "alloc_calls={alloc_calls:.1}/query ",
+            "alloc_bytes={alloc_bytes:.1}/query ",
             "results={results}"
         ),
         label = label,
@@ -96,6 +168,8 @@ fn print_profile_summary(label: &str, index: &IVFPQIndex, queries: &[Vec<f32>], 
         scanned = count_per_query(total.scanned_vectors, queries.len()),
         candidates = count_per_query(total.candidate_count, queries.len()),
         copy_bytes = count_per_query(total.code_copy_bytes, queries.len()),
+        alloc_calls = count_per_query(alloc_total.calls, queries.len()),
+        alloc_bytes = count_per_query(alloc_total.bytes, queries.len()),
         results = result_count
     );
     black_box(result_count);

@@ -256,6 +256,17 @@ cargo run --no-default-features --features ivf_pq,innr,serde --release \
 | IVF-PQ `nprobe=32` | 95.42% | 1,759.6 | 759.8 us |
 | IVF-PQ `nprobe=32`, rerank 500 | 96.58% | 1,710.0 | 775.7 us |
 
+The bench target now also reports allocation counts for each profiled
+`search_profiled()` call. Reusing the standard ADC distance buffer across
+probed clusters reduced heap activity, but did not materially change
+search-only timing. That means heap allocation was real, but not the remaining
+primary bottleneck for these shapes:
+
+| Shape | Before distance-buffer reuse | After distance-buffer reuse |
+|-------|------------------------------|-----------------------------|
+| `m25_one_dim_nprobe32_k10` | 48 alloc calls/query, 105.4 KB/query | 18 alloc calls/query, 96.4 KB/query |
+| `m5_runner_default_nprobe32_k10` | 48 alloc calls/query, 84.9 KB/query | 18 alloc calls/query, 75.9 KB/query |
+
 ## GloVe-25 (1.18M vectors, 25-d, angular distance)
 
 Ground truth: brute-force k-NN on L2-normalized vectors (angular ≡ cosine for unit vectors).

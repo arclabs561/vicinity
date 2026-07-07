@@ -2,7 +2,7 @@
 
 use super::opq::OptimizedProductQuantizer;
 use super::pq::ProductQuantizer;
-use crate::pq_simd::{adc_batch_dispatch, PackedCodes4bit, PackedLUTRef};
+use crate::pq_simd::{adc_batch_dispatch_into, PackedCodes4bit, PackedLUTRef};
 use crate::RetrieveError;
 use rand::seq::SliceRandom;
 use rand::SeedableRng;
@@ -1235,6 +1235,7 @@ impl IVFPQIndex {
         let mut candidates = Vec::new();
         let mut query_residual = vec![0.0f32; self.dimension];
         let mut codes_batch = Vec::new();
+        let mut distances_batch = Vec::new();
         let mut adc_table = Vec::new(); // Reused across clusters to avoid per-cluster allocation
 
         for (cluster_idx, _) in &cluster_distances {
@@ -1270,21 +1271,25 @@ impl IVFPQIndex {
                     profile.simd_clusters += 1;
                 }
 
+                let fastscan_distances;
                 let distances = if self.params.codebook_size == 16 {
                     // FastScan path: 4-bit codes, SIMD shuffle-based lookup.
                     if let Some(packed) = cluster.fastscan_codes.as_ref() {
                         #[cfg(feature = "benchmark")]
                         {
                             let dispatch_start = Instant::now();
-                            let distances = crate::pq_simd::fastscan_batch_flat(packed, &adc_table);
+                            fastscan_distances =
+                                crate::pq_simd::fastscan_batch_flat(packed, &adc_table);
                             if let Some(profile) = &mut profile {
                                 profile.adc_dispatch += dispatch_start.elapsed();
                             }
-                            distances
+                            fastscan_distances.as_slice()
                         }
                         #[cfg(not(feature = "benchmark"))]
                         {
-                            crate::pq_simd::fastscan_batch_flat(packed, &adc_table)
+                            fastscan_distances =
+                                crate::pq_simd::fastscan_batch_flat(packed, &adc_table);
+                            fastscan_distances.as_slice()
                         }
                     } else {
                         #[cfg(feature = "benchmark")]
@@ -1304,12 +1309,13 @@ impl IVFPQIndex {
                         let packed = PackedCodes4bit::pack(&codes_batch, ids.len(), num_cb);
                         #[cfg(feature = "benchmark")]
                         let dispatch_start = Instant::now();
-                        let distances = crate::pq_simd::fastscan_batch_flat(&packed, &adc_table);
+                        fastscan_distances =
+                            crate::pq_simd::fastscan_batch_flat(&packed, &adc_table);
                         #[cfg(feature = "benchmark")]
                         if let Some(profile) = &mut profile {
                             profile.adc_dispatch += dispatch_start.elapsed();
                         }
-                        distances
+                        fastscan_distances.as_slice()
                     }
                 } else {
                     // Standard ADC batch path for larger codebooks
@@ -1339,12 +1345,12 @@ impl IVFPQIndex {
                     );
                     #[cfg(feature = "benchmark")]
                     let dispatch_start = Instant::now();
-                    let distances = adc_batch_dispatch(codes_scan, num_cb, &packed_lut);
+                    adc_batch_dispatch_into(codes_scan, num_cb, &packed_lut, &mut distances_batch);
                     #[cfg(feature = "benchmark")]
                     if let Some(profile) = &mut profile {
                         profile.adc_dispatch += dispatch_start.elapsed();
                     }
-                    distances
+                    distances_batch.as_slice()
                 };
 
                 for (i, &vector_idx) in ids.iter().enumerate() {

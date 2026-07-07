@@ -87,6 +87,23 @@ pub fn adc_batch_distances(codes_batch: &[u8], num_codebooks: usize, lut: &[Vec<
     distances
 }
 
+/// Compute ADC distances into a caller-owned buffer.
+pub fn adc_batch_distances_into<L: PackedLUTData>(
+    codes_batch: &[u8],
+    num_codebooks: usize,
+    lut: &L,
+    distances: &mut Vec<f32>,
+) {
+    let n_candidates = codes_batch.len() / num_codebooks;
+    distances.clear();
+    distances.resize(n_candidates, 0.0);
+
+    for i in 0..n_candidates {
+        let codes = &codes_batch[i * num_codebooks..(i + 1) * num_codebooks];
+        distances[i] = lut.adc_distance(codes);
+    }
+}
+
 /// Packed LUT for SIMD operations.
 ///
 /// Reorganizes LUT data for cache-friendly and SIMD-friendly access patterns.
@@ -283,13 +300,35 @@ pub mod x86_64 {
         num_codebooks: usize,
         lut: &L,
     ) -> Vec<f32> {
+        let mut distances = Vec::new();
+        // SAFETY: caller guarantees AVX2 is available.
+        unsafe {
+            adc_batch_avx2_into(codes_batch, num_codebooks, lut, &mut distances);
+        }
+        distances
+    }
+
+    /// AVX2 batch ADC into a caller-owned buffer.
+    ///
+    /// # Safety
+    ///
+    /// Requires AVX2. Caller must verify via runtime detection.
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx2")]
+    pub unsafe fn adc_batch_avx2_into<L: PackedLUTData>(
+        codes_batch: &[u8],
+        num_codebooks: usize,
+        lut: &L,
+        distances: &mut Vec<f32>,
+    ) {
         use std::arch::x86_64::{
             __m256, __m256i, _mm256_add_ps, _mm256_i32gather_ps, _mm256_setzero_ps,
             _mm256_storeu_ps,
         };
 
         let n_candidates = codes_batch.len() / num_codebooks;
-        let mut distances = vec![0.0f32; n_candidates];
+        distances.clear();
+        distances.resize(n_candidates, 0.0);
 
         // Process 8 candidates at a time
         let chunks_8 = n_candidates / 8;
@@ -325,8 +364,6 @@ pub mod x86_64 {
             let codes = &codes_batch[i * num_codebooks..(i + 1) * num_codebooks];
             distances[i] = lut.adc_distance(codes);
         }
-
-        distances
     }
 
     /// AVX-512 batch ADC with 16-way parallelism.
@@ -342,13 +379,36 @@ pub mod x86_64 {
         num_codebooks: usize,
         lut: &L,
     ) -> Vec<f32> {
+        let mut distances = Vec::new();
+        // SAFETY: caller guarantees AVX-512F is available.
+        unsafe {
+            adc_batch_avx512_into(codes_batch, num_codebooks, lut, &mut distances);
+        }
+        distances
+    }
+
+    /// AVX-512 batch ADC into a caller-owned buffer.
+    ///
+    /// # Safety
+    ///
+    /// Requires AVX-512F. Caller must verify via runtime detection.
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx512f")]
+    #[allow(clippy::incompatible_msrv)] // AVX-512 intrinsics: stable since 1.89, but only reachable on avx512f hardware
+    pub unsafe fn adc_batch_avx512_into<L: PackedLUTData>(
+        codes_batch: &[u8],
+        num_codebooks: usize,
+        lut: &L,
+        distances: &mut Vec<f32>,
+    ) {
         use std::arch::x86_64::{
             __m512, __m512i, _mm512_add_ps, _mm512_i32gather_ps, _mm512_setzero_ps,
             _mm512_storeu_ps,
         };
 
         let n_candidates = codes_batch.len() / num_codebooks;
-        let mut distances = vec![0.0f32; n_candidates];
+        distances.clear();
+        distances.resize(n_candidates, 0.0);
 
         // Process 16 candidates at a time
         let chunks_16 = n_candidates / 16;
@@ -384,8 +444,6 @@ pub mod x86_64 {
             let codes = &codes_batch[i * num_codebooks..(i + 1) * num_codebooks];
             distances[i] = lut.adc_distance(codes);
         }
-
-        distances
     }
 }
 
@@ -406,10 +464,31 @@ pub mod aarch64 {
         num_codebooks: usize,
         lut: &L,
     ) -> Vec<f32> {
+        let mut distances = Vec::new();
+        // SAFETY: caller guarantees NEON is available.
+        unsafe {
+            adc_batch_neon_into(codes_batch, num_codebooks, lut, &mut distances);
+        }
+        distances
+    }
+
+    /// NEON batch ADC into a caller-owned buffer.
+    ///
+    /// # Safety
+    ///
+    /// NEON is always available on aarch64.
+    #[target_feature(enable = "neon")]
+    pub unsafe fn adc_batch_neon_into<L: PackedLUTData>(
+        codes_batch: &[u8],
+        num_codebooks: usize,
+        lut: &L,
+        distances: &mut Vec<f32>,
+    ) {
         use std::arch::aarch64::{float32x4_t, vaddq_f32, vdupq_n_f32, vsetq_lane_f32, vst1q_f32};
 
         let n_candidates = codes_batch.len() / num_codebooks;
-        let mut distances = vec![0.0f32; n_candidates];
+        distances.clear();
+        distances.resize(n_candidates, 0.0);
 
         // Process 4 candidates at a time
         let chunks_4 = n_candidates / 4;
@@ -451,8 +530,6 @@ pub mod aarch64 {
             let codes = &codes_batch[i * num_codebooks..(i + 1) * num_codebooks];
             distances[i] = lut.adc_distance(codes);
         }
-
-        distances
     }
 }
 
@@ -464,38 +541,42 @@ pub fn adc_batch_dispatch<L: PackedLUTData>(
     num_codebooks: usize,
     lut: &L,
 ) -> Vec<f32> {
+    let mut distances = Vec::new();
+    adc_batch_dispatch_into(codes_batch, num_codebooks, lut, &mut distances);
+    distances
+}
+
+/// Auto-dispatching batch ADC computation into a caller-owned buffer.
+pub fn adc_batch_dispatch_into<L: PackedLUTData>(
+    codes_batch: &[u8],
+    num_codebooks: usize,
+    lut: &L,
+    distances: &mut Vec<f32>,
+) {
     let n_candidates = codes_batch.len() / num_codebooks;
 
     #[cfg(target_arch = "x86_64")]
     {
         if n_candidates >= 16 && is_x86_feature_detected!("avx512f") {
-            return unsafe { x86_64::adc_batch_avx512(codes_batch, num_codebooks, lut) };
+            unsafe { x86_64::adc_batch_avx512_into(codes_batch, num_codebooks, lut, distances) };
+            return;
         }
         if n_candidates >= 8 && is_x86_feature_detected!("avx2") {
-            return unsafe { x86_64::adc_batch_avx2(codes_batch, num_codebooks, lut) };
+            unsafe { x86_64::adc_batch_avx2_into(codes_batch, num_codebooks, lut, distances) };
+            return;
         }
     }
 
     #[cfg(target_arch = "aarch64")]
     {
         if n_candidates >= 4 {
-            return unsafe { aarch64::adc_batch_neon(codes_batch, num_codebooks, lut) };
+            unsafe { aarch64::adc_batch_neon_into(codes_batch, num_codebooks, lut, distances) };
+            return;
         }
     }
 
     // Fallback
-    adc_batch_distances(codes_batch, num_codebooks, &lut_to_nested(lut))
-}
-
-/// Convert PackedLUT back to nested Vec (for fallback).
-fn lut_to_nested<L: PackedLUTData>(packed: &L) -> Vec<Vec<f32>> {
-    let mut result = Vec::with_capacity(packed.num_codebooks());
-    for m in 0..packed.num_codebooks() {
-        let start = m * packed.codebook_size();
-        let end = start + packed.codebook_size();
-        result.push(packed.data()[start..end].to_vec());
-    }
-    result
+    adc_batch_distances_into(codes_batch, num_codebooks, lut, distances);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
