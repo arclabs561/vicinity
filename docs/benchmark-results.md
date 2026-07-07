@@ -2,6 +2,12 @@
 
 Historical benchmark tables for standard ANN datasets.
 
+The checked-in `docs/*.jsonl` files are legacy result artifacts from this older
+schema. They do not include `_meta`, `storage_mode`, `cache_state`,
+`load_time_s`, or `index_bytes`, so use them only as historical in-memory
+context. Storage-aware coverage should be generated with the current harness
+commands below.
+
 Current benchmark runs should use `examples/ann_benchmark.rs`, which writes one
 `_meta` JSON line with the dataset, metric, actual `rustc --version`, MSRV, and
 crate version, query limit, and measured query count, followed by one JSON line

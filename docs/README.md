@@ -29,6 +29,10 @@ Common result files:
 - `gist-960-euclidean.jsonl`: GIST-960 (1M, 960-d, L2)
 - `sift-128-euclidean.jsonl`: SIFT-128 (1M, 128-d, L2)
 
+These checked-in JSONL files are legacy historical artifacts and predate schema
+v2 storage metadata. Generate fresh rows with `examples/ann_benchmark.rs` before
+making storage-mode or fixed-recall QPS claims.
+
 Use `storage_mode` and `cache_state` when comparing rows. `in_memory`,
 `snapshot_loaded`, `file`, and `mmap` are different workloads. `--resume`
 skips rows already present for the same dataset metadata and parameters;
