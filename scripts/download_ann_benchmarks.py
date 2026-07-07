@@ -110,6 +110,9 @@ DATASETS = {
         "normalize": False,
         "size_mb": 217,
         "expected_bytes": 227_528_288,
+        "expected_sha256": (
+            "35ff29594d96d1c51691bdef900f6adc10e33bac099ac1f37330ed5fcf652336"
+        ),
     },
     "gist-960-euclidean": {
         "url": "https://ann-benchmarks.com/gist-960-euclidean.hdf5",

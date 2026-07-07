@@ -44,8 +44,8 @@ page lists the other public indexes and the feature flags that expose them.
 | SparseMIPS | `sparse_mips` | Sparse vector graph index for SPLADE/BM25-style vectors |
 | LEMUR | `lemur` | Late-interaction MIPS scaffold; requires external encoder weights |
 | LSH | `lsh` | Cross-polytope LSH |
-| KD-tree | `kdtree` | Exact low-dimensional baseline |
-| Ball tree | `balltree` | Exact low-dimensional baseline |
+| KD-tree | `kdtree` | Low-dimensional cosine tree baseline |
+| Ball tree | `balltree` | Low-dimensional cosine tree baseline |
 | RP-tree | `rptree` | Single random-projection tree |
 | RP-forest | `rptree` | Approximate projection-tree baseline |
 | K-means tree | `kmeans_tree` | Hierarchical clustering tree baseline |
