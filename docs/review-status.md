@@ -51,8 +51,9 @@ benchmarking, persistence, Python bindings, and performance work.
   reaches 95.42% recall at 2,640 QPS in memory, 2,553 QPS from direct file
   search, and 2,722 QPS from mmap at `nprobe=32`. The `nprobe=32`,
   `rerank_pool=500` row reaches 96.58% recall at 2,514 QPS in memory and
-  2,534 QPS from mmap; direct-file rerank is still slower at 1,453 QPS because
-  exact rerank reads raw vectors by vector ID.
+  2,534 QPS from mmap; direct-file rerank was still slower at 1,453 QPS before
+  list-local raw-vector sidecars. The sidecars are implemented and covered by
+  bounded smoke rows; the full-train rerank row still needs to be remeasured.
 - DiskANN storage rows have been validated on a capped GloVe-25 corpus:
   in-memory, direct file, and mmap search now report comparable recall,
   latency tails, load time, index bytes, and file-read diagnostics. Full
@@ -116,7 +117,7 @@ benchmarking, persistence, Python bindings, and performance work.
 | 3 | CI benchmark smoke breadth | CI now runs cheap smoke rows for DiskANN file/mmap, Vamana, `store::UpdatableIndex`, filtered dense rows, FreshGraph, churn modes, and classical baselines. Keep adding rows when new implemented algorithms enter `ann_benchmark`. |
 | 4 | Dataset source pinning | All configured ann-benchmarks HDF5 sources now have direct SHA-256 pins. Next review should decide whether stable mirrors are needed beyond `ann-benchmarks.com`. |
 | 5 | Segmented-store benchmark row | Added `--algo store` with live `store` and reopened `store_snapshot` rows under `storage_mode=segmented_store`; capped 50K GloVe-25 live row reaches 99.97% recall at 5.9K QPS. Next review is dataset-scale comparison against HNSW, FreshGraph, in-place graph, and LSM churn. |
-| 6 | File-backed raw-vector locality | IVF-PQ approximate file/mmap search is now list-contiguous for PQ codes, and full-train fixed-recall rows show approximate direct-file search stays in the low-thousands QPS band at 95%+ recall. Positional reads cut targeted file-rerank rows by about 33-37%, but exact rerank still reads raw vectors by vector ID; full-train direct-file rerank at `nprobe=32` is 1,453 QPS versus 2,514 QPS in memory. Benchmark JSON now reports rerank raw-vector reads and bytes. External implementation review points to optional list-local raw-vector sidecars as the next compatibility-preserving experiment. |
+| 6 | File-backed raw-vector locality | IVF-PQ approximate file/mmap search is now list-contiguous for PQ codes, and full-train fixed-recall rows show approximate direct-file search stays in the low-thousands QPS band at 95%+ recall. Positional reads cut targeted file-rerank rows by about 33-37%. Optional `list_raw_offsets.bin` and `list_raw_vectors.bin` sidecars now make exact rerank list-contiguous while keeping old `raw_vectors.bin` fallback. A 5K-vector smoke run with `rerank_pool=20` measured file rerank at 77.6K, 77.6K, and 83.6K QPS, and mmap rerank at 274K, 286K, and 274K QPS. Next review should re-run the full-train `nprobe=32`, `rerank_pool=500` storage row. |
 | 7 | DiskANN storage layout | Callback-based neighbor reading was measured and rejected. Batching file-backed graph neighbor reads and positional direct-file reads were measured and kept. Full-corpus ef=75 now measures 87.60% recall at 12,579.5 QPS in memory, 1,662.4 QPS file, and 5,646.0 QPS mmap, with 928.74 vector reads/query on file and mmap. Next review should focus on 95% recall tuning, graph/vector page co-location, vector-read locality, mmap page behavior, and cold-cache reporting. |
 | 8 | Classical methods | Corrupt-snapshot rejection now covers KD-tree, ball tree, RP-tree, RP-forest, and K-means tree, and docs no longer call KD/Ball exact. Capped benchmark rows now cover all five classical methods with heap plus snapshot-loaded storage metadata at 5K and 50K indexed vectors. Next review should decide which classical rows need full GloVe-25 runs, then revisit dimensionality and metric gates. |
 | 9 | Filtered search | Review ACORN, FilteredGraph, RangeFiltered, and Curator with selectivity sweeps, not single dense-search rows. |
