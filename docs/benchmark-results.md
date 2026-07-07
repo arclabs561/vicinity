@@ -415,6 +415,33 @@ Additional capped storage rows from 2026-07-07:
 | K-means tree | 50K train / 1K query | in_memory | 17.24% | 1,063,262.0 | `num_clusters=16`, fast low-recall baseline |
 | K-means tree | 50K train / 1K query | snapshot_loaded | 17.24% | 1,007,105.1 | `load_time_s=0.0971`, `index_bytes=38,734,017` |
 
+Follow-up 50K classical sweep, using 500 queries and broader tree settings:
+
+```bash
+cargo run --example ann_benchmark --release --features kdtree,balltree,rptree,kmeans_tree -- \
+  data/ann-benchmarks/glove-25-angular \
+  --algo kdtree --algo balltree --algo rptree --algo rp_forest --algo kmeans_tree \
+  --tree-leaf-sizes 10,50 --tree-depths 16,32 --rp-num-trees 10,20,50 \
+  --kmeans-clusters 16,64 --kmeans-leaf-sizes 50,200 \
+  --kmeans-depths 10,20 --kmeans-iters 10 \
+  --max-train 50000 --max-queries 500 --snapshot-load --json --fresh \
+  --results data/ann-benchmarks/results/glove-25-classical-50k-sweep-20260707.jsonl
+```
+
+| Algorithm | Best 50K row | Recall@10 | QPS | Notes |
+| --- | --- | ---: | ---: | --- |
+| KD-tree | leaf 50, depth 16 | 100.00% | 4,616.6 | high-recall baseline, still far below HNSW at the same 50K cap |
+| Ball tree | leaf 50, depth 32 | 99.94% | 4,761.7 | fastest 95%+ row in the sweep |
+| RP-tree | leaf 50, depth 32 | 100.00% | 1,023.6 | reaches recall by traversing enough of the tree to be slow |
+| RP-forest | 50 trees, leaf 50 | 85.22% | 7,588.5 | improved from the 10-tree row but still has no 95% point |
+| K-means tree | 16 clusters, leaf 200, depth 10 | 23.88% | 525,365.7 | remains a low-recall speed row under these knobs |
+
+The sweep gives classical methods better coverage without changing the earlier
+conclusion. KD-tree, ball tree, and RP-tree can serve as bounded high-recall
+baselines. RP-forest and K-means tree need much larger search
+budgets or reranking to become high-recall methods, at which point their QPS
+advantage is expected to narrow.
+
 Full-train IVF-PQ storage sweep from the same day, using all 1,183,514
 GloVe-25 vectors and 500 queries:
 

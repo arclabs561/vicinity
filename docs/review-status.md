@@ -120,6 +120,12 @@ benchmarking, persistence, Python bindings, and performance work.
   legacy context, clarified DiskANN's current file/mmap path versus target
   co-located pages, and aligned LEMUR docs with the current mean-pool
   implementation.
+- A 50K-vector classical sweep with broader tree settings now separates the
+  classical baselines more clearly. KD-tree, ball tree, and RP-tree reach
+  high recall on the cap but remain much slower than HNSW at the same scale.
+  RP-forest improves to 85.22% recall with 50 trees, and K-means tree remains
+  below 25% recall, so neither has a measured 95% point under the current
+  sweep.
 
 ## Remaining Review Queue
 
@@ -132,7 +138,7 @@ benchmarking, persistence, Python bindings, and performance work.
 | 5 | Segmented-store benchmark row | Added `--algo store` with live `store` and reopened `store_snapshot` rows under `storage_mode=segmented_store`; capped 50K GloVe-25 live row reaches 99.97% recall at 5.9K QPS. Next review is dataset-scale comparison against HNSW, FreshGraph, in-place graph, and LSM churn. |
 | 6 | File-backed raw-vector locality | IVF-PQ approximate file/mmap search is now list-contiguous for PQ codes, and full-train fixed-recall rows show approximate direct-file search stays in the low-thousands QPS band at 95%+ recall. Positional reads cut targeted file-rerank rows by about 33-37%, but exact rerank still reads raw vectors by vector ID; full-train direct-file rerank at `nprobe=32` is 1,453 QPS versus 2,514 QPS in memory. Benchmark JSON now reports rerank raw-vector reads and bytes. Optional duplicate list-local raw-vector sidecars were measured and rejected because they grew snapshots without improving file rerank. Next review should profile read batching, page/cache behavior, or a replacement raw-vector layout instead. |
 | 7 | DiskANN storage layout | Callback-based neighbor reading was measured and rejected. Batching file-backed graph neighbor reads, positional direct-file reads, and dense visited tracking were measured and kept. Full-corpus ef=250 measures 95.72% recall at 4,134.1 QPS in memory, 658.7 QPS file, and 2,382.1 QPS mmap before the dense-visited patch, with 2,343.51 vector reads/query on file and mmap. Next review should focus on graph/vector page co-location, vector-read locality, mmap page behavior, and cold-cache reporting. |
-| 8 | Classical methods | Corrupt-snapshot rejection now covers KD-tree, ball tree, RP-tree, RP-forest, and K-means tree, and docs no longer call KD/Ball exact. Capped benchmark rows now cover all five classical methods with heap plus snapshot-loaded storage metadata at 5K and 50K indexed vectors. Next review should decide which classical rows need full GloVe-25 runs, then revisit dimensionality and metric gates. |
+| 8 | Classical methods | Corrupt-snapshot rejection now covers KD-tree, ball tree, RP-tree, RP-forest, and K-means tree, and docs no longer call KD/Ball exact. Capped benchmark rows now cover all five classical methods with heap plus snapshot-loaded storage metadata at 5K and 50K indexed vectors, including a broader 50K sweep. Next review should decide whether any full GloVe-25 classical run is worth the time, or whether the capped evidence is enough to keep them as bounded baselines rather than optimization targets. |
 | 9 | Filtered search | Review ACORN, FilteredGraph, RangeFiltered, and Curator with selectivity sweeps, not single dense-search rows. |
 | 10 | Streaming/update workloads | Review FreshGraph, in-place HNSW, LSM HNSW, tombstones, and `store::UpdatableIndex` against active-set recall, update throughput, query latency, compaction, and storage residency. |
 | 11 | Sparse and late-interaction harnesses | SparseMIPS needs a SPLADE/BM25-style sparse dataset harness. LEMUR needs training or reproducible model loading before storage or QPS rows matter. |
