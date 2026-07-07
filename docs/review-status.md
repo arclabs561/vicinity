@@ -43,6 +43,10 @@ benchmarking, persistence, Python bindings, and performance work.
 - The largest validated Perplexity finding so far is IVF-PQ: the old low-QPS
   result was an implementation and layout gap. Current work has improved the
   IVF-PQ search path and made file/mmap rows visible.
+- DiskANN storage rows have been validated on a capped GloVe-25 corpus:
+  in-memory, direct file, and mmap search now report comparable recall,
+  latency tails, load time, index bytes, and file-read diagnostics. Full
+  GloVe-25 rows and cold-cache storage studies remain open.
 
 ## Remaining Review Queue
 
@@ -54,7 +58,7 @@ benchmarking, persistence, Python bindings, and performance work.
 | 4 | Dataset source pinning | All configured ann-benchmarks HDF5 sources now have direct SHA-256 pins. Next review should decide whether stable mirrors are needed beyond `ann-benchmarks.com`. |
 | 5 | Segmented-store benchmark row | Added `--algo store` with `storage_mode=segmented_store`; next review is dataset-scale comparison against HNSW, FreshGraph, in-place graph, and LSM churn. |
 | 6 | File-backed raw-vector locality | IVF-PQ approximate file/mmap search is now list-contiguous for PQ codes; exact rerank still reads raw vectors by vector ID. Review whether batching, page layout, or a separate list-local raw-vector sidecar is the right next step. |
-| 7 | DiskANN storage layout | Callback-based neighbor reading was measured and rejected. Next review should focus on graph/vector page co-location, syscall count, mmap page behavior, and cache-state reporting. |
+| 7 | DiskANN storage layout | Callback-based neighbor reading was measured and rejected. Capped rows now show heap, file, and mmap behavior from the same build. Next review should focus on full-scale rows, graph/vector page co-location, syscall count, mmap page behavior, and cold-cache reporting. |
 | 8 | Classical methods | Corrupt-snapshot rejection now covers KD-tree, ball tree, RP-tree, RP-forest, and K-means tree, and docs no longer call KD/Ball exact. Capped benchmark smoke verified ball tree, RP-forest, and K-means tree heap plus snapshot-loaded rows with capped-corpus metadata. Next review should decide which classical rows need full GloVe-25 runs, then revisit dimensionality and metric gates. |
 | 9 | Filtered search | Review ACORN, FilteredGraph, RangeFiltered, and Curator with selectivity sweeps, not single dense-search rows. |
 | 10 | Streaming/update workloads | Review FreshGraph, in-place HNSW, LSM HNSW, tombstones, and `store::UpdatableIndex` against active-set recall, update throughput, query latency, compaction, and storage residency. |

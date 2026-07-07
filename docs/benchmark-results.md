@@ -129,6 +129,31 @@ This validates the basic Perplexity finding: the old 100% recall row is not the
 right operating point for QPS expectations. The 95% recall point still requires
 a sweep above `ef_search=50` for this build configuration.
 
+On 2026-07-07, a bounded DiskANN storage probe used 50,000 indexed GloVe-25
+vectors and 1,000 queries. Recall was recomputed against the capped corpus, so
+these rows validate the storage path and cache-state reporting but are not
+full-dataset comparison rows.
+
+```bash
+cargo run --example ann_benchmark --release --features hnsw,diskann -- \
+  data/ann-benchmarks/glove-25-angular \
+  --algo diskann --ef-search 50 --max-train 50000 --max-queries 1000 \
+  --json --fresh --results /tmp/vicinity-diskann-storage-capped.jsonl
+```
+
+| Storage mode | Recall@10 | QPS | p50 us | p95 us | p99 us | Load s | Index bytes |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| in_memory | 92.17% | 32,095.2 | 30.8 | 42.3 | 52.7 | n/a | n/a |
+| file | 92.17% | 1,251.3 | 790.3 | 1,012.0 | 1,159.9 | 0.0002 | 8,600,242 |
+| mmap | 92.17% | 13,646.6 | 72.1 | 100.1 | 122.1 | 0.0002 | 8,600,242 |
+
+The file and mmap rows visited the same graph work on average
+(`avg_visited_nodes=565.97`, `avg_graph_reads=55.24`,
+`avg_vector_reads=565.97`). The gap is therefore storage-access cost on this
+warm-cache capped run: heap search is fastest, mmap is much closer to heap than
+plain file reads, and direct file reads remain dominated by per-node vector
+access.
+
 ## Profiling Ledger
 
 These are incremental profiling findings from the current optimization pass.
