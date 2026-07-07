@@ -112,8 +112,13 @@
 pub mod cache;
 pub mod disk_io;
 pub mod graph;
+#[cfg(any(test, feature = "benchmark"))]
+pub(crate) mod page_io;
 
 pub use graph::DiskANNIndex;
 pub use graph::DiskANNParams;
 pub use graph::DiskANNSearchDiagnostics;
 pub use graph::DiskANNSearcher;
+#[cfg(feature = "benchmark")]
+#[doc(hidden)]
+pub use page_io::DiskANNPageSearcher;

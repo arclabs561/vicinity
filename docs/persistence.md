@@ -98,8 +98,10 @@ For file-backed searchers, recall should also be measured against ground truth.
 
 1. Keep `durability` and `segstore` as the only lower-layer crates. Add no new
    crate until shared storage code has two consumers.
-2. Finish DiskANN storage modes: current direct file save, file search, mmap
-   graph/vector readers, then page/co-location layout.
+2. Finish DiskANN storage modes: current direct file save, file search, and mmap
+   graph/vector readers are present. A `benchmark`-feature page-layout harness
+   exists, but the literal one-node-per-4KB-page shape is slower on the current
+   5K-vector smoke bench and is not promoted.
 3. Keep IVF-PQ file-backed search covered by benchmark rows, then improve the
    raw-vector rerank locality for file and mmap search. The current format
    persists:

@@ -681,6 +681,39 @@ fixed-recall file row performs about 2,343 vector reads/query, and current
 disk-resident graph literature points toward page-sized records that co-locate
 vectors, neighbor IDs, and often compressed neighbor vectors.
 
+An experimental `benchmark`-feature-only page layout then wrote one 4KB-aligned
+`nodes.page` record per node: external id, vector, and neighbor IDs in one
+record. The implementation keeps the format out of the normal `diskann` API and
+adds page-specific diagnostics (`page_reads`, `page_bytes`) so graph/vector
+file counters are not overloaded. Unit tests enforce that records are page
+aligned, page file/mmap search matches heap search, and each visited node
+causes one page read. Short Criterion smoke command:
+
+```bash
+cargo bench --bench diskann_search --no-default-features \
+  --features diskann,benchmark -- diskann_search_only \
+  --sample-size 10 --warm-up-time 0.1 --measurement-time 0.1
+```
+
+Same-run smoke results rejected this first 4KB-per-node layout as a promoted
+path. It is useful as a harness for future compressed/coalesced page layouts,
+but not as a replacement for the current file or mmap searcher:
+
+| Row | Current layout | 4KB page layout | Verdict |
+| --- | ---: | ---: | --- |
+| `file_ef50` | 48.838 ms / 100 queries | 72.252 ms / 100 queries | slower |
+| `mmap_ef50` | 9.034 ms / 100 queries | 17.317 ms / 100 queries | slower |
+| `file_ef75` | 67.815 ms / 100 queries | 98.139 ms / 100 queries | slower |
+| `mmap_ef75` | 12.366 ms / 100 queries | 23.334 ms / 100 queries | slower |
+| `file_ef250` | 140.60 ms / 100 queries | 200.89 ms / 100 queries | slower |
+| `mmap_ef250` | 25.557 ms / 100 queries | 48.759 ms / 100 queries | slower |
+
+The next page-layout attempt should reduce page bloat before another
+full-corpus run: compressed vectors, multiple low-dimensional nodes per page, or
+a hot-node cache/prefetch layer. A literal one-node-one-page layout multiplies
+the full GloVe-25 page file to roughly 4.8 GB, so it mainly measures page-cache
+pressure at this dimensionality.
+
 ### HNSW Search Heap Pressure
 
 The `hnsw_search` benchmark has an allocation counter around the normal

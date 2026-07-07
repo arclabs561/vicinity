@@ -340,6 +340,7 @@ harness = false
 [[bench]]
 name = "diskann_search"
 harness = false
+required-features = ["diskann", "benchmark"]
 
 [lints.rust]
 rust_2018_idioms = { level = "warn", priority = -1 }

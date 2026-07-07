@@ -159,6 +159,42 @@ impl DiskANNIndex {
 
         Ok(())
     }
+
+    /// Save an experimental page-co-located node layout to `nodes.page`.
+    ///
+    /// The normal [`Self::save`] format stays unchanged. This sidecar stores
+    /// each node's external id, full vector, and padded neighbor list in one
+    /// page-aligned record so file-backed search can evaluate graph/vector
+    /// co-location independently of the legacy `graph.index` plus `vectors.bin`
+    /// layout.
+    #[cfg(any(test, feature = "benchmark"))]
+    #[doc(hidden)]
+    pub fn save_page_layout(&self, output_dir: &Path) -> Result<(), RetrieveError> {
+        if !self.built {
+            return Err(RetrieveError::InvalidParameter(
+                "cannot save unbuilt index".into(),
+            ));
+        }
+        if !output_dir.exists() {
+            std::fs::create_dir_all(output_dir)?;
+        }
+
+        let page_path = output_dir.join("nodes.page");
+        let mut writer = super::page_io::DiskPageWriter::create(
+            &page_path,
+            self.num_vectors,
+            self.dimension,
+            self.params.m,
+            self.start_node,
+        )?;
+        for (idx, neighbors) in self.adj.iter().enumerate() {
+            let start = idx * self.dimension;
+            let end = start + self.dimension;
+            writer.write_node(self.doc_ids[idx], &self.vectors[start..end], neighbors)?;
+        }
+        writer.flush()?;
+        Ok(())
+    }
 }
 
 /// Disk-based searcher for DiskANN.
@@ -209,6 +245,10 @@ pub struct DiskANNSearchDiagnostics {
     pub vector_bytes: usize,
     /// Number of candidates retained before truncating to `k`.
     pub retained_candidates: usize,
+    /// Number of page-co-located node records read from `nodes.page`.
+    pub page_reads: usize,
+    /// Logical bytes read from page-co-located node records.
+    pub page_bytes: usize,
 }
 
 impl DiskANNSearcher {

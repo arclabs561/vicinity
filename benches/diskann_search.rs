@@ -8,7 +8,7 @@ use rand::prelude::*;
 #[cfg(feature = "diskann")]
 use std::cell::RefCell;
 #[cfg(feature = "diskann")]
-use vicinity::diskann::{DiskANNIndex, DiskANNParams, DiskANNSearcher};
+use vicinity::diskann::{DiskANNIndex, DiskANNPageSearcher, DiskANNParams, DiskANNSearcher};
 
 #[cfg(feature = "diskann")]
 fn random_vectors(n: usize, dim: usize, seed: u64) -> Vec<Vec<f32>> {
@@ -49,8 +49,13 @@ fn bench_diskann_search_only(c: &mut Criterion) {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let index_dir = temp_dir.path().join("diskann");
     index.save(&index_dir).expect("save DiskANN index");
+    index
+        .save_page_layout(&index_dir)
+        .expect("save DiskANN page layout");
     let file_searcher = RefCell::new(DiskANNSearcher::load(&index_dir).unwrap());
     let mmap_searcher = RefCell::new(DiskANNSearcher::load_mmap(&index_dir).unwrap());
+    let page_searcher = RefCell::new(DiskANNPageSearcher::load(&index_dir).unwrap());
+    let page_mmap_searcher = RefCell::new(DiskANNPageSearcher::load_mmap(&index_dir).unwrap());
 
     group.throughput(Throughput::Elements(n_queries as u64));
     for ef_search in [50, 75, 250] {
@@ -82,6 +87,34 @@ fn bench_diskann_search_only(c: &mut Criterion) {
                     .iter()
                     .map(|query| {
                         mmap_searcher
+                            .borrow_mut()
+                            .search(black_box(query), k, ef_search)
+                            .unwrap()
+                            .len()
+                    })
+                    .sum::<usize>()
+            })
+        });
+        group.bench_function(format!("page_file_ef{ef_search}"), |bench| {
+            bench.iter(|| {
+                queries
+                    .iter()
+                    .map(|query| {
+                        page_searcher
+                            .borrow_mut()
+                            .search(black_box(query), k, ef_search)
+                            .unwrap()
+                            .len()
+                    })
+                    .sum::<usize>()
+            })
+        });
+        group.bench_function(format!("page_mmap_ef{ef_search}"), |bench| {
+            bench.iter(|| {
+                queries
+                    .iter()
+                    .map(|query| {
+                        page_mmap_searcher
                             .borrow_mut()
                             .search(black_box(query), k, ef_search)
                             .unwrap()
