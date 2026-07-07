@@ -27,6 +27,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 const RPTREE_FORMAT_VERSION: u32 = 1;
+const DEFAULT_RPTREE_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
 
 /// Random Projection Tree index.
 ///
@@ -134,7 +135,7 @@ impl RPTreeIndex {
         }
 
         let indices: Vec<u32> = (0..self.num_vectors as u32).collect();
-        self.root = Some(self.build_tree(&indices, 0)?);
+        self.root = Some(self.build_tree(&indices, 0, DEFAULT_RPTREE_SEED)?);
 
         self.built = true;
         Ok(())
@@ -196,7 +197,12 @@ impl RPTreeIndex {
     }
 
     /// Build tree recursively.
-    fn build_tree(&self, indices: &[u32], depth: usize) -> Result<RPNode, RetrieveError> {
+    fn build_tree(
+        &self,
+        indices: &[u32],
+        depth: usize,
+        seed: u64,
+    ) -> Result<RPNode, RetrieveError> {
         if indices.is_empty() {
             return Ok(RPNode::Leaf {
                 indices: Vec::new(),
@@ -211,7 +217,7 @@ impl RPTreeIndex {
         }
 
         // Generate random hyperplane
-        let hyperplane = self.generate_random_hyperplane();
+        let hyperplane = self.generate_random_hyperplane(seed);
 
         // Compute projections and find median
         let mut projections: Vec<(f32, u32)> = indices
@@ -240,8 +246,8 @@ impl RPTreeIndex {
         }
 
         // Build children
-        let left = self.build_tree(&left_indices, depth + 1)?;
-        let right = self.build_tree(&right_indices, depth + 1)?;
+        let left = self.build_tree(&left_indices, depth + 1, child_seed(seed, 0))?;
+        let right = self.build_tree(&right_indices, depth + 1, child_seed(seed, 1))?;
 
         Ok(RPNode::Internal {
             hyperplane,
@@ -252,9 +258,11 @@ impl RPTreeIndex {
     }
 
     /// Generate random hyperplane.
-    fn generate_random_hyperplane(&self) -> Vec<f32> {
+    fn generate_random_hyperplane(&self, seed: u64) -> Vec<f32> {
+        use rand::rngs::StdRng;
         use rand::Rng;
-        let mut rng = rand::rng();
+        use rand::SeedableRng;
+        let mut rng = StdRng::seed_from_u64(seed);
 
         let mut hyperplane = Vec::with_capacity(self.dimension);
         let mut norm = 0.0;
@@ -358,6 +366,11 @@ impl RPTreeIndex {
     }
 }
 
+fn child_seed(seed: u64, branch: u64) -> u64 {
+    seed.wrapping_mul(6_364_136_223_846_793_005)
+        .wrapping_add(1_442_695_040_888_963_407 ^ branch)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -372,6 +385,16 @@ mod tests {
         }
         index.build().unwrap();
         index
+    }
+
+    #[test]
+    fn build_is_deterministic() {
+        let first = build_index();
+        let second = build_index();
+        assert_eq!(
+            serde_json::to_value(&first.root).unwrap(),
+            serde_json::to_value(&second.root).unwrap()
+        );
     }
 
     #[test]

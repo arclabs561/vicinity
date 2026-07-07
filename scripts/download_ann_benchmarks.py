@@ -82,6 +82,9 @@ DATASETS = {
         "recompute_ground_truth": True,
         "size_mb": 918,
         "expected_bytes": 962_819_488,
+        "expected_sha256": (
+            "4839085e5a8bb293434a1a66e1aa0193afc3f07c6797a85f1dbd91656172da20"
+        ),
     },
     "fashion-mnist-784-euclidean": {
         "url": "https://ann-benchmarks.com/fashion-mnist-784-euclidean.hdf5",

@@ -34,6 +34,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 const RP_FOREST_FORMAT_VERSION: u32 = 1;
+const DEFAULT_RP_FOREST_SEED: u64 = 0xA24B_AED4_963E_E407;
 
 /// Random Projection Tree Forest index.
 ///
@@ -165,8 +166,8 @@ impl RpForestIndex {
 
         // Build forest of trees
         self.trees = Vec::new();
-        for _ in 0..self.params.num_trees {
-            let tree = self.build_tree()?;
+        for tree_idx in 0..self.params.num_trees {
+            let tree = self.build_tree(tree_seed(tree_idx))?;
             self.trees.push(tree);
         }
 
@@ -230,14 +231,18 @@ impl RpForestIndex {
     }
 
     /// Build a single random projection tree.
-    fn build_tree(&self) -> Result<RPTree, RetrieveError> {
+    fn build_tree(&self, seed: u64) -> Result<RPTree, RetrieveError> {
         let indices: Vec<u32> = (0..self.num_vectors as u32).collect();
-        let root = self.build_tree_recursive(&indices)?;
+        let root = self.build_tree_recursive(&indices, seed)?;
         Ok(RPTree { root })
     }
 
     /// Build tree recursively. Each call independently samples a fresh random hyperplane.
-    fn build_tree_recursive(&self, indices: &[u32]) -> Result<Option<TreeNode>, RetrieveError> {
+    fn build_tree_recursive(
+        &self,
+        indices: &[u32],
+        seed: u64,
+    ) -> Result<Option<TreeNode>, RetrieveError> {
         if indices.is_empty() {
             return Ok(None);
         }
@@ -250,8 +255,11 @@ impl RpForestIndex {
         }
 
         // Generate a fresh random hyperplane for this split
+        use rand::rngs::StdRng;
         use rand::Rng;
-        let mut rng = rand::rng();
+        use rand::SeedableRng;
+
+        let mut rng = StdRng::seed_from_u64(seed);
         let mut hyperplane = Vec::with_capacity(self.dimension);
         let mut norm = 0.0f32;
         for _ in 0..self.dimension {
@@ -289,8 +297,8 @@ impl RpForestIndex {
         }
 
         // Each child independently picks its own split hyperplane
-        let left = self.build_tree_recursive(&left_indices)?;
-        let right = self.build_tree_recursive(&right_indices)?;
+        let left = self.build_tree_recursive(&left_indices, child_seed(seed, 0))?;
+        let right = self.build_tree_recursive(&right_indices, child_seed(seed, 1))?;
 
         Ok(Some(TreeNode::Internal {
             hyperplane,
@@ -374,6 +382,15 @@ impl RpForestIndex {
     }
 }
 
+fn tree_seed(tree_idx: usize) -> u64 {
+    DEFAULT_RP_FOREST_SEED ^ (tree_idx as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+}
+
+fn child_seed(seed: u64, branch: u64) -> u64 {
+    seed.wrapping_mul(6_364_136_223_846_793_005)
+        .wrapping_add(1_442_695_040_888_963_407 ^ branch)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -391,6 +408,16 @@ mod tests {
         }
         index.build().unwrap();
         index
+    }
+
+    #[test]
+    fn build_is_deterministic() {
+        let first = build_index(50, 4);
+        let second = build_index(50, 4);
+        assert_eq!(
+            serde_json::to_value(&first.trees).unwrap(),
+            serde_json::to_value(&second.trees).unwrap()
+        );
     }
 
     #[test]
