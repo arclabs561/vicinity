@@ -225,6 +225,37 @@ loop repeatedly called a general dense-vector L2 function below `innr`'s SIMD
 threshold. The split is now: `innr` for full-vector dense kernels, local IVF-PQ
 kernels for tiny-subvector ADC-table construction and lookup-table scan.
 
+The next profile showed the standard 8-bit ADC path was still copying PQ codes
+from vector-order storage into a cluster-order scan buffer for every probed
+cluster. Prepacking those cluster-order code buffers at build/load time removed
+that search-time copy (`code_copy=0.000us/query`) and improved the same
+Criterion bench:
+
+| Shape | Before cluster-code cache | After cluster-code cache | Change |
+|-------|---------------------------|--------------------------|--------|
+| `m25_one_dim_nprobe32_k10` | 13.91 ms / 100 queries | 12.78 ms / 100 queries | 8.1% faster |
+| `m25_one_dim_nprobe32_rerank500_k10` | 14.88 ms / 100 queries | 14.01 ms / 100 queries | 5.8% faster |
+| `m5_runner_default_nprobe32_k10` | 7.22 ms / 100 queries | 5.94 ms / 100 queries | 17.7% faster |
+| `m5_runner_default_nprobe32_rerank500_k10` | 8.04 ms / 100 queries | 6.98 ms / 100 queries | 13.2% faster |
+
+A bounded 500-query GloVe-25 run at the R@10≈0.95 operating point moved from
+820.7 QPS after the earlier ADC-table work to 1,759.6 QPS after the
+cluster-code cache:
+
+```bash
+cargo run --no-default-features --features ivf_pq,innr,serde --release \
+  --example ann_benchmark -- data/ann-benchmarks/glove-25-angular \
+  --algo ivfpq --pq-clusters 1024 --pq-codebooks 25 \
+  --pq-codebook-size 256 --pq-training-sample-size 100000 \
+  --pq-kmeans-max-iter 20 --pq-nprobes 32 --pq-rerank-pools 500 \
+  --max-queries 500 --json --fresh
+```
+
+| Algorithm | Recall@10 | QPS | p95 latency |
+|-----------|-----------|-----|-------------|
+| IVF-PQ `nprobe=32` | 95.42% | 1,759.6 | 759.8 us |
+| IVF-PQ `nprobe=32`, rerank 500 | 96.58% | 1,710.0 | 775.7 us |
+
 ## GloVe-25 (1.18M vectors, 25-d, angular distance)
 
 Ground truth: brute-force k-NN on L2-normalized vectors (angular ≡ cosine for unit vectors).

@@ -335,10 +335,16 @@ struct Cluster {
     /// Prepacked 4-bit FastScan codes in this cluster's ID order.
     ///
     /// Faiss stores FastScan codes in block layout instead of packing at query
-    /// time. This cache follows that shape for 16-centroid PQ codebooks while
-    /// leaving 8-bit and smaller-cluster paths unchanged.
+    /// time. This cache follows that shape for 16-centroid PQ codebooks.
     #[serde(skip)]
     fastscan_codes: Option<PackedCodes4bit>,
+    /// PQ codes in this cluster's ID order for standard ADC scan.
+    ///
+    /// The canonical `quantized_codes` array stays in vector-index order for
+    /// persistence and scalar lookup. This cache avoids rebuilding a contiguous
+    /// scan batch for every probed cluster on the hot search path.
+    #[serde(skip)]
+    adc_codes: Option<Vec<u8>>,
     /// Cache for decompressed IDs (temporary, cleared after use)
     #[cfg(feature = "id-compression")]
     #[serde(skip)]
@@ -353,6 +359,7 @@ impl Cluster {
             storage: ClusterStorage::Uncompressed(ids),
             filter_bitmask,
             fastscan_codes: None,
+            adc_codes: None,
             #[cfg(feature = "id-compression")]
             decompressed_cache: None,
         }
@@ -386,6 +393,7 @@ impl Cluster {
             },
             filter_bitmask,
             fastscan_codes: None,
+            adc_codes: None,
             decompressed_cache: None,
         })
     }
@@ -469,6 +477,10 @@ impl Cluster {
 
     fn set_fastscan_codes(&mut self, codes: Option<PackedCodes4bit>) {
         self.fastscan_codes = codes;
+    }
+
+    fn set_adc_codes(&mut self, codes: Option<Vec<u8>>) {
+        self.adc_codes = codes;
     }
 }
 
@@ -907,7 +919,7 @@ impl IVFPQIndex {
             let codes = pq.quantize(residual);
             self.quantized_codes.extend_from_slice(&codes);
         }
-        self.build_fastscan_cache();
+        self.build_scan_caches();
 
         self.pq = Some(pq);
         self.built = true;
@@ -940,20 +952,14 @@ impl IVFPQIndex {
         Ok(indices)
     }
 
-    fn build_fastscan_cache(&mut self) {
+    fn build_scan_caches(&mut self) {
         let num_cb = self.params.num_codebooks;
-        if self.params.codebook_size != 16 {
-            for cluster in &mut self.clusters {
-                cluster.set_fastscan_codes(None);
-            }
-            return;
-        }
-
         let quantized_codes = &self.quantized_codes;
         for cluster in &mut self.clusters {
             let ids = cluster.get_ids_ref();
             if ids.len() < SIMD_BATCH_THRESHOLD {
                 cluster.set_fastscan_codes(None);
+                cluster.set_adc_codes(None);
                 continue;
             }
 
@@ -962,11 +968,17 @@ impl IVFPQIndex {
                 let start = vector_idx as usize * num_cb;
                 codes_batch.extend_from_slice(&quantized_codes[start..start + num_cb]);
             }
-            cluster.set_fastscan_codes(Some(PackedCodes4bit::pack(
-                &codes_batch,
-                ids.len(),
-                num_cb,
-            )));
+            if self.params.codebook_size == 16 {
+                cluster.set_fastscan_codes(Some(PackedCodes4bit::pack(
+                    &codes_batch,
+                    ids.len(),
+                    num_cb,
+                )));
+                cluster.set_adc_codes(None);
+            } else {
+                cluster.set_fastscan_codes(None);
+                cluster.set_adc_codes(Some(codes_batch));
+            }
         }
     }
 
@@ -1083,7 +1095,7 @@ impl IVFPQIndex {
         };
         index.pq = Some(manifest.quantizer);
         index.built = true;
-        index.build_fastscan_cache();
+        index.build_scan_caches();
 
         Ok(index)
     }
@@ -1301,19 +1313,25 @@ impl IVFPQIndex {
                     }
                 } else {
                     // Standard ADC batch path for larger codebooks
-                    #[cfg(feature = "benchmark")]
-                    let copy_start = Instant::now();
-                    codes_batch.clear();
-                    codes_batch.reserve(ids.len() * num_cb);
-                    for &vector_idx in ids.as_ref() {
-                        let start = vector_idx as usize * num_cb;
-                        codes_batch.extend_from_slice(&self.quantized_codes[start..start + num_cb]);
-                    }
-                    #[cfg(feature = "benchmark")]
-                    if let Some(profile) = &mut profile {
-                        profile.code_copy += copy_start.elapsed();
-                        profile.code_copy_bytes += codes_batch.len();
-                    }
+                    let codes_scan = if let Some(codes) = cluster.adc_codes.as_ref() {
+                        codes.as_slice()
+                    } else {
+                        #[cfg(feature = "benchmark")]
+                        let copy_start = Instant::now();
+                        codes_batch.clear();
+                        codes_batch.reserve(ids.len() * num_cb);
+                        for &vector_idx in ids.as_ref() {
+                            let start = vector_idx as usize * num_cb;
+                            codes_batch
+                                .extend_from_slice(&self.quantized_codes[start..start + num_cb]);
+                        }
+                        #[cfg(feature = "benchmark")]
+                        if let Some(profile) = &mut profile {
+                            profile.code_copy += copy_start.elapsed();
+                            profile.code_copy_bytes += codes_batch.len();
+                        }
+                        codes_batch.as_slice()
+                    };
                     let packed_lut = PackedLUTRef::from_flat(
                         &adc_table,
                         self.params.num_codebooks,
@@ -1321,7 +1339,7 @@ impl IVFPQIndex {
                     );
                     #[cfg(feature = "benchmark")]
                     let dispatch_start = Instant::now();
-                    let distances = adc_batch_dispatch(&codes_batch, num_cb, &packed_lut);
+                    let distances = adc_batch_dispatch(codes_scan, num_cb, &packed_lut);
                     #[cfg(feature = "benchmark")]
                     if let Some(profile) = &mut profile {
                         profile.adc_dispatch += dispatch_start.elapsed();
@@ -1924,6 +1942,45 @@ mod tests {
                 .all(|cluster| cluster.fastscan_codes.is_some()),
             "clusters large enough for batched 4-bit search should be prepacked"
         );
+    }
+
+    #[test]
+    fn standard_adc_builds_prepacked_cluster_codes() {
+        let dim = 16;
+        let n = 320;
+        use rand::{Rng, SeedableRng};
+        let mut rng = rand::rngs::StdRng::seed_from_u64(16);
+
+        let params = IVFPQParams {
+            num_clusters: 4,
+            num_codebooks: 4,
+            codebook_size: 256,
+            nprobe: 4,
+            ..IVFPQParams::default()
+        };
+        let mut index = IVFPQIndex::new(dim, params).unwrap();
+
+        for i in 0..n {
+            let v: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
+            index.add(i as u32, v).unwrap();
+        }
+        index.build().unwrap();
+
+        assert!(
+            index
+                .clusters
+                .iter()
+                .filter(|cluster| cluster.len() >= SIMD_BATCH_THRESHOLD)
+                .all(|cluster| cluster.adc_codes.is_some()),
+            "clusters large enough for batched standard ADC should be prepacked"
+        );
+
+        let query: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
+        let cached = index.search(&query, 10).unwrap();
+        for cluster in &mut index.clusters {
+            cluster.set_adc_codes(None);
+        }
+        assert_eq!(index.search(&query, 10).unwrap(), cached);
     }
 
     #[test]
