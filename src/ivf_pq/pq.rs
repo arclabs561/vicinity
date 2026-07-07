@@ -196,21 +196,29 @@ impl ProductQuantizer {
             });
         }
 
+        let table_len = self.num_codebooks * self.codebook_size;
         table.clear();
-        table.reserve(self.num_codebooks * self.codebook_size);
 
         if self.subvector_dim == 1 {
-            for (codebook_idx, &q) in query.iter().take(self.num_codebooks).enumerate() {
+            table.resize(table_len, 0.0);
+            for (codebook_idx, (&q, table_chunk)) in query
+                .iter()
+                .take(self.num_codebooks)
+                .zip(table.chunks_exact_mut(self.codebook_size))
+                .enumerate()
+            {
                 let codebook_offset = codebook_idx * self.codebook_size;
                 let codebook =
                     &self.codebooks[codebook_offset..codebook_offset + self.codebook_size];
-                for &codeword in codebook {
+                for (&codeword, out) in codebook.iter().zip(table_chunk) {
                     let diff = q - codeword;
-                    table.push(diff * diff);
+                    *out = diff * diff;
                 }
             }
             return Ok(());
         }
+
+        table.reserve(table_len);
 
         if self.subvector_dim <= 8 {
             for codebook_idx in 0..self.num_codebooks {

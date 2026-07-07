@@ -401,6 +401,23 @@ remaining search allocations again:
 | `m25_one_dim_nprobe32_k10` | 18 alloc calls/query, 96.4 KB/query | 8 alloc calls/query, 50.8 KB/query |
 | `m5_runner_default_nprobe32_k10` | 18 alloc calls/query, 75.9 KB/query | 8 alloc calls/query, 30.3 KB/query |
 
+On 2026-07-07, binary inspection with `cargo asm --lib --no-default-features
+--features "ivf_pq benchmark"
+vicinity::ivf_pq::pq::ProductQuantizer::compute_adc_table_into` showed the
+one-dimensional ADC-table path still went through `Vec::push` growth checks for
+each table entry. Rewriting only that one-dimensional path to size the table
+once and fill mutable chunks moved the same short Criterion smoke as follows:
+
+| Shape | Before | After | ADC table before | ADC table after |
+|-------|--------|-------|------------------|-----------------|
+| `m25_one_dim_nprobe32_k10` | 13.08 ms / 100 queries | 4.51 ms / 100 queries | 99.466 us/query | 17.513 us/query |
+| `m25_one_dim_nprobe32_rerank500_k10` | 13.56 ms / 100 queries | 5.28 ms / 100 queries | 98.020 us/query | 17.503 us/query |
+
+The broader variant that changed all ADC-table paths was rejected: it regressed
+`m5_runner_default_nprobe32_k10` by about 3.8% in the same smoke. The kept
+change is intentionally limited to `subvector_dim == 1`, which is the GloVe-25
+`cb=25` shape where the QPS gap matters most.
+
 ## GloVe-25 (1.18M vectors, 25-d, angular distance)
 
 Ground truth: brute-force k-NN on L2-normalized vectors (angular ≡ cosine for unit vectors).
