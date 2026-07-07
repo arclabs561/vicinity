@@ -34,6 +34,7 @@ only after the interface has two real consumers.
 | NSW / SNG / Vamana / NSG / FINGER / PiPNN / EMG / LSH | Yes, directory format | Yes | No | No | Build-once | Persists the built in-memory graph state and restores it directly. This is snapshot-memory persistence, not file-backed search. |
 | DualBranch / DEG | Yes, JSON via `serde` | Yes | No | No | Build-once | These are HNSW-family experimental variants. Their benchmark snapshot rows require the `serde` feature and reload into memory. DEG dense benchmark rows cap indexed vectors at 10,000 because construction is O(n^2). |
 | HNSW quantized variants | Yes, for SQ4/SQ8 and non-compacted SymphonyQG | Yes | No | No | Build-once | SQ variants persist the underlying HNSW and rebuild quantization. SymphonyQG persists the underlying HNSW and RaBitQ manifest, then rebuilds quantized state on load. SymphonyQG-VR compacted snapshots are rejected because current search still needs raw parent vectors. |
+| HNSW query accelerators | No separate accelerator snapshot | Yes | No | No | Derived from HNSW | ADSampling and PRT state are derived from a built HNSW's reordered raw vectors. Persist the base HNSW first; add accelerator snapshots only if rebuild cost shows up in benchmark rows. |
 | IVF-PQ | Yes, directory format | Yes | No | No | Build-once | Persists centroids, PQ codebooks, posting lists, codes, and optional raw vectors for rerank. |
 | IVF-AVQ | Yes, directory format | Yes | No | No | Build-once | Persists centroids, AVQ codebooks, partitions, codes, and raw vectors for rerank. |
 | IVF-RaBitQ | Yes, directory format for non-compacted indexes | Yes | No | No | Build-once | Persists raw vectors, centroids, and cluster membership, then rebuilds RaBitQ edge codes on load. |
@@ -43,7 +44,7 @@ only after the interface has two real consumers.
 | Filtered graph | Yes, directory format | Yes | No | No | Build-once | Persists normalized vectors, graph neighbors, medoid, and inverted filter payloads. |
 | BinaryFlat / RP-Quant | Yes, directory format | Yes | No | No | Build-once | Persists full-precision vectors and params, then rebuilds quantizer or projection-derived payloads on load. |
 | SparseMIPS | Yes, directory format | Yes | No | No | Build-once | Persists sparse vectors in CSR-style offsets, indices, and values files plus the built graph. |
-| streaming LSM / EVoC | No | Yes | No | No | Varies | Keep memory-only until each has a benchmark row and a concrete persistence consumer. LSM is a multi-level mutable structure; do not add a quick snapshot until the durable tiering contract is designed. |
+| streaming LSM / EVoC / LEMUR | No | Yes | No | No | Varies | Keep memory-only until each has a benchmark row and a concrete persistence consumer. LSM is a multi-level mutable structure; do not add a quick snapshot until the durable tiering contract is designed. EVoC is clustering, and LEMUR is an inference scaffold rather than a complete ANN index. |
 | Classic trees | Yes, directory format | Yes | No | No | Build-once | KD-tree, Ball tree, K-means tree, RP-tree, and RP-forest persist built trees and preserve external doc IDs. |
 
 ## Required Persistence Tests
@@ -81,9 +82,15 @@ For file-backed searchers, recall should also be measured against ground truth.
    a safe serialized edge-code representation.
 6. Extend range-filtered persistence to file-backed search only if the filtered
    benchmark contract needs it; current load rebuilds an in-memory HNSW.
-7. Decide FreshGraph persistence separately. Its update model is not the same
+7. Keep ADSampling and PRT as derived HNSW accelerators until benchmark rows
+   show rebuild cost matters. Persisting base HNSW plus raw vectors is enough
+   for correctness today.
+8. Decide FreshGraph persistence separately. Its update model is not the same
    as segment append/compact, and forcing it through `segstore` would hide the
    in-place-update tradeoff.
+9. Design streaming LSM durability before adding any snapshot. A correct design
+   needs level manifests, tombstone semantics, and compaction recovery, not just
+   serde over the current heap state.
 
 ## Benchmark Contract
 
