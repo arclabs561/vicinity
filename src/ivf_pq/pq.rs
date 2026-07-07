@@ -212,6 +212,27 @@ impl ProductQuantizer {
             return Ok(());
         }
 
+        if self.subvector_dim <= 8 {
+            for codebook_idx in 0..self.num_codebooks {
+                let start_dim = codebook_idx * self.subvector_dim;
+                let end_dim = start_dim + self.subvector_dim;
+                let query_subvector = &query[start_dim..end_dim];
+                let codebook_offset = codebook_idx * self.codebook_size * self.subvector_dim;
+                let codebook_end = codebook_offset + self.codebook_size * self.subvector_dim;
+                let codebook = &self.codebooks[codebook_offset..codebook_end];
+
+                for codeword in codebook.chunks_exact(self.subvector_dim) {
+                    let mut dist = 0.0f32;
+                    for dim in 0..self.subvector_dim {
+                        let diff = query_subvector[dim] - codeword[dim];
+                        dist += diff * diff;
+                    }
+                    table.push(dist);
+                }
+            }
+            return Ok(());
+        }
+
         for codebook_idx in 0..self.num_codebooks {
             let start_dim = codebook_idx * self.subvector_dim;
             let end_dim = (codebook_idx + 1) * self.subvector_dim;
@@ -294,5 +315,27 @@ mod tests {
             .expect("valid query");
 
         assert_eq!(table, vec![4.0, 1.0, 1.0, 4.0, 1.0, 9.0]);
+    }
+
+    #[test]
+    fn adc_table_specializes_small_multidimensional_subvectors() {
+        let pq = ProductQuantizer {
+            dimension: 6,
+            num_codebooks: 2,
+            codebook_size: 2,
+            subvector_dim: 3,
+            codebooks: vec![
+                0.0, 0.0, 0.0, //
+                1.0, 1.0, 1.0, //
+                2.0, 2.0, 2.0, //
+                3.0, 3.0, 3.0,
+            ],
+        };
+        let mut table = Vec::new();
+
+        pq.compute_adc_table_into(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &mut table)
+            .expect("valid query");
+
+        assert_eq!(table, vec![14.0, 5.0, 29.0, 14.0]);
     }
 }

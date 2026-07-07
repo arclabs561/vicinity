@@ -208,6 +208,23 @@ cargo bench --bench ivfpq_search --no-default-features \
   --sample-size 10 --warm-up-time 0.1 --measurement-time 0.1
 ```
 
+A follow-up small-subvector ADC-table path avoids repeated generic L2 calls for
+PQ subvector dimensions up to 8. This matters for the default GloVe-25
+`m=5` shape, where each subvector has only 5 dimensions. The same Criterion
+command measured:
+
+| Shape | Before small-dim table path | After small-dim table path | Change |
+|-------|-----------------------------|----------------------------|--------|
+| `m5_runner_default_nprobe32_k10` | 10.01 ms / 100 queries | 7.22 ms / 100 queries | 27.9% faster |
+| `m5_runner_default_nprobe32_rerank500_k10` | 10.54 ms / 100 queries | 8.04 ms / 100 queries | 23.7% faster |
+
+With the `innr` feature enabled, the same path measured 6.96 ms / 100 queries
+for `m5_runner_default_nprobe32_k10`. Before the small-dimension specialization,
+enabling `innr` regressed this shape to 13.47 ms / 100 queries because the hot
+loop repeatedly called a general dense-vector L2 function below `innr`'s SIMD
+threshold. The split is now: `innr` for full-vector dense kernels, local IVF-PQ
+kernels for tiny-subvector ADC-table construction and lookup-table scan.
+
 ## GloVe-25 (1.18M vectors, 25-d, angular distance)
 
 Ground truth: brute-force k-NN on L2-normalized vectors (angular ≡ cosine for unit vectors).

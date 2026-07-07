@@ -32,6 +32,18 @@ It is intended to backstop claims in module docs and to give you a starting poin
 - Ge, He, Ke, Sun (2014). *Optimized Product Quantization.* (OPQ)  
   `https://arxiv.org/abs/1311.4055`
 
+- André et al. (2019). *Quicker ADC: Unlocking the Hidden Potential of Product Quantization with SIMD.* (SIMD ADC / FastScan lineage)
+  `https://arxiv.org/abs/1812.09162`
+
+- Faiss PR 1542. *IndexPQ and IndexIVFPQ implementations with AVX shuffle instructions.* (FastScan packed code/layout reference)
+  `https://github.com/facebookresearch/faiss/pull/1542`
+
+- Faiss PR 5309. *Implement DistanceComputer batching interfaces in SQ and PQ.* (batched PQ distance-computer reference)
+  `https://github.com/facebookresearch/faiss/pull/5309`
+
+- Lance PR 5923. *During PQ quantization we compute L2 distances from each sub-vector to every centroid in a codebook.* (SoA prepared-codebook table construction reference)
+  `https://github.com/lancedb/lance/pull/5923`
+
 ## MIPS / ScaNN (anisotropic / query-aware quantization)
 
 - Guo et al. (2020). *Accelerating Large-Scale Inference with Anisotropic Vector Quantization.* (AVQ / ScaNN line)  
