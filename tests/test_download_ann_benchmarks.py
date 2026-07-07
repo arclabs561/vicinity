@@ -159,3 +159,43 @@ def test_download_file_checks_cached_hdf5_sha256(tmp_path: Path) -> None:
             path,
             expected_sha256="0" * 64,
         )
+
+
+def test_download_dataset_hdf5_downloads_without_converting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = load_script()
+    output_dir = tmp_path / "tiny-angular"
+    info = {
+        "url": "https://example.invalid/tiny-angular.hdf5",
+        "metric": "angular",
+        "normalize": True,
+        "expected_bytes": len(b"hdf5"),
+        "expected_sha256": "expected-hash",
+    }
+
+    def fake_download(
+        _url: str,
+        dest: Path,
+        *,
+        redownload: bool,
+        expected_bytes: int | None,
+        expected_sha256: str | None,
+    ) -> None:
+        assert redownload is False
+        assert expected_bytes == len(b"hdf5")
+        assert expected_sha256 == "expected-hash"
+        dest.write_bytes(b"hdf5")
+
+    monkeypatch.setattr(script, "download_file", fake_download)
+
+    script.download_dataset_hdf5(
+        "tiny-angular",
+        info,
+        output_dir,
+        redownload=False,
+    )
+
+    assert (output_dir / "tiny-angular.hdf5").read_bytes() == b"hdf5"
+    assert not (output_dir / "dataset.json").exists()
+    assert not (output_dir / "train.bin").exists()

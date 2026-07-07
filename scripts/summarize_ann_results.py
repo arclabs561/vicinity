@@ -16,11 +16,23 @@ class Summary:
     rows: int = 0
     best_recall: float = 0.0
     best_qps: float = 0.0
+    recall_qps: list[tuple[float, float]] | None = None
 
     def add(self, row: dict[str, Any]) -> None:
         self.rows += 1
-        self.best_recall = max(self.best_recall, float(row.get("recall_at_10", 0.0)))
-        self.best_qps = max(self.best_qps, float(row.get("qps", 0.0)))
+        recall = float(row.get("recall_at_10", 0.0))
+        qps = float(row.get("qps", 0.0))
+        self.best_recall = max(self.best_recall, recall)
+        self.best_qps = max(self.best_qps, qps)
+        if self.recall_qps is None:
+            self.recall_qps = []
+        self.recall_qps.append((recall, qps))
+
+    def qps_at_recall(self, recall_floor: float) -> float | None:
+        qualifying = [
+            qps for recall, qps in self.recall_qps or [] if recall >= recall_floor
+        ]
+        return max(qualifying) if qualifying else None
 
 
 @dataclass(frozen=True)
@@ -32,6 +44,7 @@ class CoverageRow:
     rows: int
     best_recall: float | None
     best_qps: float | None
+    qps_at_recall_floor: float | None
 
 
 def row_dataset(row: dict[str, Any], current_dataset: str | None, path: Path) -> str:
@@ -71,6 +84,7 @@ def coverage_rows(
     summaries: dict[tuple[str, str, str], Summary],
     expected: list[tuple[str, str]] | None = None,
     datasets: list[str] | None = None,
+    recall_floor: float = 0.95,
 ) -> list[CoverageRow]:
     expected = expected or []
     dataset_names = sorted(datasets or {dataset for dataset, _, _ in summaries})
@@ -92,22 +106,29 @@ def coverage_rows(
                 rows=summary.rows if summary else 0,
                 best_recall=summary.best_recall if summary else None,
                 best_qps=summary.best_qps if summary else None,
+                qps_at_recall_floor=(
+                    summary.qps_at_recall(recall_floor) if summary else None
+                ),
             )
         )
     return rows
 
 
-def markdown_table(rows: list[CoverageRow]) -> str:
+def markdown_table(rows: list[CoverageRow], recall_floor: float = 0.95) -> str:
     lines = [
-        "| Dataset | Algorithm | Storage | Status | Rows | Best Recall@10 | Best QPS |",
-        "| --- | --- | --- | --- | ---: | ---: | ---: |",
+        "| Dataset | Algorithm | Storage | Status | Rows | Best Recall@10 | Best QPS | "
+        f"Best QPS @ R>={recall_floor:.2f} |",
+        "| --- | --- | --- | --- | ---: | ---: | ---: | ---: |",
     ]
     for row in rows:
         recall = "-" if row.best_recall is None else f"{row.best_recall:.4f}"
         qps = "-" if row.best_qps is None else f"{row.best_qps:.1f}"
+        floor_qps = (
+            "-" if row.qps_at_recall_floor is None else f"{row.qps_at_recall_floor:.1f}"
+        )
         lines.append(
             f"| {row.dataset} | {row.algorithm} | {row.storage_mode} | "
-            f"{row.status} | {row.rows} | {recall} | {qps} |"
+            f"{row.status} | {row.rows} | {recall} | {qps} | {floor_qps} |"
         )
     return "\n".join(lines)
 
@@ -149,13 +170,19 @@ def parse_args() -> argparse.Namespace:
         default=[],
         help="Dataset name to use for expected rows when no measured row exists",
     )
+    parser.add_argument(
+        "--recall-floor",
+        type=float,
+        default=0.95,
+        help="Recall@10 floor used for thresholded QPS reporting",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     summaries = load_summaries(args.paths)
-    rows = coverage_rows(summaries, args.expect, args.dataset)
+    rows = coverage_rows(summaries, args.expect, args.dataset, args.recall_floor)
     if args.json:
         print(
             json.dumps(
@@ -168,6 +195,7 @@ def main() -> None:
                         "rows": row.rows,
                         "best_recall_at_10": row.best_recall,
                         "best_qps": row.best_qps,
+                        "qps_at_recall_floor": row.qps_at_recall_floor,
                     }
                     for row in rows
                 ],
@@ -176,7 +204,7 @@ def main() -> None:
             )
         )
         return
-    print(markdown_table(rows))
+    print(markdown_table(rows, args.recall_floor))
 
 
 if __name__ == "__main__":

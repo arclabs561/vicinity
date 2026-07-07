@@ -29,7 +29,7 @@ def test_load_summaries_groups_by_dataset_algorithm_and_storage(tmp_path: Path) 
         "\n".join(
             [
                 '{"_meta":{"dataset":"data/ann-benchmarks/glove-25-angular"}}',
-                '{"algorithm":"hnsw","storage_mode":"in_memory","recall_at_10":0.9,"qps":10}',
+                '{"algorithm":"hnsw","storage_mode":"in_memory","recall_at_10":0.97,"qps":10}',
                 '{"algorithm":"hnsw","storage_mode":"in_memory","recall_at_10":0.8,"qps":20}',
                 '{"algorithm":"ivfpq","storage_mode":"mmap","recall_at_10":0.7,"qps":30}',
             ]
@@ -42,8 +42,10 @@ def test_load_summaries_groups_by_dataset_algorithm_and_storage(tmp_path: Path) 
 
     hnsw = summaries[("glove-25-angular", "hnsw", "in_memory")]
     assert hnsw.rows == 2
-    assert hnsw.best_recall == 0.9
+    assert hnsw.best_recall == 0.97
     assert hnsw.best_qps == 20.0
+    assert hnsw.qps_at_recall(0.95) == 10.0
+    assert hnsw.qps_at_recall(0.99) is None
     assert summaries[("glove-25-angular", "ivfpq", "mmap")].rows == 1
 
 
@@ -63,6 +65,7 @@ def test_coverage_rows_marks_expected_missing(tmp_path: Path) -> None:
 
     by_key = {(row.algorithm, row.storage_mode): row for row in rows}
     assert by_key[("hnsw", "in_memory")].status == "measured"
+    assert by_key[("hnsw", "in_memory")].qps_at_recall_floor == 42.0
     assert by_key[("store", "segmented_store")].status == "missing"
     assert by_key[("store", "segmented_store")].best_qps is None
 
@@ -77,7 +80,7 @@ def test_markdown_table_is_stable(tmp_path: Path) -> None:
 
     table = script.markdown_table(script.coverage_rows(script.load_summaries([path])))
 
-    assert "| rows | hnsw | in_memory | measured | 1 | 1.0000 | 42.0 |" in table
+    assert "| rows | hnsw | in_memory | measured | 1 | 1.0000 | 42.0 | 42.0 |" in table
 
 
 def test_json_output_preserves_recall_at_10_key(
@@ -95,3 +98,33 @@ def test_json_output_preserves_recall_at_10_key(
 
     output = json.loads(capsys.readouterr().out)
     assert output[0]["best_recall_at_10"] == 1.0
+    assert output[0]["qps_at_recall_floor"] == 42.0
+
+
+def test_json_output_uses_recall_floor_for_thresholded_qps(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = load_script()
+    path = tmp_path / "rows.jsonl"
+    path.write_text(
+        '{"algorithm":"hnsw","recall_at_10":0.96,"qps":100}\n'
+        '{"algorithm":"hnsw","recall_at_10":0.80,"qps":1000}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "summarize_ann_results.py",
+            str(path),
+            "--recall-floor",
+            "0.95",
+            "--json",
+        ],
+    )
+
+    script.main()
+
+    output = json.loads(capsys.readouterr().out)
+    assert output[0]["best_qps"] == 1000.0
+    assert output[0]["qps_at_recall_floor"] == 100.0

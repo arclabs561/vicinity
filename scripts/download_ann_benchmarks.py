@@ -136,6 +136,9 @@ DATASETS = {
         "recompute_ground_truth": False,
         "size_mb": 3669,
         "expected_bytes": 3_848_008_288,
+        "expected_sha256": (
+            "a0a44dfe80c58e63860862eeea2d34e62cff958dc3aec14fd65263d1d3c751f8"
+        ),
     },
 }
 
@@ -556,6 +559,26 @@ def convert_dataset(
     )
 
 
+def download_dataset_hdf5(
+    name: str,
+    info: dict,
+    output_dir: Path,
+    *,
+    redownload: bool,
+) -> None:
+    """Download and verify the source HDF5 without converting it."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    hdf5_path = output_dir / f"{name}.hdf5"
+    download_file(
+        info["url"],
+        hdf5_path,
+        redownload=redownload,
+        expected_bytes=info.get("expected_bytes"),
+        expected_sha256=info.get("expected_sha256"),
+    )
+    print(f"  SHA256: {sha256_file(hdf5_path)}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Download ann-benchmarks datasets")
     parser.add_argument(
@@ -578,6 +601,11 @@ def main() -> None:
         "--redownload",
         action="store_true",
         help="Replace the cached HDF5 file",
+    )
+    parser.add_argument(
+        "--download-only",
+        action="store_true",
+        help="Download and verify the source HDF5 without converting it",
     )
     parser.add_argument(
         "--adopt-existing",
@@ -605,6 +633,15 @@ def main() -> None:
         sys.exit(1)
 
     output_dir = Path(args.output) / args.dataset
+    if args.download_only:
+        download_dataset_hdf5(
+            args.dataset,
+            DATASETS[args.dataset],
+            output_dir,
+            redownload=args.redownload,
+        )
+        return
+
     convert_dataset(
         args.dataset,
         DATASETS[args.dataset],

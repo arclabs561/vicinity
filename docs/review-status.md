@@ -17,12 +17,12 @@ benchmarking, persistence, Python bindings, and performance work.
 - Dataset scripts are idempotent enough for the current benchmark workflow:
   they write atomically, verify HDF5 byte size, validate converted binary
   headers, use a manifest, and require `--force`, `--redownload`, or
-  `--adopt-existing` for non-matching cached outputs.
+  `--adopt-existing` for non-matching cached outputs. They also support
+  `--download-only` for pinning and verifying large source HDF5 files before
+  conversion.
 - Dataset reproducibility is pinned for locally verified standard HDF5 files:
-  SIFT-128, GloVe-25, GloVe-100, Fashion-MNIST, NYTimes, and GIST now have
-  expected SHA-256 values. Unverified dataset rows still use live
-  `ann-benchmarks.com` URLs plus expected byte sizes until their hashes are
-  confirmed.
+  SIFT-128, GloVe-25, GloVe-50, GloVe-100, GloVe-200, Fashion-MNIST, MNIST,
+  NYTimes, GIST, and Deep Image now have expected SHA-256 values.
 - The benchmark resume contract is storage-aware for the implemented storage
   modes. DiskANN requires memory, file, and mmap rows. IVF-PQ requires
   snapshot-loaded and file rows, plus mmap rows when the `persistence` feature
@@ -32,7 +32,9 @@ benchmarking, persistence, Python bindings, and performance work.
 - Benchmark result coverage can be summarized from JSONL with
   `uv run scripts/summarize_ann_results.py data/ann-benchmarks/results/*.jsonl`.
   Add `--expect ALGORITHM:STORAGE` rows when reviewing an intended matrix, so
-  missing measurements are visible instead of silently absent.
+  missing measurements are visible instead of silently absent. Use
+  `qps_at_recall_floor` for fixed-recall QPS claims; `best_qps` is the fastest
+  row at any recall.
 - Python intentionally exposes the stable core today: common HNSW construction,
   HNSW JSON save/load, IVF-PQ directory save/load, IVF-PQ file/mmap search, and
   parallel batch search in release wheels. It should not mirror every
@@ -47,9 +49,9 @@ benchmarking, persistence, Python bindings, and performance work.
 | Priority | Area | Next review |
 | --- | --- | --- |
 | 1 | Storage-mode matrix | Verify every algorithm row in `docs/persistence.md` against public APIs and `ann_benchmark` support. Keep heap, snapshot-loaded heap, file, mmap, and segmented-store modes separate. |
-| 2 | Benchmark coverage | Use `scripts/summarize_ann_results.py --expect ALGORITHM:STORAGE` to generate measured and missing rows for the intended algorithm x dataset x storage matrix. `ann_benchmark` now records both `--max-train` and `--max-queries` in `_meta`, so bounded rows do not mix with full-dataset rows. Next review should decide which missing rows are worth full runs versus explicitly capped runs. |
+| 2 | Benchmark coverage | Use `scripts/summarize_ann_results.py --expect ALGORITHM:STORAGE --recall-floor 0.95` to generate measured and missing rows for the intended algorithm x dataset x storage matrix. `ann_benchmark` now records both `--max-train` and `--max-queries` in `_meta`, so bounded rows do not mix with full-dataset rows. Next review should decide which missing rows are worth full runs versus explicitly capped runs. |
 | 3 | CI benchmark smoke breadth | CI now runs cheap smoke rows for DiskANN file/mmap, Vamana, `store::UpdatableIndex`, filtered dense rows, FreshGraph, churn modes, and classical baselines. Keep adding rows when new implemented algorithms enter `ann_benchmark`. |
-| 4 | Dataset source pinning | GloVe-50, GloVe-200, and MNIST now have direct SHA-256 pins. Add an expected SHA-256 value for Deep Image after direct verification. Decide whether stable mirrors are needed beyond `ann-benchmarks.com`. |
+| 4 | Dataset source pinning | All configured ann-benchmarks HDF5 sources now have direct SHA-256 pins. Next review should decide whether stable mirrors are needed beyond `ann-benchmarks.com`. |
 | 5 | Segmented-store benchmark row | Added `--algo store` with `storage_mode=segmented_store`; next review is dataset-scale comparison against HNSW, FreshGraph, in-place graph, and LSM churn. |
 | 6 | File-backed raw-vector locality | IVF-PQ approximate file/mmap search is now list-contiguous for PQ codes; exact rerank still reads raw vectors by vector ID. Review whether batching, page layout, or a separate list-local raw-vector sidecar is the right next step. |
 | 7 | DiskANN storage layout | Callback-based neighbor reading was measured and rejected. Next review should focus on graph/vector page co-location, syscall count, mmap page behavior, and cache-state reporting. |
