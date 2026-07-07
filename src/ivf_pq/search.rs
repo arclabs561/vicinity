@@ -1748,7 +1748,7 @@ impl IVFPQFileSearcher {
         }
 
         let pool = candidate_pool.max(k);
-        let candidates = self.search_approx_internal(query, pool)?;
+        let mut candidates = self.search_approx_internal(query, pool)?;
         let query_normalized = normalize_query(query);
         let mut reranked = Vec::with_capacity(candidates.len());
         let Some(storage) = self.raw_vectors.as_mut() else {
@@ -1756,6 +1756,9 @@ impl IVFPQFileSearcher {
                 "search_reranked unavailable without raw_vectors.bin".into(),
             ));
         };
+        if matches!(storage, IVFPQByteStorage::File(_)) {
+            candidates.sort_unstable_by_key(|(vector_idx, _)| *vector_idx);
+        }
         for (vector_idx, _approx_dist) in candidates {
             let vector = read_vector_from_storage(
                 storage,

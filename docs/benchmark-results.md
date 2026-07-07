@@ -486,7 +486,9 @@ PQ-code sidecars fix the largest file/mmap approximate-search penalty: file
 search improves by roughly 18-25x and mmap becomes close to heap search. Rerank
 file mode still lags because exact reranking reads raw vectors in candidate
 order from `raw_vectors.bin`; raw-vector locality is now the next storage-mode
-target.
+target. Sorting file-mode rerank reads by vector index did not materially change
+the `m25_one_dim` row and improved the `m5_runner_default` row by about 2.5%, so
+it is a small cleanup rather than the full rerank fix.
 
 ## GloVe-25 (1.18M vectors, 25-d, angular distance)
 
