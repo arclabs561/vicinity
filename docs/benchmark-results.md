@@ -236,18 +236,25 @@ The first measured 95%+ recall operating point is `ef_search=75`, not 50.
 Future DiskANN profiles should therefore target `ef=75` when validating fixed
 recall, with `ef=50` kept only as a lower-recall throughput control.
 
-The same local current-results directory now covers the standard storage matrix
-with no missing algorithm/storage rows:
+The same local current-results directory now covers the observed standard
+storage rows for the capped HNSW storage scope:
 
 ```bash
 uv run scripts/summarize_ann_results.py data/ann-benchmarks/results/*.jsonl \
-  --expect-standard-storage --only-dataset glove-25-angular \
+  --expect-observed-standard-storage \
+  --only-dataset 'glove-25-angular[train=50000,queries=1000]' \
   --missing-only --recall-floor 0.95
 ```
 
-The missing-only output is an empty table. This only proves row coverage. It
-does not promote capped rows to full-dataset results, and it does not turn
-below-95% rows into fixed-recall evidence.
+The missing-only output is an empty JSON list for that capped scope. For the
+uncapped `glove-25-angular` label, the same command still reports a missing
+HNSW `snapshot_loaded` row, which is correct: the current snapshot evidence is
+query- or train-capped and must not be mixed into the full-corpus scope. This
+only proves row coverage for observed families. It does not prove that every
+algorithm family has been run, it does not promote capped rows to full-dataset
+results, and it does not turn below-95% rows into fixed-recall evidence. Use
+`--expect-standard-storage` when auditing an intended full algorithm/storage
+matrix.
 
 Additional capped storage rows from 2026-07-07:
 

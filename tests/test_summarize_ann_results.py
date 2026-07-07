@@ -49,6 +49,26 @@ def test_load_summaries_groups_by_dataset_algorithm_and_storage(tmp_path: Path) 
     assert summaries[("glove-25-angular", "ivfpq", "mmap")].rows == 1
 
 
+def test_load_summaries_keeps_limit_scopes_separate(tmp_path: Path) -> None:
+    script = load_script()
+    path = tmp_path / "rows.jsonl"
+    path.write_text(
+        '{"_meta":{"dataset":"data/ann-benchmarks/glove-25-angular","train_limit":null,"query_limit":null}}\n'
+        '{"algorithm":"hnsw","storage_mode":"in_memory","recall_at_10":0.97,"qps":10}\n'
+        '{"_meta":{"dataset":"data/ann-benchmarks/glove-25-angular","train_limit":50000,"query_limit":1000}}\n'
+        '{"algorithm":"hnsw","storage_mode":"in_memory","recall_at_10":0.80,"qps":20}\n',
+        encoding="utf-8",
+    )
+
+    summaries = script.load_summaries([path])
+
+    assert summaries[("glove-25-angular", "hnsw", "in_memory")].best_qps == 10.0
+    capped = summaries[
+        ("glove-25-angular[train=50000,queries=1000]", "hnsw", "in_memory")
+    ]
+    assert capped.best_qps == 20.0
+
+
 def test_coverage_rows_marks_expected_missing(tmp_path: Path) -> None:
     script = load_script()
     path = tmp_path / "rows.jsonl"
@@ -189,6 +209,40 @@ def test_cli_can_emit_standard_storage_missing_rows(
     assert ("store", "segmented_store") in missing
     assert ("sparse_mips", "in_memory") in missing
     assert ("hnsw", "in_memory") not in missing
+
+
+def test_cli_can_scope_standard_storage_to_observed_algorithms(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = load_script()
+    path = tmp_path / "rows.jsonl"
+    path.write_text(
+        '{"_meta":{"dataset":"data/ann-benchmarks/glove-25-angular"}}\n'
+        '{"algorithm":"hnsw","recall_at_10":1.0,"qps":42}\n'
+        '{"algorithm":"diskann_file","storage_mode":"file","recall_at_10":1.0,"qps":24}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "summarize_ann_results.py",
+            str(path),
+            "--expect-observed-standard-storage",
+            "--missing-only",
+            "--json",
+        ],
+    )
+
+    script.main()
+
+    output = json.loads(capsys.readouterr().out)
+    missing = {(row["algorithm"], row["storage_mode"]) for row in output}
+    assert ("hnsw", "snapshot_loaded") in missing
+    assert ("diskann", "in_memory") in missing
+    assert ("diskann_mmap", "mmap") in missing
+    assert ("store", "segmented_store") not in missing
+    assert ("ivfpq", "file") not in missing
 
 
 def test_standard_storage_expectations_cover_current_storage_classes() -> None:

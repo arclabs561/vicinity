@@ -86,6 +86,33 @@ def standard_storage_expectations() -> list[tuple[str, str]]:
 
 STANDARD_STORAGE_EXPECTATIONS = standard_storage_expectations()
 
+DISKANN_ALIASES = frozenset({"diskann", "diskann_file", "diskann_mmap"})
+
+
+def expectation_matches_observed_algorithm(
+    algorithm: str, observed_algorithms: set[str]
+) -> bool:
+    if algorithm in DISKANN_ALIASES:
+        return bool(DISKANN_ALIASES & observed_algorithms)
+    return algorithm in observed_algorithms
+
+
+def observed_standard_storage_expectations(
+    summaries: dict[tuple[str, str, str], Summary],
+) -> dict[str, list[tuple[str, str]]]:
+    observed_by_dataset: dict[str, set[str]] = defaultdict(set)
+    for dataset, algorithm, _storage_mode in summaries:
+        observed_by_dataset[dataset].add(algorithm)
+
+    expected_by_dataset = {}
+    for dataset, observed_algorithms in observed_by_dataset.items():
+        expected_by_dataset[dataset] = [
+            (algorithm, storage_mode)
+            for algorithm, storage_mode in STANDARD_STORAGE_EXPECTATIONS
+            if expectation_matches_observed_algorithm(algorithm, observed_algorithms)
+        ]
+    return expected_by_dataset
+
 
 @dataclass
 class Summary:
@@ -123,6 +150,24 @@ class CoverageRow:
     qps_at_recall_floor: float | None
 
 
+def scoped_dataset_name(meta: dict[str, Any]) -> str | None:
+    dataset = meta.get("dataset")
+    if not isinstance(dataset, str) or not dataset:
+        return None
+
+    name = Path(dataset).name
+    scope = []
+    train_limit = meta.get("train_limit")
+    query_limit = meta.get("query_limit")
+    if train_limit is not None:
+        scope.append(f"train={train_limit}")
+    if query_limit is not None:
+        scope.append(f"queries={query_limit}")
+    if scope:
+        name = f"{name}[{','.join(scope)}]"
+    return name
+
+
 def row_dataset(row: dict[str, Any], current_dataset: str | None, path: Path) -> str:
     dataset = row.get("dataset") or current_dataset
     if isinstance(dataset, str) and dataset:
@@ -143,7 +188,7 @@ def load_summaries(paths: list[Path]) -> dict[tuple[str, str, str], Summary]:
                 if "_meta" in row:
                     meta = row["_meta"]
                     if isinstance(meta, dict):
-                        current_dataset = str(meta.get("dataset") or "") or None
+                        current_dataset = scoped_dataset_name(meta)
                     continue
                 algorithm = row.get("algorithm")
                 if not isinstance(algorithm, str):
@@ -159,13 +204,18 @@ def load_summaries(paths: list[Path]) -> dict[tuple[str, str, str], Summary]:
 def coverage_rows(
     summaries: dict[tuple[str, str, str], Summary],
     expected: list[tuple[str, str]] | None = None,
+    expected_by_dataset: dict[str, list[tuple[str, str]]] | None = None,
     datasets: list[str] | None = None,
     recall_floor: float = 0.95,
     only_datasets: set[str] | None = None,
     missing_only: bool = False,
 ) -> list[CoverageRow]:
     expected = expected or []
-    dataset_names = sorted(datasets or {dataset for dataset, _, _ in summaries})
+    expected_by_dataset = expected_by_dataset or {}
+    dataset_names = sorted(
+        datasets
+        or ({dataset for dataset, _, _ in summaries} | set(expected_by_dataset))
+    )
     if only_datasets is not None:
         dataset_names = [
             dataset for dataset in dataset_names if dataset in only_datasets
@@ -174,6 +224,10 @@ def coverage_rows(
     if expected:
         for dataset in dataset_names:
             for algorithm, storage_mode in expected:
+                keys.add((dataset, algorithm, storage_mode))
+    for dataset, dataset_expected in expected_by_dataset.items():
+        if dataset in dataset_names:
+            for algorithm, storage_mode in dataset_expected:
                 keys.add((dataset, algorithm, storage_mode))
 
     rows = []
@@ -256,6 +310,14 @@ def parse_args() -> argparse.Namespace:
         help="Add the standard storage-coverage expectation matrix",
     )
     parser.add_argument(
+        "--expect-observed-standard-storage",
+        action="store_true",
+        help=(
+            "Add standard storage expectations only for algorithm families "
+            "already observed in each dataset"
+        ),
+    )
+    parser.add_argument(
         "--dataset",
         action="append",
         default=[],
@@ -287,10 +349,16 @@ def main() -> None:
     expected = list(args.expect)
     if args.expect_standard_storage:
         expected.extend(STANDARD_STORAGE_EXPECTATIONS)
+    expected_by_dataset = (
+        observed_standard_storage_expectations(summaries)
+        if args.expect_observed_standard_storage
+        else None
+    )
     only_datasets = set(args.only_dataset) if args.only_dataset else None
     rows = coverage_rows(
         summaries,
         expected,
+        expected_by_dataset,
         args.dataset,
         args.recall_floor,
         only_datasets=only_datasets,

@@ -37,6 +37,8 @@ Use `storage_mode` and `cache_state` when comparing rows. `in_memory`,
 `snapshot_loaded`, `file`, and `mmap` are different workloads. `--resume`
 skips rows already present for the same dataset metadata and parameters;
 `--fresh` starts a new result file.
+The summary tool keeps capped rows separate by appending limits to the dataset
+label, for example `glove-25-angular[train=50000,queries=1000]`.
 
 Plots live in `plots/` and are regenerated from JSONL via
 `scripts/plot_comparison.py`.
@@ -48,7 +50,9 @@ The summary reports both fastest row overall and fastest row meeting
 `--recall-floor` (default `0.95`); use the thresholded QPS for fixed-recall
 claims. Add `--only-dataset NAME --missing-only` when reviewing one dataset's
 remaining storage rows, or use `--expect-standard-storage` for the standard
-storage coverage matrix.
+storage coverage matrix. For historical result directories that mix partial
+runs, use `--expect-observed-standard-storage`; it only expands storage
+expectations for algorithm families already present in each dataset.
 
 ## Background
 
