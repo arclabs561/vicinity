@@ -531,6 +531,85 @@ pub mod aarch64 {
             distances[i] = lut.adc_distance(codes);
         }
     }
+
+    /// NEON batch ADC specialized for flat 8-bit PQ LUTs.
+    ///
+    /// This is the hot path for IVF-PQ with 256 centroids per codebook. The
+    /// caller has already checked the LUT shape, so the inner loop can gather
+    /// through raw pointers instead of carrying a bounds-check bailout for each
+    /// codebook and candidate lane.
+    ///
+    /// # Safety
+    ///
+    /// NEON is always available on aarch64. `lut_data` must contain at least
+    /// `num_codebooks * 256` entries, and `codes_batch.len()` must be a
+    /// multiple of `num_codebooks`.
+    #[target_feature(enable = "neon")]
+    pub unsafe fn adc_batch_neon_flat_256_into(
+        codes_batch: &[u8],
+        num_codebooks: usize,
+        lut_data: &[f32],
+        distances: &mut Vec<f32>,
+    ) {
+        use std::arch::aarch64::{float32x4_t, vaddq_f32, vdupq_n_f32, vsetq_lane_f32, vst1q_f32};
+
+        debug_assert_eq!(codes_batch.len() % num_codebooks, 0);
+        debug_assert!(lut_data.len() >= num_codebooks * 256);
+
+        let n_candidates = codes_batch.len() / num_codebooks;
+        distances.clear();
+        distances.resize(n_candidates, 0.0);
+
+        let codes_ptr = codes_batch.as_ptr();
+        let lut_ptr = lut_data.as_ptr();
+        let chunks_4 = n_candidates / 4;
+
+        for chunk in 0..chunks_4 {
+            let base_idx = chunk * 4;
+            // SAFETY: the caller-provided shape checks guarantee all pointer
+            // offsets below stay within the code and LUT slices. NEON is
+            // enabled by the function target feature.
+            unsafe {
+                let mut sum: float32x4_t = vdupq_n_f32(0.0);
+                let c0_ptr = codes_ptr.add(base_idx * num_codebooks);
+                let c1_ptr = c0_ptr.add(num_codebooks);
+                let c2_ptr = c1_ptr.add(num_codebooks);
+                let c3_ptr = c2_ptr.add(num_codebooks);
+
+                for m in 0..num_codebooks {
+                    let lut_base = lut_ptr.add(m * 256);
+                    let v0 = *lut_base.add(*c0_ptr.add(m) as usize);
+                    let v1 = *lut_base.add(*c1_ptr.add(m) as usize);
+                    let v2 = *lut_base.add(*c2_ptr.add(m) as usize);
+                    let v3 = *lut_base.add(*c3_ptr.add(m) as usize);
+
+                    let lane0 = vsetq_lane_f32(v0, vdupq_n_f32(0.0), 0);
+                    let lane01 = vsetq_lane_f32(v1, lane0, 1);
+                    let lane012 = vsetq_lane_f32(v2, lane01, 2);
+                    let gathered = vsetq_lane_f32(v3, lane012, 3);
+
+                    sum = vaddq_f32(sum, gathered);
+                }
+
+                vst1q_f32(distances.as_mut_ptr().add(base_idx), sum);
+            }
+        }
+
+        let tail_start = chunks_4 * 4;
+        for (i, out) in distances.iter_mut().enumerate().skip(tail_start) {
+            let code_base = i * num_codebooks;
+            let mut sum = 0.0f32;
+            // SAFETY: same slice-shape checks as above. The loop is over the
+            // remaining candidate rows and all codebooks in each row.
+            unsafe {
+                for m in 0..num_codebooks {
+                    let code = *codes_ptr.add(code_base + m) as usize;
+                    sum += *lut_ptr.add(m * 256 + code);
+                }
+            }
+            *out = sum;
+        }
+    }
 }
 
 /// Auto-dispatching batch ADC computation.
@@ -570,6 +649,17 @@ pub fn adc_batch_dispatch_into<L: PackedLUTData>(
     #[cfg(target_arch = "aarch64")]
     {
         if n_candidates >= 4 {
+            if lut.codebook_size() == 256 && lut.data().len() >= num_codebooks.saturating_mul(256) {
+                unsafe {
+                    aarch64::adc_batch_neon_flat_256_into(
+                        codes_batch,
+                        num_codebooks,
+                        lut.data(),
+                        distances,
+                    )
+                };
+                return;
+            }
             unsafe { aarch64::adc_batch_neon_into(codes_batch, num_codebooks, lut, distances) };
             return;
         }

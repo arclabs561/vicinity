@@ -427,6 +427,30 @@ then moved from 1,759.6 QPS to 2,149.7 QPS for approximate search, and from
 | IVF-PQ `nprobe=32` | 95.42% | 2,149.7 | 648.2 us |
 | IVF-PQ `nprobe=32`, rerank 500 | 96.58% | 2,105.5 | 662.2 us |
 
+The next binary-inspection pass looked at
+`vicinity::pq_simd::adc_batch_dispatch_into`. On Apple Silicon, the compiler
+vectorized the generic NEON dispatcher four candidates at a time, but the
+inner loop still carried bounds-check bailout blocks for LUT gathers. A
+specialized aarch64 path for the common 8-bit PQ case (`codebook_size=256`)
+checks the LUT shape once and then gathers through raw pointers inside the
+NEON loop. The short Criterion probe moved as follows:
+
+| Shape | Before 8-bit NEON specialization | After 8-bit NEON specialization | ADC dispatch before | ADC dispatch after |
+|-------|----------------------------------|---------------------------------|---------------------|--------------------|
+| `m25_one_dim_nprobe32_k10` | 4.60 ms / 100 queries | 3.81 ms / 100 queries | 20.783 us/query | 13.484 us/query |
+| `m25_one_dim_nprobe32_rerank500_k10` | 5.61 ms / 100 queries | 4.74 ms / 100 queries | 21.459 us/query | 13.841 us/query |
+| `m5_runner_default_nprobe32_k10` | 5.94 ms / 100 queries | 5.84 ms / 100 queries | 5.319 us/query | 3.429 us/query |
+| `m5_runner_default_nprobe32_rerank500_k10` | 6.97 ms / 100 queries | 6.63 ms / 100 queries | 5.135 us/query | 3.376 us/query |
+
+The same bounded 500-query GloVe-25 macro run then moved from 2,149.7 QPS to
+2,941.4 QPS for approximate search, and from 2,105.5 QPS to 2,806.2 QPS with
+rerank pool 500:
+
+| Algorithm | Recall@10 | QPS | p95 latency |
+|-----------|-----------|-----|-------------|
+| IVF-PQ `nprobe=32` | 95.42% | 2,941.4 | 470.6 us |
+| IVF-PQ `nprobe=32`, rerank 500 | 96.58% | 2,806.2 | 488.5 us |
+
 ## GloVe-25 (1.18M vectors, 25-d, angular distance)
 
 Ground truth: brute-force k-NN on L2-normalized vectors (angular ≡ cosine for unit vectors).
