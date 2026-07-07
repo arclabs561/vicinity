@@ -359,24 +359,21 @@ page/co-location work remains a storage-layout problem rather than a benchmark
 harness problem.
 
 The same local current-results directory now covers the observed standard
-storage rows for the capped HNSW storage scope:
+storage rows for current benchmark scopes:
 
 ```bash
 uv run scripts/summarize_ann_results.py data/ann-benchmarks/results/*.jsonl \
-  --expect-observed-standard-storage \
-  --only-dataset 'glove-25-angular[train=50000,queries=1000]' \
+  --current-schema-only --expect-observed-standard-storage \
   --missing-only --recall-floor 0.95
 ```
 
-The missing-only output is an empty JSON list for that capped scope. For the
-uncapped `glove-25-angular` label, the same command still reports a missing
-HNSW `snapshot_loaded` row, which is correct: the current snapshot evidence is
-query- or train-capped and must not be mixed into the full-corpus scope. This
-only proves row coverage for observed families. It does not prove that every
-algorithm family has been run, it does not promote capped rows to full-dataset
-results, and it does not turn below-95% rows into fixed-recall evidence. Use
-`--expect-standard-storage` when auditing an intended full algorithm/storage
-matrix.
+The missing-only output is empty for observed current scopes. Historical rows
+without scope metadata still summarize as measurements, but no longer seed
+storage-coverage expectations. This only proves row coverage for observed
+families. It does not prove that every algorithm family has been run, it does
+not promote capped rows to full-dataset results, and it does not turn below-95%
+rows into fixed-recall evidence. Use `--expect-standard-storage` when auditing
+an intended full algorithm/storage matrix.
 
 Additional capped storage rows from 2026-07-07:
 

@@ -52,7 +52,8 @@ claims. Add `--only-dataset NAME --missing-only` when reviewing one dataset's
 remaining storage rows, or use `--expect-standard-storage` for the standard
 storage coverage matrix. For historical result directories that mix partial
 runs, use `--expect-observed-standard-storage`; it only expands storage
-expectations for algorithm families already present in each dataset.
+expectations for algorithm families already present in benchmark scopes that
+record train/query cardinality metadata.
 
 ## Background
 

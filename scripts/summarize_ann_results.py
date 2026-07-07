@@ -104,8 +104,9 @@ def observed_standard_storage_expectations(
     summaries: dict[tuple[str, str, str], Summary],
 ) -> dict[str, list[tuple[str, str]]]:
     observed_by_dataset: dict[str, set[str]] = defaultdict(set)
-    for dataset, algorithm, _storage_mode in summaries:
-        observed_by_dataset[dataset].add(algorithm)
+    for (dataset, algorithm, _storage_mode), summary in summaries.items():
+        if summary.storage_scope_observed:
+            observed_by_dataset[dataset].add(algorithm)
 
     expected_by_dataset = {}
     for dataset, observed_algorithms in observed_by_dataset.items():
@@ -124,9 +125,11 @@ class Summary:
     best_qps: float = 0.0
     best_qps_diagnostics: dict[str, float] | None = None
     recall_qps: list[tuple[float, float]] | None = None
+    storage_scope_observed: bool = False
 
-    def add(self, row: dict[str, Any]) -> None:
+    def add(self, row: dict[str, Any], *, storage_scope_observed: bool = False) -> None:
         self.rows += 1
+        self.storage_scope_observed |= storage_scope_observed
         recall = float(row.get("recall_at_10", 0.0))
         qps = float(row.get("qps", 0.0))
         self.best_recall = max(self.best_recall, recall)
@@ -180,6 +183,11 @@ def scoped_dataset_name(meta: dict[str, Any]) -> str | None:
     return name
 
 
+def has_storage_expectation_scope(meta: dict[str, Any]) -> bool:
+    storage_scope_keys = ("indexed_vectors", "queries", "train_limit", "query_limit")
+    return any(key in meta for key in storage_scope_keys)
+
+
 def row_dataset(row: dict[str, Any], current_dataset: str | None, path: Path) -> str:
     dataset = row.get("dataset") or current_dataset
     if isinstance(dataset, str) and dataset:
@@ -193,6 +201,7 @@ def load_summaries(
     summaries: dict[tuple[str, str, str], Summary] = defaultdict(Summary)
     for path in paths:
         current_dataset: str | None = None
+        storage_expectation_scope = False
         seen_meta = False
         with path.open(encoding="utf-8") as f:
             for line in f:
@@ -204,6 +213,7 @@ def load_summaries(
                     meta = row["_meta"]
                     if isinstance(meta, dict):
                         current_dataset = scoped_dataset_name(meta)
+                        storage_expectation_scope = has_storage_expectation_scope(meta)
                         seen_meta = True
                     continue
                 if current_schema_only and not seen_meta:
@@ -215,7 +225,10 @@ def load_summaries(
                 if not isinstance(storage_mode, str):
                     storage_mode = "in_memory"
                 dataset = row_dataset(row, current_dataset, path)
-                summaries[(dataset, algorithm, storage_mode)].add(row)
+                summaries[(dataset, algorithm, storage_mode)].add(
+                    row,
+                    storage_scope_observed=storage_expectation_scope,
+                )
     return dict(summaries)
 
 

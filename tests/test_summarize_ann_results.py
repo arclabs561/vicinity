@@ -270,7 +270,7 @@ def test_cli_can_scope_standard_storage_to_observed_algorithms(
     script = load_script()
     path = tmp_path / "rows.jsonl"
     path.write_text(
-        '{"_meta":{"dataset":"data/ann-benchmarks/glove-25-angular"}}\n'
+        '{"_meta":{"dataset":"data/ann-benchmarks/glove-25-angular","query_limit":1000}}\n'
         '{"algorithm":"hnsw","recall_at_10":1.0,"qps":42}\n'
         '{"algorithm":"diskann_file","storage_mode":"file","recall_at_10":1.0,"qps":24}\n',
         encoding="utf-8",
@@ -296,6 +296,46 @@ def test_cli_can_scope_standard_storage_to_observed_algorithms(
     assert ("diskann_mmap", "mmap") in missing
     assert ("store", "segmented_store") not in missing
     assert ("ivfpq", "file") not in missing
+
+
+def test_observed_storage_expectations_ignore_unscoped_current_rows(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = load_script()
+    historical = tmp_path / "historical.jsonl"
+    historical.write_text(
+        '{"_meta":{"dataset":"data/ann-benchmarks/glove-25-angular","result_schema":2}}\n'
+        '{"algorithm":"hnsw","storage_mode":"in_memory","recall_at_10":0.96,"qps":42}\n',
+        encoding="utf-8",
+    )
+    scoped = tmp_path / "scoped.jsonl"
+    scoped.write_text(
+        '{"_meta":{"dataset":"data/ann-benchmarks/glove-25-angular","query_limit":1000}}\n'
+        '{"algorithm":"ivfpq","storage_mode":"in_memory","recall_at_10":0.96,"qps":24}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "summarize_ann_results.py",
+            str(historical),
+            str(scoped),
+            "--current-schema-only",
+            "--expect-observed-standard-storage",
+            "--missing-only",
+            "--json",
+        ],
+    )
+
+    script.main()
+
+    output = json.loads(capsys.readouterr().out)
+    missing = {(row["algorithm"], row["storage_mode"]) for row in output}
+    assert ("hnsw", "snapshot_loaded") not in missing
+    assert ("ivfpq", "snapshot_loaded") in missing
+    assert ("ivfpq", "file") in missing
+    assert ("ivfpq", "mmap") in missing
 
 
 def test_standard_storage_expectations_cover_current_storage_classes() -> None:
