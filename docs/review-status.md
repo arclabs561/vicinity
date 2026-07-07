@@ -43,7 +43,7 @@ benchmarking, persistence, Python bindings, and performance work.
 | --- | --- | --- |
 | 1 | Storage-mode matrix | Verify every algorithm row in `docs/persistence.md` against public APIs and `ann_benchmark` support. Keep heap, snapshot-loaded heap, file, mmap, and segmented-store modes separate. |
 | 2 | Benchmark coverage | Generate a live matrix of algorithm x dataset x storage mode x recall/QPS/build/RSS/latency coverage. Mark algorithms that are implemented but not yet benchmarked on standard datasets. |
-| 3 | CI benchmark smoke breadth | CI checks a narrow runner slice. Add cheap smoke rows for DiskANN, Vamana, filtered dense rows, churn modes, and the broad algorithm set without downloading real datasets. |
+| 3 | CI benchmark smoke breadth | CI now runs cheap smoke rows for DiskANN file/mmap, Vamana, filtered dense rows, FreshGraph, churn modes, and classical baselines. Keep adding rows when new implemented algorithms enter `ann_benchmark`. |
 | 4 | Dataset source pinning | Add expected SHA-256 values for GloVe-50, GloVe-200, MNIST, and Deep Image after direct verification. Decide whether stable mirrors are needed beyond `ann-benchmarks.com`. |
 | 5 | Segmented-store benchmark row | `store::UpdatableIndex` has Criterion coverage but no dense `ann_benchmark` row. Add one if segmented durable HNSW is a serving target. |
 | 6 | File-backed raw-vector locality | IVF-PQ approximate file/mmap search is now list-contiguous for PQ codes; exact rerank still reads raw vectors by vector ID. Review whether batching, page layout, or a separate list-local raw-vector sidecar is the right next step. |
