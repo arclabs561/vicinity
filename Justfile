@@ -2,8 +2,8 @@
 
 ann_broad_features := "hnsw,nsw,vamana,diskann,ivf_pq,ivf_avq,ivf_rabitq,emg,nsg,pipnn,sng,finger,fresh_graph,filtered_graph,curator,range_filtered,rp_quant,binary_index,sq4,sq8,lsh,rptree,kdtree,balltree,kmeans_tree"
 ann_broad_algos := "--algo hnsw --algo nsw --algo vamana --algo diskann --algo ivfpq --algo ivf_avq --algo ivf_rabitq --algo emg --algo nsg --algo dual_branch --algo deg --algo pipnn --algo sng --algo finger --algo fresh_graph --algo filtered_graph --algo curator --algo range_filtered --algo rp_quant --algo binary_index --algo sq4 --algo sq4u --algo sq8u --algo symphony_qg --algo symphony_qg_vr --algo adsampling --algo lsh --algo hnsw_prt --algo brute --algo kdtree --algo balltree --algo rptree --algo rp_forest --algo kmeans_tree"
-python_lint_paths := "pyvicinity tests/test_python.py tests/test_download_ann_benchmarks.py examples/python scripts/generate_ann_smoke_data.py scripts/download_ann_benchmarks.py"
-python_test_paths := "tests/test_python.py tests/test_download_ann_benchmarks.py"
+python_lint_paths := "pyvicinity tests/test_python.py tests/test_download_ann_benchmarks.py tests/test_generate_ann_smoke_data.py examples/python scripts/generate_ann_smoke_data.py scripts/download_ann_benchmarks.py"
+python_test_paths := "tests/test_python.py tests/test_download_ann_benchmarks.py tests/test_generate_ann_smoke_data.py"
 
 default:
     @just --list
@@ -24,7 +24,11 @@ ann dataset="data/ann-benchmarks/glove-25-angular":
 
 # Run ann-benchmark with JSON output (for plotting)
 ann-json dataset="data/ann-benchmarks/glove-25-angular":
-    cargo run --example ann_benchmark --release --features hnsw,nsw -- {{dataset}} --json
+    cargo run --example ann_benchmark --release --features hnsw,nsw -- {{dataset}} --json --fresh
+
+# Resume ann-benchmark JSON output, skipping completed rows in the result file
+ann-json-resume dataset="data/ann-benchmarks/glove-25-angular":
+    cargo run --example ann_benchmark --release --features hnsw,nsw -- {{dataset}} --json --resume
 
 # Run the broad dense-vector sweep documented in docs/benchmark-results.md
 ann-broad dataset="data/ann-benchmarks/glove-25-angular":
@@ -32,17 +36,21 @@ ann-broad dataset="data/ann-benchmarks/glove-25-angular":
 
 # Run the broad dense-vector sweep with JSONL output
 ann-broad-json dataset="data/ann-benchmarks/glove-25-angular":
-    cargo run --example ann_benchmark --release --features "{{ann_broad_features}}" -- {{dataset}} {{ann_broad_algos}} --pq-training-sample-size 100000 --pq-kmeans-max-iter 20 --json
+    cargo run --example ann_benchmark --release --features "{{ann_broad_features}}" -- {{dataset}} {{ann_broad_algos}} --pq-training-sample-size 100000 --pq-kmeans-max-iter 20 --json --fresh
+
+# Resume the broad dense-vector JSONL sweep
+ann-broad-json-resume dataset="data/ann-benchmarks/glove-25-angular":
+    cargo run --example ann_benchmark --release --features "{{ann_broad_features}}" -- {{dataset}} {{ann_broad_algos}} --pq-training-sample-size 100000 --pq-kmeans-max-iter 20 --json --resume
 
 # Full standard benchmark pipeline: download + run + plot
 bench-standard:
     @echo "Downloading datasets (if needed)..."
-    just download glove-25-angular || true
-    just download sift-128-euclidean || true
+    just download glove-25-angular
+    just download sift-128-euclidean
     @echo "Running benchmarks..."
     mkdir -p data/ann-benchmarks/results
-    just ann-json data/ann-benchmarks/glove-25-angular > data/ann-benchmarks/results/glove-25.jsonl || true
-    just ann-json data/ann-benchmarks/sift-128-euclidean > data/ann-benchmarks/results/sift-128.jsonl || true
+    just ann-json data/ann-benchmarks/glove-25-angular > data/ann-benchmarks/results/glove-25.jsonl
+    just ann-json data/ann-benchmarks/sift-128-euclidean > data/ann-benchmarks/results/sift-128.jsonl
     @echo "Done. Results in data/ann-benchmarks/results/"
 
 # ─── Rigorous benchmark (multi-run, CI, LID-stratified) ─────────────────────

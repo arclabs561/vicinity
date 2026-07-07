@@ -9,6 +9,9 @@ import math
 import random
 import struct
 from pathlib import Path
+from typing import Any
+
+MANIFEST_VERSION = 1
 
 
 def normalize(vector: list[float]) -> list[float]:
@@ -84,6 +87,65 @@ def write_nbr1(path: Path, neighbors: list[list[int]]) -> None:
     tmp.replace(path)
 
 
+def read_vec1_header(path: Path) -> tuple[int, int] | None:
+    try:
+        with path.open("rb") as f:
+            header = f.read(12)
+    except FileNotFoundError:
+        return None
+    if len(header) != 12 or header[:4] != b"VEC1":
+        return None
+    return struct.unpack("<II", header[4:])
+
+
+def read_nbr1_header(path: Path) -> tuple[int, int] | None:
+    try:
+        with path.open("rb") as f:
+            header = f.read(12)
+    except FileNotFoundError:
+        return None
+    if len(header) != 12 or header[:4] != b"NBR1":
+        return None
+    return struct.unpack("<II", header[4:])
+
+
+def expected_manifest(train: int, test: int, dim: int, k: int) -> dict[str, Any]:
+    return {
+        "version": MANIFEST_VERSION,
+        "train": train,
+        "test": test,
+        "dim": dim,
+        "k": k,
+    }
+
+
+def matching_outputs(output: Path, manifest: dict[str, Any]) -> bool:
+    manifest_path = output / "ann_smoke_dataset.json"
+    try:
+        existing_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return False
+    if existing_manifest != manifest:
+        return False
+    if read_vec1_header(output / "train.bin") != (manifest["train"], manifest["dim"]):
+        return False
+    if read_vec1_header(output / "test.bin") != (manifest["test"], manifest["dim"]):
+        return False
+    return read_nbr1_header(output / "neighbors.bin") == (
+        manifest["test"],
+        manifest["k"],
+    )
+
+
+def write_manifest_atomic(path: Path, manifest: dict[str, Any]) -> None:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    tmp.replace(path)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("output", type=Path)
@@ -91,6 +153,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--test", type=int, default=12)
     parser.add_argument("--dim", type=int, default=8)
     parser.add_argument("--k", type=int, default=10)
+    parser.add_argument("--force", action="store_true")
     return parser.parse_args()
 
 
@@ -100,6 +163,11 @@ def main() -> None:
         raise SystemExit("--k must be <= --train")
 
     args.output.mkdir(parents=True, exist_ok=True)
+    manifest = expected_manifest(args.train, args.test, args.dim, args.k)
+    if not args.force and matching_outputs(args.output, manifest):
+        print(f"Reusing ANN smoke dataset at {args.output}")
+        return
+
     train = make_train(args.train, args.dim)
     test = make_test(train, args.test)
     neighbors = ground_truth(train, test, args.k)
@@ -107,17 +175,7 @@ def main() -> None:
     write_vec1(args.output / "train.bin", train)
     write_vec1(args.output / "test.bin", test)
     write_nbr1(args.output / "neighbors.bin", neighbors)
-    manifest = {
-        "version": 1,
-        "train": args.train,
-        "test": args.test,
-        "dim": args.dim,
-        "k": args.k,
-    }
-    (args.output / "ann_smoke_dataset.json").write_text(
-        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    write_manifest_atomic(args.output / "ann_smoke_dataset.json", manifest)
     print(f"Wrote ANN smoke dataset to {args.output}")
 
 
