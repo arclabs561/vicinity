@@ -414,6 +414,22 @@ Control rows after the change:
 | `mmap_ef50` | 13.280 ms | within prior noise |
 | `mmap_ef75` | 17.551 ms | fixed-recall mmap control |
 
+The next file-backed profile target was cursor movement. Switching direct-file
+graph and vector reads from `seek` plus `read_exact` to positional reads cut the
+same file rows again while keeping heap and mmap controls flat:
+
+| Row | Buffered-read row | Positional-read row | Change |
+| --- | ---: | ---: | ---: |
+| `file_ef50` | 82.718 ms / 100 queries | 54.506 ms / 100 queries | about 34.1% faster |
+| `file_ef75` | 112.57 ms / 100 queries | 72.892 ms / 100 queries | about 35.2% faster |
+
+The cumulative direct-file improvement from the pre-profile baseline is:
+
+| Row | Original | Current | Change |
+| --- | ---: | ---: | ---: |
+| `file_ef50` | 141.38 ms / 100 queries | 54.506 ms / 100 queries | about 61.4% faster |
+| `file_ef75` | 199.28 ms / 100 queries | 72.892 ms / 100 queries | about 63.4% faster |
+
 ### IVF-PQ Search Loop
 
 The `ivfpq_search` benchmark's profiled counters show the remaining hot path is
