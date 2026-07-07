@@ -230,6 +230,23 @@ kernel dispatch/inlining, and graph/vector layout locality. Future `samply`
 runs should rebuild the bench with richer debuginfo or a sidecar dSYM before
 claiming source-line percentages.
 
+The first `flush_batch` follow-up cached the current worst result distance for
+every beam width. It improved high-ef rows but regressed `ef=10`, so the kept
+change uses the cached-worst loop only for `ef >= 64`. The thresholded
+Criterion run measured:
+
+| ef_search | Time per 100 queries | Throughput |
+| --- | ---: | ---: |
+| 10 | 482.65 us | 207.19K queries/s |
+| 50 | 1.8696 ms | 53.49K queries/s |
+| 100 | 3.6628 ms | 27.30K queries/s |
+| 200 | 6.9941 ms | 14.30K queries/s |
+
+Against the immediately preceding cached-worst trial, the thresholded version
+kept small beams out of the regressed path and improved `ef=200` by about 2.7%.
+The change is still a micro-optimization; validate against a full-corpus
+fixed-recall run before treating it as the main HNSW gap closure.
+
 On 2026-07-07, a bounded DiskANN storage probe used 50,000 indexed GloVe-25
 vectors and 1,000 queries. Recall was recomputed against the capped corpus, so
 these rows validate the storage path and cache-state reporting but are not

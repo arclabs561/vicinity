@@ -72,6 +72,12 @@ benchmarking, persistence, Python bindings, and performance work.
   source-line claims need a richer debuginfo/dSYM profile, but the current
   evidence points at batch/heap update structure, distance kernel
   dispatch/inlining, and graph/vector locality.
+- A thresholded `flush_batch` follow-up now caches the worst result distance
+  only for `ef >= 64`. The first all-ef version improved high-ef rows but
+  regressed `ef=10`; the thresholded version avoids putting low-recall search
+  on that path and measured 6.994 ms per 100 queries at `ef=200` on the
+  synthetic HNSW bench, about 2.7% faster than the immediately preceding
+  cached-worst trial.
 - A capped HNSW storage sweep on 50K GloVe-25 vectors now shows
   snapshot-loaded search at the same recall and comparable warm-cache QPS as
   freshly built in-memory search. On that cap, HNSW reaches 207K QPS at 73.85%

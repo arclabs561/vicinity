@@ -40,6 +40,13 @@ const DENSE_VISITED_THRESHOLD: usize = 4_000_000;
 /// Number of neighbor distances to compute before updating the HNSW heaps.
 const DISTANCE_BATCH_SIZE: usize = 8;
 
+/// Beam width where caching the current worst result starts paying for itself.
+///
+/// Criterion on the synthetic HNSW search bench showed the cached-worst loop
+/// helps higher-ef search, but regresses very small beams where the result heap
+/// changes often and `peek()` is cheap.
+const CACHED_WORST_MIN_EF: usize = 64;
+
 /// Fast visited-node tracker using the generation-counter pattern.
 ///
 /// Dense variant: a `Vec<u8>` where `visited[id] == generation` means visited.
@@ -256,9 +263,35 @@ fn flush_batch(
         dists[i] = dist_fn(query, vec);
     }
 
-    // Then process results.
+    if ef < CACHED_WORST_MIN_EF {
+        for i in 0..count {
+            let worst_dist = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
+            if results.len() < ef || dists[i] < worst_dist {
+                candidates.push(MinCandidate {
+                    id: batch_ids[i],
+                    distance: dists[i],
+                });
+                results.push(MaxResult {
+                    id: batch_ids[i],
+                    distance: dists[i],
+                });
+                if results.len() > ef {
+                    results.pop();
+                }
+            }
+        }
+        return;
+    }
+
+    // Process high-ef results with cached worst distance. Keep the current worst
+    // distance locally so the inner loop does not repeatedly peek the result heap
+    // when no update lands.
+    let mut worst_dist = if results.len() < ef {
+        f32::INFINITY
+    } else {
+        results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY)
+    };
     for i in 0..count {
-        let worst_dist = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
         if results.len() < ef || dists[i] < worst_dist {
             candidates.push(MinCandidate {
                 id: batch_ids[i],
@@ -271,6 +304,11 @@ fn flush_batch(
             if results.len() > ef {
                 results.pop();
             }
+            worst_dist = if results.len() < ef {
+                f32::INFINITY
+            } else {
+                results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY)
+            };
         }
     }
 }
@@ -290,8 +328,32 @@ fn flush_batch_custom<F: Fn(&[f32], u32) -> f32>(
     for i in 0..count {
         dists[i] = dist_fn(query, batch_ids[i]);
     }
+    if ef < CACHED_WORST_MIN_EF {
+        for i in 0..count {
+            let worst_dist = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
+            if results.len() < ef || dists[i] < worst_dist {
+                candidates.push(MinCandidate {
+                    id: batch_ids[i],
+                    distance: dists[i],
+                });
+                results.push(MaxResult {
+                    id: batch_ids[i],
+                    distance: dists[i],
+                });
+                if results.len() > ef {
+                    results.pop();
+                }
+            }
+        }
+        return;
+    }
+
+    let mut worst_dist = if results.len() < ef {
+        f32::INFINITY
+    } else {
+        results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY)
+    };
     for i in 0..count {
-        let worst_dist = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
         if results.len() < ef || dists[i] < worst_dist {
             candidates.push(MinCandidate {
                 id: batch_ids[i],
@@ -304,6 +366,11 @@ fn flush_batch_custom<F: Fn(&[f32], u32) -> f32>(
             if results.len() > ef {
                 results.pop();
             }
+            worst_dist = if results.len() < ef {
+                f32::INFINITY
+            } else {
+                results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY)
+            };
         }
     }
 }
