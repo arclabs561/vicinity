@@ -2,8 +2,8 @@
 
 ann_broad_features := "hnsw,nsw,vamana,diskann,ivf_pq,ivf_avq,ivf_rabitq,emg,nsg,pipnn,sng,finger,fresh_graph,filtered_graph,curator,range_filtered,rp_quant,binary_index,sq4,sq8,lsh,rptree,kdtree,balltree,kmeans_tree"
 ann_broad_algos := "--algo hnsw --algo nsw --algo vamana --algo diskann --algo ivfpq --algo ivf_avq --algo ivf_rabitq --algo emg --algo nsg --algo dual_branch --algo deg --algo pipnn --algo sng --algo finger --algo fresh_graph --algo filtered_graph --algo curator --algo range_filtered --algo rp_quant --algo binary_index --algo sq4 --algo sq4u --algo sq8u --algo symphony_qg --algo symphony_qg_vr --algo adsampling --algo lsh --algo hnsw_prt --algo brute --algo kdtree --algo balltree --algo rptree --algo rp_forest --algo kmeans_tree"
-python_lint_paths := "pyvicinity tests/test_python.py tests/test_download_ann_benchmarks.py tests/test_generate_ann_smoke_data.py examples/python scripts/generate_ann_smoke_data.py scripts/download_ann_benchmarks.py"
-python_test_paths := "tests/test_python.py tests/test_download_ann_benchmarks.py tests/test_generate_ann_smoke_data.py"
+python_lint_paths := "pyvicinity tests/test_python.py tests/test_download_ann_benchmarks.py tests/test_generate_ann_smoke_data.py tests/test_generate_multiscale_data.py examples/python scripts/generate_ann_smoke_data.py scripts/download_ann_benchmarks.py"
+python_test_paths := "tests/test_python.py tests/test_download_ann_benchmarks.py tests/test_generate_ann_smoke_data.py tests/test_generate_multiscale_data.py"
 
 default:
     @just --list

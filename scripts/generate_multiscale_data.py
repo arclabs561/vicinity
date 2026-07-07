@@ -26,6 +26,9 @@ from pathlib import Path
 
 import numpy as np
 
+MANIFEST_VERSION = 1
+GROUND_TRUTH_K = 100
+
 
 # =============================================================================
 # Core generation functions
@@ -296,36 +299,169 @@ def compute_difficulty_metrics(train: np.ndarray, test: np.ndarray) -> dict:
 # I/O functions
 # =============================================================================
 
+def atomic_write(path: Path, data: bytes) -> None:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_bytes(data)
+    tmp.replace(path)
+
+
+def write_json_atomic(path: Path, value: dict) -> None:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+    tmp.replace(path)
+
+
 def save_vectors(path: Path, vectors: np.ndarray) -> None:
     n, d = vectors.shape
-    with open(path, 'wb') as f:
-        f.write(b'VEC1')
-        f.write(struct.pack('<II', n, d))
-        f.write(vectors.tobytes())
+    atomic_write(path, b'VEC1' + struct.pack('<II', n, d) + vectors.tobytes())
 
 
 def save_neighbors(path: Path, neighbors: np.ndarray) -> None:
     n, k = neighbors.shape
-    with open(path, 'wb') as f:
-        f.write(b'NBR1')
-        f.write(struct.pack('<II', n, k))
-        f.write(neighbors.tobytes())
+    atomic_write(path, b'NBR1' + struct.pack('<II', n, k) + neighbors.tobytes())
 
 
 def save_labels(path: Path, labels: np.ndarray) -> None:
     labels_u32 = labels.astype(np.uint32)
-    with open(path, 'wb') as f:
-        f.write(b'LBL1')
-        f.write(struct.pack('<I', len(labels_u32)))
-        f.write(labels_u32.tobytes())
+    atomic_write(path, b'LBL1' + struct.pack('<I', len(labels_u32)) + labels_u32.tobytes())
 
 
 def save_f32_array(path: Path, arr: np.ndarray) -> None:
     arr_f32 = arr.astype(np.float32)
-    with open(path, 'wb') as f:
-        f.write(b'F32A')
-        f.write(struct.pack('<I', len(arr_f32)))
-        f.write(arr_f32.tobytes())
+    atomic_write(path, b'F32A' + struct.pack('<I', len(arr_f32)) + arr_f32.tobytes())
+
+
+def read_header(path: Path, magic: bytes, fmt: str) -> tuple[int, ...] | None:
+    try:
+        with path.open("rb") as f:
+            header = f.read(len(magic) + struct.calcsize(fmt))
+    except FileNotFoundError:
+        return None
+    if len(header) != len(magic) + struct.calcsize(fmt) or header[:len(magic)] != magic:
+        return None
+    return struct.unpack(fmt, header[len(magic):])
+
+
+def scale_settings(scale: str) -> dict:
+    cfg = SCALES[scale]
+    n_train = cfg["n_train"]
+    return {
+        "version": MANIFEST_VERSION,
+        "scale": scale,
+        "config": cfg,
+        "n_clusters": min(200, n_train // 50),
+        "ground_truth_k": GROUND_TRUTH_K,
+        "cluster_std": 0.15,
+        "near_duplicate_frac": 0.05,
+        "near_duplicate_noise": 0.01,
+        "query_noise_std": 0.12,
+        "drift_strength": 0.25,
+        "seeds": {
+            "train": 42,
+            "duplicates": 43,
+            "queries": 100,
+            "drift": 200,
+        },
+    }
+
+
+def expected_headers(settings: dict) -> dict[str, tuple[bytes, str, tuple[int, ...]]]:
+    cfg = settings["config"]
+    n_train = cfg["n_train"]
+    n_test = cfg["n_test"]
+    dim = cfg["dim"]
+    k = settings["ground_truth_k"]
+    return {
+        "train.bin": (b"VEC1", "<II", (n_train, dim)),
+        "test.bin": (b"VEC1", "<II", (n_test, dim)),
+        "neighbors.bin": (b"NBR1", "<II", (n_test, k)),
+        "train_topics.bin": (b"LBL1", "<I", (n_train,)),
+        "test_lids.bin": (b"F32A", "<I", (n_test,)),
+        "test_difficulty.bin": (b"LBL1", "<I", (n_test,)),
+        "test_drift.bin": (b"VEC1", "<II", (n_test, dim)),
+        "neighbors_drift.bin": (b"NBR1", "<II", (n_test, k)),
+        "test_filter.bin": (b"VEC1", "<II", (n_test, dim)),
+        "test_filter_topics.bin": (b"LBL1", "<I", (n_test,)),
+        "neighbors_filter.bin": (b"NBR1", "<II", (n_test, k)),
+    }
+
+
+def expected_file_bytes(settings: dict) -> dict[str, int]:
+    cfg = settings["config"]
+    n_train = cfg["n_train"]
+    n_test = cfg["n_test"]
+    dim = cfg["dim"]
+    k = settings["ground_truth_k"]
+    vec_header = 4 + struct.calcsize("<II")
+    nbr_header = 4 + struct.calcsize("<II")
+    len_header = 4 + struct.calcsize("<I")
+    train_vectors = vec_header + n_train * dim * np.dtype(np.float32).itemsize
+    test_vectors = vec_header + n_test * dim * np.dtype(np.float32).itemsize
+    neighbors = nbr_header + n_test * k * np.dtype(np.int32).itemsize
+    train_labels = len_header + n_train * np.dtype(np.uint32).itemsize
+    test_labels = len_header + n_test * np.dtype(np.uint32).itemsize
+    test_f32 = len_header + n_test * np.dtype(np.float32).itemsize
+    return {
+        "train.bin": train_vectors,
+        "test.bin": test_vectors,
+        "neighbors.bin": neighbors,
+        "train_topics.bin": train_labels,
+        "test_lids.bin": test_f32,
+        "test_difficulty.bin": test_labels,
+        "test_drift.bin": test_vectors,
+        "neighbors_drift.bin": neighbors,
+        "test_filter.bin": test_vectors,
+        "test_filter_topics.bin": test_labels,
+        "neighbors_filter.bin": neighbors,
+    }
+
+
+def output_manifest(scale_dir: Path, settings: dict) -> dict:
+    outputs = {}
+    expected_bytes = expected_file_bytes(settings)
+    for name, (magic, fmt, expected) in expected_headers(settings).items():
+        path = scale_dir / name
+        header = read_header(path, magic, fmt)
+        if header != expected:
+            raise ValueError(f"{name} header mismatch: expected {expected}, got {header}")
+        if path.stat().st_size != expected_bytes[name]:
+            raise ValueError(
+                f"{name} size mismatch: expected {expected_bytes[name]}, got {path.stat().st_size}"
+            )
+        outputs[name] = {"bytes": path.stat().st_size}
+    metrics_path = scale_dir / "metrics.json"
+    outputs["metrics.json"] = {"bytes": metrics_path.stat().st_size}
+    return {
+        "complete": True,
+        "settings": settings,
+        "outputs": outputs,
+    }
+
+
+def matching_scale_outputs(scale_dir: Path, settings: dict) -> bool:
+    manifest_path = scale_dir / "multiscale_dataset.json"
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return False
+    if manifest.get("complete") is not True or manifest.get("settings") != settings:
+        return False
+    outputs = manifest.get("outputs", {})
+    expected_bytes = expected_file_bytes(settings)
+    for name, (magic, fmt, expected) in expected_headers(settings).items():
+        path = scale_dir / name
+        if read_header(path, magic, fmt) != expected:
+            return False
+        actual_bytes = path.stat().st_size
+        if actual_bytes != expected_bytes[name]:
+            return False
+        if outputs.get(name, {}).get("bytes") != actual_bytes:
+            return False
+    metrics_path = scale_dir / "metrics.json"
+    return (
+        metrics_path.exists()
+        and outputs.get("metrics.json", {}).get("bytes") == metrics_path.stat().st_size
+    )
 
 
 # =============================================================================
@@ -340,7 +476,7 @@ SCALES = {
 }
 
 
-def generate_scale(scale: str, data_dir: Path) -> dict:
+def generate_scale(scale: str, data_dir: Path, force: bool = False) -> dict:
     """Generate all datasets for a given scale."""
     cfg = SCALES[scale]
     n_train = cfg["n_train"]
@@ -349,6 +485,10 @@ def generate_scale(scale: str, data_dir: Path) -> dict:
     
     scale_dir = data_dir / scale
     scale_dir.mkdir(parents=True, exist_ok=True)
+    settings = scale_settings(scale)
+    if not force and matching_scale_outputs(scale_dir, settings):
+        print(f"\nReusing scale {scale}: {scale_dir}")
+        return json.loads((scale_dir / "metrics.json").read_text())
     
     print(f"\n{'='*70}")
     print(f"Scale {scale}: {cfg['desc']}")
@@ -400,7 +540,7 @@ def generate_scale(scale: str, data_dir: Path) -> dict:
     # 3. Compute ground truth
     # -------------------------------------------------------------------------
     print("  Computing ground truth (k=100)...")
-    gt = compute_ground_truth(train, test, k=100)
+    gt = compute_ground_truth(train, test, k=GROUND_TRUTH_K)
     
     # Verify that source vectors are in top-k for most queries
     source_in_top10 = np.sum([source_ids[i] in gt[i, :10] for i in range(n_test)]) / n_test
@@ -433,7 +573,7 @@ def generate_scale(scale: str, data_dir: Path) -> dict:
         test, train_centroids, source_ids, train_topics,
         drift_strength=0.25, seed=200
     )
-    gt_drift = compute_ground_truth(train, test_drift, k=100)
+    gt_drift = compute_ground_truth(train, test_drift, k=GROUND_TRUTH_K)
     drift_metrics = compute_difficulty_metrics(train, test_drift)
     metrics["drift"] = drift_metrics
     
@@ -455,7 +595,7 @@ def generate_scale(scale: str, data_dir: Path) -> dict:
     test_filter_topics = train_topics[source_ids].astype(np.int32)
     
     gt_filter = compute_filtered_ground_truth(
-        train, test, train_topics, test_filter_topics, k=100
+        train, test, train_topics, test_filter_topics, k=GROUND_TRUTH_K
     )
     
     save_vectors(scale_dir / "test_filter.bin", test)
@@ -489,8 +629,11 @@ def generate_scale(scale: str, data_dir: Path) -> dict:
         "total_size_mb": total_size / 1024 / 1024,
     }
     
-    with open(scale_dir / "metrics.json", "w") as f:
-        json.dump(metrics, f, indent=2)
+    write_json_atomic(scale_dir / "metrics.json", metrics)
+    write_json_atomic(
+        scale_dir / "multiscale_dataset.json",
+        output_manifest(scale_dir, settings),
+    )
     
     print(f"\n  Total: {total_size / 1024 / 1024:.1f} MB in {elapsed:.1f}s")
     
@@ -511,6 +654,7 @@ def main():
         default=Path(__file__).parent.parent / "data" / "multiscale",
         help="Output directory"
     )
+    parser.add_argument("--force", action="store_true", help="Regenerate matching outputs")
     args = parser.parse_args()
     
     print("Multi-Scale ANN Benchmark Data Generator")
@@ -522,7 +666,7 @@ def main():
     
     for scale in scales:
         try:
-            metrics = generate_scale(scale, args.output)
+            metrics = generate_scale(scale, args.output, force=args.force)
             all_metrics[scale] = metrics
         except MemoryError:
             print(f"\nERROR: Out of memory for scale {scale}")
@@ -530,8 +674,8 @@ def main():
             sys.exit(1)
     
     # Save combined metrics
-    with open(args.output / "all_metrics.json", "w") as f:
-        json.dump(all_metrics, f, indent=2)
+    args.output.mkdir(parents=True, exist_ok=True)
+    write_json_atomic(args.output / "all_metrics.json", all_metrics)
     
     print("\n" + "=" * 70)
     print("Generation complete!")
