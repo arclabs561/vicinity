@@ -130,9 +130,11 @@ Runnable Python examples are in [`examples/python/`](examples/python/). The
 package ships `.pyi` stubs and a `py.typed` marker.
 
 Python exposes the common HNSW constructor subset, HNSW JSON save/load, IVF-PQ
-directory save/load, and IVF-PQ file or mmap search. Rust-only surfaces include
-DiskANN, `store::UpdatableIndex`, FreshGraph, filtered search/update APIs, and
-HNSW binary segments.
+directory save/load, and IVF-PQ file search. Mmap-backed IVF-PQ search is
+available in normal Python builds because the `python` feature includes
+`persistence`; Rust builds need the `persistence` feature for `mmap=True`.
+Rust-only surfaces include DiskANN, `store::UpdatableIndex`, FreshGraph,
+filtered search/update APIs, and HNSW binary segments.
 
 ## Persistence
 
@@ -168,10 +170,6 @@ Selected GloVe-25 rows:
 | IVF-PQ, rerank 500 (current validation) | 96.58% | 2,806 |
 | RP-Forest (historical row) | 58.5% | 4,221 |
 
-<p align="center">
-  <img src="docs/plots/algorithm_comparison_glove-25-angular.png" width="680" alt="Recall vs QPS on GloVe-25" />
-</p>
-
 Current run commands and result interpretation are in
 [`docs/benchmark-results.md`](docs/benchmark-results.md).
 
@@ -186,7 +184,7 @@ Current run commands and result interpretation are in
 | Metadata filters | HNSW with post-filtering | ACORN, Curator, and FilteredGraph need selectivity sweeps |
 | Sparse learned retrieval | SparseMIPS | Workload-specific sparse baseline |
 | File-backed graph search | Evaluate DiskANN | Promote after full-corpus mmap/file rows |
-| File-backed compressed search | Evaluate IVF-PQ file or mmap searcher | Promote after full-corpus fixed-recall rows |
+| File-backed compressed search | IVF-PQ file or mmap searcher | Add rerank only when the raw-vector locality cost is acceptable |
 
 The full algorithm table is in [`docs/algorithms.md`](docs/algorithms.md).
 

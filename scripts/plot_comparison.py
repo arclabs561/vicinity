@@ -19,6 +19,7 @@ import json
 import sys
 from collections import defaultdict
 from pathlib import Path
+from typing import Any
 
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
@@ -38,6 +39,11 @@ ALGO_STYLE = {
     "fresh_graph": {"color": "#7f7f7f", "marker": "<", "label": "FreshGraph"},
     "filtered_graph": {"color": "#393b79", "marker": ">", "label": "FilteredGraph"},
     "ivfpq": {"color": "#2ca02c", "marker": "^", "label": "IVF-PQ"},
+    "ivfpq_rerank": {
+        "color": "#355f2d",
+        "marker": "^",
+        "label": "IVF-PQ rerank",
+    },
     "ivfpq-1024L": {"color": "#2ca02c", "marker": "^", "label": "IVF-PQ (cb5)"},
     "ivfpq-1024L-cb5": {"color": "#2ca02c", "marker": "^", "label": "IVF-PQ (cb5)"},
     "ivfpq-1024L-cb25": {"color": "#17becf", "marker": "^", "label": "IVF-PQ (cb25)"},
@@ -51,6 +57,11 @@ ALGO_STYLE = {
     "rptree": {"color": "#7f7f7f", "marker": "*", "label": "RP-Tree"},
     "rp_forest": {"color": "#bcbd22", "marker": "X", "label": "RP-Forest"},
     "kmeans_tree": {"color": "#17becf", "marker": "h", "label": "K-means Tree"},
+}
+
+ALGO_STYLE_ALIASES = {
+    "diskann_file": "diskann",
+    "diskann_mmap": "diskann",
 }
 
 
@@ -85,39 +96,91 @@ def pareto_frontier(points):
     return sorted(frontier, key=lambda p: p[0])
 
 
-def load_results(path):
-    """Load JSONL results, grouped by algorithm."""
-    by_algo = defaultdict(list)
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            d = json.loads(line)
-            algo = d["algorithm"]
-            by_algo[algo].append((d["recall_at_10"], d["qps"]))
-    return dict(by_algo)
+def scoped_dataset_name(meta: dict[str, Any]) -> str | None:
+    dataset = meta.get("dataset")
+    if not isinstance(dataset, str) or not dataset:
+        return None
+
+    name = Path(dataset).name
+    scope = []
+    train_limit = meta.get("train_limit")
+    query_limit = meta.get("query_limit")
+    if train_limit is not None:
+        scope.append(f"train={train_limit}")
+    if query_limit is not None:
+        scope.append(f"queries={query_limit}")
+    if scope:
+        name = f"{name}[{','.join(scope)}]"
+    return name
 
 
-def plot_comparison(results_path, output_dir=None):
-    path = Path(results_path)
+def series_key(row: dict[str, Any]) -> str:
+    algorithm = row["algorithm"]
+    storage_mode = row.get("storage_mode")
+    if storage_mode in {"file", "mmap", "snapshot_loaded", "segmented_store"}:
+        return f"{algorithm}:{storage_mode}"
+    return algorithm
+
+
+def load_results(paths):
+    """Load JSONL results, grouped by dataset and algorithm/storage series."""
+    by_dataset = defaultdict(lambda: defaultdict(list))
+    for path in [Path(p) for p in paths]:
+        current_dataset = path.stem
+        with path.open(encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                row = json.loads(line)
+                meta = row.get("_meta")
+                if isinstance(meta, dict):
+                    current_dataset = scoped_dataset_name(meta) or current_dataset
+                    continue
+                if "algorithm" not in row:
+                    continue
+                recall = row.get("recall_at_10")
+                qps = row.get("qps")
+                if not isinstance(recall, int | float) or not isinstance(
+                    qps, int | float
+                ):
+                    continue
+                by_dataset[current_dataset][series_key(row)].append(
+                    (float(recall), float(qps))
+                )
+    return {dataset: dict(by_algo) for dataset, by_algo in by_dataset.items()}
+
+
+def load_legacy_results(path):
+    """Load one JSONL result file, preserving the old helper return shape."""
+    by_dataset = load_results([path])
+    if len(by_dataset) != 1:
+        return {}
+    return next(iter(by_dataset.values()))
+
+
+def plot_one_dataset(dataset, by_algo, output_dir):
     output_dir = Path("docs/plots") if output_dir is None else Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    by_algo = load_results(path)
     if not by_algo:
-        print(f"No results in {path}", file=sys.stderr)
+        print(f"No results for {dataset}", file=sys.stderr)
         return
-
-    # Infer dataset name from filename
-    dataset = path.stem
 
     # Wider figure to leave room for legend outside the plot
     fig, ax = plt.subplots(figsize=(9, 5), dpi=150)
     apply_style(ax)
 
     for algo, points in sorted(by_algo.items()):
-        style = ALGO_STYLE.get(algo, {"color": "#333333", "marker": ".", "label": algo})
+        base_algo = algo.split(":", 1)[0]
+        style_algo = ALGO_STYLE_ALIASES.get(base_algo, base_algo)
+        style = ALGO_STYLE.get(
+            style_algo,
+            {"color": "#333333", "marker": ".", "label": base_algo},
+        )
+        label = style["label"]
+        if ":" in algo:
+            label = f"{label} ({algo.split(':', 1)[1]})"
         frontier = pareto_frontier(points)
 
         if len(frontier) == 1:
@@ -129,7 +192,7 @@ def plot_comparison(results_path, output_dir=None):
                 marker=style["marker"],
                 s=80,
                 zorder=5,
-                label=style["label"],
+                label=label,
             )
         else:
             recalls = [p[0] for p in frontier]
@@ -141,12 +204,12 @@ def plot_comparison(results_path, output_dir=None):
                 marker=style["marker"],
                 markersize=5,
                 linewidth=1.5,
-                label=style["label"],
+                label=label,
                 zorder=4,
             )
 
     ax.set_title(
-        "Recall-Queries per second (1/s) tradeoff, up and to the right is better",
+        "Recall and queries per second tradeoff, up and to the right is better",
         fontsize=10,
         pad=8,
     )
@@ -190,13 +253,24 @@ def plot_comparison(results_path, output_dir=None):
     print(f"Wrote {out_path}")
 
 
+def plot_comparison(results_paths, output_dir=None):
+    paths = [results_paths] if isinstance(results_paths, str | Path) else results_paths
+    by_dataset = load_results(paths)
+    if not by_dataset:
+        print("No results", file=sys.stderr)
+        return
+    for dataset, by_algo in sorted(by_dataset.items()):
+        plot_one_dataset(dataset, by_algo, output_dir)
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: plot_comparison.py <results.jsonl> [output_dir]", file=sys.stderr)
         sys.exit(1)
 
-    output_dir = sys.argv[2] if len(sys.argv) > 2 else None
-    for path in sys.argv[1:]:
-        if path.startswith("-"):
-            continue
-        plot_comparison(path, output_dir)
+    args = [arg for arg in sys.argv[1:] if not arg.startswith("-")]
+    output_dir = None
+    if len(args) > 1 and not args[-1].endswith(".jsonl"):
+        output_dir = args.pop()
+    paths = args
+    plot_comparison(paths, output_dir)

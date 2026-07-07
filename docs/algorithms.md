@@ -68,7 +68,7 @@ need `quantization` plus `rabitq` or `saq`. PQ is part of `ivf_pq`.
 | Metadata filters | HNSW with post-filtering | ACORN, Curator, and FilteredGraph need selectivity sweeps |
 | Sparse learned retrieval | SparseMIPS | Workload-specific sparse baseline |
 | File-backed graph search | Evaluate DiskANN | Promote after full-corpus mmap/file rows |
-| File-backed compressed search | Evaluate IVF-PQ file or mmap searcher | Promote after full-corpus fixed-recall rows |
+| File-backed compressed search | IVF-PQ file or mmap searcher | Add rerank only when the raw-vector locality cost is acceptable |
 
 ## Experimental Status
 
@@ -94,10 +94,13 @@ These APIs are reachable but are not recommended defaults yet.
   RangeFiltered)**: promote from selectivity sweeps. Report recall/QPS over at
   least low, middle, and high selectivity instead of a single QPS number.
 - **Compressed inverted files (IVF-PQ, IVF-AVQ, IVF-RaBitQ, RpQuant,
-  BinaryFlat, SQ4)**: promote per memory budget. IVF-PQ is the current
-  compressed default candidate, but file and mmap recommendations still need
-  full-corpus fixed-recall rows. The others need recall/QPS/storage rows on the
-  datasets where their quantization assumptions apply.
+  BinaryFlat, SQ4)**: promote per memory budget. IVF-PQ file and mmap
+  approximate search now have full-corpus GloVe-25 fixed-recall rows, so IVF-PQ
+  is the current compressed default candidate when raw vectors dominate RAM.
+  Exact rerank is still direct-file raw-vector-locality bound; use mmap or
+  measure the direct-file rerank row before recommending it. The other
+  compressed indexes need recall/QPS/storage rows on the datasets where their
+  quantization assumptions apply.
 - **SAQ**: quantization helper, not a standalone ANN index. Promote only after
   local quantization-error, encoding-throughput, and downstream recall rows
   justify using it over existing quantizers.
