@@ -417,6 +417,7 @@ impl DiskANNSearcher {
                 use std::io::{Read, Seek, SeekFrom};
                 file.seek(SeekFrom::Start(offset as u64))?;
                 file.read_exact(&mut self.read_buf)?;
+                Self::decode_vector_bytes(&self.read_buf, &mut self.vec_buf);
             }
             VectorStorage::Mmap(mapped) => {
                 let end = offset
@@ -426,20 +427,17 @@ impl DiskANNSearcher {
                 if end > bytes.len() {
                     return Err(RetrieveError::OutOfBounds(idx as usize));
                 }
-                self.read_buf.copy_from_slice(&bytes[offset..end]);
+                Self::decode_vector_bytes(&bytes[offset..end], &mut self.vec_buf);
             }
         }
 
-        for i in 0..self.dimension {
-            let start = i * 4;
-            self.vec_buf[i] = f32::from_le_bytes([
-                self.read_buf[start],
-                self.read_buf[start + 1],
-                self.read_buf[start + 2],
-                self.read_buf[start + 3],
-            ]);
-        }
         Ok(&self.vec_buf)
+    }
+
+    fn decode_vector_bytes(bytes: &[u8], out: &mut [f32]) {
+        for (value, chunk) in out.iter_mut().zip(bytes.chunks_exact(4)) {
+            *value = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        }
     }
 }
 

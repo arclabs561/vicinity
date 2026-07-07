@@ -204,6 +204,15 @@ than neighbor-list allocation alone. The `ann_benchmark` DiskANN file and mmap
 rows now emit average graph reads, vector reads, logical bytes, visited nodes,
 and retained candidates so storage changes can be compared against query work.
 
+Removing the extra mmap vector-byte copy in `DiskANNSearcher::read_vector`
+improved the same benchmark while leaving in-memory search statistically flat:
+
+| Row | After | Change vs baseline |
+| --- | --- | --- |
+| `memory_ef50` | 7.7063 ms / 100 queries | no change versus baseline |
+| `file_ef50` | 141.38 ms / 100 queries | about 4.1% faster |
+| `mmap_ef50` | 13.338 ms / 100 queries | about 30.9% faster |
+
 ### IVF-PQ Search Loop
 
 The `ivfpq_search` benchmark's profiled counters show the remaining hot path is
