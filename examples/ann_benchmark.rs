@@ -140,6 +140,8 @@ use support::{json_line_with_storage, ResultStorage};
     feature = "rptree"
 ))]
 use support::{kmeans_tree_params_json, rp_forest_params_json, tree_params_json};
+#[cfg(feature = "diskann")]
+use support::{BenchResult, StorageDiagnostics};
 
 #[cfg(any(
     feature = "ivf_pq",
@@ -177,6 +179,7 @@ fn snapshot_storage(load_time_s: f64, index_bytes: Option<u64>) -> ResultStorage
         cache_state: "warm_after_load",
         load_time_s: Some(load_time_s),
         index_bytes,
+        diagnostics: None,
     }
 }
 
@@ -1219,6 +1222,96 @@ fn run_vamana(
 }
 
 #[cfg(feature = "diskann")]
+#[derive(Default)]
+struct DiskAnnDiagnosticsTotals {
+    queries: usize,
+    visited_nodes: usize,
+    graph_reads: usize,
+    vector_reads: usize,
+    graph_bytes: usize,
+    vector_bytes: usize,
+    retained_candidates: usize,
+}
+
+#[cfg(feature = "diskann")]
+impl DiskAnnDiagnosticsTotals {
+    fn record(&mut self, diagnostics: vicinity::diskann::DiskANNSearchDiagnostics) {
+        self.queries += 1;
+        self.visited_nodes += diagnostics.visited_nodes;
+        self.graph_reads += diagnostics.graph_reads;
+        self.vector_reads += diagnostics.vector_reads;
+        self.graph_bytes += diagnostics.graph_bytes;
+        self.vector_bytes += diagnostics.vector_bytes;
+        self.retained_candidates += diagnostics.retained_candidates;
+    }
+
+    fn average(&self) -> StorageDiagnostics {
+        let queries = self.queries.max(1) as f64;
+        StorageDiagnostics {
+            avg_visited_nodes: self.visited_nodes as f64 / queries,
+            avg_graph_reads: self.graph_reads as f64 / queries,
+            avg_vector_reads: self.vector_reads as f64 / queries,
+            avg_graph_bytes: self.graph_bytes as f64 / queries,
+            avg_vector_bytes: self.vector_bytes as f64 / queries,
+            avg_retained_candidates: self.retained_candidates as f64 / queries,
+        }
+    }
+}
+
+#[cfg(feature = "diskann")]
+fn evaluate_diskann_searcher(
+    searcher: &std::cell::RefCell<vicinity::diskann::DiskANNSearcher>,
+    test: &[Vec<f32>],
+    neighbors: &[Vec<i32>],
+    k: usize,
+    ef_search: usize,
+) -> (BenchResult, StorageDiagnostics) {
+    use std::collections::HashSet;
+    use std::time::Instant;
+
+    const WARMUP_QUERIES: usize = 50;
+    let warmup_count = WARMUP_QUERIES.min(test.len());
+    for query in test.iter().take(warmup_count) {
+        let _ = searcher.borrow_mut().search(query, k, ef_search);
+    }
+
+    let mut total_recall = 0.0;
+    let mut latencies_us: Vec<f64> = Vec::with_capacity(test.len());
+    let mut diagnostics = DiskAnnDiagnosticsTotals::default();
+
+    for (i, query) in test.iter().enumerate() {
+        let q_start = Instant::now();
+        let (results, query_diagnostics) = searcher
+            .borrow_mut()
+            .search_with_diagnostics(query, k, ef_search)
+            .expect("DiskANN file-backed search failed");
+        let q_elapsed = q_start.elapsed();
+        latencies_us.push(q_elapsed.as_nanos() as f64 / 1000.0);
+        diagnostics.record(query_diagnostics);
+
+        let gt_set: HashSet<u32> = neighbors[i].iter().take(k).map(|&n| n as u32).collect();
+        let found: HashSet<u32> = results.iter().map(|r| r.0).collect();
+        total_recall += gt_set.intersection(&found).count() as f64 / k as f64;
+    }
+
+    latencies_us.sort_unstable_by(|a, b| a.total_cmp(b));
+    let n = latencies_us.len();
+    let total_us: f64 = latencies_us.iter().sum();
+
+    (
+        BenchResult {
+            recall_at_k: total_recall / n as f64,
+            qps: n as f64 / (total_us / 1_000_000.0),
+            latency_us: total_us / n as f64,
+            p50_us: latencies_us[n / 2],
+            p95_us: latencies_us[(n as f64 * 0.95) as usize],
+            p99_us: latencies_us[(n as f64 * 0.99) as usize],
+        },
+        diagnostics.average(),
+    )
+}
+
+#[cfg(feature = "diskann")]
 fn run_diskann(
     cfg: &Config,
     train: &[Vec<f32>],
@@ -1276,18 +1369,10 @@ fn run_diskann(
 
     for &ef in &cfg.ef_search_values {
         let result = evaluate(&|q, k| index.search(q, k, ef).unwrap(), test, neighbors, 10);
-        let file_result = evaluate(
-            &|q, k| searcher.borrow_mut().search(q, k, ef).unwrap(),
-            test,
-            neighbors,
-            10,
-        );
-        let mmap_result = evaluate(
-            &|q, k| mmap_searcher.borrow_mut().search(q, k, ef).unwrap(),
-            test,
-            neighbors,
-            10,
-        );
+        let (file_result, file_diagnostics) =
+            evaluate_diskann_searcher(&searcher, test, neighbors, 10, ef);
+        let (mmap_result, mmap_diagnostics) =
+            evaluate_diskann_searcher(&mmap_searcher, test, neighbors, 10, ef);
         if cfg.json {
             let params_json = format!(
                 "{{\"m\":{},\"ef_construction\":{},\"alpha\":1.2,\"ef_search\":{},\"storage\":\"memory\"}}",
@@ -1314,6 +1399,7 @@ fn run_diskann(
                         cache_state: "warm_after_open",
                         load_time_s: Some(file_load_time_s),
                         index_bytes,
+                        diagnostics: Some(file_diagnostics),
                     },
                 ),
             );
@@ -1334,6 +1420,7 @@ fn run_diskann(
                         cache_state: "warm_after_open",
                         load_time_s: Some(mmap_load_time_s),
                         index_bytes,
+                        diagnostics: Some(mmap_diagnostics),
                     },
                 ),
             );

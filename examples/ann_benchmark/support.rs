@@ -1120,6 +1120,17 @@ pub(crate) struct ResultStorage<'a> {
     pub(crate) cache_state: &'a str,
     pub(crate) load_time_s: Option<f64>,
     pub(crate) index_bytes: Option<u64>,
+    pub(crate) diagnostics: Option<StorageDiagnostics>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct StorageDiagnostics {
+    pub(crate) avg_visited_nodes: f64,
+    pub(crate) avg_graph_reads: f64,
+    pub(crate) avg_vector_reads: f64,
+    pub(crate) avg_graph_bytes: f64,
+    pub(crate) avg_vector_bytes: f64,
+    pub(crate) avg_retained_candidates: f64,
 }
 
 impl Default for ResultStorage<'_> {
@@ -1129,6 +1140,7 @@ impl Default for ResultStorage<'_> {
             cache_state: "warm_after_build",
             load_time_s: None,
             index_bytes: None,
+            diagnostics: None,
         }
     }
 }
@@ -1189,6 +1201,17 @@ pub(crate) fn json_line_with_storage(
     }
     if let Some(bytes) = storage.index_bytes {
         s.push_str(&format!(",\"index_bytes\":{}", bytes));
+    }
+    if let Some(diagnostics) = storage.diagnostics {
+        s.push_str(&format!(
+            ",\"avg_visited_nodes\":{:.2},\"avg_graph_reads\":{:.2},\"avg_vector_reads\":{:.2},\"avg_graph_bytes\":{:.2},\"avg_vector_bytes\":{:.2},\"avg_retained_candidates\":{:.2}",
+            diagnostics.avg_visited_nodes,
+            diagnostics.avg_graph_reads,
+            diagnostics.avg_vector_reads,
+            diagnostics.avg_graph_bytes,
+            diagnostics.avg_vector_bytes,
+            diagnostics.avg_retained_candidates
+        ));
     }
     if let Some(kb) = rss_kb {
         s.push_str(&format!(",\"rss_kb\":{}", kb));
@@ -1504,6 +1527,14 @@ mod tests {
             cache_state: "warm_after_open",
             load_time_s: Some(0.125),
             index_bytes: Some(4096),
+            diagnostics: Some(StorageDiagnostics {
+                avg_visited_nodes: 12.0,
+                avg_graph_reads: 8.5,
+                avg_vector_reads: 12.0,
+                avg_graph_bytes: 544.0,
+                avg_vector_bytes: 1200.0,
+                avg_retained_candidates: 10.0,
+            }),
         };
         let line = json_line_with_storage(
             "diskann_mmap",
@@ -1518,6 +1549,9 @@ mod tests {
         assert!(line.contains("\"cache_state\":\"warm_after_open\""));
         assert!(line.contains("\"load_time_s\":0.1250"));
         assert!(line.contains("\"index_bytes\":4096"));
+        assert!(line.contains("\"avg_visited_nodes\":12.00"));
+        assert!(line.contains("\"avg_graph_reads\":8.50"));
+        assert!(line.contains("\"avg_vector_bytes\":1200.00"));
     }
 
     #[test]
