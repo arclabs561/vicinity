@@ -295,10 +295,12 @@ codegen-units = 1
 [[bench]]
 name = "hnsw"
 harness = false
+required-features = ["hnsw"]
 
 [[bench]]
 name = "hnsw_search"
 harness = false
+required-features = ["hnsw"]
 
 [[bench]]
 name = "distance"
@@ -315,6 +317,7 @@ harness = false
 [[bench]]
 name = "recall"
 harness = false
+required-features = ["hnsw"]
 
 [[bench]]
 name = "memory"
@@ -323,10 +326,12 @@ harness = false
 [[bench]]
 name = "scaling"
 harness = false
+required-features = ["hnsw"]
 
 [[bench]]
 name = "adsampling"
 harness = false
+required-features = ["hnsw"]
 
 [[bench]]
 name = "store"
