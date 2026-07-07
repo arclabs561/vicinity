@@ -1552,7 +1552,7 @@ fn run_store(
     dim: usize,
 ) {
     use durability::FsDirectory;
-    use vicinity::store::UpdatableIndex;
+    use vicinity::store::{SnapshotIndex, UpdatableIndex};
 
     if cfg.is_euclidean {
         eprintln!("store: skipping (cosine-only, dataset is euclidean)");
@@ -1571,7 +1571,7 @@ fn run_store(
     }
 
     let build_start = Instant::now();
-    let mut index = UpdatableIndex::open(dir, flush_threshold, dim, cfg.m, cfg.m * 2)
+    let mut index = UpdatableIndex::open(dir.clone(), flush_threshold, dim, cfg.m, cfg.m * 2)
         .expect("open store index");
     index
         .extend(
@@ -1585,6 +1585,16 @@ fn run_store(
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
     let index_bytes = dir_size_bytes(temp_dir.path()).ok();
+    let load_start = Instant::now();
+    let snapshot =
+        SnapshotIndex::open(dir, dim, cfg.m, cfg.m * 2).expect("open store snapshot index");
+    if let Some(query) = test.first() {
+        let warm_ef = cfg.ef_search_values.iter().copied().max().unwrap_or(10);
+        snapshot
+            .search(query, 10, warm_ef)
+            .expect("warm store snapshot index");
+    }
+    let snapshot_load_time_s = load_start.elapsed().as_secs_f64();
 
     if !cfg.json {
         println!(
@@ -1616,8 +1626,46 @@ fn run_store(
                     },
                 ),
             );
+            let snapshot_result = evaluate(
+                &|q, k| {
+                    snapshot
+                        .search(q, k, ef)
+                        .expect("search store snapshot index")
+                },
+                test,
+                neighbors,
+                10,
+            );
+            emit_result(
+                &cfg.results_path,
+                &json_line_with_storage(
+                    "store_snapshot",
+                    &params_json,
+                    build_time_s,
+                    rss,
+                    &snapshot_result,
+                    &ResultStorage {
+                        storage_mode: "segmented_store",
+                        cache_state: "warm_after_reopen",
+                        load_time_s: Some(snapshot_load_time_s),
+                        index_bytes,
+                        diagnostics: None,
+                    },
+                ),
+            );
         } else {
             print_row(&format!("ef={}", ef), &result);
+            let snapshot_result = evaluate(
+                &|q, k| {
+                    snapshot
+                        .search(q, k, ef)
+                        .expect("search store snapshot index")
+                },
+                test,
+                neighbors,
+                10,
+            );
+            print_row(&format!("ef={} snapshot_reopened", ef), &snapshot_result);
         }
     }
 

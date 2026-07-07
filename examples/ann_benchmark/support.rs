@@ -754,12 +754,16 @@ fn required_result_checks(
         "store" => cfg
             .ef_search_values
             .iter()
-            .map(|&ef| {
-                ExpectedResult::with_params_and_storage(
-                    "store",
-                    &store_params_json(cfg, train_len, ef),
-                    "segmented_store",
-                )
+            .flat_map(|&ef| {
+                let params = store_params_json(cfg, train_len, ef);
+                [
+                    ExpectedResult::with_params_and_storage("store", &params, "segmented_store"),
+                    ExpectedResult::with_params_and_storage(
+                        "store_snapshot",
+                        &params,
+                        "segmented_store",
+                    ),
+                ]
             })
             .collect(),
         "finger" => {
@@ -1882,7 +1886,7 @@ mod tests {
     }
 
     #[test]
-    fn store_resume_requires_segmented_storage_row() {
+    fn store_resume_requires_live_and_reopened_segmented_storage_rows() {
         let cfg = Config {
             ef_search_values: vec![10],
             ..Config::default()
@@ -1900,6 +1904,13 @@ mod tests {
             )],
             ..CompletedResults::default()
         };
+        let completed_with_snapshot = CompletedResults {
+            lines: vec![
+                single_line_with_storage("store", &params, "segmented_store"),
+                single_line_with_storage("store_snapshot", &params, "segmented_store"),
+            ],
+            ..CompletedResults::default()
+        };
 
         assert!(!request_completed(
             &missing_segmented,
@@ -1909,7 +1920,15 @@ mod tests {
             64,
             12
         ));
-        assert!(request_completed(&completed, "store", &cfg, 8, 64, 12));
+        assert!(!request_completed(&completed, "store", &cfg, 8, 64, 12));
+        assert!(request_completed(
+            &completed_with_snapshot,
+            "store",
+            &cfg,
+            8,
+            64,
+            12
+        ));
     }
 
     #[cfg(feature = "serde")]

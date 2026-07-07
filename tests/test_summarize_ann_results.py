@@ -258,6 +258,7 @@ def test_cli_can_emit_standard_storage_missing_rows(
     assert ("ivfpq_rerank", "file") in missing
     assert ("fresh_graph", "snapshot_loaded") in missing
     assert ("kdtree", "snapshot_loaded") in missing
+    assert ("store_snapshot", "segmented_store") in missing
     assert ("store", "segmented_store") in missing
     assert ("sparse_mips", "in_memory") in missing
     assert ("hnsw", "in_memory") not in missing

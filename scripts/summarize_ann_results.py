@@ -58,7 +58,7 @@ FILE_BACKED_ALGORITHMS = (
     "ivfpq_rerank",
 )
 
-SEGMENTED_STORE_ALGORITHMS = ("store",)
+SEGMENTED_STORE_ALGORITHMS = ("store", "store_snapshot")
 
 ALIAS_STORAGE_EXPECTATIONS = (
     ("diskann", "in_memory"),
