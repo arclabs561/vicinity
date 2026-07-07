@@ -115,6 +115,10 @@ cargo run --example ann_benchmark --release --features hnsw,ivf_pq,ivf_avq -- \
 cargo run --example ann_benchmark --release --features hnsw,serde -- \
   data/ann-benchmarks/glove-25-angular --algo hnsw --snapshot-load --json
 
+# DiskANN in-memory, file, and mmap rows from the same build
+cargo run --example ann_benchmark --release --features hnsw,diskann -- \
+  data/ann-benchmarks/glove-25-angular --algo diskann --json
+
 # IVF-PQ cluster/codebook/rerank sweep
 # Add --snapshot-load to also measure saved-and-reopened raw and reranked rows.
 cargo run --example ann_benchmark --release --features hnsw,ivf_pq -- \
