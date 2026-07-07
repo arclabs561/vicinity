@@ -47,7 +47,8 @@ review matrix, for example `--expect hnsw:in_memory --expect store:segmented_sto
 The summary reports both fastest row overall and fastest row meeting
 `--recall-floor` (default `0.95`); use the thresholded QPS for fixed-recall
 claims. Add `--only-dataset NAME --missing-only` when reviewing one dataset's
-remaining storage rows.
+remaining storage rows, or use `--expect-standard-storage` for the standard
+storage coverage matrix.
 
 ## Background
 

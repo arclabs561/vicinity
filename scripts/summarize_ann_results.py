@@ -10,6 +10,25 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+STANDARD_STORAGE_EXPECTATIONS = [
+    ("hnsw", "in_memory"),
+    ("hnsw", "snapshot_loaded"),
+    ("diskann", "in_memory"),
+    ("diskann_file", "file"),
+    ("diskann_mmap", "mmap"),
+    ("ivfpq", "in_memory"),
+    ("ivfpq", "snapshot_loaded"),
+    ("ivfpq", "file"),
+    ("ivfpq", "mmap"),
+    ("store", "segmented_store"),
+    ("balltree", "in_memory"),
+    ("balltree", "snapshot_loaded"),
+    ("rp_forest", "in_memory"),
+    ("rp_forest", "snapshot_loaded"),
+    ("kmeans_tree", "in_memory"),
+    ("kmeans_tree", "snapshot_loaded"),
+]
+
 
 @dataclass
 class Summary:
@@ -175,6 +194,11 @@ def parse_args() -> argparse.Namespace:
         help="Mark an expected algorithm/storage row as missing when absent",
     )
     parser.add_argument(
+        "--expect-standard-storage",
+        action="store_true",
+        help="Add the standard storage-coverage expectation matrix",
+    )
+    parser.add_argument(
         "--dataset",
         action="append",
         default=[],
@@ -203,10 +227,13 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     summaries = load_summaries(args.paths)
+    expected = list(args.expect)
+    if args.expect_standard_storage:
+        expected.extend(STANDARD_STORAGE_EXPECTATIONS)
     only_datasets = set(args.only_dataset) if args.only_dataset else None
     rows = coverage_rows(
         summaries,
-        args.expect,
+        expected,
         args.dataset,
         args.recall_floor,
         only_datasets=only_datasets,

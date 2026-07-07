@@ -151,3 +151,36 @@ def test_json_output_uses_recall_floor_for_thresholded_qps(
     output = json.loads(capsys.readouterr().out)
     assert output[0]["best_qps"] == 1000.0
     assert output[0]["qps_at_recall_floor"] == 100.0
+
+
+def test_cli_can_emit_standard_storage_missing_rows(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = load_script()
+    path = tmp_path / "rows.jsonl"
+    path.write_text(
+        '{"_meta":{"dataset":"data/ann-benchmarks/glove-25-angular"}}\n'
+        '{"algorithm":"hnsw","storage_mode":"in_memory","recall_at_10":1.0,"qps":42}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "summarize_ann_results.py",
+            str(path),
+            "--expect-standard-storage",
+            "--only-dataset",
+            "glove-25-angular",
+            "--missing-only",
+            "--json",
+        ],
+    )
+
+    script.main()
+
+    output = json.loads(capsys.readouterr().out)
+    missing = {(row["algorithm"], row["storage_mode"]) for row in output}
+    assert ("hnsw", "snapshot_loaded") in missing
+    assert ("diskann_mmap", "mmap") in missing
+    assert ("hnsw", "in_memory") not in missing
