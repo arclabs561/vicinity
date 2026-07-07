@@ -87,26 +87,27 @@ def write_nbr1(path: Path, neighbors: list[list[int]]) -> None:
     tmp.replace(path)
 
 
-def read_vec1_header(path: Path) -> tuple[int, int] | None:
+def binary_shape(path: Path, magic: bytes) -> tuple[int, int] | None:
     try:
         with path.open("rb") as f:
             header = f.read(12)
     except FileNotFoundError:
         return None
-    if len(header) != 12 or header[:4] != b"VEC1":
+    if len(header) != 12 or header[:4] != magic:
         return None
-    return struct.unpack("<II", header[4:])
+    rows, width = struct.unpack("<II", header[4:])
+    expected_size = 12 + rows * width * 4
+    if path.stat().st_size != expected_size:
+        return None
+    return rows, width
 
 
-def read_nbr1_header(path: Path) -> tuple[int, int] | None:
-    try:
-        with path.open("rb") as f:
-            header = f.read(12)
-    except FileNotFoundError:
-        return None
-    if len(header) != 12 or header[:4] != b"NBR1":
-        return None
-    return struct.unpack("<II", header[4:])
+def read_vec1_shape(path: Path) -> tuple[int, int] | None:
+    return binary_shape(path, b"VEC1")
+
+
+def read_nbr1_shape(path: Path) -> tuple[int, int] | None:
+    return binary_shape(path, b"NBR1")
 
 
 def expected_manifest(train: int, test: int, dim: int, k: int) -> dict[str, Any]:
@@ -127,11 +128,11 @@ def matching_outputs(output: Path, manifest: dict[str, Any]) -> bool:
         return False
     if existing_manifest != manifest:
         return False
-    if read_vec1_header(output / "train.bin") != (manifest["train"], manifest["dim"]):
+    if read_vec1_shape(output / "train.bin") != (manifest["train"], manifest["dim"]):
         return False
-    if read_vec1_header(output / "test.bin") != (manifest["test"], manifest["dim"]):
+    if read_vec1_shape(output / "test.bin") != (manifest["test"], manifest["dim"]):
         return False
-    return read_nbr1_header(output / "neighbors.bin") == (
+    return read_nbr1_shape(output / "neighbors.bin") == (
         manifest["test"],
         manifest["k"],
     )

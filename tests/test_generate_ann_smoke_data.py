@@ -70,3 +70,24 @@ def test_manifest_mismatch_does_not_reuse_outputs(tmp_path: Path) -> None:
     )
 
     assert not script.matching_outputs(output, script.expected_manifest(16, 5, 4, 4))
+
+
+def test_matching_manifest_rejects_truncated_payload(tmp_path: Path) -> None:
+    script = load_script()
+    output = tmp_path / "ann-smoke"
+    output.mkdir()
+    train = script.make_train(16, 4)
+    test = script.make_test(train, 5)
+    neighbors = script.ground_truth(train, test, 3)
+    script.write_vec1(output / "train.bin", train)
+    script.write_vec1(output / "test.bin", test)
+    script.write_nbr1(output / "neighbors.bin", neighbors)
+    script.write_manifest_atomic(
+        output / "ann_smoke_dataset.json",
+        script.expected_manifest(16, 5, 4, 3),
+    )
+
+    train_path = output / "train.bin"
+    train_path.write_bytes(train_path.read_bytes()[:12])
+
+    assert not script.matching_outputs(output, script.expected_manifest(16, 5, 4, 3))
