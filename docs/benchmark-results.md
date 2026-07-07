@@ -430,6 +430,27 @@ The cumulative direct-file improvement from the pre-profile baseline is:
 | `file_ef50` | 141.38 ms / 100 queries | 54.506 ms / 100 queries | about 61.4% faster |
 | `file_ef75` | 199.28 ms / 100 queries | 72.892 ms / 100 queries | about 63.4% faster |
 
+### HNSW Search Heap Pressure
+
+The `hnsw_search` benchmark has an allocation counter around the normal
+`HNSWIndex::search` path. On the 10K-vector, 128-dimension search-only bench,
+the main search path was still allocating fresh candidate and result heaps for
+each query even though the visited set already uses thread-local reuse.
+
+Reusing the candidate/result heaps through a thread-local scratch buffer in
+`greedy_search_layer` reduced allocation pressure and gave a small but measured
+QPS gain:
+
+| Row | Before | After |
+| --- | ---: | ---: |
+| `ef=50` allocation calls | 7.0/query | 5.0/query |
+| `ef=50` allocation bytes | 3,796 bytes/query | 1,388 bytes/query |
+| `hnsw_search_only/ef/50` | 1.9566 ms / 100 queries | 1.8877 ms / 100 queries |
+
+Criterion reported the `ef=50` row about 3.9% faster. This is useful but not a
+substitute for the bigger GloVe-25 fixed-recall work: HNSW still needs
+full-corpus lower-recall sweeps and cache-layout profiling.
+
 ### IVF-PQ Search Loop
 
 The `ivfpq_search` benchmark's profiled counters show the remaining hot path is

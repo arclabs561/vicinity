@@ -57,6 +57,10 @@ benchmarking, persistence, Python bindings, and performance work.
   reads and then switching direct-file graph/vector reads to positional reads
   moved `file_ef75` from 199.28 ms to 72.892 ms per 100 queries, with heap
   and mmap controls staying in family.
+- HNSW allocation profiling found fresh per-query candidate/result heap
+  allocation in the normal `HNSWIndex::search` path. Thread-local heap reuse
+  reduced the `ef=50` search-only row from 7.0 to 5.0 allocation calls/query
+  and measured about 3.9% faster in Criterion.
 - The standard storage expectation matrix now covers all current benchmark
   families at the coarse algorithm/storage level, including graph snapshots,
   file/mmap searchers, segmented store, churn rows, and sparse placeholders.

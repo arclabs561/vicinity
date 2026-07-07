@@ -157,6 +157,28 @@ thread_local! {
     static THREAD_VISITED: RefCell<VisitedSet> = const { RefCell::new(
         VisitedSet::Dense { marks: Vec::new(), generation: 1 }
     ) };
+    static THREAD_SEARCH_SCRATCH: RefCell<SearchScratch> = const { RefCell::new(SearchScratch::new()) };
+}
+
+struct SearchScratch {
+    candidates: BinaryHeap<MinCandidate>,
+    results: BinaryHeap<MaxResult>,
+}
+
+impl SearchScratch {
+    const fn new() -> Self {
+        Self {
+            candidates: BinaryHeap::new(),
+            results: BinaryHeap::new(),
+        }
+    }
+
+    fn prepare(&mut self, ef: usize) {
+        self.candidates.clear();
+        self.results.clear();
+        self.candidates.reserve(ef.saturating_mul(2));
+        self.results.reserve(ef.saturating_add(1));
+    }
 }
 
 /// Borrow the thread-local visited set, prepared for `num_nodes`.
@@ -308,92 +330,99 @@ pub fn greedy_search_layer(
 ) -> Vec<(u32, f32)> {
     let num_vectors = vectors.len() / dimension;
 
-    with_visited_set(num_vectors, ef * 2, |visited| {
-        let mut candidates: BinaryHeap<MinCandidate> = BinaryHeap::with_capacity(ef * 2);
-        let mut results: BinaryHeap<MaxResult> = BinaryHeap::with_capacity(ef + 1);
+    THREAD_SEARCH_SCRATCH.with(|scratch_cell| {
+        let mut scratch = scratch_cell.borrow_mut();
+        scratch.prepare(ef);
+        let SearchScratch {
+            candidates,
+            results,
+        } = &mut *scratch;
 
-        // Start from entry point
-        let entry_vector = get_vector(vectors, dimension, entry_point as usize);
-        let entry_distance = dist_fn(query, entry_vector);
-        candidates.push(MinCandidate {
-            id: entry_point,
-            distance: entry_distance,
-        });
-        results.push(MaxResult {
-            id: entry_point,
-            distance: entry_distance,
-        });
-        visited.insert(entry_point);
+        with_visited_set(num_vectors, ef * 2, |visited| {
+            // Start from entry point
+            let entry_vector = get_vector(vectors, dimension, entry_point as usize);
+            let entry_distance = dist_fn(query, entry_vector);
+            candidates.push(MinCandidate {
+                id: entry_point,
+                distance: entry_distance,
+            });
+            results.push(MaxResult {
+                id: entry_point,
+                distance: entry_distance,
+            });
+            visited.insert(entry_point);
 
-        // Standard HNSW beam search:
-        // Continue while we have candidates that might improve results
-        while let Some(candidate) = candidates.pop() {
-            // Stopping condition: if best candidate is worse than worst result
-            // and we have enough results, we're done
-            let worst_dist = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
-            if candidate.distance > worst_dist && results.len() >= ef {
-                break;
-            }
+            // Standard HNSW beam search:
+            // Continue while we have candidates that might improve results
+            while let Some(candidate) = candidates.pop() {
+                // Stopping condition: if best candidate is worse than worst result
+                // and we have enough results, we're done
+                let worst_dist = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
+                if candidate.distance > worst_dist && results.len() >= ef {
+                    break;
+                }
 
-            // Explore neighbors using batched distance computation.
-            // Collect a small group of unvisited neighbors, prefetch their vectors,
-            // compute distances together for better ILP and cache behavior.
-            let neighbors = layer.get_neighbors(candidate.id);
+                // Explore neighbors using batched distance computation.
+                // Collect a small group of unvisited neighbors, prefetch their vectors,
+                // compute distances together for better ILP and cache behavior.
+                let neighbors = layer.get_neighbors(candidate.id);
 
-            let mut batch_ids: [u32; DISTANCE_BATCH_SIZE] = [0; DISTANCE_BATCH_SIZE];
-            let mut batch_count = 0usize;
+                let mut batch_ids: [u32; DISTANCE_BATCH_SIZE] = [0; DISTANCE_BATCH_SIZE];
+                let mut batch_count = 0usize;
 
-            for &neighbor_id in neighbors.iter() {
-                if visited.insert(neighbor_id) {
-                    batch_ids[batch_count] = neighbor_id;
-                    batch_count += 1;
+                for &neighbor_id in neighbors.iter() {
+                    if visited.insert(neighbor_id) {
+                        batch_ids[batch_count] = neighbor_id;
+                        batch_count += 1;
 
-                    // Prefetch the vector for this neighbor (it will be read shortly).
-                    if (neighbor_id as usize) < num_vectors {
-                        let ptr = vectors
-                            .as_ptr()
-                            .wrapping_add(neighbor_id as usize * dimension);
-                        prefetch_read_data(ptr);
-                        if dimension > 16 {
-                            prefetch_read_data(ptr.wrapping_add(16));
+                        // Prefetch the vector for this neighbor (it will be read shortly).
+                        if (neighbor_id as usize) < num_vectors {
+                            let ptr = vectors
+                                .as_ptr()
+                                .wrapping_add(neighbor_id as usize * dimension);
+                            prefetch_read_data(ptr);
+                            if dimension > 16 {
+                                prefetch_read_data(ptr.wrapping_add(16));
+                            }
+                        }
+
+                        if batch_count == DISTANCE_BATCH_SIZE {
+                            flush_batch(
+                                query,
+                                &batch_ids,
+                                batch_count,
+                                vectors,
+                                dimension,
+                                dist_fn,
+                                candidates,
+                                results,
+                                ef,
+                            );
+                            batch_count = 0;
                         }
                     }
-
-                    if batch_count == DISTANCE_BATCH_SIZE {
-                        flush_batch(
-                            query,
-                            &batch_ids,
-                            batch_count,
-                            vectors,
-                            dimension,
-                            dist_fn,
-                            &mut candidates,
-                            &mut results,
-                            ef,
-                        );
-                        batch_count = 0;
-                    }
+                }
+                // Flush remaining (< 4).
+                if batch_count > 0 {
+                    flush_batch(
+                        query,
+                        &batch_ids,
+                        batch_count,
+                        vectors,
+                        dimension,
+                        dist_fn,
+                        candidates,
+                        results,
+                        ef,
+                    );
                 }
             }
-            // Flush remaining (< 4).
-            if batch_count > 0 {
-                flush_batch(
-                    query,
-                    &batch_ids,
-                    batch_count,
-                    vectors,
-                    dimension,
-                    dist_fn,
-                    &mut candidates,
-                    &mut results,
-                    ef,
-                );
-            }
-        }
 
-        let mut output: Vec<(u32, f32)> = results.into_iter().map(|r| (r.id, r.distance)).collect();
-        output.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
-        output
+            let mut output: Vec<(u32, f32)> = results.drain().map(|r| (r.id, r.distance)).collect();
+            candidates.clear();
+            output.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+            output
+        })
     })
 }
 

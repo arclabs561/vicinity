@@ -170,6 +170,7 @@ pub(crate) mod pq_simd;
 pub mod prt;
 
 pub mod distance;
+#[cfg(any(feature = "diskann", feature = "ivf_pq"))]
 pub(crate) mod file_io;
 pub mod filtering;
 #[cfg(any(
