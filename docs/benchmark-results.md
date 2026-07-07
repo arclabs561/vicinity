@@ -115,6 +115,82 @@ This validates the basic Perplexity finding: the old 100% recall row is not the
 right operating point for QPS expectations. The 95% recall point still requires
 a sweep above `ef_search=50` for this build configuration.
 
+## Profiling Ledger
+
+These are incremental profiling findings from the current optimization pass.
+They are workload-specific and should be re-run before making release claims.
+
+### HNSW Search Loop
+
+Search-only Criterion benchmark:
+
+```bash
+CARGO_TARGET_DIR=/tmp/vicinity-hnsw-batch-target \
+  cargo bench --bench hnsw_search --features hnsw -- \
+  hnsw_search_only/ef/50 --measurement-time 3 --warm-up-time 1 --sample-size 20
+```
+
+Baseline with 4-neighbor distance batches:
+
+| Workload | Time | Throughput |
+| --- | --- | --- |
+| `hnsw_search_only/ef/50` | 2.0073 ms / 100 queries | 49.819 Kelem/s |
+
+Increasing the internal distance batch to 8 improved the same benchmark:
+
+| Workload | Time | Throughput | Criterion change |
+| --- | --- | --- | --- |
+| `hnsw_search_only/ef/50` | 1.9511 ms / 100 queries | 51.252 Kelem/s | 4.6% faster, p < 0.05 |
+
+The supporting `samply` profile was recorded with:
+
+```bash
+CARGO_TARGET_DIR=/tmp/vicinity-hnsw-profile-target \
+  samply record --save-only -o /tmp/vicinity-hnsw-search-20260706.json.gz -- \
+  cargo bench --bench hnsw_search --features hnsw -- \
+  hnsw_search_only/ef/50 --profile-time 15
+```
+
+Symbolized top samples showed `cosine_distance_normalized` at about 36.5%
+inclusive time and `innr::dense::dot` as the largest leaf bucket at about
+23.1%. `greedy_search_layer` and `flush_batch` were also hot. This supports
+keeping `innr` for dense distance kernels and optimizing HNSW graph traversal
+around the kernel rather than replacing the kernel in `vicinity`.
+
+### Dense Distance Kernel
+
+Direct Criterion measurements on the 128-d L2 kernel:
+
+| Feature set | Time | Throughput |
+| --- | --- | --- |
+| `--features innr` | 8.382 ns | 15.271 Gelem/s |
+| `--no-default-features` | 52.846 ns | 2.422 Gelem/s |
+
+Binary inspection of the benchmark artifact confirmed that the `innr` path
+lowers to an aarch64 NEON loop with paired vector loads and `fmla.4s`
+accumulation. The actionable conclusion is to use `innr` for full-vector dense
+distance and spend `vicinity` work on search layout, pruning, and storage.
+
+### IVF-PQ Search Loop
+
+The `ivfpq_search` benchmark's profiled counters show the remaining hot path is
+ADC-table construction and scan dispatch, not final result selection:
+
+| Shape | ADC table | ADC dispatch | Finalizer | Allocations |
+| --- | --- | --- | --- | --- |
+| `m25_one_dim_nprobe32_k10` | 97.315 us/query | 21.485 us/query | 2.568 us/query | 14 calls/query, 50.2 KB/query |
+| `m5_runner_default_nprobe32_k10` | 46.726 us/query | 5.085 us/query | 2.511 us/query | 13 calls/query, 29.1 KB/query |
+
+A bounded top-k heap experiment regressed GloVe-25 IVF-PQ at the same recall:
+
+| Row | Before | Bounded top-k |
+| --- | --- | --- |
+| IVF-PQ `nprobe=32` | 1,759.6 QPS, 95.42% recall | 1,598.7 QPS, 95.42% recall |
+| IVF-PQ `nprobe=32`, rerank 500 | 1,710.0 QPS, 96.58% recall | 1,418.6 QPS, 96.58% recall |
+
+That experiment was rejected. The next IVF-PQ work should focus on the ADC
+table path, codebook shape, and SIMD scan layout.
+
 ## Benchmark Coverage
 
 The dense `ann_benchmark` runner covers the implemented single-vector ANN
@@ -143,6 +219,14 @@ Methods with both in-memory and file-backed search should report separate
 `storage_mode=in_memory`, `storage_mode=file`, and, when implemented,
 `storage_mode=mmap` rows. File and mmap rows should also report `load_time_s`
 and `index_bytes` when the runner opens a saved index.
+
+The long-term target is not only faster heap-resident search. In-memory QPS is
+the easiest number to improve and the least representative for datasets that do
+not fit in RAM. For large datasets, benchmark and implementation work should
+prefer layouts that search persisted bytes directly: DiskANN graph/vector files,
+mmap graph pages, IVF posting lists, segmented stores, and cold/warm page-cache
+measurements. Snapshot-loaded rows remain useful correctness and reload
+baselines, but they are not a substitute for file or mmap search rows.
 
 ### IVF-PQ sampled-training diagnostic (2026-07-06)
 

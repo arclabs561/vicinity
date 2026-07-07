@@ -37,6 +37,9 @@ pub(crate) fn prefetch_read_data(ptr: *const f32) {
 /// avoids hashing overhead on every visited-node check.
 const DENSE_VISITED_THRESHOLD: usize = 4_000_000;
 
+/// Number of neighbor distances to compute before updating the HNSW heaps.
+const DISTANCE_BATCH_SIZE: usize = 8;
+
 /// Fast visited-node tracker using the generation-counter pattern.
 ///
 /// Dense variant: a `Vec<u8>` where `visited[id] == generation` means visited.
@@ -215,7 +218,7 @@ impl PartialOrd for MaxResult {
 #[inline]
 fn flush_batch(
     query: &[f32],
-    batch_ids: &[u32; 4],
+    batch_ids: &[u32; DISTANCE_BATCH_SIZE],
     count: usize,
     vectors: &[f32],
     dimension: usize,
@@ -225,7 +228,7 @@ fn flush_batch(
     ef: usize,
 ) {
     // Compute all distances first (enables ILP -- CPU can overlap independent FP pipelines).
-    let mut dists = [0.0f32; 4];
+    let mut dists = [0.0f32; DISTANCE_BATCH_SIZE];
     for i in 0..count {
         let vec = get_vector(vectors, dimension, batch_ids[i] as usize);
         dists[i] = dist_fn(query, vec);
@@ -254,14 +257,14 @@ fn flush_batch(
 #[inline]
 fn flush_batch_custom<F: Fn(&[f32], u32) -> f32>(
     query: &[f32],
-    batch_ids: &[u32; 4],
+    batch_ids: &[u32; DISTANCE_BATCH_SIZE],
     count: usize,
     dist_fn: &F,
     candidates: &mut std::collections::BinaryHeap<MinCandidate>,
     results: &mut std::collections::BinaryHeap<MaxResult>,
     ef: usize,
 ) {
-    let mut dists = [0.0f32; 4];
+    let mut dists = [0.0f32; DISTANCE_BATCH_SIZE];
     for i in 0..count {
         dists[i] = dist_fn(query, batch_ids[i]);
     }
@@ -333,12 +336,11 @@ pub fn greedy_search_layer(
             }
 
             // Explore neighbors using batched distance computation.
-            // Collect up to 4 unvisited neighbors, prefetch their vectors,
+            // Collect a small group of unvisited neighbors, prefetch their vectors,
             // compute distances together for better ILP and cache behavior.
             let neighbors = layer.get_neighbors(candidate.id);
 
-            // Batch buffer: up to 4 unvisited neighbor IDs.
-            let mut batch_ids: [u32; 4] = [0; 4];
+            let mut batch_ids: [u32; DISTANCE_BATCH_SIZE] = [0; DISTANCE_BATCH_SIZE];
             let mut batch_count = 0usize;
 
             for &neighbor_id in neighbors.iter() {
@@ -357,8 +359,7 @@ pub fn greedy_search_layer(
                         }
                     }
 
-                    if batch_count == 4 {
-                        // Flush batch: compute 4 distances and process results.
+                    if batch_count == DISTANCE_BATCH_SIZE {
                         flush_batch(
                             query,
                             &batch_ids,
@@ -543,7 +544,7 @@ pub fn greedy_search_layer_custom<F: Fn(&[f32], u32) -> f32>(
             }
 
             let neighbors = layer.get_neighbors(candidate.id);
-            let mut batch_ids: [u32; 4] = [0; 4];
+            let mut batch_ids: [u32; DISTANCE_BATCH_SIZE] = [0; DISTANCE_BATCH_SIZE];
             let mut batch_count = 0usize;
 
             for &neighbor_id in neighbors.iter() {
@@ -562,7 +563,7 @@ pub fn greedy_search_layer_custom<F: Fn(&[f32], u32) -> f32>(
                         }
                     }
 
-                    if batch_count == 4 {
+                    if batch_count == DISTANCE_BATCH_SIZE {
                         flush_batch_custom(
                             query,
                             &batch_ids,
