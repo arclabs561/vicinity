@@ -17,6 +17,7 @@ Run: uvx --with numpy python scripts/generate_sample_data.py
 """
 
 import argparse
+import hashlib
 import json
 import os
 import struct
@@ -43,6 +44,7 @@ EXPECTED_OUTPUTS = {
     "hard_neighbors_filter.bin": b"NBR1",
     "hard_test_filter_topics.bin": b"LBL1",
 }
+EXPECTED_TEXT_OUTPUTS = ("README.md",)
 
 
 def generate_topic_mixture_unit_with_topics(
@@ -581,11 +583,27 @@ def valid_output(path: Path, magic: bytes) -> bool:
     return valid_vec_or_neighbors(path, magic)
 
 
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def expected_output_names() -> tuple[str, ...]:
+    return tuple(EXPECTED_OUTPUTS) + EXPECTED_TEXT_OUTPUTS
+
+
 def all_expected_outputs_exist(data_dir: Path) -> bool:
-    return all(
+    binaries_exist = all(
         valid_output(data_dir / filename, magic)
         for filename, magic in EXPECTED_OUTPUTS.items()
     )
+    text_outputs_exist = all(
+        (data_dir / filename).exists() for filename in EXPECTED_TEXT_OUTPUTS
+    )
+    return binaries_exist and text_outputs_exist
 
 
 def manifest_path(data_dir: Path) -> Path:
@@ -607,9 +625,25 @@ def manifest_matches(data_dir: Path, hard_dup_frac: float) -> bool:
         manifest = json.loads(path.read_text())
     except json.JSONDecodeError:
         return False
-    return manifest.get("complete") is True and manifest.get(
-        "settings"
-    ) == generation_settings(hard_dup_frac)
+    if manifest.get("complete") is not True:
+        return False
+    if manifest.get("settings") != generation_settings(hard_dup_frac):
+        return False
+    outputs = manifest.get("outputs")
+    if not isinstance(outputs, dict):
+        return False
+
+    for filename in expected_output_names():
+        info = outputs.get(filename)
+        path = data_dir / filename
+        if not isinstance(info, dict) or not path.exists():
+            return False
+        if info.get("bytes") != path.stat().st_size:
+            return False
+        if info.get("sha256") != file_sha256(path):
+            return False
+
+    return True
 
 
 def write_manifest(data_dir: Path, manifest: dict) -> None:
@@ -633,8 +667,9 @@ def write_complete_manifest(data_dir: Path, hard_dup_frac: float) -> None:
     outputs = {
         filename: {
             "bytes": (data_dir / filename).stat().st_size,
+            "sha256": file_sha256(data_dir / filename),
         }
-        for filename in EXPECTED_OUTPUTS
+        for filename in expected_output_names()
     }
     write_manifest(
         data_dir,
