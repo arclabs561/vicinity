@@ -466,6 +466,25 @@ rerank pool 500:
 | IVF-PQ `nprobe=32` | 95.42% | 2,941.4 | 470.6 us |
 | IVF-PQ `nprobe=32`, rerank 500 | 96.58% | 2,806.2 | 488.5 us |
 
+The storage-mode Criterion probe now compares the freshly built heap index,
+snapshot-loaded heap index, plain file searcher, and mmap searcher on the same
+20K-vector synthetic shape used for short profiling. Throughput is queries per
+second; each sample processes 100 queries.
+
+| Shape | Heap | Snapshot-loaded | File searcher | Mmap searcher |
+|-------|-----:|----------------:|--------------:|--------------:|
+| `m25_one_dim_nprobe32_k10` | 24.5K | 24.3K | 675 | 17.4K |
+| `m25_one_dim_nprobe32_rerank500_k10` | 20.0K | 19.8K | 556 | 13.6K |
+| `m5_runner_default_nprobe32_k10` | 16.0K | 16.0K | 689 | 12.4K |
+| `m5_runner_default_nprobe32_rerank500_k10` | 14.1K | 13.8K | 555 | 10.1K |
+
+Interpretation: `load_from_dir()` is effectively at heap speed. The plain file
+searcher is dominated by random per-vector code/raw-vector reads. Mmap avoids
+the syscall-scale collapse but still pays the current gather/repack step because
+codes are persisted in vector-index order rather than list-contiguous probed
+cluster order. The next persistence optimization should persist list-local code
+blocks and offsets instead of reconstructing those batches at query time.
+
 ## GloVe-25 (1.18M vectors, 25-d, angular distance)
 
 Ground truth: brute-force k-NN on L2-normalized vectors (angular ≡ cosine for unit vectors).

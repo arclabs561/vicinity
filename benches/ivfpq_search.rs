@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(all(feature = "ivf_pq", feature = "benchmark"))]
 use vicinity::ivf_pq::IVFPQSearchProfile;
 #[cfg(feature = "ivf_pq")]
-use vicinity::ivf_pq::{IVFPQIndex, IVFPQParams};
+use vicinity::ivf_pq::{IVFPQFileSearcher, IVFPQIndex, IVFPQParams};
 
 #[cfg(all(feature = "ivf_pq", feature = "benchmark"))]
 static ALLOC_CALLS: AtomicUsize = AtomicUsize::new(0);
@@ -187,6 +187,12 @@ fn bench_ivfpq_search_only(c: &mut Criterion) {
 
     for (label, num_codebooks) in configs {
         let (index, _vectors) = build_index(n_vectors, dim, num_codebooks);
+        let snapshot_dir = tempfile::tempdir().expect("create IVF-PQ snapshot dir");
+        index.save_to_dir(snapshot_dir.path()).unwrap();
+        let loaded = IVFPQIndex::load_from_dir(snapshot_dir.path()).unwrap();
+        let mut file_searcher = IVFPQFileSearcher::load(snapshot_dir.path()).unwrap();
+        #[cfg(feature = "persistence")]
+        let mut mmap_searcher = IVFPQFileSearcher::load_mmap(snapshot_dir.path()).unwrap();
 
         #[cfg(feature = "benchmark")]
         {
@@ -204,11 +210,80 @@ fn bench_ivfpq_search_only(c: &mut Criterion) {
             });
         });
 
+        group.bench_function(format!("{label}_snapshot_loaded_nprobe32_k10"), |bench| {
+            bench.iter(|| {
+                queries
+                    .iter()
+                    .map(|q| loaded.search(black_box(q), 10).unwrap().len())
+                    .sum::<usize>()
+            });
+        });
+
+        group.bench_function(format!("{label}_file_nprobe32_k10"), |bench| {
+            bench.iter(|| {
+                queries
+                    .iter()
+                    .map(|q| file_searcher.search(black_box(q), 10).unwrap().len())
+                    .sum::<usize>()
+            });
+        });
+
+        #[cfg(feature = "persistence")]
+        group.bench_function(format!("{label}_mmap_nprobe32_k10"), |bench| {
+            bench.iter(|| {
+                queries
+                    .iter()
+                    .map(|q| mmap_searcher.search(black_box(q), 10).unwrap().len())
+                    .sum::<usize>()
+            });
+        });
+
         group.bench_function(format!("{label}_nprobe32_rerank500_k10"), |bench| {
             bench.iter(|| {
                 queries
                     .iter()
                     .map(|q| index.search_reranked(black_box(q), 10, 500).unwrap().len())
+                    .sum::<usize>()
+            });
+        });
+
+        group.bench_function(
+            format!("{label}_snapshot_loaded_nprobe32_rerank500_k10"),
+            |bench| {
+                bench.iter(|| {
+                    queries
+                        .iter()
+                        .map(|q| loaded.search_reranked(black_box(q), 10, 500).unwrap().len())
+                        .sum::<usize>()
+                });
+            },
+        );
+
+        group.bench_function(format!("{label}_file_nprobe32_rerank500_k10"), |bench| {
+            bench.iter(|| {
+                queries
+                    .iter()
+                    .map(|q| {
+                        file_searcher
+                            .search_reranked(black_box(q), 10, 500)
+                            .unwrap()
+                            .len()
+                    })
+                    .sum::<usize>()
+            });
+        });
+
+        #[cfg(feature = "persistence")]
+        group.bench_function(format!("{label}_mmap_nprobe32_rerank500_k10"), |bench| {
+            bench.iter(|| {
+                queries
+                    .iter()
+                    .map(|q| {
+                        mmap_searcher
+                            .search_reranked(black_box(q), 10, 500)
+                            .unwrap()
+                            .len()
+                    })
                     .sum::<usize>()
             });
         });
