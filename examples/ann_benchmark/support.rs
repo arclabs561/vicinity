@@ -206,25 +206,10 @@ pub(crate) fn load_completed_results(
     }
 }
 
-enum ExpectedParams {
-    Any,
-    Exact(String),
-    Contains(Vec<String>),
-}
-
-impl ExpectedParams {
-    fn matches(&self, line: &str) -> bool {
-        match self {
-            Self::Any => true,
-            Self::Exact(expected) => json_value_field(line, "params") == Some(expected.as_str()),
-            Self::Contains(fragments) => fragments.iter().all(|fragment| line.contains(fragment)),
-        }
-    }
-}
-
 struct ExpectedResult {
     algorithm: String,
-    params: ExpectedParams,
+    params_json: Option<String>,
+    param_fragments: Vec<String>,
     storage_mode: Option<String>,
 }
 
@@ -232,7 +217,8 @@ impl ExpectedResult {
     fn any_params(algorithm: impl Into<String>) -> Self {
         Self {
             algorithm: algorithm.into(),
-            params: ExpectedParams::Any,
+            params_json: None,
+            param_fragments: Vec::new(),
             storage_mode: None,
         }
     }
@@ -240,7 +226,8 @@ impl ExpectedResult {
     fn with_params(algorithm: impl Into<String>, params_json: &str) -> Self {
         Self {
             algorithm: algorithm.into(),
-            params: ExpectedParams::Exact(params_json.to_string()),
+            params_json: Some(params_json.to_string()),
+            param_fragments: Vec::new(),
             storage_mode: None,
         }
     }
@@ -252,7 +239,8 @@ impl ExpectedResult {
     ) -> Self {
         Self {
             algorithm: algorithm.into(),
-            params: ExpectedParams::Exact(params_json.to_string()),
+            params_json: Some(params_json.to_string()),
+            param_fragments: Vec::new(),
             storage_mode: Some(storage_mode.into()),
         }
     }
@@ -263,7 +251,8 @@ impl ExpectedResult {
     ) -> Self {
         Self {
             algorithm: algorithm.into(),
-            params: ExpectedParams::Contains(fragments.into_iter().collect()),
+            params_json: None,
+            param_fragments: fragments.into_iter().collect(),
             storage_mode: None,
         }
     }
@@ -272,7 +261,16 @@ impl ExpectedResult {
         if json_string_field(line, "algorithm").as_deref() != Some(self.algorithm.as_str()) {
             return false;
         }
-        if !self.params.matches(line) {
+        if let Some(expected) = &self.params_json {
+            if json_value_field(line, "params") != Some(expected.as_str()) {
+                return false;
+            }
+        }
+        if !self
+            .param_fragments
+            .iter()
+            .all(|fragment| line.contains(fragment))
+        {
             return false;
         }
         if let Some(expected) = &self.storage_mode {
