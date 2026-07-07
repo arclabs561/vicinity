@@ -53,7 +53,7 @@ fn bench_diskann_search_only(c: &mut Criterion) {
     let mmap_searcher = RefCell::new(DiskANNSearcher::load_mmap(&index_dir).unwrap());
 
     group.throughput(Throughput::Elements(n_queries as u64));
-    for ef_search in [50, 75] {
+    for ef_search in [50, 75, 250] {
         group.bench_function(format!("memory_ef{ef_search}"), |bench| {
             bench.iter(|| {
                 queries
