@@ -48,7 +48,9 @@ ALGO_STYLE = {
     "diskann": {"color": "#333333", "marker": "o", "label": "DiskANN"},
     "kdtree": {"color": "#8c564b", "marker": "+", "label": "KD-Tree"},
     "balltree": {"color": "#e377c2", "marker": "P", "label": "Ball Tree"},
-    "rptree": {"color": "#7f7f7f", "marker": "*", "label": "RP-Forest"},
+    "rptree": {"color": "#7f7f7f", "marker": "*", "label": "RP-Tree"},
+    "rp_forest": {"color": "#bcbd22", "marker": "X", "label": "RP-Forest"},
+    "kmeans_tree": {"color": "#17becf", "marker": "h", "label": "K-means Tree"},
 }
 
 
@@ -99,10 +101,7 @@ def load_results(path):
 
 def plot_comparison(results_path, output_dir=None):
     path = Path(results_path)
-    if output_dir is None:
-        output_dir = Path("docs/plots")
-    else:
-        output_dir = Path(output_dir)
+    output_dir = Path("docs/plots") if output_dir is None else Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     by_algo = load_results(path)
@@ -147,7 +146,7 @@ def plot_comparison(results_path, output_dir=None):
             )
 
     ax.set_title(
-        f"Recall-Queries per second (1/s) tradeoff — up and to the right is better",
+        "Recall-Queries per second (1/s) tradeoff, up and to the right is better",
         fontsize=10,
         pad=8,
     )

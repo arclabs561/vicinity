@@ -59,7 +59,7 @@ must be part of the benchmark row.
 | Index family | Save/load | Memory search | File search | Mmap search | Updates | Storage direction |
 | --- | --- | --- | --- | --- | --- | --- |
 | HNSW | JSON via `serde`; binary segments via `persistence` | Yes | No | No | Tombstones and repair; `store` for durable segments | Keep JSON and binary segment paths. Use `store` for durable segmented HNSW. |
-| `store::UpdatableIndex` | Yes, via `segstore` + HNSW sidecars | Segment sidecars loaded into memory | No | No | Add/delete/compact/checkpoint | Keep on `segstore`; this is the segmented-HNSW path. |
+| `store::UpdatableIndex` | Open/checkpoint/reopen via `segstore` + HNSW sidecars | Segment sidecars loaded into memory | No | No | Add/delete/compact/checkpoint | Keep on `segstore`; this is the segmented-HNSW path. Benchmark both live post-checkpoint search and reopened `SnapshotIndex` search when validating restart behavior. |
 | DiskANN | Yes, graph + vector files | Yes | Yes | Yes | Build-once | Save writes the current graph/vector files directly. File and mmap searchers read those files, with mmap using `durability`. Page/co-location layout remains next. Do not route through `segstore`. |
 | NSW / SNG / Vamana / NSG / FINGER / PiPNN / EMG / LSH | Yes, directory format | Yes | No | No | Build-once | Persists the built in-memory graph state and restores it directly. This is snapshot-memory persistence, not file-backed search. |
 | DualBranch / DEG | Yes, JSON via `serde` | Yes | No | No | Build-once | These are HNSW-family experimental variants. Their benchmark snapshot rows require the `serde` feature and reload into memory. DEG dense benchmark rows cap indexed vectors at 10,000 because construction is O(n^2). |
@@ -73,8 +73,8 @@ must be part of the benchmark row.
 | Range-filtered graph | Yes, directory format | Yes | No | No | Build-once | Persists normalized vectors and sorted attributes, then rebuilds HNSW on load. |
 | Filtered graph | Yes, directory format | Yes | No | No | Build-once | Persists normalized vectors, graph neighbors, medoid, and inverted filter payloads. |
 | BinaryFlat / RP-Quant | Yes, directory format | Yes | No | No | Build-once | Persists full-precision vectors and params, then rebuilds quantizer or projection-derived payloads on load. |
-| SparseMIPS | Yes, directory format | Yes | No | No | Build-once | Persists sparse vectors in CSR-style offsets, indices, and values files plus the built graph. |
-| streaming LSM / LEMUR | No | Yes | No | No | Varies | Keep memory-only until each has a benchmark row and a concrete persistence consumer. LSM is a multi-level mutable structure; do not add a quick snapshot until the durable tiering contract is designed. LEMUR is an inference scaffold rather than a complete ANN index. |
+| SparseMIPS | Yes, directory format | Yes | No | No | Build-once | Persists sparse vectors in CSR-style offsets, indices, and values files plus the built graph. Current persistence coverage is API-level; dense `ann_benchmark` datasets skip SparseMIPS until a sparse harness exists. |
+| streaming LSM / LEMUR | No | Yes | No | No | Varies | Keep persistence memory-only until a concrete persistence consumer exists. LSM already has churn benchmark rows, but its multi-level mutable structure needs a durable tiering contract before snapshots. LEMUR is an inference scaffold rather than a complete ANN index. |
 | EVoC | No | No ANN search row | No | No | Clustering | EVoC is a clustering wrapper, not a nearest-neighbor index. Evaluate it with clustering metrics and add persistence only if clustered outputs become a durable API. |
 | Classic trees | Yes, directory format | Yes | No | No | Build-once | KD-tree, Ball tree, K-means tree, RP-tree, and RP-forest persist built trees and preserve external doc IDs. |
 

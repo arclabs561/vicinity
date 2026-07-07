@@ -303,6 +303,28 @@ The first measured 95%+ recall operating point is `ef_search=75`, not 50.
 Future DiskANN profiles should therefore target `ef=75` when validating fixed
 recall, with `ef=50` kept only as a lower-recall throughput control.
 
+The corresponding full-corpus DiskANN storage run used all 1,183,514
+GloVe-25 vectors and 500 queries:
+
+```bash
+cargo run --release --example ann_benchmark --no-default-features --features hnsw,diskann -- \
+  data/ann-benchmarks/glove-25-angular --algo diskann \
+  --ef-search 75 --max-queries 500 --json --fresh \
+  --results data/ann-benchmarks/results/glove-25-diskann-fulltrain-storage-ef75-20260707.jsonl
+```
+
+| Storage mode | Recall@10 | QPS | p50 us | p95 us | p99 us | Load s | Index bytes | Vector reads |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| in_memory | 87.60% | 12,579.5 | 77.4 | 112.6 | 145.2 | n/a | n/a | n/a |
+| file | 87.60% | 1,662.4 | 585.1 | 868.2 | 1,037.9 | 0.0014 | 203,564,652 | 928.74 |
+| mmap | 87.60% | 5,646.0 | 172.7 | 259.1 | 339.2 | 0.0008 | 203,564,652 | 928.74 |
+
+This full-corpus row is below the capped-corpus 95% recall point, so it is not
+a fixed-recall target row. It does confirm the storage shape at scale:
+direct-file search performs many small graph/vector reads, mmap is much closer
+to heap search, and page/co-location work remains a storage-layout problem
+rather than a benchmark harness problem.
+
 The same local current-results directory now covers the observed standard
 storage rows for the capped HNSW storage scope:
 
@@ -343,10 +365,15 @@ Additional capped storage rows from 2026-07-07:
 | IVF-PQ rerank | 50K train / 500 query | mmap | 97.42% | 10,645.8 | mmap avoids most direct-file rerank cost |
 | Store | 50K train / 1K query | segmented_store | 99.97% | 5,914.5 | warm after checkpoint, `index_bytes=13,838,119` |
 | KD-tree | 5K train / 200 query | in_memory | 100.00% | 26,407.9 | capped low-dimensional baseline |
+| KD-tree | 5K train / 200 query | snapshot_loaded | 100.00% | 26,685.8 | `load_time_s=0.0072`, `index_bytes=2,932,965` |
 | Ball tree | 5K train / 200 query | in_memory | 98.55% | 18,261.0 | capped low-dimensional baseline |
+| Ball tree | 5K train / 200 query | snapshot_loaded | 98.55% | 17,828.4 | `load_time_s=0.0140`, `index_bytes=5,714,434` |
 | RP-tree | 5K train / 200 query | in_memory | 100.00% | 9,575.0 | current implementation traverses both subtrees |
+| RP-tree | 5K train / 200 query | snapshot_loaded | 100.00% | 9,712.8 | `load_time_s=0.0089`, `index_bytes=3,597,682` |
 | RP-forest | 5K train / 200 query | in_memory | 15.10% | 420,948.1 | fast, low-recall baseline |
+| RP-forest | 5K train / 200 query | snapshot_loaded | 15.10% | 413,360.6 | `load_time_s=0.0219`, `index_bytes=8,890,185` |
 | K-means tree | 5K train / 200 query | in_memory | 20.75% | 994,609.2 | fast, low-recall baseline |
+| K-means tree | 5K train / 200 query | snapshot_loaded | 20.75% | 1,438,435.0 | `load_time_s=0.0089`, `index_bytes=3,638,525` |
 
 Full-train IVF-PQ storage sweep from the same day, using all 1,183,514
 GloVe-25 vectors and 500 queries:
