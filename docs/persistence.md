@@ -46,7 +46,7 @@ IVF-family indexes still need layouts shaped around their access patterns:
 co-located graph pages for DiskANN, posting-list pages for IVF, and centroid or
 compressed-vector navigation for cold data.
 
-Modern systems use the same separation. Faiss exposes mmap-backed on-disk IVF
+Production systems use the same separation. Faiss exposes mmap-backed on-disk IVF
 inverted lists with list prefetching. DiskANN-style systems keep compressed
 navigation data and hot-node caches in memory while graph/vector payloads live
 on SSD. SPFresh/HFresh-style designs keep a centroid index in memory and scan
@@ -60,7 +60,7 @@ must be part of the benchmark row.
 | --- | --- | --- | --- | --- | --- | --- |
 | HNSW | JSON via `serde`; binary segments via `persistence` | Yes | No | No | Tombstones and repair; `store` for durable segments | Keep JSON and binary segment paths. Use `store` for durable segmented HNSW. |
 | `store::UpdatableIndex` | Yes, via `segstore` + HNSW sidecars | Segment sidecars loaded into memory | No | No | Add/delete/compact/checkpoint | Keep on `segstore`; this is the segmented-HNSW path. |
-| DiskANN | Yes, graph + vector files | Yes | Yes | Yes | Build-once | Mmap exists for current separate graph/vector files. Page/co-location layout remains next. Do not route through `segstore`. |
+| DiskANN | Yes, graph + vector files | Yes | Yes | Yes | Build-once | Save writes the current graph/vector files directly. File and mmap searchers read those files, with mmap using `durability`. Page/co-location layout remains next. Do not route through `segstore`. |
 | NSW / SNG / Vamana / NSG / FINGER / PiPNN / EMG / LSH | Yes, directory format | Yes | No | No | Build-once | Persists the built in-memory graph state and restores it directly. This is snapshot-memory persistence, not file-backed search. |
 | DualBranch / DEG | Yes, JSON via `serde` | Yes | No | No | Build-once | These are HNSW-family experimental variants. Their benchmark snapshot rows require the `serde` feature and reload into memory. DEG dense benchmark rows cap indexed vectors at 10,000 because construction is O(n^2). |
 | HNSW quantized variants | Yes, for SQ4/SQ8 and non-compacted SymphonyQG | Yes | No | No | Build-once | SQ variants persist the underlying HNSW and rebuild quantization. SymphonyQG persists the underlying HNSW and RaBitQ manifest, then rebuilds quantized state on load. SymphonyQG-VR compacted snapshots are rejected because current search still needs raw parent vectors. |
@@ -97,8 +97,8 @@ For file-backed searchers, recall should also be measured against ground truth.
 
 1. Keep `durability` and `segstore` as the only lower-layer crates. Add no new
    crate until shared storage code has two consumers.
-2. Finish DiskANN storage modes: current file search, then mmap graph/vector
-   readers, then page/co-location layout.
+2. Finish DiskANN storage modes: current direct file save, file search, mmap
+   graph/vector readers, then page/co-location layout.
 3. Extend IVF-PQ persistence from save/load to file-backed search. The current
    format persists:
    - manifest with format version, metric, dimensions, counts, and parameters

@@ -39,7 +39,7 @@
 //! | **Sparse Vectors** (SPLADE/BM25) | `sparse_mips::SparseMipsIndex` | `sparse_mips` | Yes: snapshot reloads into memory |
 //! | **High-d Compression** (768d+) | `rp_quant::RpQuantIndex` | `rp_quant` | Yes: snapshot reloads into memory |
 //! | **Quantized Graph** (HNSW + RaBitQ, cosine) | `hnsw::SymphonyQGIndex` | `hnsw` + `ivf_rabitq` | Yes: non-compacted snapshot reloads into memory |
-//! | **Quantized Graph** (HNSW + RaBitQ, cosine + L2) | `hnsw::SymphonyQGVRIndex` | `hnsw` + `ivf_rabitq` | No |
+//! | **Quantized Graph** (HNSW + RaBitQ, cosine + L2) | `hnsw::SymphonyQGVRIndex` | `hnsw` + `ivf_rabitq` | Yes: non-compacted snapshot reloads into memory |
 //! | **Binary Quantization** (1-bit + rerank) | `binary_index::BinaryFlatIndex` | `binary_index` | Yes: snapshot reloads into memory |
 //! | **File-Backed Search** (SSD-based, experimental) | `diskann` | `diskann` (experimental) | Yes: file and mmap searcher |
 //! | **4-bit Scalar Quant** (8x compression) | `sq4::SQ4Index` | `sq4` | Yes: snapshot reloads into memory |
@@ -57,7 +57,7 @@
 //!    in-memory ANN index rather than a disk-resident search path.
 //!
 //! 3. **Try NSW (Flat)** if you want a simpler graph, or you are benchmarking on
-//!    modern embeddings (hundreds/thousands of dimensions). Recent empirical work suggests the
+//!    high-dimensional embeddings (hundreds/thousands of dimensions). Recent empirical work suggests the
 //!    hierarchy may provide less incremental value in that regime (see arXiv:2412.01940).
 //!    *Note: HNSW is the more common default in production systems, so it’s still a safe first choice.*
 //!
@@ -80,7 +80,7 @@
 //!   (arXiv:2412.01940). This doesn’t make HNSW “wrong”; it just means NSW is often a
 //!   worthwhile baseline to benchmark.
 //!
-//! - **Memory**: for modern embeddings, the raw vector store (n × d × 4 bytes) can dominate.
+//! - **Memory**: for high-dimensional embeddings, the raw vector store (n × d × 4 bytes) can dominate.
 //!   The extra hierarchy layers and graph edges still matter, but you should measure on your
 //!   actual (n, d, M, ef) and memory layout.
 //!
