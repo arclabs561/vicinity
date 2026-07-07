@@ -199,3 +199,31 @@ def test_download_dataset_hdf5_downloads_without_converting(
     assert (output_dir / "tiny-angular.hdf5").read_bytes() == b"hdf5"
     assert not (output_dir / "dataset.json").exists()
     assert not (output_dir / "train.bin").exists()
+
+
+def test_selected_dataset_names_returns_single_dataset() -> None:
+    script = load_script()
+
+    assert script.selected_dataset_names("glove-25-angular", False) == [
+        "glove-25-angular"
+    ]
+
+
+def test_selected_dataset_names_returns_all_configured_datasets() -> None:
+    script = load_script()
+
+    assert script.selected_dataset_names(None, True) == list(script.DATASETS)
+
+
+def test_selected_dataset_names_rejects_missing_dataset() -> None:
+    script = load_script()
+
+    with pytest.raises(SystemExit, match="dataset is required"):
+        script.selected_dataset_names(None, False)
+
+
+def test_selected_dataset_names_rejects_all_with_named_dataset() -> None:
+    script = load_script()
+
+    with pytest.raises(SystemExit, match="--all cannot be combined"):
+        script.selected_dataset_names("glove-25-angular", True)

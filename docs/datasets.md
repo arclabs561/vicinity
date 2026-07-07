@@ -59,6 +59,9 @@ uv run scripts/download_ann_benchmarks.py glove-100-angular
 
 # SIFT (Euclidean benchmark)
 uv run scripts/download_ann_benchmarks.py sift-128-euclidean
+
+# Verify every configured source HDF5 without converting yet
+uv run scripts/download_ann_benchmarks.py --all --download-only
 ```
 
 The script writes `data/ann-benchmarks/<dataset>/{train,test,neighbors}.bin`
@@ -71,6 +74,8 @@ HDF5, or `--redownload` to replace the cached HDF5 before conversion. If you
 already have converted `.bin` files from an older checkout but no manifest, use
 `--adopt-existing` to write `dataset.json` after validating the cached HDF5 size,
 source hash when pinned, and binary headers.
+Use `--all` to apply the same idempotent fetch or conversion flow to every
+configured dataset.
 
 ## Current Embedding Dimensions
 

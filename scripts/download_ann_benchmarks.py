@@ -579,12 +579,35 @@ def download_dataset_hdf5(
     print(f"  SHA256: {sha256_file(hdf5_path)}")
 
 
+def selected_dataset_names(dataset: str | None, all_datasets: bool) -> list[str]:
+    """Return the datasets requested by CLI arguments."""
+    if all_datasets:
+        if dataset:
+            raise SystemExit("--all cannot be combined with a dataset name.")
+        return list(DATASETS)
+
+    if not dataset:
+        raise SystemExit("dataset is required unless --list or --all is used")
+
+    if dataset not in DATASETS:
+        raise SystemExit(
+            f"Unknown dataset: {dataset}\nAvailable: {', '.join(DATASETS.keys())}"
+        )
+
+    return [dataset]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Download ann-benchmarks datasets")
     parser.add_argument(
         "dataset",
         nargs="?",
         help="Dataset name (e.g., sift-128-euclidean)",
+    )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Process every configured dataset",
     )
     parser.add_argument("--list", action="store_true", help="List available datasets")
     parser.add_argument(
@@ -624,32 +647,25 @@ def main() -> None:
         print(f"\nUsage: uv run {sys.argv[0]} <dataset-name>")
         return
 
-    if not args.dataset:
-        parser.error("dataset is required unless --list is used")
+    for dataset in selected_dataset_names(args.dataset, args.all):
+        output_dir = Path(args.output) / dataset
+        if args.download_only:
+            download_dataset_hdf5(
+                dataset,
+                DATASETS[dataset],
+                output_dir,
+                redownload=args.redownload,
+            )
+            continue
 
-    if args.dataset not in DATASETS:
-        print(f"Unknown dataset: {args.dataset}")
-        print(f"Available: {', '.join(DATASETS.keys())}")
-        sys.exit(1)
-
-    output_dir = Path(args.output) / args.dataset
-    if args.download_only:
-        download_dataset_hdf5(
-            args.dataset,
-            DATASETS[args.dataset],
+        convert_dataset(
+            dataset,
+            DATASETS[dataset],
             output_dir,
+            force=args.force,
             redownload=args.redownload,
+            adopt_existing=args.adopt_existing,
         )
-        return
-
-    convert_dataset(
-        args.dataset,
-        DATASETS[args.dataset],
-        output_dir,
-        force=args.force,
-        redownload=args.redownload,
-        adopt_existing=args.adopt_existing,
-    )
 
 
 if __name__ == "__main__":
