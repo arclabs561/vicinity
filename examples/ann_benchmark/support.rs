@@ -799,22 +799,33 @@ fn required_result_checks(
                 ]
             })
         }
-        "adsampling" => ef_checks("adsampling", cfg, |_| {
-            vec![
-                format!("\"m\":{}", cfg.m),
-                format!("\"ef_construction\":{}", cfg.ef_construction),
-                "\"epsilon0\":2.1".to_string(),
-            ]
-        }),
+        "adsampling" => cfg
+            .ef_search_values
+            .iter()
+            .map(|ef| {
+                ExpectedResult::with_params(
+                    "adsampling",
+                    &format!(
+                        "{{\"m\":{},\"ef_construction\":{},\"ef_search\":{},\"epsilon0\":2.1}}",
+                        cfg.m, cfg.ef_construction, ef
+                    ),
+                )
+            })
+            .collect(),
         "hnsw_prt" => {
             let num_projections = (dim / 4).clamp(8, 64);
-            ef_checks("hnsw_prt", cfg, |_| {
-                vec![
-                    format!("\"m\":{}", cfg.m),
-                    format!("\"ef_construction\":{}", cfg.ef_construction),
-                    format!("\"num_projections\":{}", num_projections),
-                ]
-            })
+            cfg.ef_search_values
+                .iter()
+                .map(|ef| {
+                    ExpectedResult::with_params(
+                        "hnsw_prt",
+                        &format!(
+                            "{{\"m\":{},\"ef_construction\":{},\"ef_search\":{},\"num_projections\":{}}}",
+                            cfg.m, cfg.ef_construction, ef, num_projections
+                        ),
+                    )
+                })
+                .collect()
         }
         "sq8u" | "sq4u" => hnsw_quantized_snapshot_checks(algo, cfg),
         "symphony_qg_vr" => {
