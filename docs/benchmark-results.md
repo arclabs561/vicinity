@@ -466,24 +466,27 @@ rerank pool 500:
 | IVF-PQ `nprobe=32` | 95.42% | 2,941.4 | 470.6 us |
 | IVF-PQ `nprobe=32`, rerank 500 | 96.58% | 2,806.2 | 488.5 us |
 
-The storage-mode Criterion probe now compares the freshly built heap index,
+The storage-mode Criterion probe compares the freshly built heap index,
 snapshot-loaded heap index, plain file searcher, and mmap searcher on the same
 20K-vector synthetic shape used for short profiling. Throughput is queries per
-second; each sample processes 100 queries.
+second; each sample processes 100 queries. Adding optional list-contiguous
+`list_codes.bin` plus `list_offsets.bin` sidecars removes the per-query
+vector-order gather for file and mmap searchers while preserving fallback for
+old snapshots.
 
-| Shape | Heap | Snapshot-loaded | File searcher | Mmap searcher |
-|-------|-----:|----------------:|--------------:|--------------:|
-| `m25_one_dim_nprobe32_k10` | 24.5K | 24.3K | 675 | 17.4K |
-| `m25_one_dim_nprobe32_rerank500_k10` | 20.0K | 19.8K | 556 | 13.6K |
-| `m5_runner_default_nprobe32_k10` | 16.0K | 16.0K | 689 | 12.4K |
-| `m5_runner_default_nprobe32_rerank500_k10` | 14.1K | 13.8K | 555 | 10.1K |
+| Shape | Heap after | Snapshot after | File before | File after | Mmap before | Mmap after |
+|-------|-----------:|---------------:|------------:|-----------:|------------:|-----------:|
+| `m25_one_dim_nprobe32_k10` | 26.4K | 26.3K | 675 | 16.7K | 17.4K | 25.9K |
+| `m25_one_dim_nprobe32_rerank500_k10` | 21.2K | 21.4K | 556 | 2.61K | 13.6K | 18.7K |
+| `m5_runner_default_nprobe32_k10` | 17.8K | 17.7K | 689 | 12.4K | 12.4K | 17.9K |
+| `m5_runner_default_nprobe32_rerank500_k10` | 15.3K | 15.2K | 555 | 2.40K | 10.1K | 13.9K |
 
-Interpretation: `load_from_dir()` is effectively at heap speed. The plain file
-searcher is dominated by random per-vector code/raw-vector reads. Mmap avoids
-the syscall-scale collapse but still pays the current gather/repack step because
-codes are persisted in vector-index order rather than list-contiguous probed
-cluster order. The next persistence optimization should persist list-local code
-blocks and offsets instead of reconstructing those batches at query time.
+Interpretation: `load_from_dir()` is effectively at heap speed. List-contiguous
+PQ-code sidecars fix the largest file/mmap approximate-search penalty: file
+search improves by roughly 18-25x and mmap becomes close to heap search. Rerank
+file mode still lags because exact reranking reads raw vectors in candidate
+order from `raw_vectors.bin`; raw-vector locality is now the next storage-mode
+target.
 
 ## GloVe-25 (1.18M vectors, 25-d, angular distance)
 

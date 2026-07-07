@@ -229,6 +229,7 @@ pub struct IVFPQFileSearcher {
     centroids: Vec<f32>,
     pq: Quantizer,
     codes: IVFPQByteStorage,
+    list_codes: Option<IVFPQListCodeStorage>,
     raw_vectors: Option<IVFPQByteStorage>,
     code_buf: Vec<u8>,
     raw_byte_buf: Vec<u8>,
@@ -239,6 +240,11 @@ enum IVFPQByteStorage {
     File(std::fs::File),
     #[cfg(feature = "persistence")]
     Mmap(Box<MappedFile>),
+}
+
+struct IVFPQListCodeStorage {
+    offsets: Vec<u64>,
+    codes: IVFPQByteStorage,
 }
 
 /// IVF-PQ parameters.
@@ -1063,6 +1069,13 @@ impl IVFPQIndex {
         write_f32_atomic(&output_dir.join("centroids.bin"), &self.centroids)?;
         write_u32_atomic(&output_dir.join("doc_ids.bin"), &self.doc_ids)?;
         write_bytes_atomic(&output_dir.join("codes.bin"), &self.quantized_codes)?;
+        let (list_offsets, list_codes) = build_list_codes(
+            &self.clusters,
+            &self.quantized_codes,
+            self.params.num_codebooks,
+        )?;
+        write_u64_atomic(&output_dir.join("list_offsets.bin"), &list_offsets)?;
+        write_bytes_atomic(&output_dir.join("list_codes.bin"), &list_codes)?;
         write_clusters_atomic(&output_dir.join("clusters.bin"), &self.clusters)?;
         if raw_vectors_present {
             write_f32_atomic(&output_dir.join("raw_vectors.bin"), &self.vectors)?;
@@ -1628,6 +1641,7 @@ impl IVFPQFileSearcher {
             "IVF-PQ codes length overflow",
         )?;
         let codes = open_byte_storage(&input_dir.join("codes.bin"), codes_len, mmap)?;
+        let list_codes = open_list_code_storage(input_dir, params.num_clusters, codes_len, mmap)?;
         let raw_vectors = if manifest.raw_vectors_present {
             let raw_floats = checked_len(
                 manifest.num_vectors,
@@ -1662,6 +1676,7 @@ impl IVFPQFileSearcher {
             centroids,
             pq: manifest.quantizer,
             codes,
+            list_codes,
             raw_vectors,
             code_buf: Vec::new(),
             raw_byte_buf: vec![0; raw_vector_byte_len],
@@ -1792,12 +1807,22 @@ impl IVFPQFileSearcher {
                 .compute_adc_table_into(&query_residual, &mut adc_table)?;
 
             if ids.len() >= SIMD_BATCH_THRESHOLD {
-                append_codes_for_ids(
-                    &mut self.codes,
-                    &mut codes_batch,
-                    ids.as_ref(),
-                    self.params.num_codebooks,
-                )?;
+                if let Some(list_codes) = self.list_codes.as_mut() {
+                    read_list_codes_for_cluster(
+                        list_codes,
+                        *cluster_idx,
+                        ids.len(),
+                        self.params.num_codebooks,
+                        &mut codes_batch,
+                    )?;
+                } else {
+                    append_codes_for_ids(
+                        &mut self.codes,
+                        &mut codes_batch,
+                        ids.as_ref(),
+                        self.params.num_codebooks,
+                    )?;
+                }
 
                 if self.params.codebook_size == 16 {
                     let packed =
@@ -1889,6 +1914,15 @@ fn write_u32_atomic(path: &Path, values: &[u32]) -> Result<(), RetrieveError> {
     })
 }
 
+fn write_u64_atomic(path: &Path, values: &[u64]) -> Result<(), RetrieveError> {
+    write_atomic(path, |writer| {
+        for value in values {
+            writer.write_all(&value.to_le_bytes())?;
+        }
+        Ok(())
+    })
+}
+
 fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> Result<(), RetrieveError> {
     write_atomic(path, |writer| writer.write_all(bytes))
 }
@@ -1966,6 +2000,28 @@ fn read_u32_exact(path: &Path, expected_len: usize) -> Result<Vec<u32>, Retrieve
     let mut values = Vec::with_capacity(expected_len);
     for chunk in bytes.chunks_exact(4) {
         values.push(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+    }
+    Ok(values)
+}
+
+fn read_u64_exact(path: &Path, expected_len: usize) -> Result<Vec<u64>, RetrieveError> {
+    let bytes = std::fs::read(path)?;
+    let expected_bytes = expected_len
+        .checked_mul(std::mem::size_of::<u64>())
+        .ok_or_else(|| RetrieveError::FormatError("u64 byte length overflow".into()))?;
+    if bytes.len() != expected_bytes {
+        return Err(RetrieveError::FormatError(format!(
+            "{} size mismatch: expected {} bytes, got {}",
+            path.display(),
+            expected_bytes,
+            bytes.len()
+        )));
+    }
+    let mut values = Vec::with_capacity(expected_len);
+    for chunk in bytes.chunks_exact(8) {
+        values.push(u64::from_le_bytes([
+            chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
+        ]));
     }
     Ok(values)
 }
@@ -2051,6 +2107,92 @@ fn open_byte_storage(
     Ok(IVFPQByteStorage::File(std::fs::File::open(path)?))
 }
 
+fn build_list_codes(
+    clusters: &[Cluster],
+    quantized_codes: &[u8],
+    num_codebooks: usize,
+) -> Result<(Vec<u64>, Vec<u8>), RetrieveError> {
+    let mut offsets = Vec::with_capacity(clusters.len() + 1);
+    let mut codes = Vec::with_capacity(quantized_codes.len());
+    offsets.push(0);
+    for cluster in clusters {
+        let ids = cluster.get_ids_ref();
+        for &vector_idx in ids.as_ref() {
+            let start = checked_len(
+                vector_idx as usize,
+                num_codebooks,
+                "IVF-PQ list-code offset overflow",
+            )?;
+            let end = start.checked_add(num_codebooks).ok_or_else(|| {
+                RetrieveError::FormatError("IVF-PQ list-code end overflow".into())
+            })?;
+            if end > quantized_codes.len() {
+                return Err(RetrieveError::FormatError(format!(
+                    "IVF-PQ cluster references code range {}..{} beyond {} bytes",
+                    start,
+                    end,
+                    quantized_codes.len()
+                )));
+            }
+            codes.extend_from_slice(&quantized_codes[start..end]);
+        }
+        offsets.push(codes.len() as u64);
+    }
+    Ok((offsets, codes))
+}
+
+fn open_list_code_storage(
+    input_dir: &Path,
+    num_clusters: usize,
+    expected_codes_len: usize,
+    mmap: bool,
+) -> Result<Option<IVFPQListCodeStorage>, RetrieveError> {
+    let offsets_path = input_dir.join("list_offsets.bin");
+    let codes_path = input_dir.join("list_codes.bin");
+    let offsets_exists = offsets_path.exists();
+    let codes_exists = codes_path.exists();
+    if offsets_exists != codes_exists {
+        return Err(RetrieveError::FormatError(
+            "partial IVF-PQ list-code sidecar: expected both list_offsets.bin and list_codes.bin"
+                .into(),
+        ));
+    }
+    if !offsets_exists {
+        return Ok(None);
+    }
+
+    let offsets = read_u64_exact(&offsets_path, num_clusters + 1)?;
+    validate_list_code_offsets(&offsets, expected_codes_len)?;
+    let codes = open_byte_storage(&codes_path, expected_codes_len, mmap)?;
+    Ok(Some(IVFPQListCodeStorage { offsets, codes }))
+}
+
+fn validate_list_code_offsets(
+    offsets: &[u64],
+    expected_codes_len: usize,
+) -> Result<(), RetrieveError> {
+    if offsets.first().copied() != Some(0) {
+        return Err(RetrieveError::FormatError(
+            "IVF-PQ list-code offsets must start at zero".into(),
+        ));
+    }
+    for pair in offsets.windows(2) {
+        if pair[0] > pair[1] {
+            return Err(RetrieveError::FormatError(
+                "IVF-PQ list-code offsets must be nondecreasing".into(),
+            ));
+        }
+    }
+    if offsets.last().copied() != Some(expected_codes_len as u64) {
+        return Err(RetrieveError::FormatError(format!(
+            "IVF-PQ list-code offsets end at {}, expected {}",
+            offsets.last().copied().unwrap_or_default(),
+            expected_codes_len
+        )));
+    }
+    Ok(())
+}
+
 fn append_codes_for_ids(
     storage: &mut IVFPQByteStorage,
     out: &mut Vec<u8>,
@@ -2068,6 +2210,43 @@ fn append_codes_for_ids(
             &mut out[old_len..old_len + num_codebooks],
         )?;
     }
+    Ok(())
+}
+
+fn read_list_codes_for_cluster(
+    storage: &mut IVFPQListCodeStorage,
+    cluster_idx: usize,
+    num_ids: usize,
+    num_codebooks: usize,
+    out: &mut Vec<u8>,
+) -> Result<(), RetrieveError> {
+    let start = *storage.offsets.get(cluster_idx).ok_or_else(|| {
+        RetrieveError::FormatError("IVF-PQ list-code cluster offset missing".into())
+    })?;
+    let end = *storage
+        .offsets
+        .get(cluster_idx + 1)
+        .ok_or_else(|| RetrieveError::FormatError("IVF-PQ list-code cluster end missing".into()))?;
+    let start = usize::try_from(start)
+        .map_err(|_| RetrieveError::FormatError("IVF-PQ list-code start overflow".into()))?;
+    let end = usize::try_from(end)
+        .map_err(|_| RetrieveError::FormatError("IVF-PQ list-code end overflow".into()))?;
+    let expected_len = checked_len(
+        num_ids,
+        num_codebooks,
+        "IVF-PQ list-code cluster length overflow",
+    )?;
+    let actual_len = end
+        .checked_sub(start)
+        .ok_or_else(|| RetrieveError::FormatError("IVF-PQ list-code negative range".into()))?;
+    if actual_len != expected_len {
+        return Err(RetrieveError::FormatError(format!(
+            "IVF-PQ list-code cluster has {} bytes, expected {}",
+            actual_len, expected_len
+        )));
+    }
+    out.resize(actual_len, 0);
+    read_bytes_from_storage(&mut storage.codes, start, out)?;
     Ok(())
 }
 
@@ -2664,6 +2843,7 @@ mod tests {
         let loaded = IVFPQIndex::load_from_dir(dir.path()).unwrap();
         let mut file_searcher = IVFPQFileSearcher::load(dir.path()).unwrap();
 
+        assert!(file_searcher.list_codes.is_some());
         assert_eq!(file_searcher.num_vectors(), loaded.num_vectors);
         assert_eq!(file_searcher.nprobe(), loaded.nprobe());
         assert_eq!(
@@ -2673,6 +2853,79 @@ mod tests {
         assert_eq!(
             file_searcher.search_reranked(&query, 10, 80).unwrap(),
             loaded.search_reranked(&query, 10, 80).unwrap()
+        );
+    }
+
+    #[test]
+    fn file_searcher_loads_old_snapshots_without_list_codes() {
+        let dim = 16;
+        let n = 240;
+        use rand::{Rng, SeedableRng};
+        let mut rng = rand::rngs::StdRng::seed_from_u64(106);
+
+        let params = IVFPQParams {
+            num_clusters: 4,
+            num_codebooks: 4,
+            codebook_size: 32,
+            nprobe: 4,
+            seed: 128,
+            ..IVFPQParams::default()
+        };
+        let mut index = IVFPQIndex::new(dim, params).unwrap();
+        for i in 0..n {
+            let vector: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
+            index.add(60_000 + i as u32, vector).unwrap();
+        }
+        index.build().unwrap();
+
+        let query: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
+        let dir = tempfile::tempdir().unwrap();
+        index.save_to_dir(dir.path()).unwrap();
+        std::fs::remove_file(dir.path().join("list_offsets.bin")).unwrap();
+        std::fs::remove_file(dir.path().join("list_codes.bin")).unwrap();
+
+        let loaded = IVFPQIndex::load_from_dir(dir.path()).unwrap();
+        let mut file_searcher = IVFPQFileSearcher::load(dir.path()).unwrap();
+        assert!(file_searcher.list_codes.is_none());
+        assert_eq!(
+            file_searcher.search(&query, 10).unwrap(),
+            loaded.search(&query, 10).unwrap()
+        );
+    }
+
+    #[test]
+    fn file_searcher_rejects_partial_list_code_sidecar() {
+        let dim = 16;
+        let n = 240;
+        use rand::{Rng, SeedableRng};
+        let mut rng = rand::rngs::StdRng::seed_from_u64(107);
+
+        let params = IVFPQParams {
+            num_clusters: 4,
+            num_codebooks: 4,
+            codebook_size: 32,
+            nprobe: 4,
+            seed: 129,
+            ..IVFPQParams::default()
+        };
+        let mut index = IVFPQIndex::new(dim, params).unwrap();
+        for i in 0..n {
+            let vector: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
+            index.add(70_000 + i as u32, vector).unwrap();
+        }
+        index.build().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        index.save_to_dir(dir.path()).unwrap();
+        std::fs::remove_file(dir.path().join("list_codes.bin")).unwrap();
+
+        let err = match IVFPQFileSearcher::load(dir.path()) {
+            Ok(_) => panic!("partial list-code sidecar should fail to load"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("partial IVF-PQ list-code sidecar"),
+            "unexpected error: {err}"
         );
     }
 
