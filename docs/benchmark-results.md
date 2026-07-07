@@ -219,6 +219,18 @@ than neighbor-list allocation alone. The `ann_benchmark` DiskANN file and mmap
 rows now emit average graph reads, vector reads, logical bytes, visited nodes,
 and retained candidates so storage changes can be compared against query work.
 
+A later callback-style neighbor visitor removed the owned neighbor vector from
+the search loop entirely, but regressed the same search-only bench:
+
+| Row | Criterion change |
+| --- | --- |
+| `memory_ef50` | no change, +0.85% mean time |
+| `file_ef50` | regressed, +5.07% mean time, p < 0.05 |
+| `mmap_ef50` | regressed, +5.24% mean time, p < 0.05 |
+
+That experiment was also rejected. The measured path is not currently limited
+by the neighbor-list allocation enough to justify callback overhead.
+
 Removing the extra mmap vector-byte copy in `DiskANNSearcher::read_vector`
 improved the same benchmark while leaving in-memory search statistically flat:
 
