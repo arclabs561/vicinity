@@ -129,6 +129,25 @@ This validates the basic Perplexity finding: the old 100% recall row is not the
 right operating point for QPS expectations. The 95% recall point still requires
 a sweep above `ef_search=50` for this build configuration.
 
+The same current harness also validated HNSW snapshot-loaded search on the full
+1.18M-vector corpus with a 1,000-query cap:
+
+```bash
+cargo run --example ann_benchmark --release --features hnsw,serde -- \
+  data/ann-benchmarks/glove-25-angular \
+  --algo hnsw --ef-search 50 --max-queries 1000 --snapshot-load \
+  --json --fresh --results data/ann-benchmarks/results/glove-25-storage-current.jsonl
+```
+
+| Storage mode | Recall@10 | QPS | p50 us | p95 us | p99 us | Load s | Index bytes |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| in_memory | 88.17% | 30,773.3 | 31.8 | 43.3 | 54.4 | n/a | n/a |
+| snapshot_loaded | 88.17% | 30,583.7 | 32.2 | 43.4 | 52.8 | 1.6409 | 512,450,333 |
+
+This is a persistence parity row, not a fixed-recall target row. Snapshot load
+restored the same recall and near-identical warm-cache search throughput at this
+operating point; the 95% recall point still needs a higher-`ef_search` sweep.
+
 On 2026-07-07, a bounded DiskANN storage probe used 50,000 indexed GloVe-25
 vectors and 1,000 queries. Recall was recomputed against the capped corpus, so
 these rows validate the storage path and cache-state reporting but are not
@@ -153,6 +172,37 @@ The file and mmap rows visited the same graph work on average
 warm-cache capped run: heap search is fastest, mmap is much closer to heap than
 plain file reads, and direct file reads remain dominated by per-node vector
 access.
+
+A replicated capped-corpus DiskANN sweep then measured the recall/QPS curve
+three times with 50,000 indexed vectors and 1,000 queries:
+
+```bash
+for r in 1 2 3; do
+  CARGO_TARGET_DIR=/tmp/vicinity-ann-target \
+    cargo run --example ann_benchmark --release --features hnsw,diskann -- \
+    data/ann-benchmarks/glove-25-angular --algo diskann \
+    --ef-search 50,75,100,150,200 --max-train 50000 --max-queries 1000 \
+    --json --fresh --results /tmp/vicinity-diskann-glove50k-ef-curve-r${r}.jsonl
+done
+```
+
+Median rows:
+
+| Storage | ef | Recall@10 | QPS | p95 us | p99 us | Vector reads |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| in_memory | 50 | 92.17% | 32,981.2 | 42.4 | 50.2 | n/a |
+| in_memory | 75 | 95.16% | 24,069.8 | 56.9 | 67.6 | n/a |
+| in_memory | 100 | 96.52% | 19,547.2 | 69.2 | 78.8 | n/a |
+| mmap | 50 | 92.17% | 14,118.0 | 95.3 | 114.7 | 565.97 |
+| mmap | 75 | 95.16% | 10,717.8 | 129.0 | 145.3 | 755.90 |
+| mmap | 100 | 96.52% | 8,021.6 | 178.4 | 200.5 | 936.39 |
+| file | 50 | 92.17% | 1,310.4 | 960.0 | 1,103.9 | 565.97 |
+| file | 75 | 95.16% | 943.3 | 1,295.7 | 1,424.7 | 755.90 |
+| file | 100 | 96.52% | 722.6 | 1,652.8 | 1,762.1 | 936.39 |
+
+The first measured 95%+ recall operating point is `ef_search=75`, not 50.
+Future DiskANN profiles should therefore target `ef=75` when validating fixed
+recall, with `ef=50` kept only as a lower-recall throughput control.
 
 ## Profiling Ledger
 

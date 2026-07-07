@@ -47,6 +47,10 @@ benchmarking, persistence, Python bindings, and performance work.
   in-memory, direct file, and mmap search now report comparable recall,
   latency tails, load time, index bytes, and file-read diagnostics. Full
   GloVe-25 rows and cold-cache storage studies remain open.
+- A replicated capped DiskANN EF sweep found `ef_search=75` is the first
+  measured 95%+ recall point on the 50K-vector GloVe-25 probe. Profile
+  `ef=75` for fixed-recall storage work; keep `ef=50` as a lower-recall
+  throughput control.
 
 ## Remaining Review Queue
 
