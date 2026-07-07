@@ -656,6 +656,34 @@ The cumulative direct-file improvement from the pre-profile baseline is:
 | `file_ef50` | 141.38 ms / 100 queries | 54.506 ms / 100 queries | about 61.4% faster |
 | `file_ef75` | 199.28 ms / 100 queries | 72.892 ms / 100 queries | about 63.4% faster |
 
+After the full-corpus run found `ef_search=250` as the first 95%+ recall
+DiskANN point, the search-only benchmark added an `ef250` row and profiled the
+direct-file path:
+
+```bash
+samply record --unstable-presymbolicate --save-only \
+  -o /tmp/vicinity-diskann-file-ef250-presym-20260707.json.gz -- \
+  cargo bench --bench diskann_search --no-default-features --features diskann -- \
+  diskann_search_only/file_ef250 --profile-time 10
+```
+
+The saved profile was not useful for source-line claims because the raw profile
+still contained address-heavy frames. Source inspection did find that the
+file/mmap searcher still used a per-query `HashSet` for visited nodes while the
+in-memory DiskANN, Vamana, NSW, and HNSW search paths already use dense
+generation-counter visited sets. Moving the same pattern into
+`DiskANNSearcher` improved both fixed-recall storage rows:
+
+| Row | Before | After | Criterion change |
+| --- | ---: | ---: | ---: |
+| `file_ef250` | 151.43 ms / 100 queries | 140.45 ms / 100 queries | 7.25% faster mean time, p < 0.05 |
+| `mmap_ef250` | 39.478 ms / 100 queries | 25.338 ms / 100 queries | 35.82% faster mean time, p < 0.05 |
+
+The next DiskANN storage step is still record layout: the full-corpus
+fixed-recall file row performs about 2,343 vector reads/query, and current
+disk-resident graph literature points toward page-sized records that co-locate
+vectors, neighbor IDs, and often compressed neighbor vectors.
+
 ### HNSW Search Heap Pressure
 
 The `hnsw_search` benchmark has an allocation counter around the normal

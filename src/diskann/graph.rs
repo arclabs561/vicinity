@@ -177,6 +177,9 @@ pub struct DiskANNSearcher {
     read_buf: Vec<u8>,
     /// Reusable f32 buffer for parsed vectors.
     vec_buf: Vec<f32>,
+    /// Dense generation-counter visited set for search.
+    visited_marks: Vec<u8>,
+    visited_generation: u8,
 }
 
 enum VectorStorage {
@@ -289,9 +292,13 @@ impl DiskANNSearcher {
             (0..num_vectors as u32).collect()
         };
 
+        let graph_nodes = graph_reader.num_nodes;
+
         Ok(Self {
             read_buf: vec![0u8; dimension * 4],
             vec_buf: vec![0.0f32; dimension],
+            visited_marks: vec![0; graph_nodes],
+            visited_generation: 1,
             dimension,
             start_node,
             graph_reader,
@@ -333,7 +340,8 @@ impl DiskANNSearcher {
 
         use std::cmp::Reverse;
         use std::collections::BinaryHeap;
-        let mut visited = HashSet::new();
+        self.reset_visited();
+        let mut visited_count = 0usize;
         let mut frontier: BinaryHeap<Reverse<Candidate>> = BinaryHeap::with_capacity(ef * 2);
         let mut results: BinaryHeap<Candidate> = BinaryHeap::with_capacity(ef + 1);
 
@@ -352,7 +360,8 @@ impl DiskANNSearcher {
             id: self.start_node,
             dist: start_dist,
         });
-        visited.insert(self.start_node);
+        self.insert_visited(self.start_node)?;
+        visited_count += 1;
 
         while let Some(Reverse(current)) = frontier.pop() {
             if results.len() >= ef {
@@ -370,10 +379,10 @@ impl DiskANNSearcher {
             diagnostics.graph_bytes += 4 + neighbors.len() * std::mem::size_of::<u32>();
 
             for neighbor in neighbors {
-                if visited.contains(&neighbor) {
+                if !self.insert_visited(neighbor)? {
                     continue;
                 }
-                visited.insert(neighbor);
+                visited_count += 1;
 
                 // Fetch neighbor vector from disk (zero-alloc via reusable buffer)
                 let dist = {
@@ -390,7 +399,7 @@ impl DiskANNSearcher {
             }
         }
 
-        diagnostics.visited_nodes = visited.len();
+        diagnostics.visited_nodes = visited_count;
         diagnostics.retained_candidates = results.len();
         diagnostics.vector_bytes =
             diagnostics.vector_reads * self.dimension * std::mem::size_of::<f32>();
@@ -407,6 +416,29 @@ impl DiskANNSearcher {
             .collect();
 
         Ok((results, diagnostics))
+    }
+
+    fn reset_visited(&mut self) {
+        if let Some(next) = self.visited_generation.checked_add(1) {
+            self.visited_generation = next;
+        } else {
+            self.visited_marks.fill(0);
+            self.visited_generation = 1;
+        }
+    }
+
+    fn insert_visited(&mut self, node_id: u32) -> Result<bool, RetrieveError> {
+        let idx = node_id as usize;
+        let mark = self
+            .visited_marks
+            .get_mut(idx)
+            .ok_or(RetrieveError::OutOfBounds(idx))?;
+        if *mark == self.visited_generation {
+            Ok(false)
+        } else {
+            *mark = self.visited_generation;
+            Ok(true)
+        }
     }
 
     /// Read a vector from disk into the reusable buffer, returning a slice.

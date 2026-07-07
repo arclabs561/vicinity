@@ -70,6 +70,11 @@ benchmarking, persistence, Python bindings, and performance work.
   reads and then switching direct-file graph/vector reads to positional reads
   moved `file_ef75` from 199.28 ms to 72.892 ms per 100 queries, with heap
   and mmap controls staying in family.
+- The full-corpus DiskANN fixed-recall point moved the search-only profiling
+  target to `ef=250`. Replacing the file/mmap searcher's per-query `HashSet`
+  visited set with the dense generation-counter pattern already used by the
+  in-memory graph paths improved `file_ef250` by 7.25% mean time and
+  `mmap_ef250` by 35.82% mean time in Criterion.
 - HNSW allocation profiling found fresh per-query candidate/result heap
   allocation in the normal `HNSWIndex::search` path. Thread-local heap reuse
   reduced the `ef=50` search-only row from 7.0 to 5.0 allocation calls/query
@@ -126,7 +131,7 @@ benchmarking, persistence, Python bindings, and performance work.
 | 4 | Dataset source pinning | All configured ann-benchmarks HDF5 sources now have direct SHA-256 pins. Next review should decide whether stable mirrors are needed beyond `ann-benchmarks.com`. |
 | 5 | Segmented-store benchmark row | Added `--algo store` with live `store` and reopened `store_snapshot` rows under `storage_mode=segmented_store`; capped 50K GloVe-25 live row reaches 99.97% recall at 5.9K QPS. Next review is dataset-scale comparison against HNSW, FreshGraph, in-place graph, and LSM churn. |
 | 6 | File-backed raw-vector locality | IVF-PQ approximate file/mmap search is now list-contiguous for PQ codes, and full-train fixed-recall rows show approximate direct-file search stays in the low-thousands QPS band at 95%+ recall. Positional reads cut targeted file-rerank rows by about 33-37%, but exact rerank still reads raw vectors by vector ID; full-train direct-file rerank at `nprobe=32` is 1,453 QPS versus 2,514 QPS in memory. Benchmark JSON now reports rerank raw-vector reads and bytes. Optional duplicate list-local raw-vector sidecars were measured and rejected because they grew snapshots without improving file rerank. Next review should profile read batching, page/cache behavior, or a replacement raw-vector layout instead. |
-| 7 | DiskANN storage layout | Callback-based neighbor reading was measured and rejected. Batching file-backed graph neighbor reads and positional direct-file reads were measured and kept. Full-corpus ef=250 now measures 95.72% recall at 4,134.1 QPS in memory, 658.7 QPS file, and 2,382.1 QPS mmap, with 2,343.51 vector reads/query on file and mmap. Next review should focus on graph/vector page co-location, vector-read locality, mmap page behavior, and cold-cache reporting. |
+| 7 | DiskANN storage layout | Callback-based neighbor reading was measured and rejected. Batching file-backed graph neighbor reads, positional direct-file reads, and dense visited tracking were measured and kept. Full-corpus ef=250 measures 95.72% recall at 4,134.1 QPS in memory, 658.7 QPS file, and 2,382.1 QPS mmap before the dense-visited patch, with 2,343.51 vector reads/query on file and mmap. Next review should focus on graph/vector page co-location, vector-read locality, mmap page behavior, and cold-cache reporting. |
 | 8 | Classical methods | Corrupt-snapshot rejection now covers KD-tree, ball tree, RP-tree, RP-forest, and K-means tree, and docs no longer call KD/Ball exact. Capped benchmark rows now cover all five classical methods with heap plus snapshot-loaded storage metadata at 5K and 50K indexed vectors. Next review should decide which classical rows need full GloVe-25 runs, then revisit dimensionality and metric gates. |
 | 9 | Filtered search | Review ACORN, FilteredGraph, RangeFiltered, and Curator with selectivity sweeps, not single dense-search rows. |
 | 10 | Streaming/update workloads | Review FreshGraph, in-place HNSW, LSM HNSW, tombstones, and `store::UpdatableIndex` against active-set recall, update throughput, query latency, compaction, and storage residency. |
