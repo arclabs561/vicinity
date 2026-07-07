@@ -374,6 +374,16 @@ Additional capped storage rows from 2026-07-07:
 | RP-forest | 5K train / 200 query | snapshot_loaded | 15.10% | 413,360.6 | `load_time_s=0.0219`, `index_bytes=8,890,185` |
 | K-means tree | 5K train / 200 query | in_memory | 20.75% | 994,609.2 | fast, low-recall baseline |
 | K-means tree | 5K train / 200 query | snapshot_loaded | 20.75% | 1,438,435.0 | `load_time_s=0.0089`, `index_bytes=3,638,525` |
+| KD-tree | 50K train / 1K query | in_memory | 100.00% | 2,629.4 | exact capped baseline |
+| KD-tree | 50K train / 1K query | snapshot_loaded | 100.00% | 2,700.6 | `load_time_s=0.0820`, `index_bytes=33,547,928` |
+| Ball tree | 50K train / 1K query | in_memory | 95.02% | 2,791.2 | `build_time_s=21.84` |
+| Ball tree | 50K train / 1K query | snapshot_loaded | 95.02% | 2,766.3 | `load_time_s=0.1645`, `index_bytes=67,328,391` |
+| RP-tree | 50K train / 1K query | in_memory | 100.00% | 795.4 | exact capped baseline, current search visits both subtrees |
+| RP-tree | 50K train / 1K query | snapshot_loaded | 100.00% | 798.3 | `load_time_s=0.1181`, `index_bytes=47,593,620` |
+| RP-forest | 50K train / 1K query | in_memory | 24.77% | 91,630.2 | `num_trees=10`, fast low-recall baseline |
+| RP-forest | 50K train / 1K query | snapshot_loaded | 24.77% | 85,595.4 | `load_time_s=0.6667`, `index_bytes=283,750,228` |
+| K-means tree | 50K train / 1K query | in_memory | 17.24% | 1,063,262.0 | `num_clusters=16`, fast low-recall baseline |
+| K-means tree | 50K train / 1K query | snapshot_loaded | 17.24% | 1,007,105.1 | `load_time_s=0.0971`, `index_bytes=38,734,017` |
 
 Full-train IVF-PQ storage sweep from the same day, using all 1,183,514
 GloVe-25 vectors and 500 queries:

@@ -103,6 +103,12 @@ use support::brute_force_search_ids;
 use support::dir_size_bytes;
 #[cfg(feature = "parallel")]
 use support::evaluate_parallel;
+#[cfg(feature = "kmeans_tree")]
+use support::kmeans_tree_params_json;
+#[cfg(feature = "rptree")]
+use support::rp_forest_params_json;
+#[cfg(any(feature = "balltree", feature = "kdtree", feature = "rptree"))]
+use support::tree_params_json;
 use support::{
     brute_force_search, current_rss_kb, emit_result, evaluate, json_line, load_completed_results,
     parse_args, print_header, print_row, request_completed, rustc_version, Config,
@@ -128,13 +134,6 @@ use support::{
     feature = "vamana"
 ))]
 use support::{json_line_with_storage, ResultStorage};
-#[cfg(any(
-    feature = "balltree",
-    feature = "kdtree",
-    feature = "kmeans_tree",
-    feature = "rptree"
-))]
-use support::{kmeans_tree_params_json, rp_forest_params_json, tree_params_json};
 #[cfg(feature = "store")]
 use support::{store_flush_threshold, store_params_json};
 #[cfg(feature = "diskann")]
