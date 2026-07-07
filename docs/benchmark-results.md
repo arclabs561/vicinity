@@ -434,9 +434,10 @@ Output:
 ```
 
 The classical rows are useful storage and API coverage, not full-scale ANN
-recommendations. The next IVF-PQ work is to profile the remaining direct-file
-rerank gap and decide whether batching, page layout, or a list-local raw-vector
-sidecar is the right fix.
+recommendations. The next IVF-PQ file-rerank work should avoid duplicating
+full-precision vectors and instead profile candidate order, read batching,
+page/cache behavior, or a raw-vector layout change that replaces the old layout
+without growing snapshots.
 
 ## Profiling Ledger
 
@@ -697,10 +698,28 @@ The file and mmap rerank rows both report `avg_vector_reads=20.00`,
 An external read-only implementation review found the same shape in other
 systems: FAISS on-disk IVF and SPANN/SPFresh organize work around posting-list
 locality, while Lance keeps row IDs beside PQ codes and treats row-id stability
-as a format invariant. The next storage experiment should therefore add optional
-`list_raw_offsets.bin` and `list_raw_vectors.bin` sidecars, carry
-`(cluster_idx, local_offset)` through approximate search, and compare grouped
-list-local rerank reads against the current global-vector-id sorted reads.
+as a format invariant. A compatibility-preserving experiment added optional
+`list_raw_offsets.bin` and `list_raw_vectors.bin` sidecars while retaining
+`raw_vectors.bin`. The full-train fixed-recall row rejected that shape: it
+duplicated raw vectors, grew the snapshot, and did not improve direct-file
+rerank.
+
+| Row | Before | With duplicate list-raw sidecar | Verdict |
+| --- | ---: | ---: | --- |
+| IVF-PQ `nprobe=32`, file rerank 500 | 1,453.4 QPS, 187.3 MB | 1,449.4 QPS, 305.6 MB | Rejected |
+| IVF-PQ `nprobe=32`, mmap rerank 500 | 2,533.9 QPS, 187.3 MB | 2,301.8 QPS, 305.6 MB | Rejected |
+
+Command for the rejected run:
+
+```bash
+cargo run --release --example ann_benchmark --no-default-features --features ivf_pq,persistence -- \
+  data/ann-benchmarks/glove-25-angular --algo ivfpq \
+  --pq-clusters 1024 --pq-codebooks 25 --pq-codebook-size 256 \
+  --pq-training-sample-size 100000 --pq-kmeans-max-iter 20 \
+  --pq-nprobes 32 --pq-rerank-pools 500 --max-queries 500 \
+  --snapshot-load --json --fresh \
+  --results /tmp/vicinity-ivfpq-list-raw-fulltrain.jsonl
+```
 
 ## Benchmark Coverage
 
@@ -939,10 +958,12 @@ Interpretation: `load_from_dir()` is effectively at heap speed. List-contiguous
 PQ-code sidecars fix the largest file/mmap approximate-search penalty: file
 search improves by roughly 18-25x and mmap becomes close to heap search. Rerank
 file mode still lags because exact reranking reads raw vectors in candidate
-order from `raw_vectors.bin`; raw-vector locality is now the next storage-mode
-target. Sorting file-mode rerank reads by vector index did not materially change
-the `m25_one_dim` row and improved the `m5_runner_default` row by about 2.5%, so
-it is a small cleanup rather than the full rerank fix.
+order from `raw_vectors.bin`. Sorting file-mode rerank reads by vector index did
+not materially change the `m25_one_dim` row and improved the `m5_runner_default`
+row by about 2.5%, so it is a small cleanup rather than the full rerank fix. A
+later duplicate list-raw sidecar experiment was also rejected on full-train
+rows, so the next file-rerank attempt needs a different storage design or read
+plan.
 
 ## Legacy GloVe-25 (1.18M vectors, 25-d, angular distance)
 
