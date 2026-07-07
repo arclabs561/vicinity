@@ -225,9 +225,16 @@ Additional capped storage rows from 2026-07-07:
 | IVF-PQ approximate | 50K train / 500 query | snapshot_loaded | 92.70% | 22,161.7 | persisted PQ-code sidecars rebuild scan caches on load |
 | IVF-PQ approximate | 50K train / 500 query | file | 92.70% | 12,205.3 | list-local PQ codes avoid the old file-path penalty |
 | IVF-PQ approximate | 50K train / 500 query | mmap | 92.70% | 19,933.1 | mmap remains faster than direct file reads |
+| IVF-PQ approximate | 50K train / 500 query | in_memory | 96.64% | 11,375.8 | `nprobe=64`, first capped 95%+ row |
+| IVF-PQ approximate | 50K train / 500 query | snapshot_loaded | 96.64% | 14,555.3 | persisted row at fixed recall |
+| IVF-PQ approximate | 50K train / 500 query | file | 96.64% | 8,632.5 | file row at fixed recall |
+| IVF-PQ approximate | 50K train / 500 query | mmap | 96.64% | 14,150.9 | mmap row at fixed recall |
 | IVF-PQ rerank | 50K train / 500 query | in_memory | 93.22% | 11,159.4 | `rerank_pool=500`, still below 95% |
 | IVF-PQ rerank | 50K train / 500 query | file | 93.22% | 2,018.2 | exact rerank still reads raw vectors by vector ID |
 | IVF-PQ rerank | 50K train / 500 query | mmap | 93.22% | 13,549.5 | raw-vector locality is the next storage issue |
+| IVF-PQ rerank | 50K train / 500 query | in_memory | 97.42% | 9,852.2 | `nprobe=64`, `rerank_pool=500` |
+| IVF-PQ rerank | 50K train / 500 query | file | 97.42% | 2,150.6 | fixed-recall file rerank remains raw-vector bound |
+| IVF-PQ rerank | 50K train / 500 query | mmap | 97.42% | 10,645.8 | mmap avoids most direct-file rerank cost |
 | Store | 50K train / 1K query | segmented_store | 99.97% | 5,914.5 | warm after checkpoint, `index_bytes=13,838,119` |
 | KD-tree | 5K train / 200 query | in_memory | 100.00% | 26,407.9 | capped low-dimensional baseline |
 | Ball tree | 5K train / 200 query | in_memory | 98.55% | 18,261.0 | capped low-dimensional baseline |
@@ -236,9 +243,8 @@ Additional capped storage rows from 2026-07-07:
 | K-means tree | 5K train / 200 query | in_memory | 20.75% | 994,609.2 | fast, low-recall baseline |
 
 The classical rows are useful storage and API coverage, not full-scale ANN
-recommendations. The next fixed-recall work is to sweep IVF-PQ nprobe/rerank
-settings above this capped 92-93% recall point and to run full-corpus rows for
-the algorithms whose build time is acceptable.
+recommendations. The next IVF-PQ work is to promote the capped fixed-recall
+rows to full-corpus runs and then profile the remaining direct-file rerank gap.
 
 ## Profiling Ledger
 
