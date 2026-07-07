@@ -638,8 +638,32 @@ touching mmap or heap paths:
 
 The remaining file-backed IVF-PQ locality problem is layout, not cursor
 movement: exact rerank still reads raw full-precision vectors by vector ID.
-The next storage change should batch or co-locate rerank vectors by posting
-list rather than issuing one random vector read per candidate.
+IVF-PQ file and mmap rerank benchmark rows now report this directly via
+`avg_vector_reads`, `avg_vector_bytes`, and `avg_retained_candidates`.
+
+A 5K-vector smoke row verifies the diagnostic fields on the benchmark output:
+
+```bash
+cargo run --release --example ann_benchmark --no-default-features --features ivf_pq,persistence -- \
+  data/ann-benchmarks/glove-25-angular --algo ivfpq \
+  --pq-clusters 64 --pq-codebooks 5 --pq-codebook-size 32 \
+  --pq-training-sample-size 2000 --pq-kmeans-max-iter 3 \
+  --pq-nprobes 4 --pq-rerank-pools 20 \
+  --max-train 5000 --max-queries 20 --snapshot-load --json --fresh \
+  --results /tmp/vicinity-ivfpq-diagnostics-smoke.jsonl
+```
+
+The file and mmap rerank rows both report `avg_vector_reads=20.00`,
+`avg_vector_bytes=2000.00`, and `avg_retained_candidates=20.00`, which matches
+`rerank_pool=20` on 25-d `f32` vectors.
+
+An external read-only implementation review found the same shape in other
+systems: FAISS on-disk IVF and SPANN/SPFresh organize work around posting-list
+locality, while Lance keeps row IDs beside PQ codes and treats row-id stability
+as a format invariant. The next storage experiment should therefore add optional
+`list_raw_offsets.bin` and `list_raw_vectors.bin` sidecars, carry
+`(cluster_idx, local_offset)` through approximate search, and compare grouped
+list-local rerank reads against the current global-vector-id sorted reads.
 
 ## Benchmark Coverage
 
