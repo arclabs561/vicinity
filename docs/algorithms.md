@@ -30,6 +30,7 @@ page lists the other public indexes and the feature flags that expose them.
 | IVF-PQ | `ivf_pq` | Compressed inverted-file search with optional exact reranking |
 | IVF-AVQ | `ivf_avq` | Anisotropic vector quantization with reranking |
 | IVF-RaBitQ | `ivf_rabitq` | RaBitQ binary quantization |
+| SAQ | `quantization` + `saq` | Segmented adaptive quantization helper |
 | RpQuant | `rp_quant` | Random projection plus scalar quantization |
 | BinaryFlat | `binary_index` | One-bit quantization with full-precision rerank |
 | SQ4 | `sq4` | Standalone 4-bit scalar quantized flat index |
@@ -63,11 +64,11 @@ need `quantization` plus `rabitq` or `saq`. PQ is part of `ivf_pq`.
 | Small corpus (<10K vectors) | Brute force | HNSW when scale or latency requires |
 | Dense vectors that fit in memory | HNSW | NSW or Vamana |
 | Raw vectors dominate RAM | HNSW, then IVF-PQ | IVF-PQ with reranking |
-| Frequent writes/deletes | `store::UpdatableIndex` or FreshGraph | LSM HNSW |
-| Metadata filters | HNSW with post-filtering | ACORN, Curator, or FilteredGraph |
+| Frequent writes/deletes | Evaluate `store::UpdatableIndex` | Compare FreshGraph, in-place HNSW, and LSM HNSW on churn rows |
+| Metadata filters | HNSW with post-filtering | ACORN, Curator, and FilteredGraph need selectivity sweeps |
 | Sparse learned retrieval | SparseMIPS | Workload-specific sparse baseline |
-| File-backed graph search | DiskANN | Benchmark mmap/file rows before serving |
-| File-backed compressed search | IVF-PQ file or mmap searcher | Use persisted PQ-code snapshots |
+| File-backed graph search | Evaluate DiskANN | Promote after full-corpus mmap/file rows |
+| File-backed compressed search | Evaluate IVF-PQ file or mmap searcher | Promote after full-corpus fixed-recall rows |
 
 ## Experimental Status
 
@@ -77,6 +78,10 @@ These APIs are reachable but are not recommended defaults yet.
   when a head-to-head benchmark shows a recall/QPS/build-time win over HNSW on a
   documented workload. Vamana is the closest default candidate; the others need
   fresh rows before they should guide users.
+- **HNSW variants (DualBranch and DEG)**: promote only with hard-tail or
+  per-query recall improvements over plain HNSW at fixed recall, plus
+  build-time and memory cost. Keep a row where the variant heuristic is disabled
+  so the added graph logic has a fair control.
 - **DiskANN**: file save/load, mmap search, and search diagnostics exist.
   Promote when mmap/page-layout measurements stay competitive on a 1M-vector
   dataset, and when the file-backed row is clearly separated from in-memory
@@ -90,8 +95,12 @@ These APIs are reachable but are not recommended defaults yet.
   least low, middle, and high selectivity instead of a single QPS number.
 - **Compressed inverted files (IVF-PQ, IVF-AVQ, IVF-RaBitQ, RpQuant,
   BinaryFlat, SQ4)**: promote per memory budget. IVF-PQ is the current
-  compressed default candidate; the others need recall/QPS/storage rows on the
+  compressed default candidate, but file and mmap recommendations still need
+  full-corpus fixed-recall rows. The others need recall/QPS/storage rows on the
   datasets where their quantization assumptions apply.
+- **SAQ**: quantization helper, not a standalone ANN index. Promote only after
+  local quantization-error, encoding-throughput, and downstream recall rows
+  justify using it over existing quantizers.
 - **Quantized HNSW traversal (SQ4U, SQ8U, SymphonyQG, and SymphonyQG-VR)**:
   promote when they beat plain HNSW on recall/QPS on at least two published
   datasets. Low-dimensional GloVe-25 alone is not enough.

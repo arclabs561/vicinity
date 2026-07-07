@@ -182,11 +182,11 @@ Current run commands and result interpretation are in
 | Small corpus (<10K vectors) | Brute force | HNSW when scale or latency requires |
 | Dense vectors that fit in memory | HNSW | NSW or Vamana |
 | Raw vectors dominate RAM | HNSW, then IVF-PQ | IVF-PQ with reranking |
-| Frequent writes/deletes | `store::UpdatableIndex` or FreshGraph | LSM HNSW |
-| Metadata filters | HNSW with post-filtering | ACORN, Curator, or FilteredGraph |
+| Frequent writes/deletes | Evaluate `store::UpdatableIndex` | Compare FreshGraph, in-place HNSW, and LSM HNSW on churn rows |
+| Metadata filters | HNSW with post-filtering | ACORN, Curator, and FilteredGraph need selectivity sweeps |
 | Sparse learned retrieval | SparseMIPS | Workload-specific sparse baseline |
-| File-backed graph search | DiskANN | Benchmark mmap/file rows before serving |
-| File-backed compressed search | IVF-PQ file or mmap searcher | Use persisted PQ-code snapshots |
+| File-backed graph search | Evaluate DiskANN | Promote after full-corpus mmap/file rows |
+| File-backed compressed search | Evaluate IVF-PQ file or mmap searcher | Promote after full-corpus fixed-recall rows |
 
 The full algorithm table is in [`docs/algorithms.md`](docs/algorithms.md).
 

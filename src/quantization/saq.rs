@@ -1,11 +1,13 @@
 //! SAQ (Segmented Adaptive Quantization) implementation.
 //!
-//! Pure Rust implementation of the 2026 SAQ algorithm with:
+//! SAQ-style segmented adaptive quantization helper with:
 //! - Dimension segmentation with PCA projection
 //! - Dynamic programming for optimal bit allocation
 //! - Code adjustment with coordinate-descent refinement
-//! - 80% quantization error reduction vs PQ
-//! - 80× faster encoding than Extended RaBitQ
+//!
+//! Treat this as experimental until local quantization-error, encoding
+//! throughput, and downstream recall rows justify it against the other
+//! quantizers in this crate.
 //!
 //! # References
 //!
