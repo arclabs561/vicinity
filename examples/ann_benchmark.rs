@@ -78,14 +78,6 @@ use std::path::Path;
 ))]
 use std::time::Instant;
 
-#[cfg(any(
-    feature = "filtered_graph",
-    feature = "finger",
-    feature = "fresh_graph",
-    feature = "hnsw",
-    feature = "nsg",
-    feature = "sng"
-))]
 use support::brute_force_neighbors_for_ids;
 #[cfg(any(feature = "fresh_graph", feature = "hnsw"))]
 use support::brute_force_search_ids;
@@ -190,14 +182,6 @@ fn snapshot_storage(load_time_s: f64, index_bytes: Option<u64>) -> ResultStorage
 
 // ─── Algorithm runners ───────────────────────────────────────────────────────
 
-#[cfg(any(
-    feature = "filtered_graph",
-    feature = "finger",
-    feature = "fresh_graph",
-    feature = "hnsw",
-    feature = "nsg",
-    feature = "sng"
-))]
 fn dataset_metric(cfg: &Config) -> vicinity::DistanceMetric {
     if cfg.is_euclidean {
         vicinity::DistanceMetric::L2
@@ -3188,7 +3172,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Data: {}\n", cfg.data_dir);
     }
 
-    let (train, dim) = common::load_vectors(&format!("{}/train.bin", cfg.data_dir))?;
+    let (mut train, dim) = common::load_vectors(&format!("{}/train.bin", cfg.data_dir))?;
     let (mut test, _) = common::load_vectors(&format!("{}/test.bin", cfg.data_dir))?;
     let (mut neighbors, k_gt) = common::load_neighbors(&format!("{}/neighbors.bin", cfg.data_dir))?;
 
@@ -3201,14 +3185,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         neighbors.truncate(capped_len);
     }
 
+    if let Some(max_train) = cfg.max_train {
+        if max_train == 0 {
+            return Err("--max-train must be greater than zero".into());
+        }
+        if max_train < train.len() {
+            train.truncate(max_train);
+            let active_ids: Vec<u32> = (0..train.len() as u32).collect();
+            neighbors = brute_force_neighbors_for_ids(
+                &train,
+                &active_ids,
+                &test,
+                k_gt,
+                dataset_metric(&cfg),
+            );
+        }
+    }
+
     let meta = || {
         format!(
-            "{{\"_meta\":{{\"dataset\":\"{}\",\"metric\":\"{}\",\"result_schema\":2,\"rustc\":\"{}\",\"rust_msrv\":\"{}\",\"vicinity\":\"{}\",\"query_limit\":{},\"queries\":{}}}}}",
+            "{{\"_meta\":{{\"dataset\":\"{}\",\"metric\":\"{}\",\"result_schema\":2,\"rustc\":\"{}\",\"rust_msrv\":\"{}\",\"vicinity\":\"{}\",\"train_limit\":{},\"indexed_vectors\":{},\"query_limit\":{},\"queries\":{}}}}}",
             cfg.data_dir,
             if cfg.is_euclidean { "l2" } else { "cosine" },
             rustc_version(),
             env!("CARGO_PKG_RUST_VERSION"),
             env!("CARGO_PKG_VERSION"),
+            cfg.max_train
+                .map(|limit| limit.to_string())
+                .unwrap_or_else(|| "null".to_string()),
+            train.len(),
             cfg.max_queries
                 .map(|limit| limit.to_string())
                 .unwrap_or_else(|| "null".to_string()),
@@ -3228,7 +3233,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let completed = if cfg.resume {
-        load_completed_results(&cfg.results_path, &cfg.data_dir, cfg.max_queries)
+        load_completed_results(
+            &cfg.results_path,
+            &cfg.data_dir,
+            cfg.max_train,
+            cfg.max_queries,
+        )
     } else {
         Default::default()
     };

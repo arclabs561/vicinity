@@ -29,6 +29,14 @@ cargo run --example ann_benchmark --release --features hnsw -- \
   data/ann-benchmarks/glove-25-angular --algo hnsw \
   --ef-search 10,20,30,40,50 --max-queries 1000 --json --fresh
 
+# Bounded corpus probe for algorithms whose full-index build is expensive.
+# Both the indexed-vector cap and the query cap are recorded in `_meta`, and
+# recall is recomputed against the capped corpus before measurement.
+cargo run --example ann_benchmark --release --features kdtree,balltree,rptree,kmeans_tree -- \
+  data/ann-benchmarks/glove-25-angular \
+  --algo balltree --algo rp_forest --algo kmeans_tree \
+  --max-train 5000 --max-queries 200 --snapshot-load --json --fresh
+
 # HNSW single-query plus parallel-query throughput.
 RAYON_NUM_THREADS=4 cargo run --example ann_benchmark --release --features hnsw,parallel -- \
   data/ann-benchmarks/glove-25-angular --algo hnsw --batch --json --fresh

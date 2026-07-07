@@ -33,6 +33,7 @@ pub(crate) struct Config {
     pub(crate) batch: bool,
     pub(crate) resume: bool,
     pub(crate) snapshot_load: bool,
+    pub(crate) max_train: Option<usize>,
     pub(crate) max_queries: Option<usize>,
     pub(crate) churn_base_size: usize,
     pub(crate) churn_cycles: usize,
@@ -67,6 +68,7 @@ impl Default for Config {
             batch: false,
             resume: false,
             snapshot_load: false,
+            max_train: None,
             max_queries: None,
             churn_base_size: 50_000,
             churn_cycles: 5_000,
@@ -150,17 +152,18 @@ fn json_value_field<'a>(line: &'a str, field: &str) -> Option<&'a str> {
     }
 }
 
-fn meta_query_limit_matches(line: &str, expected_query_limit: Option<usize>) -> bool {
-    match json_value_field(line, "query_limit").map(str::trim) {
-        None => expected_query_limit.is_none(),
-        Some("null") => expected_query_limit.is_none(),
-        Some(raw) => raw.parse::<usize>().ok() == expected_query_limit,
+fn meta_usize_field_matches(line: &str, field: &str, expected: Option<usize>) -> bool {
+    match json_value_field(line, field).map(str::trim) {
+        None => expected.is_none(),
+        Some("null") => expected.is_none(),
+        Some(raw) => raw.parse::<usize>().ok() == expected,
     }
 }
 
 pub(crate) fn load_completed_results(
     path: &Path,
     expected_dataset: &str,
+    expected_train_limit: Option<usize>,
     expected_query_limit: Option<usize>,
 ) -> CompletedResults {
     let mut counts = HashMap::new();
@@ -178,7 +181,8 @@ pub(crate) fn load_completed_results(
             if let Some(dataset) = json_string_field(&line, "dataset") {
                 seen_meta = true;
                 if dataset != expected_dataset
-                    || !meta_query_limit_matches(&line, expected_query_limit)
+                    || !meta_usize_field_matches(&line, "train_limit", expected_train_limit)
+                    || !meta_usize_field_matches(&line, "query_limit", expected_query_limit)
                 {
                     has_mismatched_meta = true;
                     active_dataset_matches = false;
@@ -1093,6 +1097,12 @@ pub(crate) fn parse_args() -> Config {
             "--snapshot-load" => {
                 cfg.snapshot_load = true;
             }
+            "--max-train" => {
+                i += 1;
+                if i < args.len() {
+                    cfg.max_train = args[i].parse().ok();
+                }
+            }
             "--max-queries" => {
                 i += 1;
                 if i < args.len() {
@@ -1463,14 +1473,6 @@ pub(crate) fn brute_force_search(
     dists
 }
 
-#[cfg(any(
-    feature = "filtered_graph",
-    feature = "finger",
-    feature = "fresh_graph",
-    feature = "hnsw",
-    feature = "nsg",
-    feature = "sng"
-))]
 pub(crate) fn brute_force_search_ids(
     train: &[Vec<f32>],
     active_ids: &[u32],
@@ -1486,14 +1488,6 @@ pub(crate) fn brute_force_search_ids(
     dists.into_iter().take(k).map(|(id, _)| id as i32).collect()
 }
 
-#[cfg(any(
-    feature = "filtered_graph",
-    feature = "finger",
-    feature = "fresh_graph",
-    feature = "hnsw",
-    feature = "nsg",
-    feature = "sng"
-))]
 pub(crate) fn brute_force_neighbors_for_ids(
     train: &[Vec<f32>],
     active_ids: &[u32],
@@ -1641,7 +1635,42 @@ mod tests {
     }
 
     #[test]
-    fn load_completed_results_matches_query_limit_metadata() {
+    fn load_completed_results_matches_limit_metadata() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            file.as_file(),
+            "{{\"_meta\":{{\"dataset\":\"data/a\",\"train_limit\":1000,\"query_limit\":100}}}}"
+        )
+        .unwrap();
+        writeln!(
+            file.as_file(),
+            "{{\"algorithm\":\"hnsw\",\"params\":{{\"m\":16,\"ef_construction\":200,\"ef_search\":10}},\"storage_mode\":\"in_memory\",\"recall_at_10\":1.0,\"qps\":1.0}}"
+        )
+        .unwrap();
+
+        let matching = load_completed_results(file.path(), "data/a", Some(1000), Some(100));
+        assert!(matching.has_matching_meta);
+        assert_eq!(matching.counts.get("hnsw"), Some(&1));
+
+        let mismatched_query = load_completed_results(file.path(), "data/a", Some(1000), Some(200));
+        assert!(!mismatched_query.has_matching_meta);
+        assert!(mismatched_query.has_mismatched_meta);
+        assert!(mismatched_query.counts.is_empty());
+
+        let mismatched_train = load_completed_results(file.path(), "data/a", Some(2000), Some(100));
+        assert!(!mismatched_train.has_matching_meta);
+        assert!(mismatched_train.has_mismatched_meta);
+        assert!(mismatched_train.counts.is_empty());
+
+        let mismatched_uncapped_train =
+            load_completed_results(file.path(), "data/a", None, Some(100));
+        assert!(!mismatched_uncapped_train.has_matching_meta);
+        assert!(mismatched_uncapped_train.has_mismatched_meta);
+        assert!(mismatched_uncapped_train.counts.is_empty());
+    }
+
+    #[test]
+    fn load_completed_results_keeps_legacy_uncapped_metadata() {
         let file = tempfile::NamedTempFile::new().unwrap();
         writeln!(
             file.as_file(),
@@ -1654,11 +1683,11 @@ mod tests {
         )
         .unwrap();
 
-        let matching = load_completed_results(file.path(), "data/a", Some(100));
+        let matching = load_completed_results(file.path(), "data/a", None, Some(100));
         assert!(matching.has_matching_meta);
         assert_eq!(matching.counts.get("hnsw"), Some(&1));
 
-        let mismatched = load_completed_results(file.path(), "data/a", Some(200));
+        let mismatched = load_completed_results(file.path(), "data/a", Some(1000), Some(100));
         assert!(!mismatched.has_matching_meta);
         assert!(mismatched.has_mismatched_meta);
         assert!(mismatched.counts.is_empty());
@@ -1693,7 +1722,8 @@ mod tests {
             max_queries: Some(100),
             ..Config::default()
         };
-        let completed = load_completed_results(file.path(), "data/a", cfg.max_queries);
+        let completed =
+            load_completed_results(file.path(), "data/a", cfg.max_train, cfg.max_queries);
 
         assert!(request_completed(&completed, "hnsw", &cfg, 25, 1_000, 100));
 
@@ -1701,7 +1731,12 @@ mod tests {
             ef_search_values: vec![20],
             ..Config::default()
         };
-        let completed = load_completed_results(file.path(), "data/a", full_cfg.max_queries);
+        let completed = load_completed_results(
+            file.path(),
+            "data/a",
+            full_cfg.max_train,
+            full_cfg.max_queries,
+        );
 
         assert!(request_completed(
             &completed, "hnsw", &full_cfg, 25, 1_000, 100
