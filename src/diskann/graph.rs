@@ -62,11 +62,8 @@ impl DiskANNIndex {
     #[inline]
     pub fn size_bytes(&self) -> usize {
         self.vectors.len() * std::mem::size_of::<f32>()
-            + self
-                .adj
-                .iter()
-                .map(|n| n.len() * std::mem::size_of::<u32>())
-                .sum::<usize>()
+            + crate::memory::smallvec_u32_bytes(&self.adj)
+            + self.doc_ids.len() * std::mem::size_of::<u32>()
     }
 
     /// Save the built index to disk.
@@ -1140,6 +1137,23 @@ mod tests {
             .expect("DiskANNIndex::new must succeed for valid params");
         assert_eq!(index.dimension(), 4);
         assert_eq!(index.num_vectors(), 0);
+    }
+
+    #[test]
+    fn size_bytes_counts_inline_adjacency_storage() {
+        let mut index = DiskANNIndex::new(4, DiskANNParams::default()).unwrap();
+        for i in 0..3u32 {
+            index.add(i, vec![i as f32, 0.0, 1.0, 0.0]).unwrap();
+        }
+
+        let vectors_bytes = index.vectors.len() * std::mem::size_of::<f32>();
+        let doc_ids_bytes = index.doc_ids.len() * std::mem::size_of::<u32>();
+        let inline_adj_bytes = index.adj.len() * std::mem::size_of::<SmallVec<[u32; 32]>>();
+
+        assert_eq!(
+            index.size_bytes(),
+            vectors_bytes + doc_ids_bytes + inline_adj_bytes
+        );
     }
 
     #[test]
