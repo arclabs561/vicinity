@@ -56,8 +56,9 @@ partial runs, use `--expect-observed-standard-storage`; it only expands storage
 expectations for algorithm families already present in benchmark scopes that
 record train/query cardinality metadata. Pass `--profile-dir PATH` to attach
 matching `profile_ann_dataset.py` JSON paths to coverage rows.
-Pass `--recall-gap-only` to list measured rows that still have no row meeting
-the recall floor.
+Pass `--recall-gap-only` to list scoped measured rows that still have no row
+meeting the recall floor. Exploratory rows without train/query cardinality
+metadata are ignored.
 
 ## Background
 

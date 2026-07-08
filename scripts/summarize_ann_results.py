@@ -353,7 +353,9 @@ def coverage_rows(
         if missing_only and summary:
             continue
         if recall_gap_only and (
-            summary is None or summary.qps_at_recall(recall_floor) is not None
+            summary is None
+            or not summary.storage_scope_observed
+            or summary.qps_at_recall(recall_floor) is not None
         ):
             continue
         rows.append(
@@ -494,8 +496,8 @@ def parse_args() -> argparse.Namespace:
         "--recall-gap-only",
         action="store_true",
         help=(
-            "Emit only measured rows that have no QPS at the recall floor. "
-            "This identifies fixed-recall sweep gaps."
+            "Emit only scoped measured rows that have no QPS at the recall floor. "
+            "This identifies fixed-recall sweep gaps without flagging exploratory rows."
         ),
     )
     parser.add_argument(
