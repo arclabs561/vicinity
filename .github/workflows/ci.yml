@@ -91,7 +91,10 @@ jobs:
       - name: ann_benchmark smoke
         run: |
           python scripts/generate_ann_smoke_data.py /tmp/vicinity-ann-ci --train 64 --test 12 --dim 8 --k 10
+          python scripts/generate_sparse_mips_smoke_data.py /tmp/vicinity-sparse-ci --train 64 --test 12 --vocab 256 --topics 8 --nnz 16 --k 10
           cargo test --example ann_benchmark --no-default-features --features hnsw,serde
+          cargo run --no-default-features --features sparse_mips --release --example sparse_mips_benchmark -- \
+            /tmp/vicinity-sparse-ci
           cargo run --no-default-features --features hnsw,serde,nsw,lsh,kdtree,balltree,rptree,kmeans_tree,vamana,diskann,filtered_graph,range_filtered,curator,fresh_graph,store --release --example ann_benchmark -- \
             /tmp/vicinity-ann-ci \
             --algo hnsw --algo nsw --algo lsh \
@@ -264,15 +267,15 @@ jobs:
       - name: Build extension (editable)
         run: maturin develop --release --features hnsw,python,parallel
       - name: Ruff
-        run: python -m ruff check pyvicinity tests/test_python.py tests/test_download_ann_benchmarks.py examples/python scripts/generate_ann_smoke_data.py scripts/download_ann_benchmarks.py
+        run: python -m ruff check pyvicinity tests/test_python.py tests/test_download_ann_benchmarks.py tests/test_generate_sparse_mips_smoke_data.py examples/python scripts/generate_ann_smoke_data.py scripts/generate_sparse_mips_smoke_data.py scripts/download_ann_benchmarks.py
       - name: Ruff format
-        run: python -m ruff format --check pyvicinity tests/test_python.py tests/test_download_ann_benchmarks.py examples/python scripts/generate_ann_smoke_data.py scripts/download_ann_benchmarks.py
+        run: python -m ruff format --check pyvicinity tests/test_python.py tests/test_download_ann_benchmarks.py tests/test_generate_sparse_mips_smoke_data.py examples/python scripts/generate_ann_smoke_data.py scripts/generate_sparse_mips_smoke_data.py scripts/download_ann_benchmarks.py
       - name: mypy --strict
         run: python -m mypy --strict pyvicinity
       - name: Stubtest (.pyi vs compiled module)
         run: python -m mypy.stubtest pyvicinity._core
       - name: Pytest
-        run: python -m pytest tests/test_python.py tests/test_download_ann_benchmarks.py -v
+        run: python -m pytest tests/test_python.py tests/test_download_ann_benchmarks.py tests/test_generate_sparse_mips_smoke_data.py -v
       - name: Python harness example
         run: python examples/python/03_ann_benchmarks_harness.py
   # Documentation build
