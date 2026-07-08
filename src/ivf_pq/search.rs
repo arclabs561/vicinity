@@ -337,6 +337,16 @@ struct IVFPQManifest {
     raw_vectors_present: bool,
     params: PersistedIVFPQParams,
     quantizer: Quantizer,
+    #[serde(default)]
+    filter_field: Option<String>,
+    #[serde(default)]
+    filter_metadata: Vec<PersistedFilterMetadata>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PersistedFilterMetadata {
+    doc_id: u32,
+    metadata: crate::filtering::DocumentMetadata,
 }
 
 impl Default for IVFPQParams {
@@ -1053,9 +1063,9 @@ impl IVFPQIndex {
                 "cannot save unbuilt IVF-PQ index".into(),
             ));
         }
-        if self.metadata.is_some() || self.filter_field.is_some() {
+        if self.metadata.is_some() && self.filter_field.is_none() {
             return Err(RetrieveError::InvalidParameter(
-                "IVF-PQ persistence does not yet include filter metadata".into(),
+                "IVF-PQ filter metadata requires a filter field".into(),
             ));
         }
         let pq = self
@@ -1066,6 +1076,18 @@ impl IVFPQIndex {
         std::fs::create_dir_all(output_dir)?;
 
         let raw_vectors_present = self.vectors.len() == self.num_vectors * self.dimension;
+        let mut filter_metadata = if let Some(store) = &self.metadata {
+            store
+                .iter()
+                .map(|(&doc_id, metadata)| PersistedFilterMetadata {
+                    doc_id,
+                    metadata: metadata.clone(),
+                })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        filter_metadata.sort_by_key(|entry| entry.doc_id);
         let manifest = IVFPQManifest {
             version: IVFPQ_FORMAT_VERSION,
             dimension: self.dimension,
@@ -1074,6 +1096,8 @@ impl IVFPQIndex {
             raw_vectors_present,
             params: PersistedIVFPQParams::from(&self.params),
             quantizer: pq,
+            filter_field: self.filter_field.clone(),
+            filter_metadata,
         };
 
         write_json_atomic(&output_dir.join("manifest.json"), &manifest)?;
@@ -1127,6 +1151,18 @@ impl IVFPQIndex {
             Vec::new()
         };
         index.pq = Some(manifest.quantizer);
+        if manifest.filter_field.is_some() || !manifest.filter_metadata.is_empty() {
+            let filter_field = manifest.filter_field.clone().ok_or_else(|| {
+                RetrieveError::FormatError(
+                    "IVF-PQ manifest has filter metadata without filter_field".into(),
+                )
+            })?;
+            index.filter_field = Some(filter_field);
+            index.metadata = Some(crate::filtering::MetadataStore::new());
+            for entry in manifest.filter_metadata {
+                index.add_metadata(entry.doc_id, entry.metadata)?;
+            }
+        }
         index.built = true;
         index.build_scan_caches();
 
@@ -2850,6 +2886,59 @@ mod tests {
     }
 
     #[test]
+    fn save_load_preserves_filter_metadata() {
+        let dim = 16;
+        let n = 240;
+        use rand::{Rng, SeedableRng};
+        let mut rng = rand::rngs::StdRng::seed_from_u64(115);
+
+        let params = IVFPQParams {
+            num_clusters: 4,
+            num_codebooks: 4,
+            codebook_size: 16,
+            nprobe: 4,
+            seed: 321,
+            ..IVFPQParams::default()
+        };
+        let mut index = IVFPQIndex::with_filtering(dim, params, "group").unwrap();
+        for i in 0..n {
+            let doc_id = 30_000 + i as u32;
+            let v: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
+            index.add(doc_id, v).unwrap();
+
+            let mut metadata = crate::filtering::DocumentMetadata::new();
+            metadata.insert(
+                "group".to_string(),
+                crate::filtering::MetadataValue::Int((i % 4) as i64),
+            );
+            metadata.insert(
+                "label".to_string(),
+                crate::filtering::MetadataValue::Str(format!("doc-{i}")),
+            );
+            index.add_metadata(doc_id, metadata).unwrap();
+        }
+        index.build().unwrap();
+        #[cfg(feature = "hnsw")]
+        {
+            index.coarse_quantizer = None;
+        }
+
+        let query: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
+        let filter = crate::filtering::MetadataFilter::equals("group", 2i32);
+        let before = index.search_with_filter(&query, 10, &filter).unwrap();
+        assert!(!before.is_empty());
+
+        let dir = tempfile::tempdir().unwrap();
+        index.save_to_dir(dir.path()).unwrap();
+        let loaded = IVFPQIndex::load_from_dir(dir.path()).unwrap();
+
+        assert_eq!(
+            loaded.search_with_filter(&query, 10, &filter).unwrap(),
+            before
+        );
+    }
+
+    #[test]
     fn file_searcher_matches_snapshot_loaded_search() {
         let dim = 16;
         let n = 240;
@@ -3186,6 +3275,53 @@ mod tests {
                 .contains("unsupported IVF-PQ format version"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn load_accepts_legacy_manifest_without_filter_fields() {
+        let dim = 16;
+        let n = 200;
+        use rand::{Rng, SeedableRng};
+        let mut rng = rand::rngs::StdRng::seed_from_u64(18);
+
+        let params = IVFPQParams {
+            num_clusters: 4,
+            num_codebooks: 4,
+            codebook_size: 16,
+            nprobe: 4,
+            seed: 141,
+            ..IVFPQParams::default()
+        };
+        let mut index = IVFPQIndex::new(dim, params).unwrap();
+        for i in 0..n {
+            let v: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
+            index.add(i as u32, v).unwrap();
+        }
+        index.build().unwrap();
+        #[cfg(feature = "hnsw")]
+        {
+            index.coarse_quantizer = None;
+        }
+
+        let query: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
+        let before = index.search(&query, 10).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        index.save_to_dir(dir.path()).unwrap();
+
+        let manifest_path = dir.path().join("manifest.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+        let manifest_obj = manifest.as_object_mut().unwrap();
+        manifest_obj.remove("filter_field");
+        manifest_obj.remove("filter_metadata");
+        std::fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let loaded = IVFPQIndex::load_from_dir(dir.path()).unwrap();
+        assert_eq!(loaded.search(&query, 10).unwrap(), before);
     }
 
     #[test]

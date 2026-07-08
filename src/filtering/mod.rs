@@ -7,6 +7,10 @@ use std::collections::HashMap;
 
 /// A typed metadata value.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    any(feature = "serde", feature = "ivf_pq"),
+    derive(serde::Deserialize, serde::Serialize)
+)]
 pub enum MetadataValue {
     /// 64-bit integer.
     Int(i64),
@@ -198,6 +202,12 @@ impl MetadataStore {
     /// Retrieve metadata for a document, if present.
     pub fn get(&self, doc_id: u32) -> Option<&DocumentMetadata> {
         self.metadata.get(&doc_id)
+    }
+
+    /// Iterate over all stored metadata entries.
+    #[cfg(feature = "ivf_pq")]
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&u32, &DocumentMetadata)> {
+        self.metadata.iter()
     }
 
     /// Check whether a document's metadata satisfies the given filter.

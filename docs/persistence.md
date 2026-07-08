@@ -65,7 +65,7 @@ must be part of the benchmark row.
 | DualBranch / DEG | Yes, JSON via `serde` | Yes | No | No | Build-once | These are HNSW-family experimental variants. Their benchmark snapshot rows require the `serde` feature and reload into memory. DEG dense benchmark rows cap indexed vectors at 10,000 because construction is O(n^2). |
 | HNSW quantized variants | Yes, for SQ4/SQ8 and non-compacted SymphonyQG | Yes | No | No | Build-once | SQ variants persist the underlying HNSW and rebuild quantization. SymphonyQG persists the underlying HNSW and RaBitQ manifest, then rebuilds quantized state on load. SymphonyQG-VR compacted snapshots are rejected because current search still needs raw parent vectors. |
 | HNSW query accelerators | No separate accelerator snapshot | Yes | No | No | Derived from HNSW | ADSampling and PRT state are derived from a built HNSW's reordered raw vectors. Persist the base HNSW first; add accelerator snapshots only if rebuild cost shows up in benchmark rows. |
-| IVF-PQ | Yes, directory format | Yes | Yes | Yes, with `persistence` | Build-once | `load_from_dir` rebuilds an in-memory snapshot. `IVFPQFileSearcher` reads persisted PQ codes and optional raw vectors from files or mmap. PQ-code sidecars are list-contiguous; exact rerank still reads optional raw vectors by vector ID. |
+| IVF-PQ | Yes, directory format | Yes | Yes | Yes, with `persistence` | Build-once | `load_from_dir` rebuilds an in-memory snapshot, including optional filter field and document metadata. `IVFPQFileSearcher` reads persisted PQ codes and optional raw vectors from files or mmap. PQ-code sidecars are list-contiguous; exact rerank still reads optional raw vectors by vector ID. |
 | IVF-AVQ | Yes, directory format | Yes | No | No | Build-once | Persists centroids, AVQ codebooks, partitions, codes, and raw vectors for rerank. |
 | IVF-RaBitQ | Yes, directory format for non-compacted indexes | Yes | No | No | Build-once | Persists raw vectors, centroids, and cluster membership, then rebuilds RaBitQ edge codes on load. |
 | FreshGraph / in-place graph | Yes | Yes | No | No | Insert/delete/compact | FreshGraph uses a snapshot directory with tombstones and inbound counts. `InPlaceIndex` and `MappedInPlaceIndex` use `serde`-gated file snapshots that preserve free slots and external-ID maps. WAL/checkpoint durability remains separate from `segstore`. |
@@ -112,6 +112,7 @@ For file-backed searchers, recall should also be measured against ground truth.
    - list offsets and list-contiguous PQ codes for file/mmap scans
    - 4-bit packed FastScan blocks rebuilt on memory-snapshot load
    - optional raw normalized vectors when exact rerank should survive reload
+   - optional filter field and document metadata for snapshot-loaded filtered search
    `IVFPQFileSearcher` scans saved list-local PQ codes through file I/O or mmap.
    The next storage layout work is raw-vector locality for rerank, so reranking
    does not page through full-precision vectors in vector-ID order.

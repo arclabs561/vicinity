@@ -103,6 +103,9 @@ benchmarking, persistence, Python bindings, and performance work.
   3.3636 us to 934.32 ns, with parity covered against the portable block
   kernel. This is separate from the main GloVe-25 IVF-PQ row, which uses
   `codebook_size=256` and the standard 8-bit ADC path.
+- IVF-PQ snapshot persistence now includes the optional filter field and
+  document metadata. The format remains compatible with older v1 manifests that
+  lack those fields, and tests cover filtered search after save/load.
 - A thresholded `flush_batch` follow-up now caches the worst result distance
   only for `ef >= 64`. The first all-ef version improved high-ef rows but
   regressed `ef=10`; the thresholded version avoids putting low-recall search
