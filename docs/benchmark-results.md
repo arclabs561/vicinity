@@ -796,8 +796,8 @@ failure modes: ACORN is returning enough candidates but needs traversal tuning,
 FilteredGraph has a sharp slow-path transition, and RangeFiltered visibly
 under-returns at narrow ranges.
 
-Two ACORN-only follow-up rows used the same 3K-vector, 200-query workload after
-`acorn_selectivity` gained explicit tuning flags:
+Two pre-dense ACORN-only follow-up rows used the same 3K-vector, 200-query
+workload after `acorn_selectivity` gained explicit tuning flags:
 
 ```bash
 cargo run --release --example acorn_selectivity --no-default-features \
@@ -817,6 +817,10 @@ cargo run --release --example acorn_selectivity --no-default-features \
 | `ef=800`, 128 two-hop | 2% | 97.00% | 3,983.1 | 257.3 us | 10.0 | clears 95% with moderate QPS |
 | `ef=800`, 128 two-hop | 5% | 98.90% | 3,942.7 | 261.5 us | 10.0 | clears 95% |
 | `ef=800`, 128 two-hop | 50% | 99.85% | 3,895.4 | 264.3 us | 10.0 | clears 95% |
+
+The recall shape remains useful, but the QPS values in this table are pre-dense
+visited tracking. The refreshed `selectivity_acorn` rows below supersede them
+for post-dense throughput.
 
 This supports a selectivity-gated filtered-search plan. With the node-count
 dense visited path, ACORN is a useful moderate-selectivity path on this
