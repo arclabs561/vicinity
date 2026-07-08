@@ -112,8 +112,9 @@ use support::rp_forest_params_json;
 #[cfg(any(feature = "balltree", feature = "kdtree", feature = "rptree"))]
 use support::tree_params_json;
 use support::{
-    brute_force_search, current_rss_kb, emit_result, evaluate, json_line, load_completed_results,
-    parse_args, print_header, print_row, request_completed, rustc_version, Config,
+    algorithm_options_help, brute_force_search, current_rss_kb, emit_result, evaluate, json_line,
+    load_completed_results, parse_args, print_header, print_row, request_completed, rustc_version,
+    Config,
 };
 #[cfg(any(
     feature = "balltree",
@@ -3860,8 +3861,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             other => {
                 eprintln!(
-                    "Unknown algorithm: {}. Options: hnsw, nsw, ivfpq, ivf_avq, emg, nsg, dual_branch, deg, pipnn, sng, vamana, diskann, ivf_rabitq, symphony_qg, symphony_qg_vr, finger, fresh_graph, store, fresh_graph_churn, inplace, inplace_churn, lsm_churn, filtered_graph, rp_quant, sparse_mips, curator, range_filtered, binary_index, sq4, sq4u, sq8u, adsampling, lsh, hnsw_prt, kdtree, balltree, rptree, rp_forest, kmeans_tree, brute",
-                    other
+                    "Unknown algorithm: {}. Options: {}",
+                    other,
+                    algorithm_options_help()
                 );
             }
         }

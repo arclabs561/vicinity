@@ -7,6 +7,53 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
 
+pub(crate) const ALGORITHM_OPTIONS: &[&str] = &[
+    "hnsw",
+    "nsw",
+    "ivfpq",
+    "ivf_avq",
+    "emg",
+    "nsg",
+    "dual_branch",
+    "deg",
+    "pipnn",
+    "sng",
+    "vamana",
+    "diskann",
+    "ivf_rabitq",
+    "symphony_qg",
+    "symphony_qg_vr",
+    "finger",
+    "fresh_graph",
+    "store",
+    "fresh_graph_churn",
+    "inplace",
+    "inplace_churn",
+    "lsm_churn",
+    "filtered_graph",
+    "rp_quant",
+    "sparse_mips",
+    "curator",
+    "range_filtered",
+    "binary_index",
+    "sq4",
+    "sq4u",
+    "sq8u",
+    "adsampling",
+    "lsh",
+    "hnsw_prt",
+    "kdtree",
+    "balltree",
+    "rptree",
+    "rp_forest",
+    "kmeans_tree",
+    "brute",
+];
+
+pub(crate) fn algorithm_options_help() -> String {
+    ALGORITHM_OPTIONS.join(", ")
+}
+
 pub(crate) struct Config {
     pub(crate) data_dir: String,
     pub(crate) algos: Vec<String>,
@@ -889,7 +936,9 @@ fn required_result_checks(
         "rptree" => tree_snapshot_checks(!cfg.is_euclidean, "rptree", cfg),
         "rp_forest" => rp_forest_snapshot_checks(!cfg.is_euclidean, cfg),
         "kmeans_tree" => kmeans_tree_snapshot_checks(cfg),
-        _ => vec![ExpectedResult::any_params(algo)],
+        "brute" => vec![ExpectedResult::any_params("brute")],
+        "sparse_mips" => Vec::new(),
+        _ => Vec::new(),
     }
 }
 
@@ -1624,6 +1673,52 @@ mod tests {
             "{{\"algorithm\":\"{}\",\"params\":{},\"storage_mode\":\"{}\",\"recall_at_10\":1.0,\"qps\":1.0}}",
             algorithm, params, storage_mode
         )
+    }
+
+    #[test]
+    fn algorithm_options_are_unique_and_resume_checked() {
+        let cfg = Config {
+            ef_search_values: vec![10],
+            ..Config::default()
+        };
+        let mut seen = HashSet::new();
+
+        for algorithm in ALGORITHM_OPTIONS {
+            assert!(
+                seen.insert(*algorithm),
+                "duplicate algorithm option: {algorithm}"
+            );
+            let checks = required_result_checks(algorithm, &cfg, 25, 60_000, 1_000);
+            if *algorithm == "sparse_mips" {
+                assert!(
+                    checks.is_empty(),
+                    "dense harness should not expect sparse_mips rows"
+                );
+            } else {
+                assert!(
+                    !checks.is_empty(),
+                    "missing resume checks for algorithm option: {algorithm}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unknown_algorithms_are_not_resume_complete() {
+        let cfg = Config::default();
+        let completed = CompletedResults {
+            lines: vec![single_line("unknown_algorithm", "{}")],
+            ..CompletedResults::default()
+        };
+
+        assert!(!request_completed(
+            &completed,
+            "unknown_algorithm",
+            &cfg,
+            25,
+            2_000,
+            200
+        ));
     }
 
     fn sample_result() -> BenchResult {
