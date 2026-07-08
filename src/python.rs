@@ -241,8 +241,8 @@ impl PyHNSWIndex {
 
     /// Save this index to a JSON snapshot file.
     ///
-    /// pyvicinity does not expose deletion or filtered-search metadata today;
-    /// metadata is not persisted by the underlying Rust snapshot.
+    /// pyvicinity does not expose deletion or filtered-search APIs today;
+    /// snapshots preserve the Rust index state this binding can create.
     fn save(&self, path: PathBuf) -> PyResult<()> {
         self.inner
             .save_to_file(path)
