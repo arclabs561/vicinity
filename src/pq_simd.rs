@@ -15,25 +15,26 @@
 //!
 //! # SIMD Optimization
 //!
-//! The naive approach loads one LUT value at a time. With SIMD shuffle
-//! instructions (`vpshufb` on x86, `tbl` on ARM), we can perform multiple
-//! table lookups in parallel:
+//! The naive approach loads one LUT value at a time. The standard 8-bit ADC
+//! path batches candidates and uses platform SIMD for 4-wide gathers. The
+//! 4-bit FastScan path packs 32 candidates per block and uses byte-table
+//! lookup where available.
 //!
-//! - AVX2 `vpshufb`: 32 parallel 4-bit lookups
-//! - AVX-512 `vpermb`: 64 parallel 8-bit lookups
-//! - NEON `tbl`: 16 parallel 4-bit lookups
+//! Current kernels:
+//! - aarch64 NEON: 4-wide f32 gather for 8-bit ADC (`codebook_size = 256`)
+//! - aarch64 NEON `tbl`: 32-candidate block lookup for 4-bit FastScan
+//!   (`codebook_size = 16`)
+//! - x86 AVX2/AVX-512: batched f32 gather for standard ADC
 //!
-//! For codebook size 256, we use the 4-bit trick: split each 8-bit code
-//! into two 4-bit parts, look up in two half-tables, then add.
+//! `codebook_size = 256` is the normal high-recall path used by current
+//! GloVe-25 benchmarks. `codebook_size = 16` enables the FastScan layout but
+//! trades recall headroom for speed and compactness.
 //!
 //! # Performance
 //!
-//! On typical workloads:
-//! - Naive: ~1 lookup/cycle
-//! - AVX2 shuffle: ~8 lookups/cycle
-//! - AVX-512 shuffle: ~16 lookups/cycle
-//!
-//! 3-5x speedup on distance computation, which dominates PQ search time.
+//! See `docs/benchmark-results.md` for measured rows; performance depends on
+//! codebook shape, architecture, and whether the index has prepacked cluster
+//! codes.
 //!
 //! # References
 //!
@@ -610,6 +611,73 @@ pub mod aarch64 {
             *out = sum;
         }
     }
+
+    /// NEON FastScan block kernel for 4-bit PQ codes.
+    ///
+    /// Processes one 32-vector packed block. Each 16-byte codebook slice stores
+    /// low-nibble codes for vectors 0..15 and high-nibble codes for vectors
+    /// 16..31. `tbl` performs the 16-way byte lookup against the quantized LUT.
+    ///
+    /// # Safety
+    ///
+    /// NEON is always available on aarch64. `block_data` and `lut_quantized`
+    /// must both contain at least `num_codebooks * 16` bytes.
+    #[target_feature(enable = "neon")]
+    pub(crate) unsafe fn fastscan_block_neon(
+        block_data: &[u8],
+        lut_quantized: &[u8],
+        num_codebooks: usize,
+    ) -> [u16; 32] {
+        use std::arch::aarch64::{
+            uint16x8_t, vaddw_u8, vandq_u8, vdupq_n_u16, vdupq_n_u8, vget_high_u8, vget_low_u8,
+            vld1q_u8, vqtbl1q_u8, vshrq_n_u8, vst1q_u16,
+        };
+
+        let required_len = num_codebooks * 16;
+        assert!(block_data.len() >= required_len);
+        assert!(lut_quantized.len() >= required_len);
+
+        let block_ptr = block_data.as_ptr();
+        let lut_ptr = lut_quantized.as_ptr();
+        let low_mask = vdupq_n_u8(0x0f);
+
+        let mut low_0_7: uint16x8_t = vdupq_n_u16(0);
+        let mut low_8_15: uint16x8_t = vdupq_n_u16(0);
+        let mut high_0_7: uint16x8_t = vdupq_n_u16(0);
+        let mut high_8_15: uint16x8_t = vdupq_n_u16(0);
+
+        for m in 0..num_codebooks {
+            // SAFETY: callers provide one 16-byte packed code slice and one
+            // 16-entry LUT per codebook.
+            let (packed, table) = unsafe {
+                (
+                    vld1q_u8(block_ptr.add(m * 16)),
+                    vld1q_u8(lut_ptr.add(m * 16)),
+                )
+            };
+            let low_idx = vandq_u8(packed, low_mask);
+            let high_idx = vshrq_n_u8::<4>(packed);
+
+            let low_vals = vqtbl1q_u8(table, low_idx);
+            let high_vals = vqtbl1q_u8(table, high_idx);
+
+            low_0_7 = vaddw_u8(low_0_7, vget_low_u8(low_vals));
+            low_8_15 = vaddw_u8(low_8_15, vget_high_u8(low_vals));
+            high_0_7 = vaddw_u8(high_0_7, vget_low_u8(high_vals));
+            high_8_15 = vaddw_u8(high_8_15, vget_high_u8(high_vals));
+        }
+
+        let mut accum = [0u16; 32];
+        // SAFETY: each store writes exactly 8 lanes into the corresponding
+        // segment of the 32-lane output array.
+        unsafe {
+            vst1q_u16(accum.as_mut_ptr(), low_0_7);
+            vst1q_u16(accum.as_mut_ptr().add(8), low_8_15);
+            vst1q_u16(accum.as_mut_ptr().add(16), high_0_7);
+            vst1q_u16(accum.as_mut_ptr().add(24), high_8_15);
+        }
+        accum
+    }
 }
 
 /// Auto-dispatching batch ADC computation.
@@ -961,6 +1029,9 @@ fn fastscan_batch_quantized(
         let block_end = (block_start + bpb).min(packed.data.len());
         let block_data = &packed.data[block_start..block_end];
 
+        #[cfg(target_arch = "aarch64")]
+        let accum = unsafe { aarch64::fastscan_block_neon(block_data, lut_q, num_codebooks) };
+        #[cfg(not(target_arch = "aarch64"))]
         let accum = fastscan_block_portable(block_data, lut_q, num_codebooks);
 
         let vecs_in_block = if block_idx == num_blocks - 1 {
@@ -1186,6 +1257,29 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn test_neon_fastscan_block_matches_portable() {
+        let num_vectors = 32;
+        let num_codebooks = 7;
+        let codes: Vec<u8> = (0..num_vectors * num_codebooks)
+            .map(|i| ((i * 11 + 3) % 16) as u8)
+            .collect();
+        let packed = PackedCodes4bit::pack(&codes, num_vectors, num_codebooks);
+        let lut: Vec<f32> = (0..num_codebooks * 16)
+            .map(|i| ((i * 17 + 5) % 251) as f32 * 0.01)
+            .collect();
+        let (lut_q, _, _) = quantize_lut_flat(&lut, num_codebooks);
+
+        let portable = fastscan_block_portable(packed.block_data(0), &lut_q, num_codebooks);
+        // SAFETY: aarch64 always has NEON and the packed block/LUT are sized
+        // from the same `num_codebooks` value.
+        let neon =
+            unsafe { aarch64::fastscan_block_neon(packed.block_data(0), &lut_q, num_codebooks) };
+
+        assert_eq!(neon, portable);
     }
 
     #[test]

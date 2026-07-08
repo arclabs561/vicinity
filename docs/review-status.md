@@ -98,6 +98,11 @@ benchmarking, persistence, Python bindings, and performance work.
   `ef=200` by about 5.8%, 5.6%, and 10.2% respectively in the search-only
   Criterion target. Future dispatch work should start from binary inspection or
   a narrower distance-kernel boundary, not a traversal-wide generic wrapper.
+- The 4-bit IVF-PQ FastScan path now has an aarch64 NEON `tbl` block kernel.
+  The direct `pq_fastscan_lut_shape/flat_lut` microbench improved from
+  3.3636 us to 934.32 ns, with parity covered against the portable block
+  kernel. This is separate from the main GloVe-25 IVF-PQ row, which uses
+  `codebook_size=256` and the standard 8-bit ADC path.
 - A thresholded `flush_batch` follow-up now caches the worst result distance
   only for `ef >= 64`. The first all-ef version improved high-ef rows but
   regressed `ef=10`; the thresholded version avoids putting low-recall search
@@ -178,7 +183,7 @@ benchmarking, persistence, Python bindings, and performance work.
 | 11 | Sparse and late-interaction harnesses | SparseMIPS needs a SPLADE/BM25-style sparse dataset harness. LEMUR needs training or reproducible model loading before storage or QPS rows matter. |
 | 12 | Python policy | Decide which Rust APIs become Python APIs. Keep the default policy narrow unless an algorithm has stable benchmarks, persistence behavior, and examples. Rust-only gaps today: DiskANN, `store`, FreshGraph, filtered search/update APIs, and HNSW binary segments. |
 | 13 | LSH/sketch boundary | The `lsh` feature uses `sketchir` for cross-polytope hashing primitives. Keep `sketchir` focused on MinHash/SimHash/LSH sketches and durable sketch sidecars; keep vicinity focused on ANN storage, exact reranking, persistence modes, and fixed-recall benchmark rows. Benchmark sharing is useful, but PRT, RP-tree/RP-forest, SparseMIPS, and LEMUR should stay in vicinity unless their role becomes pure sketch generation. |
-| 14 | External research claims | Verify newer roadmap claims before implementation: Extended RaBitQ, VSAG layout tricks, IP-DiskANN, ACORN production behavior, PAG, SAQ, and ARM/SVE2 kernels. |
+| 14 | External research claims | Verify newer roadmap claims before implementation: Extended RaBitQ, VSAG layout tricks, IP-DiskANN, ACORN production behavior, PAG, SAQ, and ARM/SVE2 kernels. Keep `innr` as the optional dense-distance SIMD dependency; use local `pq_simd` work for PQ-code/LUT kernels that `innr` does not cover. |
 | 15 | Dataset difficulty metadata | First sampled profile script exists for VEC1/NBR1 datasets, and local profiles now cover SIFT, GloVe-25/50/100/200, Deep Image, NYTimes, Fashion-MNIST, MNIST, and GIST. Optional generated split labels are reported when present, and `scripts/summarize_dataset_profiles.py` renders profile JSONs into the docs table shape. Next review should decide whether benchmark-result summaries should link profile JSON paths directly. |
 | 16 | Profiling depth | Add profile artifacts for the next actual performance change. Record baseline, profiler target, negative controls, before/after, and rejected hypotheses in `docs/benchmark-results.md`. |
 

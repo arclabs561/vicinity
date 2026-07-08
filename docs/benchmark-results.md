@@ -1186,6 +1186,33 @@ rerank pool 500:
 | IVF-PQ `nprobe=32` | 95.42% | 2,941.4 | 470.6 us |
 | IVF-PQ `nprobe=32`, rerank 500 | 96.58% | 2,806.2 | 488.5 us |
 
+The separate 4-bit FastScan path (`codebook_size=16`) was then checked because
+the source comments still described a shuffle/table-lookup kernel while the
+implemented block scanner was portable scalar. The baseline and after run used
+the same saved Criterion baseline:
+
+```bash
+cargo bench --bench pq_simd -- pq_fastscan_lut_shape/flat_lut \
+  --measurement-time 3 --warm-up-time 1 --sample-size 20 \
+  --save-baseline before_fastscan_neon
+
+cargo bench --bench pq_simd -- pq_fastscan_lut_shape/flat_lut \
+  --measurement-time 3 --warm-up-time 1 --sample-size 20 \
+  --baseline before_fastscan_neon
+```
+
+Adding an aarch64 NEON `tbl` block kernel moved the 1,024-vector flat-LUT
+FastScan microbench from 3.3636 us to 934.32 ns:
+
+| Shape | Before | After | Criterion change |
+|-------|-------:|------:|------------------|
+| `pq_fastscan_lut_shape/flat_lut` | 3.3636 us | 934.32 ns | 72.25% lower mean time |
+
+This is a real FastScan-kernel fix, but it does not change the primary
+GloVe-25 fixed-recall row above: that row uses `codebook_size=256` and the
+standard 8-bit ADC path. The associated tests include a direct NEON-vs-portable
+block parity check and the existing 4-bit IVF-PQ search tests.
+
 The storage-mode Criterion probe compares the freshly built heap index,
 snapshot-loaded heap index, plain file searcher, and mmap searcher on the same
 20K-vector synthetic shape used for short profiling. Throughput is queries per

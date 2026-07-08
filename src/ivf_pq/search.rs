@@ -1310,7 +1310,7 @@ impl IVFPQIndex {
 
                 let fastscan_distances;
                 let distances = if self.params.codebook_size == 16 {
-                    // FastScan path: 4-bit codes, SIMD shuffle-based lookup.
+                    // FastScan path: 4-bit codes in prepacked 32-vector blocks.
                     if let Some(packed) = cluster.fastscan_codes.as_ref() {
                         #[cfg(feature = "benchmark")]
                         {
