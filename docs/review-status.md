@@ -111,9 +111,11 @@ benchmarking, persistence, Python bindings, and performance work.
   snapshot. Its HNSW tombstone, IVF-PQ filter metadata, DiskANN rustdoc,
   SmallVec inline-capacity, random LEMUR encoder warning, and unsupported
   compression fallback claims are resolved or mitigated at current `HEAD`.
-  Live follow-ups from that note are HNSW distance-dispatch profiling,
-  fixed-recall rows for experimental families, and reducing `ivf_pq/search.rs`
-  module size without changing behavior.
+  Live follow-ups from that note are HNSW distance-dispatch profiling and
+  fixed-recall rows for experimental families. The `ivf_pq/search.rs` size item
+  has been reduced without behavior changes by extracting manifest, cluster, and
+  file-storage helpers; continue splitting only when a coherent private
+  boundary appears.
 - The 4-bit IVF-PQ FastScan path now has an aarch64 NEON `tbl` block kernel.
   The direct `pq_fastscan_lut_shape/flat_lut` microbench improved from
   3.3636 us to 934.32 ns, with parity covered against the portable block
