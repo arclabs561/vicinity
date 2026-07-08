@@ -142,9 +142,12 @@ class Summary:
     rows: int = 0
     best_recall: float = 0.0
     best_qps: float = 0.0
+    best_qps_params: dict[str, Any] | None = None
     best_qps_index_bytes: int | None = None
     best_qps_diagnostics: dict[str, float] | None = None
-    recall_qps: list[tuple[float, float, int | None]] | None = None
+    recall_qps: list[tuple[float, float, int | None, dict[str, Any] | None]] | None = (
+        None
+    )
     storage_scope_observed: bool = False
 
     def add(self, row: dict[str, Any], *, storage_scope_observed: bool = False) -> None:
@@ -154,9 +157,12 @@ class Summary:
         qps = float(row.get("qps", 0.0))
         index_bytes = row.get("index_bytes")
         index_bytes = index_bytes if isinstance(index_bytes, int) else None
+        params = row.get("params")
+        params = dict(params) if isinstance(params, dict) else None
         self.best_recall = max(self.best_recall, recall)
         if qps >= self.best_qps:
             self.best_qps = qps
+            self.best_qps_params = params
             self.best_qps_index_bytes = index_bytes
             diagnostics = {
                 key: float(row[key])
@@ -166,26 +172,32 @@ class Summary:
             self.best_qps_diagnostics = diagnostics or None
         if self.recall_qps is None:
             self.recall_qps = []
-        self.recall_qps.append((recall, qps, index_bytes))
+        self.recall_qps.append((recall, qps, index_bytes, params))
 
-    def qps_at_recall(self, recall_floor: float) -> float | None:
+    def best_at_recall(
+        self,
+        recall_floor: float,
+    ) -> tuple[float, int | None, dict[str, Any] | None] | None:
         qualifying = [
-            qps
-            for recall, qps, _index_bytes in self.recall_qps or []
-            if recall >= recall_floor
-        ]
-        return max(qualifying) if qualifying else None
-
-    def index_bytes_at_recall(self, recall_floor: float) -> int | None:
-        qualifying = [
-            (qps, index_bytes)
-            for recall, qps, index_bytes in self.recall_qps or []
+            (qps, index_bytes, params)
+            for recall, qps, index_bytes, params in self.recall_qps or []
             if recall >= recall_floor
         ]
         if not qualifying:
             return None
-        _qps, index_bytes = max(qualifying)
-        return index_bytes
+        return max(qualifying, key=lambda item: item[0])
+
+    def qps_at_recall(self, recall_floor: float) -> float | None:
+        best = self.best_at_recall(recall_floor)
+        return None if best is None else best[0]
+
+    def index_bytes_at_recall(self, recall_floor: float) -> int | None:
+        best = self.best_at_recall(recall_floor)
+        return None if best is None else best[1]
+
+    def params_at_recall(self, recall_floor: float) -> dict[str, Any] | None:
+        best = self.best_at_recall(recall_floor)
+        return None if best is None else best[2]
 
 
 @dataclass(frozen=True)
@@ -198,8 +210,10 @@ class CoverageRow:
     rows: int
     best_recall: float | None
     best_qps: float | None
+    best_params: dict[str, Any] | None
     best_index_bytes: int | None
     qps_at_recall_floor: float | None
+    params_at_recall_floor: dict[str, Any] | None
     index_bytes_at_recall_floor: int | None
     best_row_diagnostics: dict[str, float] | None
 
@@ -352,9 +366,13 @@ def coverage_rows(
                 rows=summary.rows if summary else 0,
                 best_recall=summary.best_recall if summary else None,
                 best_qps=summary.best_qps if summary else None,
+                best_params=summary.best_qps_params if summary else None,
                 best_index_bytes=summary.best_qps_index_bytes if summary else None,
                 qps_at_recall_floor=(
                     summary.qps_at_recall(recall_floor) if summary else None
+                ),
+                params_at_recall_floor=(
+                    summary.params_at_recall(recall_floor) if summary else None
                 ),
                 index_bytes_at_recall_floor=(
                     summary.index_bytes_at_recall(recall_floor) if summary else None
@@ -365,22 +383,32 @@ def coverage_rows(
     return rows
 
 
+def format_params(params: dict[str, Any] | None) -> str:
+    if params is None:
+        return "-"
+    return f"`{json.dumps(params, sort_keys=True, separators=(',', ':'))}`"
+
+
 def markdown_table(rows: list[CoverageRow], recall_floor: float = 0.95) -> str:
     lines = [
         "| Dataset | Profile | Algorithm | Storage | Status | Rows | "
-        "Best Recall@10 | Best QPS | Best Index Bytes | "
+        "Best Recall@10 | Best QPS | Best Params | Best Index Bytes | "
         f"Best QPS @ R>={recall_floor:.2f} | "
+        f"Params @ R>={recall_floor:.2f} | "
         f"Index Bytes @ R>={recall_floor:.2f} |",
-        "| --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| --- | --- | --- | --- | --- | ---: | ---: | ---: | --- | "
+        "---: | ---: | --- | ---: |",
     ]
     for row in rows:
         profile = "-" if row.dataset_profile is None else row.dataset_profile
         recall = "-" if row.best_recall is None else f"{row.best_recall:.4f}"
         qps = "-" if row.best_qps is None else f"{row.best_qps:.1f}"
+        best_params = format_params(row.best_params)
         index_bytes = "-" if row.best_index_bytes is None else str(row.best_index_bytes)
         floor_qps = (
             "-" if row.qps_at_recall_floor is None else f"{row.qps_at_recall_floor:.1f}"
         )
+        floor_params = format_params(row.params_at_recall_floor)
         floor_index_bytes = (
             "-"
             if row.index_bytes_at_recall_floor is None
@@ -388,8 +416,8 @@ def markdown_table(rows: list[CoverageRow], recall_floor: float = 0.95) -> str:
         )
         lines.append(
             f"| {row.dataset} | {profile} | {row.algorithm} | {row.storage_mode} | "
-            f"{row.status} | {row.rows} | {recall} | {qps} | {index_bytes} | "
-            f"{floor_qps} | {floor_index_bytes} |"
+            f"{row.status} | {row.rows} | {recall} | {qps} | {best_params} | "
+            f"{index_bytes} | {floor_qps} | {floor_params} | {floor_index_bytes} |"
         )
     return "\n".join(lines)
 
@@ -529,9 +557,11 @@ def main() -> None:
                         "rows": row.rows,
                         "best_recall_at_10": row.best_recall,
                         "best_qps": row.best_qps,
+                        "best_params": row.best_params,
                         "best_index_bytes": row.best_index_bytes,
                         "best_row_diagnostics": row.best_row_diagnostics,
                         "qps_at_recall_floor": row.qps_at_recall_floor,
+                        "params_at_recall_floor": row.params_at_recall_floor,
                         "index_bytes_at_recall_floor": row.index_bytes_at_recall_floor,
                     }
                     for row in rows
