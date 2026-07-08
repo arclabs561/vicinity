@@ -1291,6 +1291,7 @@ pub(crate) fn json_line(
     json_line_with_storage(algorithm, params, build_time_s, rss_kb, result, &storage)
 }
 
+#[cfg(any(feature = "fresh_graph", feature = "hnsw"))]
 pub(crate) fn json_line_with_extra_fields(
     algorithm: &str,
     params: &str,
@@ -1350,6 +1351,7 @@ pub(crate) fn json_line_with_storage(
     s
 }
 
+#[cfg(any(feature = "fresh_graph", feature = "hnsw"))]
 fn append_extra_fields(line: &mut String, extra_fields: &str) {
     let fields = extra_fields.trim().trim_start_matches(',');
     if fields.is_empty() || !line.ends_with('}') {
@@ -1653,6 +1655,7 @@ mod tests {
         assert!(line.contains("\"rss_kb\":123"));
     }
 
+    #[cfg(any(feature = "fresh_graph", feature = "hnsw"))]
     #[test]
     fn json_line_with_extra_fields_appends_top_level_metrics() {
         let line = json_line_with_extra_fields(

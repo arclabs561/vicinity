@@ -103,6 +103,8 @@ use support::brute_force_search_ids;
 use support::dir_size_bytes;
 #[cfg(feature = "parallel")]
 use support::evaluate_parallel;
+#[cfg(any(feature = "fresh_graph", feature = "hnsw"))]
+use support::json_line_with_extra_fields;
 #[cfg(feature = "kmeans_tree")]
 use support::kmeans_tree_params_json;
 #[cfg(feature = "rptree")]
@@ -110,9 +112,8 @@ use support::rp_forest_params_json;
 #[cfg(any(feature = "balltree", feature = "kdtree", feature = "rptree"))]
 use support::tree_params_json;
 use support::{
-    brute_force_search, current_rss_kb, emit_result, evaluate, json_line,
-    json_line_with_extra_fields, load_completed_results, parse_args, print_header, print_row,
-    request_completed, rustc_version, Config,
+    brute_force_search, current_rss_kb, emit_result, evaluate, json_line, load_completed_results,
+    parse_args, print_header, print_row, request_completed, rustc_version, Config,
 };
 #[cfg(any(
     feature = "balltree",
