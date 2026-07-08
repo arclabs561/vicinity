@@ -47,6 +47,7 @@ class SelectivityRow:
     recall: float | None
     qps: float | None
     index_bytes: int | None
+    index_bytes_kind: str | None
     index_bytes_required: bool
     p95_us: float | None
     p99_us: float | None
@@ -97,6 +98,7 @@ def parse_row(
         storage_mode = "in_memory"
     cache_state = row.get("cache_state")
     index_bytes = row.get("index_bytes")
+    index_bytes_kind = row.get("index_bytes_kind")
     return SelectivityRow(
         workload=workload,
         algorithm=algorithm,
@@ -108,6 +110,9 @@ def parse_row(
         recall=recall,
         qps=number(row.get("qps")),
         index_bytes=int(index_bytes) if isinstance(index_bytes, int) else None,
+        index_bytes_kind=(
+            index_bytes_kind if isinstance(index_bytes_kind, str) else None
+        ),
         index_bytes_required=index_bytes_required,
         p95_us=number(row.get("p95_us")),
         p99_us=number(row.get("p99_us")),
@@ -178,6 +183,7 @@ def markdown_table(rows: list[SelectivityRow]) -> str:
         "Recall",
         "QPS",
         "Index Bytes",
+        "Index Bytes Kind",
         "p95 us",
         "p99 us",
         "Returned",
@@ -190,6 +196,7 @@ def markdown_table(rows: list[SelectivityRow]) -> str:
         "---",
         "---",
         "---:",
+        "---",
         "---:",
         "---:",
         "---:",
@@ -225,6 +232,7 @@ def markdown_table(rows: list[SelectivityRow]) -> str:
                     fmt_float(row.recall, 4),
                     fmt_qps(row.qps),
                     "" if row.index_bytes is None else str(row.index_bytes),
+                    "" if row.index_bytes_kind is None else row.index_bytes_kind,
                     fmt_float(row.p95_us),
                     fmt_float(row.p99_us),
                     fmt_float(row.mean_returned),
@@ -249,6 +257,7 @@ def rows_as_json(rows: list[SelectivityRow]) -> list[dict[str, Any]]:
             row.recall_key: row.recall,
             "qps": row.qps,
             "index_bytes": row.index_bytes,
+            "index_bytes_kind": row.index_bytes_kind,
             "index_bytes_required": row.index_bytes_required,
             "p95_us": row.p95_us,
             "p99_us": row.p99_us,

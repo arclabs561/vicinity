@@ -256,7 +256,14 @@ fn emit_result(
             ));
         }
         let index_bytes = index_bytes
-            .map(|bytes| format!(",\"index_bytes\":{bytes}"))
+            .map(|bytes| {
+                let kind = if algorithm == "acorn" || algorithm == "selectivity_acorn" {
+                    "synthetic_heap_estimate"
+                } else {
+                    "heap_estimate"
+                };
+                format!(",\"index_bytes\":{bytes},\"index_bytes_kind\":\"{kind}\"")
+            })
             .unwrap_or_default();
         let line = format!(
             "{{\"algorithm\":\"{}\",\"params\":{{{}}},\"storage_mode\":\"in_memory\",\"cache_state\":\"warm_after_build\",\"recall_at_{}\":{:.4},\"qps\":{:.1},\"latency_us\":{:.1},\"p50_us\":{:.1},\"p95_us\":{:.1},\"p99_us\":{:.1},\"mean_returned\":{:.1},\"two_hop_invocations\":{},\"two_hop_nodes_examined\":{}{}}}",

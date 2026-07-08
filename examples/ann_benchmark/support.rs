@@ -1495,6 +1495,7 @@ pub(crate) struct ResultStorage<'a> {
     pub(crate) cache_state: &'a str,
     pub(crate) load_time_s: Option<f64>,
     pub(crate) index_bytes: Option<u64>,
+    pub(crate) index_bytes_kind: Option<&'a str>,
     pub(crate) diagnostics: Option<StorageDiagnostics>,
 }
 
@@ -1521,8 +1522,22 @@ impl Default for ResultStorage<'_> {
             cache_state: "warm_after_build",
             load_time_s: None,
             index_bytes: None,
+            index_bytes_kind: None,
             diagnostics: None,
         }
+    }
+}
+
+impl ResultStorage<'_> {
+    fn index_bytes_kind(&self) -> Option<&str> {
+        let _ = self.index_bytes?;
+
+        self.index_bytes_kind.or(match self.storage_mode {
+            "in_memory" => Some("heap_estimate"),
+            "snapshot_loaded" => Some("snapshot_bytes"),
+            "file" | "mmap" | "segmented_store" => Some("storage_bytes"),
+            _ => None,
+        })
     }
 }
 
@@ -1620,6 +1635,9 @@ pub(crate) fn json_line_with_storage(
     }
     if let Some(bytes) = storage.index_bytes {
         s.push_str(&format!(",\"index_bytes\":{}", bytes));
+    }
+    if let Some(kind) = storage.index_bytes_kind() {
+        s.push_str(&format!(",\"index_bytes_kind\":\"{}\"", kind));
     }
     if let Some(diagnostics) = storage.diagnostics {
         s.push_str(&format!(
@@ -2036,6 +2054,25 @@ mod tests {
         assert!(line.contains("\"rss_kb\":123"));
     }
 
+    #[test]
+    fn json_line_records_index_bytes_kind_when_size_is_reported() {
+        let storage = ResultStorage {
+            index_bytes: Some(4096),
+            ..ResultStorage::default()
+        };
+        let line = json_line_with_storage(
+            "hnsw",
+            "{\"m\":16,\"ef_search\":10}",
+            1.0,
+            None,
+            &sample_result(),
+            &storage,
+        );
+
+        assert!(line.contains("\"index_bytes\":4096"));
+        assert!(line.contains("\"index_bytes_kind\":\"heap_estimate\""));
+    }
+
     #[cfg(any(feature = "fresh_graph", feature = "hnsw"))]
     #[test]
     fn json_line_with_extra_fields_appends_top_level_metrics() {
@@ -2072,6 +2109,7 @@ mod tests {
         );
 
         assert!(line.contains("\"index_bytes\":4096"));
+        assert!(line.contains("\"index_bytes_kind\":\"heap_estimate\""));
         assert!(line.contains("\"update_qps\":12.5"));
         assert!(line.ends_with('}'));
     }
@@ -2083,6 +2121,7 @@ mod tests {
             cache_state: "warm_after_open",
             load_time_s: Some(0.125),
             index_bytes: Some(4096),
+            index_bytes_kind: Some("storage_bytes"),
             diagnostics: Some(StorageDiagnostics {
                 avg_visited_nodes: 12.0,
                 avg_probed_lists: 3.0,
@@ -2108,6 +2147,7 @@ mod tests {
         );
 
         assert!(line.contains("\"storage_mode\":\"mmap\""));
+        assert!(line.contains("\"index_bytes_kind\":\"storage_bytes\""));
         assert!(line.contains("\"cache_state\":\"warm_after_open\""));
         assert!(line.contains("\"load_time_s\":0.1250"));
         assert!(line.contains("\"index_bytes\":4096"));

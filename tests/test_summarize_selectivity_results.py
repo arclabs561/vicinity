@@ -50,6 +50,7 @@ def write_results(path: Path) -> None:
             "cache_state": "warm_after_build",
             "qps": 12345.678,
             "index_bytes": 4096,
+            "index_bytes_kind": "synthetic_heap_estimate",
             "p95_us": 90.1,
             "p99_us": 120.2,
             "mean_returned": 9.8,
@@ -67,6 +68,7 @@ def write_results(path: Path) -> None:
             "cache_state": "warm_after_build",
             "qps": 4567.0,
             "index_bytes": 2048,
+            "index_bytes_kind": "heap_estimate",
             "p95_us": 210.0,
             "p99_us": 300.0,
             "mean_returned": 7.0,
@@ -96,6 +98,7 @@ def test_load_rows_keeps_selectivity_curve(tmp_path: Path) -> None:
     assert rows[0].recall_key == "recall_at_10"
     assert rows[0].recall == 0.95
     assert rows[0].index_bytes == 4096
+    assert rows[0].index_bytes_kind == "synthetic_heap_estimate"
     assert rows[0].index_bytes_required
     assert rows[0].two_hop_invocations == 14.0
     assert rows[1].algorithm == "filtered_graph"
@@ -114,11 +117,12 @@ def test_markdown_table_renders_selectivity_columns(tmp_path: Path) -> None:
     acorn = next(line for line in lines if "| acorn |" in line)
     filtered = next(line for line in lines if "| filtered_graph |" in line)
     acorn_fragment = (
-        "| in_memory | warm_after_build | 0.1 | 120 | 0.95 | 12345.7 | 4096 |"
+        "| in_memory | warm_after_build | 0.1 | 120 | 0.95 | 12345.7 | "
+        "4096 | synthetic_heap_estimate |"
     )
     assert acorn_fragment in acorn
     assert "| 9.8 | 14 | 88 |" in acorn
-    assert "| 0.01 | 12 | 0.72 | 4567.0 | 2048 |" in filtered
+    assert "| 0.01 | 12 | 0.72 | 4567.0 | 2048 | heap_estimate |" in filtered
     assert filtered.endswith("| 7 |  |  |")
 
 
@@ -140,6 +144,7 @@ def test_cli_json_preserves_dynamic_recall_key(
     assert output[0]["recall_at_10"] == 0.95
     assert output[0]["selectivity"] == 0.1
     assert output[0]["index_bytes"] == 4096
+    assert output[0]["index_bytes_kind"] == "synthetic_heap_estimate"
     assert output[0]["index_bytes_required"]
     assert output[1]["algorithm"] == "filtered_graph"
 

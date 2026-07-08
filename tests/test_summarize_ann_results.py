@@ -236,10 +236,10 @@ def test_markdown_table_is_stable(tmp_path: Path) -> None:
     table = script.markdown_table(script.coverage_rows(script.load_summaries([path])))
     columns = [line.split("|")[1:-1] for line in table.splitlines()]
 
-    assert {len(line_columns) for line_columns in columns} == {15}
+    assert {len(line_columns) for line_columns in columns} == {18}
     assert (
         "| rows | - | hnsw | in_memory | measured | 1 | 1.0000 | - | 4096 | "
-        "42.0 | - | 4096 | 42.0 | - | 4096 |" in table
+        "- | 42.0 | - | 4096 | - | 42.0 | - | 4096 | - |" in table
     )
 
 
@@ -249,7 +249,8 @@ def test_json_output_preserves_recall_at_10_key(
     script = load_script()
     path = tmp_path / "rows.jsonl"
     path.write_text(
-        '{"algorithm":"hnsw","recall_at_10":1.0,"qps":42,"index_bytes":4096}\n',
+        '{"algorithm":"hnsw","recall_at_10":1.0,"qps":42,"index_bytes":4096,'
+        '"index_bytes_kind":"heap_estimate"}\n',
         encoding="utf-8",
     )
     monkeypatch.setattr(sys, "argv", ["summarize_ann_results.py", str(path), "--json"])
@@ -260,9 +261,12 @@ def test_json_output_preserves_recall_at_10_key(
     assert output[0]["best_recall_at_10"] == 1.0
     assert output[0]["best_recall_params"] is None
     assert output[0]["best_recall_index_bytes"] == 4096
+    assert output[0]["best_recall_index_bytes_kind"] == "heap_estimate"
     assert output[0]["best_index_bytes"] == 4096
+    assert output[0]["best_index_bytes_kind"] == "heap_estimate"
     assert output[0]["qps_at_recall_floor"] == 42.0
     assert output[0]["index_bytes_at_recall_floor"] == 4096
+    assert output[0]["index_bytes_kind_at_recall_floor"] == "heap_estimate"
 
 
 def test_json_output_can_include_dataset_profile_path(
@@ -341,8 +345,10 @@ def test_json_output_uses_recall_floor_for_thresholded_qps(
     script = load_script()
     path = tmp_path / "rows.jsonl"
     path.write_text(
-        '{"algorithm":"hnsw","params":{"ef_search":50},"recall_at_10":0.96,"qps":100,"index_bytes":1000}\n'
-        '{"algorithm":"hnsw","params":{"ef_search":10},"recall_at_10":0.80,"qps":1000,"index_bytes":2000}\n',
+        '{"algorithm":"hnsw","params":{"ef_search":50},"recall_at_10":0.96,"qps":100,'
+        '"index_bytes":1000,"index_bytes_kind":"heap_estimate"}\n'
+        '{"algorithm":"hnsw","params":{"ef_search":10},"recall_at_10":0.80,"qps":1000,'
+        '"index_bytes":2000,"index_bytes_kind":"snapshot_bytes"}\n',
         encoding="utf-8",
     )
     monkeypatch.setattr(
@@ -363,12 +369,15 @@ def test_json_output_uses_recall_floor_for_thresholded_qps(
     assert output[0]["best_recall_at_10"] == 0.96
     assert output[0]["best_recall_params"] == {"ef_search": 50}
     assert output[0]["best_recall_index_bytes"] == 1000
+    assert output[0]["best_recall_index_bytes_kind"] == "heap_estimate"
     assert output[0]["best_qps"] == 1000.0
     assert output[0]["best_params"] == {"ef_search": 10}
     assert output[0]["best_index_bytes"] == 2000
+    assert output[0]["best_index_bytes_kind"] == "snapshot_bytes"
     assert output[0]["qps_at_recall_floor"] == 100.0
     assert output[0]["params_at_recall_floor"] == {"ef_search": 50}
     assert output[0]["index_bytes_at_recall_floor"] == 1000
+    assert output[0]["index_bytes_kind_at_recall_floor"] == "heap_estimate"
 
 
 def test_json_output_preserves_best_row_diagnostics(

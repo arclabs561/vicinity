@@ -157,6 +157,7 @@ fn snapshot_storage(load_time_s: f64, index_bytes: Option<u64>) -> ResultStorage
         cache_state: "warm_after_load",
         load_time_s: Some(load_time_s),
         index_bytes,
+        index_bytes_kind: Some("snapshot_bytes"),
         diagnostics: None,
     }
 }
@@ -182,6 +183,7 @@ fn snapshot_storage(load_time_s: f64, index_bytes: Option<u64>) -> ResultStorage
 fn in_memory_storage(index_bytes: Option<u64>) -> ResultStorage<'static> {
     ResultStorage {
         index_bytes,
+        index_bytes_kind: Some("heap_estimate"),
         ..ResultStorage::default()
     }
 }
@@ -1484,6 +1486,7 @@ fn run_diskann(
                         cache_state: "warm_after_open",
                         load_time_s: Some(file_load_time_s),
                         index_bytes,
+                        index_bytes_kind: Some("storage_bytes"),
                         diagnostics: Some(file_diagnostics),
                     },
                 ),
@@ -1505,6 +1508,7 @@ fn run_diskann(
                         cache_state: "warm_after_open",
                         load_time_s: Some(mmap_load_time_s),
                         index_bytes,
+                        index_bytes_kind: Some("storage_bytes"),
                         diagnostics: Some(mmap_diagnostics),
                     },
                 ),
@@ -1726,6 +1730,7 @@ fn run_store(
                         cache_state: "warm_after_checkpoint",
                         load_time_s: None,
                         index_bytes,
+                        index_bytes_kind: Some("storage_bytes"),
                         diagnostics: None,
                     },
                 ),
@@ -1753,6 +1758,7 @@ fn run_store(
                         cache_state: "warm_after_reopen",
                         load_time_s: Some(snapshot_load_time_s),
                         index_bytes,
+                        index_bytes_kind: Some("storage_bytes"),
                         diagnostics: None,
                     },
                 ),
@@ -2968,6 +2974,7 @@ fn run_brute(cfg: &Config, train: &[Vec<f32>], test: &[Vec<f32>], neighbors: &[V
         let params_json = "{}";
         let storage = ResultStorage {
             index_bytes: Some(0),
+            index_bytes_kind: Some("none"),
             ..ResultStorage::default()
         };
         emit_result(
