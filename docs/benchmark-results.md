@@ -524,6 +524,11 @@ cargo run --release --example ann_benchmark --no-default-features --features dis
 | 250 | file | 95.72% | 658.7 | 1,532.3 | 2,087.8 | 2,289.6 | 0.0012 | 203,564,652 | 2,343.51 |
 | 250 | mmap | 95.72% | 2,382.1 | 421.2 | 591.1 | 651.6 | 0.0009 | 203,564,652 | 2,343.51 |
 
+DiskANN in-memory rows generated before `6402ece` either omitted heap index
+bytes or undercounted them. `DiskANNIndex::size_bytes()` now counts inline
+`SmallVec` adjacency storage and doc IDs, so regenerate rows before using
+DiskANN heap footprint in comparisons.
+
 These full-corpus rows confirm the storage shape at scale: direct-file search
 performs many small graph/vector reads, mmap is much closer to heap search, and
 page/co-location work remains a storage-layout problem rather than a benchmark
