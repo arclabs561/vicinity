@@ -24,8 +24,10 @@ benchmarking, persistence, Python bindings, and performance work.
 
 - Dataset scripts are idempotent enough for the current benchmark workflow:
   they write atomically, verify HDF5 byte size, validate converted binary
-  headers, use a manifest, and require `--force`, `--redownload`, or
-  `--adopt-existing` for non-matching cached outputs. They also support
+  headers and payload sizes, record generated-output SHA-256 values in
+  manifests where generation is deterministic, and require `--force`,
+  `--redownload`, or `--adopt-existing` for non-matching cached outputs.
+  They also support
   `--download-only` for pinning and verifying large source HDF5 files before
   conversion, and `--all` for applying the same flow to every configured
   ann-benchmarks dataset.

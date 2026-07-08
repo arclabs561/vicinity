@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 from types import ModuleType
 
@@ -74,10 +75,36 @@ def test_matching_scale_outputs_accepts_complete_manifest(tmp_path: Path) -> Non
     assert script.matching_scale_outputs(scale_dir, settings)
 
 
+def test_output_manifest_records_hashes(tmp_path: Path) -> None:
+    script = load_script()
+    scale_dir = tmp_path / "Z"
+    write_tiny_scale(script, scale_dir, "Z")
+
+    manifest = json.loads((scale_dir / "multiscale_dataset.json").read_text())
+    for info in manifest["outputs"].values():
+        assert isinstance(info["bytes"], int)
+        assert isinstance(info["sha256"], str)
+        assert len(info["sha256"]) == 64
+
+
 def test_matching_scale_outputs_rejects_truncated_payload(tmp_path: Path) -> None:
     script = load_script()
     scale_dir = tmp_path / "Z"
     settings = write_tiny_scale(script, scale_dir, "Z")
     (scale_dir / "train.bin").write_bytes((scale_dir / "train.bin").read_bytes()[:12])
+
+    assert not script.matching_scale_outputs(scale_dir, settings)
+
+
+def test_matching_scale_outputs_rejects_same_size_payload_drift(
+    tmp_path: Path,
+) -> None:
+    script = load_script()
+    scale_dir = tmp_path / "Z"
+    settings = write_tiny_scale(script, scale_dir, "Z")
+    train_path = scale_dir / "train.bin"
+    payload = bytearray(train_path.read_bytes())
+    payload[-1] ^= 0x01
+    train_path.write_bytes(payload)
 
     assert not script.matching_scale_outputs(scale_dir, settings)
