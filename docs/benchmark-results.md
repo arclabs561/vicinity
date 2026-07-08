@@ -2086,6 +2086,38 @@ mmap graph pages, IVF posting lists, segmented stores, and cold/warm page-cache
 measurements. Snapshot-loaded rows remain useful correctness and reload
 baselines, but they are not a substitute for file or mmap search rows.
 
+### IVF-AVQ capped fixed-recall storage diagnostic (2026-07-08)
+
+Command:
+
+```sh
+cargo run --example ann_benchmark --release --features ivf_avq,persistence -- \
+  data/ann-benchmarks/glove-25-angular --algo ivf_avq \
+  --max-train 50000 --max-queries 500 --warmup-queries 50 \
+  --pq-nprobes 20,50 --pq-rerank-pools 500 --snapshot-load --json --fresh \
+  --results data/ann-benchmarks/results/vicinity-ivf-avq-storage-20260708.jsonl
+```
+
+The first capped point above 95% recall is `nprobe=20,num_reorder=500`.
+This is capped 50K/500-query evidence, not a replacement for a full-train
+GloVe-25 row.
+
+| Storage | Recall@10 | QPS | p95 us | Index bytes | Bytes kind | Notes |
+| --- | ---: | ---: | ---: | ---: | --- | --- |
+| in_memory | 0.9586 | 32,145.7 | 36.5 | 7,421,328 | heap_estimate | warm after build |
+| snapshot_loaded | 0.9586 | 31,530.3 | 37.3 | 5,705,525 | snapshot_bytes | loaded into heap |
+| file | 0.9586 | 4,186.1 | 267.2 | 5,705,525 | storage_bytes | 20 partition reads/query, 500 raw vector reads/query |
+| mmap | 0.9586 | 20,022.5 | 59.8 | 5,705,525 | storage_bytes | same logical reads as file, warm page cache |
+| in_memory | 0.9886 | 18,084.1 | 63.3 | 7,421,328 | heap_estimate | `nprobe=50,num_reorder=500` |
+| snapshot_loaded | 0.9886 | 17,758.1 | 64.3 | 5,705,525 | snapshot_bytes | `nprobe=50,num_reorder=500` |
+| file | 0.9886 | 3,377.5 | 315.8 | 5,705,525 | storage_bytes | 50 partition reads/query, 500 raw vector reads/query |
+| mmap | 0.9886 | 11,088.8 | 102.0 | 5,705,525 | storage_bytes | same logical reads as file, warm page cache |
+
+The earlier all-results recall-gap report still shows the old full-train
+`queries=500` IVF-AVQ rows at 20.5% recall because capped 50K evidence should
+not dominate full-train evidence. The remaining IVF-AVQ benchmark task is a
+full-train fixed-recall sweep.
+
 ### IVF-PQ sampled-training diagnostic (2026-07-06)
 
 Command:
