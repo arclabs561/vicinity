@@ -292,6 +292,38 @@ candidate-processing experiment with the same ef=10/50/100/200 controls. Do
 not widen unsafe for this path; the dense kernel is already inside innr's safe
 API boundary.
 
+A later same-day profile used `CARGO_PROFILE_BENCH_DEBUG=1`, frame pointers,
+and an explicit `dsymutil` pass against the benchmark executable saved by
+`samply`:
+
+```bash
+CARGO_PROFILE_BENCH_DEBUG=1 RUSTFLAGS="-C force-frame-pointers=yes" \
+  CARGO_TARGET_DIR=/tmp/vicinity-hnsw-profile-target CARGO_INCREMENTAL=0 \
+  RUSTC_WRAPPER= samply record --save-only \
+  -o /tmp/vicinity-hnsw-ef200-current-20260708.json.gz -- \
+  cargo bench --bench hnsw_search --features hnsw,benchmark -- \
+  hnsw_search_only/ef/200 --profile-time 10
+```
+
+That trace captured 14,069 benchmark-thread samples. Mapping the address
+labels through the generated dSYM gave this leaf-sample split:
+
+| Bucket | Leaf samples | Share |
+| --- | ---: | ---: |
+| `innr::dense::dot` | 5,314 | 37.8% |
+| `vicinity::hnsw::search::greedy_search_layer` | 3,016 | 21.4% |
+| `vicinity::hnsw::search::flush_batch` | 2,602 | 18.5% |
+| `vicinity::hnsw::search::insert_result_if_accepted` | 2,000 | 14.2% |
+| sort/setup/other | 918 | 6.5% |
+| `vicinity::distance::cosine_distance_normalized` | 219 | 1.6% |
+
+The new sample again argues against new local unsafe in HNSW. The largest leaf
+bucket is already inside `innr`'s safe dense kernel, while the next buckets are
+safe search/frontier bookkeeping. Future HNSW work should first test candidate
+and result heap structure, visited-set behavior, and graph/vector layout
+locality. If an `innr` helper is added, the measured shape should be a safe
+row-indexed scorer over `query + flat_vectors + dim + ids -> output`.
+
 The first `flush_batch` follow-up cached the current worst result distance for
 every beam width. It improved high-ef rows but regressed `ef=10`, so the kept
 change uses the cached-worst loop only for `ef >= 64`. The thresholded
