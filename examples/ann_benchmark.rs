@@ -1359,6 +1359,7 @@ fn run_diskann(
     index.build().unwrap();
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
+    let memory_index_bytes = Some(index.size_bytes() as u64);
 
     let temp_dir = tempfile::tempdir().expect("create temp dir for DiskANN file-backed benchmark");
     let index_dir = temp_dir.path().join("diskann");
@@ -1393,7 +1394,17 @@ fn run_diskann(
             );
             emit_result(
                 &cfg.results_path,
-                &json_line("diskann", &params_json, build_time_s, rss, &result),
+                &json_line_with_storage(
+                    "diskann",
+                    &params_json,
+                    build_time_s,
+                    rss,
+                    &result,
+                    &ResultStorage {
+                        index_bytes: memory_index_bytes,
+                        ..ResultStorage::default()
+                    },
+                ),
             );
             let params_json = format!(
                 "{{\"m\":{},\"ef_construction\":{},\"alpha\":1.2,\"ef_search\":{},\"storage\":\"file\"}}",
