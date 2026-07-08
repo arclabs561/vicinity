@@ -140,9 +140,10 @@ cargo run --example ann_benchmark --release --features hnsw,fresh_graph -- \
 cargo run --example ann_benchmark --release --features hnsw -- \
   data/ann-benchmarks/glove-25-angular --algo inplace --algo inplace_churn --json
 
-# LSM-tiered streaming churn, scored against a live active-set oracle
-cargo run --example ann_benchmark --release --features hnsw -- \
-  data/ann-benchmarks/glove-25-angular --algo lsm_churn --json
+# LSM-tiered streaming churn, scored against a live active-set oracle.
+# `--snapshot-load` adds a saved-and-reopened restart snapshot row.
+cargo run --example ann_benchmark --release --features hnsw,serde -- \
+  data/ann-benchmarks/glove-25-angular --algo lsm_churn --snapshot-load --json
 
 # Classic tree baselines for comparison
 cargo run --example ann_benchmark --release --features kdtree,balltree,rptree,kmeans_tree -- \

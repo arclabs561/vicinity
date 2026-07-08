@@ -89,6 +89,7 @@ use support::brute_force_search_ids;
     feature = "finger",
     feature = "filtered_graph",
     feature = "fresh_graph",
+    all(feature = "hnsw", feature = "serde"),
     feature = "kdtree",
     feature = "kmeans_tree",
     feature = "nsg",
@@ -2361,6 +2362,22 @@ fn run_lsm_churn(cfg: &Config, train: &[Vec<f32>], test: &[Vec<f32>], dim: usize
     let stats = index.stats();
     let rss = current_rss_kb();
     let index_bytes = Some(index.memory_usage().total() as u64);
+    #[cfg(feature = "serde")]
+    let snapshot_index = if cfg.snapshot_load {
+        let temp_dir = tempfile::tempdir().expect("create temp dir for LSM snapshot benchmark");
+        index.save_to_dir(temp_dir.path()).unwrap();
+        let index_bytes = dir_size_bytes(temp_dir.path()).ok();
+        let load_start = Instant::now();
+        let loaded = LsmIndex::load_from_dir(temp_dir.path()).unwrap();
+        let load_time_s = load_start.elapsed().as_secs_f64();
+        Some((temp_dir, loaded, load_time_s, index_bytes))
+    } else {
+        None
+    };
+    #[cfg(not(feature = "serde"))]
+    if cfg.snapshot_load {
+        eprintln!("lsm_churn --snapshot-load requested but serde feature is not enabled");
+    }
 
     let test_subset = &test[..query_count];
     let live_neighbors: Vec<Vec<i32>> = test_subset
@@ -2426,8 +2443,39 @@ fn run_lsm_churn(cfg: &Config, train: &[Vec<f32>], test: &[Vec<f32>], dim: usize
                     &extra_json,
                 ),
             );
+            #[cfg(feature = "serde")]
+            if let Some((_, loaded, load_time_s, index_bytes)) = &snapshot_index {
+                let loaded_result = evaluate(
+                    &|q, k| loaded.search_with_ef(q, k, ef).unwrap(),
+                    test_subset,
+                    &live_neighbors,
+                    10,
+                );
+                emit_result(
+                    &cfg.results_path,
+                    &json_line_with_storage_and_extra_fields(
+                        "lsm_churn",
+                        &params_json,
+                        build_time_s,
+                        rss,
+                        &loaded_result,
+                        &snapshot_storage(*load_time_s, *index_bytes),
+                        &extra_json,
+                    ),
+                );
+            }
         } else {
             print_row(&format!("ef={}", ef), &result);
+            #[cfg(feature = "serde")]
+            if let Some((_, loaded, _, _)) = &snapshot_index {
+                let loaded_result = evaluate(
+                    &|q, k| loaded.search_with_ef(q, k, ef).unwrap(),
+                    test_subset,
+                    &live_neighbors,
+                    10,
+                );
+                print_row(&format!("ef={} snapshot_loaded", ef), &loaded_result);
+            }
         }
     }
 

@@ -109,8 +109,10 @@ cargo run --example ann_benchmark --release --features hnsw -- \
   --algo inplace --algo inplace_churn --json --fresh
 
 # LSM-tiered streaming churn, scored against a live active-set oracle.
-cargo run --example ann_benchmark --release --features hnsw -- \
-  data/ann-benchmarks/glove-25-angular --algo lsm_churn --json --fresh
+# `--snapshot-load` adds a saved-and-reopened restart snapshot row.
+cargo run --example ann_benchmark --release --features hnsw,serde -- \
+  data/ann-benchmarks/glove-25-angular --algo lsm_churn \
+  --snapshot-load --json --fresh
 
 # Filtered-search selectivity sweep. This is synthetic and writes its own JSONL.
 cargo run --example acorn_selectivity --release \
@@ -939,21 +941,22 @@ estimates too. A bounded schema smoke used 300 GloVe-25 vectors, 20 queries,
 and 50 churn cycles:
 
 ```bash
-cargo run --no-default-features --features hnsw,fresh_graph --example ann_benchmark -- \
+cargo run --no-default-features --features hnsw,fresh_graph,serde --example ann_benchmark -- \
   data/ann-benchmarks/glove-25-angular \
   --algo dual_branch --algo deg --algo adsampling \
   --algo fresh_graph_churn --algo inplace_churn --algo lsm_churn \
   --max-train 300 --max-queries 20 --warmup-queries 0 --ef-search 10 \
   --churn-base-size 200 --churn-cycles 50 --churn-queries 20 \
-  --json --fresh --results /tmp/vicinity-size-smoke.jsonl
+  --snapshot-load --json --fresh --results /tmp/vicinity-size-smoke.jsonl
 ```
 
 The six in-memory rows emitted positive `index_bytes`
 (`DualBranch=100,480`, `DEG=99,792`, `ADSampling=179,204`,
 `FreshGraph churn=43,314`, `InPlace churn=75,288`, and
-`LSM churn=137,405` bytes). The strict summarizer accepted the file with
-`--require-index-bytes` for these six rows. Treat this as row-shape coverage;
-the tiny workload is not a QPS target.
+`LSM churn=137,405` bytes). With `serde`, LSM churn also emits a
+`snapshot_loaded` row with `load_time_s` and `snapshot_bytes`. The strict
+summarizer accepted the file with `--require-index-bytes` for these rows.
+Treat this as row-shape coverage; the tiny workload is not a QPS target.
 
 A bounded filtered-search selectivity sweep now exercises the same synthetic
 workload across ACORN, FilteredGraph, RangeFiltered, and Curator:

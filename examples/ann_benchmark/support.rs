@@ -448,6 +448,22 @@ fn params_containing_check(
     ExpectedResult::with_param_fragments(algorithm, fragments)
 }
 
+#[cfg(feature = "serde")]
+fn params_containing_storage_checks(
+    algorithm: &str,
+    fragments: Vec<String>,
+    cfg: &Config,
+    expectation: StorageExpectation,
+) -> Vec<ExpectedResult> {
+    std::iter::once("in_memory")
+        .chain(expectation.required_modes(cfg).iter().copied())
+        .map(|storage_mode| {
+            ExpectedResult::with_param_fragments(algorithm, fragments.clone())
+                .with_storage(storage_mode)
+        })
+        .collect()
+}
+
 #[derive(Clone, Copy)]
 enum StorageExpectation {
     Reload,
@@ -1042,15 +1058,39 @@ fn required_result_checks(
                 return Vec::new();
             };
             let buffer_capacity = (base_size / 10).clamp(20, 10_000);
-            ef_checks("lsm_churn", cfg, |_| {
-                vec![
-                    format!("\"base_size\":{}", base_size),
-                    format!("\"cycles\":{}", cycles),
-                    format!("\"queries\":{}", queries),
-                    format!("\"buffer_capacity\":{}", buffer_capacity),
-                    "\"size_ratio\":4".to_string(),
-                ]
-            })
+            #[cfg(feature = "serde")]
+            {
+                cfg.ef_search_values
+                    .iter()
+                    .flat_map(|&ef| {
+                        params_containing_storage_checks(
+                            "lsm_churn",
+                            vec![
+                                format!("\"ef_search\":{}", ef),
+                                format!("\"base_size\":{}", base_size),
+                                format!("\"cycles\":{}", cycles),
+                                format!("\"queries\":{}", queries),
+                                format!("\"buffer_capacity\":{}", buffer_capacity),
+                                "\"size_ratio\":4".to_string(),
+                            ],
+                            cfg,
+                            StorageExpectation::Reload,
+                        )
+                    })
+                    .collect()
+            }
+            #[cfg(not(feature = "serde"))]
+            {
+                ef_checks("lsm_churn", cfg, |_| {
+                    vec![
+                        format!("\"base_size\":{}", base_size),
+                        format!("\"cycles\":{}", cycles),
+                        format!("\"queries\":{}", queries),
+                        format!("\"buffer_capacity\":{}", buffer_capacity),
+                        "\"size_ratio\":4".to_string(),
+                    ]
+                })
+            }
         }
         "adsampling" => ef_exact_checks("adsampling", cfg, |ef| {
             format!(
@@ -1799,6 +1839,7 @@ pub(crate) fn current_rss_kb() -> Option<u64> {
     feature = "finger",
     feature = "filtered_graph",
     feature = "fresh_graph",
+    all(feature = "hnsw", feature = "serde"),
     feature = "ivf_avq",
     feature = "ivf_pq",
     feature = "ivf_rabitq",
@@ -2541,6 +2582,48 @@ mod tests {
         ));
         assert!(request_completed(
             &completed, "inplace", &cfg, 25, 1_000, 100
+        ));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn lsm_churn_snapshot_resume_requires_snapshot_storage_rows() {
+        let cfg = Config {
+            snapshot_load: true,
+            ef_search_values: vec![10],
+            churn_base_size: 200,
+            churn_cycles: 50,
+            churn_queries: 20,
+            ..Config::default()
+        };
+        let params = "{\"m\":16,\"ef_construction\":200,\"ef_search\":10,\"base_size\":200,\"cycles\":50,\"queries\":20,\"buffer_capacity\":20,\"size_ratio\":4,\"max_levels\":5,\"update_time_s\":0.0100,\"update_qps\":5000.0,\"compactions\":1,\"levels\":2,\"level_sizes\":[20,200],\"tombstones\":0}";
+        let missing_snapshot = CompletedResults {
+            lines: vec![single_line_with_storage("lsm_churn", params, "in_memory")],
+            ..CompletedResults::default()
+        };
+        let completed = CompletedResults {
+            lines: vec![
+                single_line_with_storage("lsm_churn", params, "in_memory"),
+                single_line_with_storage("lsm_churn", params, "snapshot_loaded"),
+            ],
+            ..CompletedResults::default()
+        };
+
+        assert!(!request_completed(
+            &missing_snapshot,
+            "lsm_churn",
+            &cfg,
+            25,
+            300,
+            20
+        ));
+        assert!(request_completed(
+            &completed,
+            "lsm_churn",
+            &cfg,
+            25,
+            300,
+            20
         ));
     }
 

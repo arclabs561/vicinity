@@ -652,6 +652,7 @@ def test_cli_can_emit_standard_storage_missing_rows(
     assert ("ivfpq_rerank", "file") in missing
     assert ("fresh_graph", "snapshot_loaded") in missing
     assert ("kdtree", "snapshot_loaded") in missing
+    assert ("lsm_churn", "snapshot_loaded") in missing
     assert ("store_snapshot", "segmented_store") in missing
     assert ("store", "segmented_store") in missing
     assert ("sparse_mips", "in_memory") in missing
@@ -730,6 +731,36 @@ def test_observed_storage_expectations_ignore_unscoped_current_rows(
     assert ("ivfpq", "snapshot_loaded") in missing
     assert ("ivfpq", "file") in missing
     assert ("ivfpq", "mmap") in missing
+
+
+def test_observed_lsm_churn_requires_snapshot_storage(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = load_script()
+    path = tmp_path / "rows.jsonl"
+    path.write_text(
+        '{"_meta":{"dataset":"data/ann-benchmarks/glove-25-angular","query_limit":20}}\n'
+        '{"algorithm":"lsm_churn","storage_mode":"in_memory","recall_at_10":1.0,"qps":42}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "summarize_ann_results.py",
+            str(path),
+            "--expect-observed-standard-storage",
+            "--missing-only",
+            "--json",
+        ],
+    )
+
+    script.main()
+
+    output = json.loads(capsys.readouterr().out)
+    missing = {(row["algorithm"], row["storage_mode"]) for row in output}
+    assert ("lsm_churn", "snapshot_loaded") in missing
+    assert ("lsm_churn", "in_memory") not in missing
 
 
 def test_standard_storage_expectations_cover_current_storage_classes() -> None:

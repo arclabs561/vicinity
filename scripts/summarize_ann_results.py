@@ -42,6 +42,7 @@ STORAGE_EXPECTATION_GROUPS = {
         "rptree",
         "rp_forest",
         "kmeans_tree",
+        "lsm_churn",
     ),
     ("in_memory",): (
         "brute",
@@ -49,7 +50,6 @@ STORAGE_EXPECTATION_GROUPS = {
         "hnsw_prt",
         "fresh_graph_churn",
         "inplace_churn",
-        "lsm_churn",
         "sparse_mips",
     ),
     ("in_memory", "snapshot_loaded", "file", "mmap"): (
