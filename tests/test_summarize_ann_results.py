@@ -456,11 +456,15 @@ def test_json_output_preserves_best_row_diagnostics(
         '{"algorithm":"ivfpq_rerank","storage_mode":"file","recall_at_10":0.90,"qps":10,'
         '"avg_probed_lists":4,"avg_scanned_vectors":128,"avg_code_reads":4,'
         '"avg_code_bytes":512,"avg_partition_reads":4,"avg_partition_bytes":1024,'
-        '"avg_vector_reads":80,"avg_vector_bytes":8000,"avg_retained_candidates":80}\n'
+        '"avg_vector_reads":80,"avg_vector_bytes":8000,'
+        '"avg_page_reads":40,"avg_page_bytes":163840,'
+        '"avg_retained_candidates":80}\n'
         '{"algorithm":"ivfpq_rerank","storage_mode":"file","recall_at_10":0.80,"qps":20,'
         '"avg_probed_lists":2,"avg_scanned_vectors":64,"avg_code_reads":2,'
         '"avg_code_bytes":256,"avg_partition_reads":2,"avg_partition_bytes":512,'
-        '"avg_vector_reads":20,"avg_vector_bytes":2000,"avg_retained_candidates":20}\n',
+        '"avg_vector_reads":20,"avg_vector_bytes":2000,'
+        '"avg_page_reads":10,"avg_page_bytes":40960,'
+        '"avg_retained_candidates":20}\n',
         encoding="utf-8",
     )
     monkeypatch.setattr(sys, "argv", ["summarize_ann_results.py", str(path), "--json"])
@@ -474,6 +478,8 @@ def test_json_output_preserves_best_row_diagnostics(
         "avg_code_reads": 2.0,
         "avg_partition_bytes": 512.0,
         "avg_partition_reads": 2.0,
+        "avg_page_bytes": 40960.0,
+        "avg_page_reads": 10.0,
         "avg_probed_lists": 2.0,
         "avg_retained_candidates": 20.0,
         "avg_scanned_vectors": 64.0,

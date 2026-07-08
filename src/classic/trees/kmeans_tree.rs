@@ -724,6 +724,19 @@ mod tests {
     }
 
     #[test]
+    fn save_load_roundtrip_preserves_leaf_budget_search() {
+        let tree = build_index();
+        let dir = tempfile::tempdir().unwrap();
+        tree.save_to_dir(dir.path()).unwrap();
+        let loaded = KMeansTreeIndex::load_from_dir(dir.path()).unwrap();
+        let query = vec![50.0, 100.0, 150.0];
+        assert_eq!(
+            tree.search_with_leaf_budget(&query, 8, 8).unwrap(),
+            loaded.search_with_leaf_budget(&query, 8, 8).unwrap()
+        );
+    }
+
+    #[test]
     fn internal_centers_match_non_empty_children() {
         let params = KMeansTreeParams {
             num_clusters: 8,

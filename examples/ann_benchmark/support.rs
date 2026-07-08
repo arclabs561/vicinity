@@ -1554,9 +1554,11 @@ pub(crate) struct StorageDiagnostics {
     pub(crate) avg_graph_reads: f64,
     pub(crate) avg_code_reads: f64,
     pub(crate) avg_vector_reads: f64,
+    pub(crate) avg_page_reads: f64,
     pub(crate) avg_graph_bytes: f64,
     pub(crate) avg_code_bytes: f64,
     pub(crate) avg_vector_bytes: f64,
+    pub(crate) avg_page_bytes: f64,
     pub(crate) avg_retained_candidates: f64,
 }
 
@@ -1686,7 +1688,7 @@ pub(crate) fn json_line_with_storage(
     }
     if let Some(diagnostics) = storage.diagnostics {
         s.push_str(&format!(
-            ",\"avg_visited_nodes\":{:.2},\"avg_probed_lists\":{:.2},\"avg_scanned_vectors\":{:.2},\"avg_partition_reads\":{:.2},\"avg_partition_bytes\":{:.2},\"avg_graph_reads\":{:.2},\"avg_code_reads\":{:.2},\"avg_vector_reads\":{:.2},\"avg_graph_bytes\":{:.2},\"avg_code_bytes\":{:.2},\"avg_vector_bytes\":{:.2},\"avg_retained_candidates\":{:.2}",
+            ",\"avg_visited_nodes\":{:.2},\"avg_probed_lists\":{:.2},\"avg_scanned_vectors\":{:.2},\"avg_partition_reads\":{:.2},\"avg_partition_bytes\":{:.2},\"avg_graph_reads\":{:.2},\"avg_code_reads\":{:.2},\"avg_vector_reads\":{:.2},\"avg_page_reads\":{:.2},\"avg_graph_bytes\":{:.2},\"avg_code_bytes\":{:.2},\"avg_vector_bytes\":{:.2},\"avg_page_bytes\":{:.2},\"avg_retained_candidates\":{:.2}",
             diagnostics.avg_visited_nodes,
             diagnostics.avg_probed_lists,
             diagnostics.avg_scanned_vectors,
@@ -1695,9 +1697,11 @@ pub(crate) fn json_line_with_storage(
             diagnostics.avg_graph_reads,
             diagnostics.avg_code_reads,
             diagnostics.avg_vector_reads,
+            diagnostics.avg_page_reads,
             diagnostics.avg_graph_bytes,
             diagnostics.avg_code_bytes,
             diagnostics.avg_vector_bytes,
+            diagnostics.avg_page_bytes,
             diagnostics.avg_retained_candidates
         ));
     }
@@ -2177,9 +2181,11 @@ mod tests {
                 avg_graph_reads: 8.5,
                 avg_code_reads: 4.0,
                 avg_vector_reads: 12.0,
+                avg_page_reads: 6.0,
                 avg_graph_bytes: 544.0,
                 avg_code_bytes: 512.0,
                 avg_vector_bytes: 1200.0,
+                avg_page_bytes: 24_576.0,
                 avg_retained_candidates: 10.0,
             }),
         };
@@ -2204,8 +2210,10 @@ mod tests {
         assert!(line.contains("\"avg_partition_bytes\":640.00"));
         assert!(line.contains("\"avg_graph_reads\":8.50"));
         assert!(line.contains("\"avg_code_reads\":4.00"));
+        assert!(line.contains("\"avg_page_reads\":6.00"));
         assert!(line.contains("\"avg_code_bytes\":512.00"));
         assert!(line.contains("\"avg_vector_bytes\":1200.00"));
+        assert!(line.contains("\"avg_page_bytes\":24576.00"));
     }
 
     #[test]
@@ -2507,6 +2515,53 @@ mod tests {
         ));
         assert!(request_completed(
             &completed, "kdtree", &cfg, 25, 1_000, 100
+        ));
+    }
+
+    #[test]
+    fn kmeans_leaf_budget_snapshot_resume_requires_snapshot_storage_row() {
+        let cfg = Config {
+            snapshot_load: true,
+            kmeans_clusters: vec![8],
+            kmeans_leaf_sizes: vec![500],
+            kmeans_depths: vec![10],
+            kmeans_iters: vec![10],
+            kmeans_search_branches: Vec::new(),
+            kmeans_leaf_budgets: vec![48],
+            ..Config::default()
+        };
+        let params = kmeans_tree_leaf_budget_params_json(8, 500, 10, 10, 48);
+        let missing_snapshot = CompletedResults {
+            lines: vec![single_line_with_storage(
+                "kmeans_tree",
+                &params,
+                "in_memory",
+            )],
+            ..CompletedResults::default()
+        };
+        let completed = CompletedResults {
+            lines: vec![
+                single_line_with_storage("kmeans_tree", &params, "in_memory"),
+                single_line_with_storage("kmeans_tree", &params, "snapshot_loaded"),
+            ],
+            ..CompletedResults::default()
+        };
+
+        assert!(!request_completed(
+            &missing_snapshot,
+            "kmeans_tree",
+            &cfg,
+            25,
+            1_000,
+            100
+        ));
+        assert!(request_completed(
+            &completed,
+            "kmeans_tree",
+            &cfg,
+            25,
+            1_000,
+            100
         ));
     }
 

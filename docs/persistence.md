@@ -101,8 +101,9 @@ For file-backed searchers, recall should also be measured against ground truth.
    crate until shared storage code has two consumers.
 2. Finish DiskANN storage modes: current direct file save, file search, and mmap
    graph/vector readers are present. A `benchmark`-feature page-layout harness
-   exists, but the literal one-node-per-4KB-page shape is slower on the current
-   5K-vector smoke bench and is not promoted.
+   emits `diskann_page_file` and `diskann_page_mmap` rows, but the literal
+   one-node-per-4KB-page shape is larger and slower than split mmap and is not
+   promoted.
 3. Keep IVF-PQ file-backed search covered by benchmark rows, then improve the
    raw-vector rerank locality for file and mmap search. The current format
    persists:

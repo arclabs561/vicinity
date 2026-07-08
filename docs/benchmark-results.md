@@ -1819,6 +1819,33 @@ a hot-node cache/prefetch layer. A literal one-node-one-page layout multiplies
 the full GloVe-25 page file to roughly 4.8 GB, so it mainly measures page-cache
 pressure at this dimensionality.
 
+The `ann_benchmark` runner now emits benchmark-feature page-layout rows so the
+same result file can compare legacy split files against `nodes.page` without
+promoting the page format:
+
+```bash
+python3 scripts/generate_ann_smoke_data.py /tmp/vicinity-ann-page-smoke \
+  --train 512 --test 64 --dim 16 --k 10 --force
+
+CARGO_TARGET_DIR=/tmp/vicinity-diskann-page-ann CARGO_INCREMENTAL=0 RUSTC_WRAPPER= \
+cargo run --release --example ann_benchmark --no-default-features \
+  --features diskann,benchmark -- /tmp/vicinity-ann-page-smoke \
+  --algo diskann --ef-search 10 --json --fresh \
+  --results /tmp/vicinity-diskann-page-smoke.jsonl
+```
+
+| Row | Storage | Recall@10 | QPS | Index bytes | Read diagnostics |
+| --- | --- | ---: | ---: | ---: | --- |
+| `diskann_file` | split file | 99.22% | 32,869.0 | 69,872 | 11.72 graph reads/query, 56.47 vector reads/query |
+| `diskann_page_file` | `nodes.page` file | 99.22% | 31,655.2 | 2,101,248 | 56.47 page reads/query, 231,296 page bytes/query |
+| `diskann_mmap` | split mmap | 99.22% | 398,133.7 | 69,872 | 11.72 graph reads/query, 56.47 vector reads/query |
+| `diskann_page_mmap` | `nodes.page` mmap | 99.22% | 157,213.0 | 2,101,248 | 56.47 page reads/query, 231,296 page bytes/query |
+
+The page-file row is close to legacy direct-file QPS on this tiny smoke, but it
+does so with about 30x larger storage. The page-mmap row is slower than split
+mmap. The row exists to keep future co-location experiments visible in the
+storage matrix, not as a recommended layout.
+
 ### HNSW Search Heap Pressure
 
 The `hnsw_search` benchmark has an allocation counter around the normal

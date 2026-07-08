@@ -1305,8 +1305,10 @@ struct DiskAnnDiagnosticsTotals {
     visited_nodes: usize,
     graph_reads: usize,
     vector_reads: usize,
+    page_reads: usize,
     graph_bytes: usize,
     vector_bytes: usize,
+    page_bytes: usize,
     retained_candidates: usize,
 }
 
@@ -1317,8 +1319,10 @@ impl DiskAnnDiagnosticsTotals {
         self.visited_nodes += diagnostics.visited_nodes;
         self.graph_reads += diagnostics.graph_reads;
         self.vector_reads += diagnostics.vector_reads;
+        self.page_reads += diagnostics.page_reads;
         self.graph_bytes += diagnostics.graph_bytes;
         self.vector_bytes += diagnostics.vector_bytes;
+        self.page_bytes += diagnostics.page_bytes;
         self.retained_candidates += diagnostics.retained_candidates;
     }
 
@@ -1328,8 +1332,10 @@ impl DiskAnnDiagnosticsTotals {
             avg_visited_nodes: self.visited_nodes as f64 / queries,
             avg_graph_reads: self.graph_reads as f64 / queries,
             avg_vector_reads: self.vector_reads as f64 / queries,
+            avg_page_reads: self.page_reads as f64 / queries,
             avg_graph_bytes: self.graph_bytes as f64 / queries,
             avg_vector_bytes: self.vector_bytes as f64 / queries,
+            avg_page_bytes: self.page_bytes as f64 / queries,
             avg_retained_candidates: self.retained_candidates as f64 / queries,
             ..StorageDiagnostics::default()
         }
@@ -1388,6 +1394,58 @@ fn evaluate_diskann_searcher(
     )
 }
 
+#[cfg(all(feature = "diskann", feature = "benchmark"))]
+fn evaluate_diskann_page_searcher(
+    searcher: &std::cell::RefCell<vicinity::diskann::DiskANNPageSearcher>,
+    test: &[Vec<f32>],
+    neighbors: &[Vec<i32>],
+    k: usize,
+    ef_search: usize,
+) -> (BenchResult, StorageDiagnostics) {
+    use std::collections::HashSet;
+    use std::time::Instant;
+
+    let warmup_count = support::warmup_queries().min(test.len());
+    for query in test.iter().take(warmup_count) {
+        let _ = searcher.borrow_mut().search(query, k, ef_search);
+    }
+
+    let mut total_recall = 0.0;
+    let mut latencies_us: Vec<f64> = Vec::with_capacity(test.len());
+    let mut diagnostics = DiskAnnDiagnosticsTotals::default();
+
+    for (i, query) in test.iter().enumerate() {
+        let q_start = Instant::now();
+        let (results, query_diagnostics) = searcher
+            .borrow_mut()
+            .search_with_diagnostics(query, k, ef_search)
+            .expect("DiskANN page-backed search failed");
+        let q_elapsed = q_start.elapsed();
+        latencies_us.push(q_elapsed.as_nanos() as f64 / 1000.0);
+        diagnostics.record(query_diagnostics);
+
+        let gt_set: HashSet<u32> = neighbors[i].iter().take(k).map(|&n| n as u32).collect();
+        let found: HashSet<u32> = results.iter().map(|r| r.0).collect();
+        total_recall += gt_set.intersection(&found).count() as f64 / k as f64;
+    }
+
+    latencies_us.sort_unstable_by(|a, b| a.total_cmp(b));
+    let n = latencies_us.len();
+    let total_us: f64 = latencies_us.iter().sum();
+
+    (
+        BenchResult {
+            recall_at_k: total_recall / n as f64,
+            qps: n as f64 / (total_us / 1_000_000.0),
+            latency_us: total_us / n as f64,
+            p50_us: latencies_us[n / 2],
+            p95_us: latencies_us[(n as f64 * 0.95) as usize],
+            p99_us: latencies_us[(n as f64 * 0.99) as usize],
+        },
+        diagnostics.average(),
+    )
+}
+
 #[cfg(feature = "diskann")]
 fn run_diskann(
     cfg: &Config,
@@ -1398,6 +1456,8 @@ fn run_diskann(
 ) {
     use std::cell::RefCell;
 
+    #[cfg(feature = "benchmark")]
+    use vicinity::diskann::DiskANNPageSearcher;
     use vicinity::diskann::{DiskANNIndex, DiskANNParams, DiskANNSearcher};
 
     let params = DiskANNParams {
@@ -1435,6 +1495,26 @@ fn run_diskann(
     let mmap_load_start = Instant::now();
     let mmap_searcher = RefCell::new(DiskANNSearcher::load_mmap(&index_dir).unwrap());
     let mmap_load_time_s = mmap_load_start.elapsed().as_secs_f64();
+    #[cfg(feature = "benchmark")]
+    let page_searchers = {
+        index.save_page_layout(&index_dir).unwrap();
+        let page_index_bytes = std::fs::metadata(index_dir.join("nodes.page"))
+            .ok()
+            .map(|metadata| metadata.len());
+        let page_file_load_start = Instant::now();
+        let page_file_searcher = RefCell::new(DiskANNPageSearcher::load(&index_dir).unwrap());
+        let page_file_load_time_s = page_file_load_start.elapsed().as_secs_f64();
+        let page_mmap_load_start = Instant::now();
+        let page_mmap_searcher = RefCell::new(DiskANNPageSearcher::load_mmap(&index_dir).unwrap());
+        let page_mmap_load_time_s = page_mmap_load_start.elapsed().as_secs_f64();
+        (
+            page_file_searcher,
+            page_file_load_time_s,
+            page_mmap_searcher,
+            page_mmap_load_time_s,
+            page_index_bytes,
+        )
+    };
 
     if !cfg.json {
         println!(
@@ -1451,6 +1531,29 @@ fn run_diskann(
             evaluate_diskann_searcher(&searcher, test, neighbors, 10, ef);
         let (mmap_result, mmap_diagnostics) =
             evaluate_diskann_searcher(&mmap_searcher, test, neighbors, 10, ef);
+        #[cfg(feature = "benchmark")]
+        let page_results = {
+            let (
+                page_file_searcher,
+                page_file_load_time_s,
+                page_mmap_searcher,
+                page_mmap_load_time_s,
+                page_index_bytes,
+            ) = &page_searchers;
+            let (page_file_result, page_file_diagnostics) =
+                evaluate_diskann_page_searcher(page_file_searcher, test, neighbors, 10, ef);
+            let (page_mmap_result, page_mmap_diagnostics) =
+                evaluate_diskann_page_searcher(page_mmap_searcher, test, neighbors, 10, ef);
+            (
+                page_file_result,
+                page_file_diagnostics,
+                *page_file_load_time_s,
+                page_mmap_result,
+                page_mmap_diagnostics,
+                *page_mmap_load_time_s,
+                *page_index_bytes,
+            )
+        };
         if cfg.json {
             let params_json = format!(
                 "{{\"m\":{},\"ef_construction\":{},\"alpha\":1.2,\"ef_search\":{},\"storage\":\"memory\"}}",
@@ -1514,10 +1617,72 @@ fn run_diskann(
                     },
                 ),
             );
+            #[cfg(feature = "benchmark")]
+            {
+                let (
+                    page_file_result,
+                    page_file_diagnostics,
+                    page_file_load_time_s,
+                    page_mmap_result,
+                    page_mmap_diagnostics,
+                    page_mmap_load_time_s,
+                    page_index_bytes,
+                ) = &page_results;
+                let params_json = format!(
+                    "{{\"m\":{},\"ef_construction\":{},\"alpha\":1.2,\"ef_search\":{},\"storage\":\"page_file\"}}",
+                    cfg.m, cfg.ef_construction, ef
+                );
+                emit_result(
+                    &cfg.results_path,
+                    &json_line_with_storage(
+                        "diskann_page_file",
+                        &params_json,
+                        build_time_s,
+                        rss,
+                        page_file_result,
+                        &ResultStorage {
+                            storage_mode: "file",
+                            cache_state: "warm_after_open",
+                            load_time_s: Some(*page_file_load_time_s),
+                            index_bytes: *page_index_bytes,
+                            index_bytes_kind: Some("storage_bytes"),
+                            diagnostics: Some(*page_file_diagnostics),
+                        },
+                    ),
+                );
+                let params_json = format!(
+                    "{{\"m\":{},\"ef_construction\":{},\"alpha\":1.2,\"ef_search\":{},\"storage\":\"page_mmap\"}}",
+                    cfg.m, cfg.ef_construction, ef
+                );
+                emit_result(
+                    &cfg.results_path,
+                    &json_line_with_storage(
+                        "diskann_page_mmap",
+                        &params_json,
+                        build_time_s,
+                        rss,
+                        page_mmap_result,
+                        &ResultStorage {
+                            storage_mode: "mmap",
+                            cache_state: "warm_after_open",
+                            load_time_s: Some(*page_mmap_load_time_s),
+                            index_bytes: *page_index_bytes,
+                            index_bytes_kind: Some("storage_bytes"),
+                            diagnostics: Some(*page_mmap_diagnostics),
+                        },
+                    ),
+                );
+            }
         } else {
             print_row(&format!("ef={} memory", ef), &result);
             print_row(&format!("ef={} file", ef), &file_result);
             print_row(&format!("ef={} mmap", ef), &mmap_result);
+            #[cfg(feature = "benchmark")]
+            {
+                let (page_file_result, _, _, page_mmap_result, _, _, _) = &page_results;
+                print_row(&format!("ef={} page_file", ef), page_file_result);
+                print_row(&format!("ef={} page_mmap", ef), page_mmap_result);
+            }
         }
     }
 
