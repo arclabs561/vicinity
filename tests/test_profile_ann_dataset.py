@@ -40,6 +40,8 @@ def test_profile_dataset_reports_shape_and_difficulty(tmp_path: Path) -> None:
         sample_train=16,
         sample_queries=4,
         pair_samples=20,
+        coarse_clusters=4,
+        coarse_iters=3,
         lid_k=5,
         seed=1,
     )
@@ -59,6 +61,8 @@ def test_profile_dataset_reports_shape_and_difficulty(tmp_path: Path) -> None:
     assert profile["query_neighbors"]["lid_mle"]["mean"] > 0.0
     assert profile["sampled_relative_contrast"]["mean"] > 1.0
     assert profile["hubness"]["topk"] == 10.0
+    assert profile["coarse_partition_imbalance"]["clusters"] == 4.0
+    assert profile["coarse_partition_imbalance"]["count_max"] > 0.0
 
 
 def test_cli_writes_json_output(tmp_path: Path, monkeypatch) -> None:

@@ -31,8 +31,8 @@ contrast or nearest-neighbor margin for separability
 distribution, duplicate rate, hubness, cluster or posting-list imbalance, and
 whether the query set is in-distribution or OOD. Use
 `scripts/profile_ann_dataset.py` for the first sampled profile pass over
-converted `VEC1`/`NBR1` datasets. These fields are dataset metadata, not
-algorithm result rows.
+converted `VEC1`/`NBR1` datasets, including sampled coarse-partition imbalance.
+These fields are dataset metadata, not algorithm result rows.
 
 Recommended current commands:
 
@@ -420,25 +420,26 @@ therefore be high while 95%+ recall remains sensitive to graph traversal,
 reranking, and locality.
 
 A lighter cross-dataset pass used `--sample-train 2048 --sample-queries 500
---pair-samples 5000` on every locally converted standard dataset.
+--pair-samples 5000 --coarse-clusters 64 --coarse-iters 8` on every locally
+converted standard dataset.
 
-| Dataset | Metric | Train | Dim | Pair p50 | NN p50 | Top-2 gap p50 | LID p50 | Contrast p50 | Hub Gini |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| deep-image-96-angular | cosine | 9,990,000 | 96 | 0.950 | 0.155 | 0.00767 | 13.2 | 5.93 | 0.990 |
-| fashion-mnist-784-euclidean | l2 | 60,000 | 784 | 2.98e3 | 887 | 39.8 | 15.7 | 3.25 | 0.631 |
-| gist-960-euclidean | l2 | 1,000,000 | 960 | 1.87 | 1.07 | 0.0131 | 52.2 | 1.70 | 0.991 |
-| glove-100-angular | cosine | 1,183,514 | 100 | 0.871 | 0.326 | 0.0149 | 16.2 | 2.66 | 0.929 |
-| glove-200-angular | cosine | 1,183,514 | 200 | 0.931 | 0.463 | 0.0188 | 21.8 | 2.00 | 0.931 |
-| glove-25-angular | cosine | 1,183,514 | 25 | 0.804 | 0.0965 | 0.00777 | 8.40 | 7.85 | 0.925 |
-| glove-50-angular | cosine | 1,183,514 | 50 | 0.851 | 0.204 | 0.0153 | 11.7 | 4.18 | 0.927 |
-| mnist-784-euclidean | l2 | 60,000 | 784 | 2.61e3 | 1.09e3 | 43.4 | 14.0 | 2.40 | 0.553 |
-| nytimes-256-angular | cosine | 290,000 | 256 | 0.986 | 0.360 | 0.0232 | 10.4 | 2.48 | 0.796 |
-| sift-128-euclidean | l2 | 1,000,000 | 128 | 562 | 198 | 5.74 | 22.8 | 2.68 | 0.915 |
+| Dataset | Metric | Train | Dim | Pair p50 | NN p50 | Top-2 gap p50 | LID p50 | Contrast p50 | Hub Gini | Coarse Gini |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| deep-image-96-angular | cosine | 9,990,000 | 96 | 0.950 | 0.155 | 0.00767 | 13.2 | 5.93 | 0.990 | 0.255 |
+| fashion-mnist-784-euclidean | l2 | 60,000 | 784 | 2.98e3 | 887 | 39.8 | 15.7 | 3.25 | 0.631 | 0.302 |
+| gist-960-euclidean | l2 | 1,000,000 | 960 | 1.87 | 1.07 | 0.0131 | 52.2 | 1.70 | 0.991 | 0.474 |
+| glove-100-angular | cosine | 1,183,514 | 100 | 0.871 | 0.326 | 0.0149 | 16.2 | 2.66 | 0.929 | 0.322 |
+| glove-200-angular | cosine | 1,183,514 | 200 | 0.931 | 0.463 | 0.0188 | 21.8 | 2.00 | 0.931 | 0.363 |
+| glove-25-angular | cosine | 1,183,514 | 25 | 0.804 | 0.0965 | 0.00777 | 8.40 | 7.85 | 0.925 | 0.241 |
+| glove-50-angular | cosine | 1,183,514 | 50 | 0.851 | 0.204 | 0.0153 | 11.7 | 4.18 | 0.927 | 0.265 |
+| mnist-784-euclidean | l2 | 60,000 | 784 | 2.61e3 | 1.09e3 | 43.4 | 14.0 | 2.40 | 0.553 | 0.221 |
+| nytimes-256-angular | cosine | 290,000 | 256 | 0.986 | 0.360 | 0.0232 | 10.4 | 2.48 | 0.796 | 0.174 |
+| sift-128-euclidean | l2 | 1,000,000 | 128 | 562 | 198 | 5.74 | 22.8 | 2.68 | 0.915 | 0.271 |
 
 This table is not a substitute for benchmark rows, but it gives a cheap sanity
-check before interpreting them. For example, GIST's high sampled LID and hub
-Gini imply that high-recall graph and quantized-search rows should be evaluated
-separately from the lower-dimensional GloVe-25 curve.
+check before interpreting them. For example, GIST's high sampled LID, hub Gini,
+and coarse-partition Gini imply that high-recall graph and quantized-search rows
+should be evaluated separately from the lower-dimensional GloVe-25 curve.
 
 Additional capped storage rows from 2026-07-07:
 

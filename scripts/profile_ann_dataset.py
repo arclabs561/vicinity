@@ -254,6 +254,63 @@ def hubness(neighbors: np.ndarray, train_count: int) -> dict[str, float]:
     }
 
 
+def gini(values: np.ndarray) -> float:
+    if len(values) == 0:
+        return 0.0
+    sorted_values = np.sort(values.astype(np.float64))
+    total = float(np.sum(sorted_values))
+    if total == 0.0:
+        return 0.0
+    cumulative = np.cumsum(sorted_values)
+    n = len(sorted_values)
+    return float((n + 1 - 2 * np.sum(cumulative) / total) / n)
+
+
+def coarse_partition_imbalance(
+    vectors: np.ndarray,
+    metric: Metric,
+    clusters: int,
+    iterations: int,
+    rng: np.random.Generator,
+) -> dict[str, float]:
+    if clusters <= 0 or len(vectors) == 0:
+        return {}
+    k = min(clusters, len(vectors))
+    centroid_ids = rng.choice(len(vectors), size=k, replace=False)
+    centroids = np.asarray(vectors[centroid_ids], dtype=np.float32).copy()
+    assignments = np.zeros(len(vectors), dtype=np.int32)
+
+    for _ in range(max(1, iterations)):
+        if metric == "cosine":
+            norms = np.linalg.norm(centroids, axis=1, keepdims=True)
+            centroids = centroids / np.maximum(norms, 1e-12)
+            assignments = np.argmax(vectors @ centroids.T, axis=1).astype(np.int32)
+        else:
+            diff = vectors[:, None, :] - centroids[None, :, :]
+            assignments = np.argmin(np.sum(diff * diff, axis=2), axis=1).astype(
+                np.int32
+            )
+
+        for cluster_id in range(k):
+            members = vectors[assignments == cluster_id]
+            if len(members) == 0:
+                centroids[cluster_id] = vectors[rng.integers(0, len(vectors))]
+            else:
+                centroids[cluster_id] = np.mean(members, axis=0)
+
+    counts = np.bincount(assignments, minlength=k).astype(np.float64)
+    nonzero = counts[counts > 0.0]
+    return {
+        "clusters": float(k),
+        "iterations": float(max(1, iterations)),
+        "empty_fraction": float(1.0 - len(nonzero) / k),
+        "count_p50": float(np.percentile(counts, 50)),
+        "count_p95": float(np.percentile(counts, 95)),
+        "count_max": float(np.max(counts)),
+        "count_gini": gini(counts),
+    }
+
+
 def profile_dataset(
     dataset: Path,
     *,
@@ -261,6 +318,8 @@ def profile_dataset(
     sample_train: int,
     sample_queries: int,
     pair_samples: int,
+    coarse_clusters: int,
+    coarse_iters: int,
     lid_k: int,
     seed: int,
 ) -> dict[str, Any]:
@@ -321,6 +380,13 @@ def profile_dataset(
             metric,
         ),
         "hubness": hubness(neighbors, train.shape[0]),
+        "coarse_partition_imbalance": coarse_partition_imbalance(
+            sampled_train,
+            metric,
+            coarse_clusters,
+            coarse_iters,
+            rng,
+        ),
     }
 
 
@@ -331,6 +397,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sample-train", type=int, default=4096)
     parser.add_argument("--sample-queries", type=int, default=1000)
     parser.add_argument("--pair-samples", type=int, default=20000)
+    parser.add_argument("--coarse-clusters", type=int, default=64)
+    parser.add_argument("--coarse-iters", type=int, default=8)
     parser.add_argument("--lid-k", type=int, default=20)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output", type=Path)
@@ -346,6 +414,8 @@ def main() -> None:
         sample_train=args.sample_train,
         sample_queries=args.sample_queries,
         pair_samples=args.pair_samples,
+        coarse_clusters=args.coarse_clusters,
+        coarse_iters=args.coarse_iters,
         lid_k=args.lid_k,
         seed=args.seed,
     )

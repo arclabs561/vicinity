@@ -133,14 +133,16 @@ benchmarking, persistence, Python bindings, and performance work.
   `scripts/profile_ann_dataset.py` reports shape, norm distribution, sampled
   pair-distance dispersion, exact duplicate rate on the sample, query
   nearest-neighbor margins, LID estimates, sampled relative contrast, and
-  ground-truth hubness. Local GloVe-25 showed unit norms, zero sampled exact
-  duplicates, median sampled pair distance 0.806, median top-2 gap 0.0089,
-  median LID 8.28, median sampled relative contrast 8.11, and top-10 hubness
-  Gini 0.925. A lighter pass now covers all ten locally converted standard
-  datasets. GIST stood out with sampled LID p50 52.2 and hubness Gini 0.991;
-  Deep Image showed 9.99M vectors, sampled LID p50 13.2, and hubness Gini 0.990.
-  Both are warnings against treating the GloVe-25 curve as representative. Next
-  profiler work is list/cluster imbalance and OOD split labels.
+  ground-truth hubness, and sampled coarse-partition imbalance. Local GloVe-25
+  showed unit norms, zero sampled exact duplicates, median sampled pair distance
+  0.806, median top-2 gap 0.0089, median LID 8.28, median sampled relative
+  contrast 8.11, top-10 hubness Gini 0.925, and coarse-partition Gini 0.241. A
+  lighter pass now covers all ten locally converted standard datasets. GIST
+  stood out with sampled LID p50 52.2, hubness Gini 0.991, and coarse-partition
+  Gini 0.474; Deep Image showed 9.99M vectors, sampled LID p50 13.2, hubness
+  Gini 0.990, and coarse-partition Gini 0.255. These are warnings against
+  treating the GloVe-25 curve as representative. Next profiler work is explicit
+  OOD split labels.
 
 ## Remaining Review Queue
 
@@ -160,7 +162,7 @@ benchmarking, persistence, Python bindings, and performance work.
 | 12 | Python policy | Decide which Rust APIs become Python APIs. Keep the default policy narrow unless an algorithm has stable benchmarks, persistence behavior, and examples. Rust-only gaps today: DiskANN, `store`, FreshGraph, filtered search/update APIs, and HNSW binary segments. |
 | 13 | LSH/sketch boundary | The `lsh` feature uses `sketchir` for cross-polytope hashing primitives. Keep `sketchir` focused on MinHash/SimHash/LSH sketches and durable sketch sidecars; keep vicinity focused on ANN storage, exact reranking, persistence modes, and fixed-recall benchmark rows. Benchmark sharing is useful, but PRT, RP-tree/RP-forest, SparseMIPS, and LEMUR should stay in vicinity unless their role becomes pure sketch generation. |
 | 14 | External research claims | Verify newer roadmap claims before implementation: Extended RaBitQ, VSAG layout tricks, IP-DiskANN, ACORN production behavior, PAG, SAQ, and ARM/SVE2 kernels. |
-| 15 | Dataset difficulty metadata | First sampled profile script exists for VEC1/NBR1 datasets, and local profiles now cover SIFT, GloVe-25/50/100/200, Deep Image, NYTimes, Fashion-MNIST, MNIST, and GIST. Next review should add partition/list imbalance for IVF-style indexes and explicit OOD split labels where datasets provide them. |
+| 15 | Dataset difficulty metadata | First sampled profile script exists for VEC1/NBR1 datasets, and local profiles now cover SIFT, GloVe-25/50/100/200, Deep Image, NYTimes, Fashion-MNIST, MNIST, and GIST. Next review should add explicit OOD split labels where datasets provide them. |
 | 16 | Profiling depth | Add profile artifacts for the next actual performance change. Record baseline, profiler target, negative controls, before/after, and rejected hypotheses in `docs/benchmark-results.md`. |
 
 ## Guardrails
