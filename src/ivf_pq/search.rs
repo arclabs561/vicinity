@@ -1044,6 +1044,10 @@ impl IVFPQIndex {
                 let start = vector_idx as usize * num_cb;
                 codes_batch.extend_from_slice(&quantized_codes[start..start + num_cb]);
             }
+            // FastScan is the 4-bit layout: codes are packed into 32-vector
+            // nibble blocks and scanned with the byte-table kernel. Larger
+            // codebooks, especially the default 8-bit `codebook_size = 256`,
+            // use the standard ADC batch layout below.
             if self.params.codebook_size == 16 {
                 cluster.set_fastscan_codes(Some(PackedCodes4bit::pack(
                     &codes_batch,
@@ -1411,7 +1415,9 @@ impl IVFPQIndex {
                         fastscan_distances.as_slice()
                     }
                 } else {
-                    // Standard ADC batch path for larger codebooks
+                    // Standard ADC batch path for larger codebooks. Do not
+                    // route `codebook_size = 256` through FastScan: that path
+                    // is the 4-bit representation, not a generic PQ scanner.
                     let codes_scan = if let Some(codes) = cluster.adc_codes.as_ref() {
                         codes.as_slice()
                     } else {
