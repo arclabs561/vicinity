@@ -752,6 +752,14 @@ the packing. New unsafe SIMD in `vicinity` should remain limited to local
 layout-specific kernels such as PQ code/LUT scans; dense full-vector kernels
 should continue to enter through innr's safe API.
 
+The narrow future innr helper to test is a safe row-indexed scorer that writes
+one distance or dot product per caller-provided vector id into caller-owned
+output. That matches HNSW/DiskANN row-major storage better than `VerticalBatch`.
+Do not add it speculatively: first compare against current `flush_batch` at
+batch sizes 4/8/16 and dimensions 64/128/384/768, then run end-to-end HNSW,
+DiskANN, and IVF rerank/centroid controls. Any unsafe needed to implement that
+helper should stay inside innr's private dispatch or kernel layer.
+
 ### DiskANN File And Mmap Search
 
 The search-only DiskANN benchmark isolates in-memory, file, and mmap search
