@@ -525,6 +525,117 @@ fn diskann_checks(cfg: &Config) -> Vec<ExpectedResult> {
         .collect()
 }
 
+fn hnsw_result_checks(cfg: &Config) -> Vec<ExpectedResult> {
+    cfg.ef_search_values
+        .iter()
+        .flat_map(|&ef| {
+            let params_json = format!(
+                "{{\"m\":{},\"ef_construction\":{},\"ef_search\":{}}}",
+                cfg.m, cfg.ef_construction, ef
+            );
+            #[cfg(not(feature = "parallel"))]
+            {
+                serde_snapshot_check("hnsw", &params_json, cfg)
+            }
+
+            #[cfg(feature = "parallel")]
+            {
+                let mut markers = serde_snapshot_check("hnsw", &params_json, cfg);
+                if cfg.batch {
+                    markers.push(params_containing_check(
+                        "hnsw_parallel",
+                        [
+                            format!("\"m\":{}", cfg.m),
+                            format!("\"ef_construction\":{}", cfg.ef_construction),
+                            format!("\"ef_search\":{}", ef),
+                            "\"threads\":".to_string(),
+                        ],
+                    ));
+                }
+                markers
+            }
+        })
+        .collect()
+}
+
+fn ivfpq_result_checks(cfg: &Config, dim: usize) -> Vec<ExpectedResult> {
+    let num_clusters = cfg.pq_num_clusters.unwrap_or(256);
+    if num_clusters == 0 {
+        return Vec::new();
+    }
+    let num_codebooks = cfg.pq_num_codebooks.unwrap_or_else(|| {
+        (1..=8.min(dim))
+            .rev()
+            .find(|&c| dim.is_multiple_of(c))
+            .unwrap_or(1)
+    });
+    if !dim.is_multiple_of(num_codebooks) {
+        return Vec::new();
+    }
+    nprobe_values(cfg, num_clusters)
+        .into_iter()
+        .flat_map(|nprobe| {
+            let params_json = ivfpq_params_json(
+                num_clusters,
+                num_codebooks,
+                cfg.pq_codebook_size,
+                nprobe,
+                None,
+                cfg.pq_training_sample_size,
+                cfg.pq_kmeans_max_iter,
+            );
+            let mut markers = snapshot_file_checks("ivfpq", &params_json, cfg);
+            markers.extend(
+                cfg.pq_rerank_pools
+                    .iter()
+                    .copied()
+                    .filter(|&rerank_pool| rerank_pool > 0)
+                    .flat_map(|rerank_pool| {
+                        snapshot_file_checks(
+                            "ivfpq_rerank",
+                            &ivfpq_params_json(
+                                num_clusters,
+                                num_codebooks,
+                                cfg.pq_codebook_size,
+                                nprobe,
+                                Some(rerank_pool),
+                                cfg.pq_training_sample_size,
+                                cfg.pq_kmeans_max_iter,
+                            ),
+                            cfg,
+                        )
+                    }),
+            );
+            markers
+        })
+        .collect()
+}
+
+fn lsh_result_checks(cfg: &Config, dim: usize) -> Vec<ExpectedResult> {
+    const TABLE_SWEEP: usize = 3;
+    let num_tables_values = [8, 16, 32];
+    let num_probes_values = [2, 4, 8, 16];
+    num_tables_values
+        .into_iter()
+        .take(TABLE_SWEEP)
+        .flat_map(|num_tables| {
+            num_probes_values
+                .into_iter()
+                .filter(move |&num_probes| num_probes <= dim)
+                .flat_map(move |num_probes| {
+                    snapshot_check(
+                        "lsh",
+                        &format!(
+                            "{{\"num_tables\":{},\"num_probes\":{}}}",
+                            num_tables, num_probes
+                        ),
+                        cfg,
+                    )
+                })
+        })
+        .collect()
+}
+
 fn churn_shape(cfg: &Config, train_len: usize, test_len: usize) -> Option<(usize, usize, usize)> {
     let base_size = cfg
         .churn_base_size
@@ -545,95 +656,12 @@ fn required_result_checks(
     train_len: usize,
     test_len: usize,
 ) -> Vec<ExpectedResult> {
-    const LSH_TABLE_SWEEP: usize = 3;
-
     match algo {
-        "hnsw" => cfg
-            .ef_search_values
-            .iter()
-            .flat_map(|&ef| {
-                let params_json = format!(
-                    "{{\"m\":{},\"ef_construction\":{},\"ef_search\":{}}}",
-                    cfg.m, cfg.ef_construction, ef
-                );
-                #[cfg(not(feature = "parallel"))]
-                {
-                    serde_snapshot_check("hnsw", &params_json, cfg)
-                }
-
-                #[cfg(feature = "parallel")]
-                {
-                    let mut markers = serde_snapshot_check("hnsw", &params_json, cfg);
-                    if cfg.batch {
-                        markers.push(params_containing_check(
-                            "hnsw_parallel",
-                            [
-                                format!("\"m\":{}", cfg.m),
-                                format!("\"ef_construction\":{}", cfg.ef_construction),
-                                format!("\"ef_search\":{}", ef),
-                                "\"threads\":".to_string(),
-                            ],
-                        ));
-                    }
-                    markers
-                }
-            })
-            .collect(),
+        "hnsw" => hnsw_result_checks(cfg),
         "nsw" => ef_snapshot_checks("nsw", cfg, |ef| {
             format!("{{\"m\":{},\"ef_search\":{}}}", cfg.m, ef)
         }),
-        "ivfpq" => {
-            let num_clusters = cfg.pq_num_clusters.unwrap_or(256);
-            if num_clusters == 0 {
-                return Vec::new();
-            }
-            let num_codebooks = cfg.pq_num_codebooks.unwrap_or_else(|| {
-                (1..=8.min(dim))
-                    .rev()
-                    .find(|&c| dim.is_multiple_of(c))
-                    .unwrap_or(1)
-            });
-            if !dim.is_multiple_of(num_codebooks) {
-                return Vec::new();
-            }
-            nprobe_values(cfg, num_clusters)
-                .into_iter()
-                .flat_map(|nprobe| {
-                    let params_json = ivfpq_params_json(
-                        num_clusters,
-                        num_codebooks,
-                        cfg.pq_codebook_size,
-                        nprobe,
-                        None,
-                        cfg.pq_training_sample_size,
-                        cfg.pq_kmeans_max_iter,
-                    );
-                    let mut markers = snapshot_file_checks("ivfpq", &params_json, cfg);
-                    markers.extend(
-                        cfg.pq_rerank_pools
-                            .iter()
-                            .copied()
-                            .filter(|&rerank_pool| rerank_pool > 0)
-                            .flat_map(|rerank_pool| {
-                                snapshot_file_checks(
-                                    "ivfpq_rerank",
-                                    &ivfpq_params_json(
-                                        num_clusters,
-                                        num_codebooks,
-                                        cfg.pq_codebook_size,
-                                        nprobe,
-                                        Some(rerank_pool),
-                                        cfg.pq_training_sample_size,
-                                        cfg.pq_kmeans_max_iter,
-                                    ),
-                                    cfg,
-                                )
-                            }),
-                    );
-                    markers
-                })
-                .collect()
-        }
+        "ivfpq" => ivfpq_result_checks(cfg, dim),
         "ivf_avq" => {
             let num_partitions = 256.min(train_len).max(1);
             let num_codebooks = (1..=16.min(dim))
@@ -673,29 +701,7 @@ fn required_result_checks(
             cfg,
         ),
         "binary_index" => snapshot_check("binary_index", "{\"rerank_factor\":10}", cfg),
-        "lsh" => {
-            let num_tables_values = [8, 16, 32];
-            let num_probes_values = [2, 4, 8, 16];
-            num_tables_values
-                .into_iter()
-                .take(LSH_TABLE_SWEEP)
-                .flat_map(|num_tables| {
-                    num_probes_values
-                        .into_iter()
-                        .filter(move |&num_probes| num_probes <= dim)
-                        .flat_map(move |num_probes| {
-                            snapshot_check(
-                                "lsh",
-                                &format!(
-                                    "{{\"num_tables\":{},\"num_probes\":{}}}",
-                                    num_tables, num_probes
-                                ),
-                                cfg,
-                            )
-                        })
-                })
-                .collect()
-        }
+        "lsh" => lsh_result_checks(cfg, dim),
         "emg" | "nsg" | "fresh_graph" => max_degree_ef_snapshot_checks(algo, cfg),
         "dual_branch" => ef_serde_snapshot_checks("dual_branch", cfg, |ef| {
             format!(
