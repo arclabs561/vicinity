@@ -611,6 +611,11 @@ impl IVFAVQFileSearcher {
         self.params.nprobe = nprobe;
     }
 
+    /// Set the number of candidates re-ranked with exact distances.
+    pub fn set_num_reorder(&mut self, num_reorder: usize) {
+        self.params.num_reorder = num_reorder;
+    }
+
     fn read_partition(&mut self, location: PartitionLocation) -> Result<(), RetrieveError> {
         let id_bytes_len = checked_byte_len(
             location.ids_len,

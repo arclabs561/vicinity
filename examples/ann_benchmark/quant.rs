@@ -38,6 +38,8 @@ use crate::support::StorageDiagnostics;
     all(feature = "hnsw", feature = "ivf_rabitq", feature = "serde")
 ))]
 use crate::support::{dir_size_bytes, json_line_with_storage, ResultStorage};
+#[cfg(feature = "ivf_avq")]
+use crate::support::{ivfavq_num_reorder_values, ivfavq_params_json};
 
 #[cfg(any(
     feature = "ivf_pq",
@@ -533,19 +535,20 @@ pub(crate) fn run_ivf_avq(
         .find(|&c| dim.is_multiple_of(c))
         .unwrap_or(1);
     let codebook_size = 256;
-    let num_reorder = 100;
+    let num_reorder_values = ivfavq_num_reorder_values(cfg);
+    let initial_num_reorder = num_reorder_values.first().copied().unwrap_or(100);
 
     if !cfg.json {
         println!(
-            "--- IVF-AVQ (partitions={}, codebooks={}, reorder={}) ---",
-            num_partitions, num_codebooks, num_reorder
+            "--- IVF-AVQ (partitions={}, codebooks={}, reorder={:?}) ---",
+            num_partitions, num_codebooks, num_reorder_values
         );
     }
 
     let params = IVFAVQParams {
         num_partitions,
         nprobe: 1,
-        num_reorder,
+        num_reorder: initial_num_reorder,
         num_codebooks,
         codebook_size,
         seed: 42,
@@ -601,89 +604,125 @@ pub(crate) fn run_ivf_avq(
     }
 
     for nprobe in nprobe_values(cfg, num_partitions) {
-        index.set_nprobe(nprobe);
-        let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
-        if cfg.json {
-            let params_json = format!(
-                "{{\"num_partitions\":{},\"num_codebooks\":{},\"codebook_size\":{},\"nprobe\":{},\"num_reorder\":{}}}",
-                num_partitions, num_codebooks, codebook_size, nprobe, num_reorder
-            );
-            emit_result(
-                &cfg.results_path,
-                &json_line("ivf_avq", &params_json, build_time_s, rss, &result),
-            );
-        } else {
-            print_row(&format!("np={}", nprobe), &result);
-        }
-
-        if let Some(snapshot) = snapshot_index.as_mut() {
-            snapshot.loaded.set_nprobe(nprobe);
-            let loaded_result = evaluate(
-                &|q, k| snapshot.loaded.search(q, k).unwrap(),
-                test,
-                neighbors,
-                10,
-            );
-            snapshot.file_searcher.borrow_mut().set_nprobe(nprobe);
-            #[cfg(feature = "persistence")]
-            snapshot.mmap_searcher.borrow_mut().set_nprobe(nprobe);
-            let file_result = evaluate(
-                &|q, k| snapshot.file_searcher.borrow_mut().search(q, k).unwrap(),
-                test,
-                neighbors,
-                10,
-            );
-            #[cfg(feature = "persistence")]
-            let mmap_result = evaluate(
-                &|q, k| snapshot.mmap_searcher.borrow_mut().search(q, k).unwrap(),
-                test,
-                neighbors,
-                10,
-            );
-            let params_json = format!(
-                "{{\"num_partitions\":{},\"num_codebooks\":{},\"codebook_size\":{},\"nprobe\":{},\"num_reorder\":{}}}",
-                num_partitions, num_codebooks, codebook_size, nprobe, num_reorder
-            );
+        for &num_reorder in &num_reorder_values {
+            index.set_nprobe(nprobe);
+            index.set_num_reorder(num_reorder);
+            let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
             if cfg.json {
-                emit_result(
-                    &cfg.results_path,
-                    &json_line_with_storage(
-                        "ivf_avq",
-                        &params_json,
-                        build_time_s,
-                        rss,
-                        &loaded_result,
-                        &snapshot_storage(snapshot.load_time_s, snapshot.index_bytes),
-                    ),
+                let params_json = ivfavq_params_json(
+                    num_partitions,
+                    num_codebooks,
+                    codebook_size,
+                    nprobe,
+                    num_reorder,
                 );
                 emit_result(
                     &cfg.results_path,
-                    &json_line_with_storage(
-                        "ivf_avq",
-                        &params_json,
-                        build_time_s,
-                        rss,
-                        &file_result,
-                        &opened_storage("file", snapshot.file_load_time_s, snapshot.index_bytes),
-                    ),
-                );
-                #[cfg(feature = "persistence")]
-                emit_result(
-                    &cfg.results_path,
-                    &json_line_with_storage(
-                        "ivf_avq",
-                        &params_json,
-                        build_time_s,
-                        rss,
-                        &mmap_result,
-                        &opened_storage("mmap", snapshot.mmap_load_time_s, snapshot.index_bytes),
-                    ),
+                    &json_line("ivf_avq", &params_json, build_time_s, rss, &result),
                 );
             } else {
-                print_row(&format!("np={} snapshot_loaded", nprobe), &loaded_result);
-                print_row(&format!("np={} file", nprobe), &file_result);
+                print_row(&format!("np={} reorder={}", nprobe, num_reorder), &result);
+            }
+
+            if let Some(snapshot) = snapshot_index.as_mut() {
+                snapshot.loaded.set_nprobe(nprobe);
+                snapshot.loaded.set_num_reorder(num_reorder);
+                let loaded_result = evaluate(
+                    &|q, k| snapshot.loaded.search(q, k).unwrap(),
+                    test,
+                    neighbors,
+                    10,
+                );
+                snapshot.file_searcher.borrow_mut().set_nprobe(nprobe);
+                snapshot
+                    .file_searcher
+                    .borrow_mut()
+                    .set_num_reorder(num_reorder);
                 #[cfg(feature = "persistence")]
-                print_row(&format!("np={} mmap", nprobe), &mmap_result);
+                snapshot.mmap_searcher.borrow_mut().set_nprobe(nprobe);
+                #[cfg(feature = "persistence")]
+                snapshot
+                    .mmap_searcher
+                    .borrow_mut()
+                    .set_num_reorder(num_reorder);
+                let file_result = evaluate(
+                    &|q, k| snapshot.file_searcher.borrow_mut().search(q, k).unwrap(),
+                    test,
+                    neighbors,
+                    10,
+                );
+                #[cfg(feature = "persistence")]
+                let mmap_result = evaluate(
+                    &|q, k| snapshot.mmap_searcher.borrow_mut().search(q, k).unwrap(),
+                    test,
+                    neighbors,
+                    10,
+                );
+                let params_json = ivfavq_params_json(
+                    num_partitions,
+                    num_codebooks,
+                    codebook_size,
+                    nprobe,
+                    num_reorder,
+                );
+                if cfg.json {
+                    emit_result(
+                        &cfg.results_path,
+                        &json_line_with_storage(
+                            "ivf_avq",
+                            &params_json,
+                            build_time_s,
+                            rss,
+                            &loaded_result,
+                            &snapshot_storage(snapshot.load_time_s, snapshot.index_bytes),
+                        ),
+                    );
+                    emit_result(
+                        &cfg.results_path,
+                        &json_line_with_storage(
+                            "ivf_avq",
+                            &params_json,
+                            build_time_s,
+                            rss,
+                            &file_result,
+                            &opened_storage(
+                                "file",
+                                snapshot.file_load_time_s,
+                                snapshot.index_bytes,
+                            ),
+                        ),
+                    );
+                    #[cfg(feature = "persistence")]
+                    emit_result(
+                        &cfg.results_path,
+                        &json_line_with_storage(
+                            "ivf_avq",
+                            &params_json,
+                            build_time_s,
+                            rss,
+                            &mmap_result,
+                            &opened_storage(
+                                "mmap",
+                                snapshot.mmap_load_time_s,
+                                snapshot.index_bytes,
+                            ),
+                        ),
+                    );
+                } else {
+                    print_row(
+                        &format!("np={} reorder={} snapshot_loaded", nprobe, num_reorder),
+                        &loaded_result,
+                    );
+                    print_row(
+                        &format!("np={} reorder={} file", nprobe, num_reorder),
+                        &file_result,
+                    );
+                    #[cfg(feature = "persistence")]
+                    print_row(
+                        &format!("np={} reorder={} mmap", nprobe, num_reorder),
+                        &mmap_result,
+                    );
+                }
             }
         }
     }

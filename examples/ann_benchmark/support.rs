@@ -711,6 +711,37 @@ pub(crate) fn nprobe_values(cfg: &Config, max_probe: usize) -> Vec<usize> {
         .collect()
 }
 
+pub(crate) fn ivfavq_num_reorder_values(cfg: &Config) -> Vec<usize> {
+    if cfg.pq_rerank_pools.is_empty() {
+        vec![100]
+    } else {
+        let values: Vec<_> = cfg
+            .pq_rerank_pools
+            .iter()
+            .copied()
+            .filter(|&num_reorder| num_reorder > 0)
+            .collect();
+        if values.is_empty() {
+            vec![100]
+        } else {
+            values
+        }
+    }
+}
+
+pub(crate) fn ivfavq_params_json(
+    num_partitions: usize,
+    num_codebooks: usize,
+    codebook_size: usize,
+    nprobe: usize,
+    num_reorder: usize,
+) -> String {
+    format!(
+        "{{\"num_partitions\":{},\"num_codebooks\":{},\"codebook_size\":{},\"nprobe\":{},\"num_reorder\":{}}}",
+        num_partitions, num_codebooks, codebook_size, nprobe, num_reorder
+    )
+}
+
 fn diskann_checks(cfg: &Config) -> Vec<ExpectedResult> {
     const STORAGE_ROWS: [(&str, &str, &str); 3] = [
         ("diskann", "memory", "in_memory"),
@@ -878,14 +909,21 @@ fn required_result_checks(
             nprobe_values(cfg, num_partitions)
                 .into_iter()
                 .flat_map(|nprobe| {
-                    snapshot_file_checks(
-                        "ivf_avq",
-                        &format!(
-                            "{{\"num_partitions\":{},\"num_codebooks\":{},\"codebook_size\":256,\"nprobe\":{},\"num_reorder\":100}}",
-                            num_partitions, num_codebooks, nprobe
-                        ),
-                        cfg,
-                    )
+                    ivfavq_num_reorder_values(cfg)
+                        .into_iter()
+                        .flat_map(move |num_reorder| {
+                            snapshot_file_checks(
+                                "ivf_avq",
+                                &ivfavq_params_json(
+                                    num_partitions,
+                                    num_codebooks,
+                                    256,
+                                    nprobe,
+                                    num_reorder,
+                                ),
+                                cfg,
+                            )
+                        })
                 })
                 .collect()
         }
@@ -1284,10 +1322,7 @@ pub(crate) fn parse_args() -> Config {
             "--pq-rerank-pools" => {
                 i += 1;
                 if i < args.len() {
-                    cfg.pq_rerank_pools = args[i]
-                        .split(',')
-                        .filter_map(|s| s.trim().parse().ok())
-                        .collect();
+                    cfg.pq_rerank_pools = parse_usize_list(&args[i], &[]);
                 }
             }
             "--tree-leaf-sizes" => {
@@ -2437,6 +2472,50 @@ mod tests {
             128,
             2_000,
             200
+        ));
+    }
+
+    #[test]
+    fn ivf_avq_resume_requires_each_reorder_pool() {
+        let cfg = Config {
+            snapshot_load: true,
+            pq_nprobe_values: Some(vec![1]),
+            pq_rerank_pools: vec![50, 100],
+            ..Config::default()
+        };
+        let reorder_50_params = ivfavq_params_json(256, 16, 256, 1, 50);
+        let reorder_100_params = ivfavq_params_json(256, 16, 256, 1, 100);
+        let storage_rows = |params: &str| {
+            let mut lines = vec![
+                single_line_with_storage("ivf_avq", params, "in_memory"),
+                single_line_with_storage("ivf_avq", params, "snapshot_loaded"),
+                single_line_with_storage("ivf_avq", params, "file"),
+            ];
+            #[cfg(feature = "persistence")]
+            lines.push(single_line_with_storage("ivf_avq", params, "mmap"));
+            lines
+        };
+        let missing_second_reorder = CompletedResults {
+            lines: storage_rows(&reorder_50_params),
+            ..CompletedResults::default()
+        };
+        let mut completed_lines = storage_rows(&reorder_50_params);
+        completed_lines.extend(storage_rows(&reorder_100_params));
+        let completed = CompletedResults {
+            lines: completed_lines,
+            ..CompletedResults::default()
+        };
+
+        assert!(!request_completed(
+            &missing_second_reorder,
+            "ivf_avq",
+            &cfg,
+            128,
+            2_000,
+            200
+        ));
+        assert!(request_completed(
+            &completed, "ivf_avq", &cfg, 128, 2_000, 200
         ));
     }
 

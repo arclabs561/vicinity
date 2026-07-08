@@ -79,6 +79,13 @@ cargo run --example ann_benchmark --release --features ivf_pq,hnsw -- \
   --pq-training-sample-size 100000 --pq-kmeans-max-iter 20 \
   --pq-nprobes 16,32,64,128,256 --pq-rerank-pools 500,5000,20000 --json --fresh
 
+# IVF-AVQ nprobe plus exact-reorder sweep. For IVF-AVQ,
+# `--pq-rerank-pools` controls `num_reorder`.
+cargo run --example ann_benchmark --release --features ivf_avq -- \
+  data/ann-benchmarks/glove-25-angular --algo ivf_avq \
+  --pq-nprobes 1,4,16,64,128,256 \
+  --pq-rerank-pools 100,500,2000,10000 --json --fresh
+
 # DiskANN in-memory graph search plus file and mmap search from the same build.
 cargo run --example ann_benchmark --release --features hnsw,diskann -- \
   data/ann-benchmarks/glove-25-angular --algo diskann --json --fresh
@@ -586,7 +593,18 @@ check before interpreting them. For example, GIST's high sampled LID, hub Gini,
 and coarse-partition Gini imply that high-recall graph and quantized-search rows
 should be evaluated separately from the lower-dimensional GloVe-25 curve.
 
-Additional capped storage rows from 2026-07-07:
+Additional capped storage and config rows from 2026-07-07/08. The IVF-AVQ
+rows used:
+
+```bash
+CARGO_TARGET_DIR=/tmp/vicinity-avq-reorder-sweep CARGO_INCREMENTAL=0 RUSTC_WRAPPER= \
+  cargo run --release --no-default-features --features ivf_avq --example ann_benchmark -- \
+  data/ann-benchmarks/glove-25-angular --algo ivf_avq \
+  --max-train 50000 --max-queries 500 \
+  --pq-nprobes 1,4,16,64,128,256 \
+  --pq-rerank-pools 100,500,2000,10000 --json \
+  --results /tmp/vicinity-avq-reorder-sweep.jsonl
+```
 
 | Workload | Cap | Storage row | Recall@10 | QPS | Notes |
 | --- | --- | --- | ---: | ---: | --- |
@@ -604,6 +622,10 @@ Additional capped storage rows from 2026-07-07:
 | IVF-PQ rerank | 50K train / 500 query | in_memory | 97.42% | 9,852.2 | `nprobe=64`, `rerank_pool=500` |
 | IVF-PQ rerank | 50K train / 500 query | file | 97.42% | 2,150.6 | fixed-recall file rerank remains raw-vector bound |
 | IVF-PQ rerank | 50K train / 500 query | mmap | 97.42% | 10,645.8 | mmap avoids most direct-file rerank cost |
+| IVF-AVQ | 50K train / 500 query | in_memory | 45.52% | 61,834.3 | `nprobe=1`, `num_reorder=10000`; low-recall throughput point |
+| IVF-AVQ | 50K train / 500 query | in_memory | 94.22% | 23,344.7 | `nprobe=16`, `num_reorder=500`; just below 95% |
+| IVF-AVQ | 50K train / 500 query | in_memory | 99.22% | 8,525.9 | `nprobe=64`, `num_reorder=500`; first capped 95%+ row in this sweep |
+| IVF-AVQ | 50K train / 500 query | in_memory | 99.56% | 5,085.6 | `nprobe=128`, `num_reorder=500`; higher recall costs another ~40% QPS |
 | Store | 50K train / 1K query | segmented_store | 99.97% | 5,914.5 | warm after checkpoint, `index_bytes=13,838,119` |
 | KD-tree | 5K train / 200 query | in_memory | 100.00% | 26,407.9 | capped low-dimensional baseline |
 | KD-tree | 5K train / 200 query | snapshot_loaded | 100.00% | 26,685.8 | `load_time_s=0.0072`, `index_bytes=2,932,965` |
