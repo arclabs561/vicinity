@@ -104,7 +104,7 @@ use support::dir_size_bytes;
 #[cfg(feature = "parallel")]
 use support::evaluate_parallel;
 #[cfg(any(feature = "fresh_graph", feature = "hnsw"))]
-use support::json_line_with_extra_fields;
+use support::json_line_with_storage_and_extra_fields;
 #[cfg(feature = "rptree")]
 use support::rp_forest_params_json;
 #[cfg(any(feature = "balltree", feature = "kdtree", feature = "rptree"))]
@@ -437,6 +437,7 @@ fn run_dual_branch(
     index.build().unwrap();
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
+    let index_bytes = Some(index.memory_usage().total() as u64);
 
     #[cfg(feature = "serde")]
     let snapshot_index = if cfg.snapshot_load {
@@ -486,7 +487,14 @@ fn run_dual_branch(
         if cfg.json {
             emit_result(
                 &cfg.results_path,
-                &json_line("dual_branch", &params_json, build_time_s, rss, &result),
+                &json_line_with_storage(
+                    "dual_branch",
+                    &params_json,
+                    build_time_s,
+                    rss,
+                    &result,
+                    &in_memory_storage(index_bytes),
+                ),
             );
         } else {
             print_row(&format!("ef={}", ef), &result);
@@ -558,6 +566,7 @@ fn run_deg(
     index.build().unwrap();
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
+    let index_bytes = Some(index.memory_usage().total() as u64);
 
     #[cfg(feature = "serde")]
     let snapshot_index = if cfg.snapshot_load {
@@ -609,7 +618,14 @@ fn run_deg(
         if cfg.json {
             emit_result(
                 &cfg.results_path,
-                &json_line("deg", &params_json, build_time_s, rss, &result),
+                &json_line_with_storage(
+                    "deg",
+                    &params_json,
+                    build_time_s,
+                    rss,
+                    &result,
+                    &in_memory_storage(index_bytes),
+                ),
             );
             if let Some((_, loaded, load_time_s, index_bytes)) = &snapshot_index {
                 let loaded_result = evaluate(
@@ -1967,6 +1983,7 @@ fn run_fresh_graph_churn(cfg: &Config, train: &[Vec<f32>], test: &[Vec<f32>], di
     let update_qps = cycles as f64 / update_time_s;
     let tombstone_ratio = index.num_deleted() as f64 / index.len().max(1) as f64;
     let rss = current_rss_kb();
+    let index_bytes = Some(index.memory_usage().total() as u64);
 
     let test_subset = &test[..query_count];
     let live_neighbors: Vec<Vec<i32>> = test_subset
@@ -2008,12 +2025,13 @@ fn run_fresh_graph_churn(cfg: &Config, train: &[Vec<f32>], test: &[Vec<f32>], di
             );
             emit_result(
                 &cfg.results_path,
-                &json_line_with_extra_fields(
+                &json_line_with_storage_and_extra_fields(
                     "fresh_graph_churn",
                     &params_json,
                     build_time_s,
                     rss,
                     &result,
+                    &in_memory_storage(index_bytes),
                     &extra_json,
                 ),
             );
@@ -2227,6 +2245,7 @@ fn run_inplace_churn(cfg: &Config, train: &[Vec<f32>], test: &[Vec<f32>], dim: u
     let free_slot_ratio =
         stats.free_slots as f64 / (stats.active_nodes + stats.free_slots).max(1) as f64;
     let rss = current_rss_kb();
+    let index_bytes = Some(index.memory_usage().total() as u64);
 
     let test_subset = &test[..query_count];
     let live_neighbors: Vec<Vec<i32>> = test_subset
@@ -2273,12 +2292,13 @@ fn run_inplace_churn(cfg: &Config, train: &[Vec<f32>], test: &[Vec<f32>], dim: u
             );
             emit_result(
                 &cfg.results_path,
-                &json_line_with_extra_fields(
+                &json_line_with_storage_and_extra_fields(
                     "inplace_churn",
                     &params_json,
                     build_time_s,
                     rss,
                     &result,
+                    &in_memory_storage(index_bytes),
                     &extra_json,
                 ),
             );
@@ -2354,6 +2374,7 @@ fn run_lsm_churn(cfg: &Config, train: &[Vec<f32>], test: &[Vec<f32>], dim: usize
     let update_qps = cycles as f64 / update_time_s;
     let stats = index.stats();
     let rss = current_rss_kb();
+    let index_bytes = Some(index.memory_usage().total() as u64);
 
     let test_subset = &test[..query_count];
     let live_neighbors: Vec<Vec<i32>> = test_subset
@@ -2409,12 +2430,13 @@ fn run_lsm_churn(cfg: &Config, train: &[Vec<f32>], test: &[Vec<f32>], dim: usize
             );
             emit_result(
                 &cfg.results_path,
-                &json_line_with_extra_fields(
+                &json_line_with_storage_and_extra_fields(
                     "lsm_churn",
                     &params_json,
                     build_time_s,
                     rss,
                     &result,
+                    &in_memory_storage(index_bytes),
                     &extra_json,
                 ),
             );
@@ -2616,6 +2638,7 @@ fn run_adsampling(
     let state = ADSamplingState::from_hnsw(&index, ads_params);
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
+    let index_bytes = Some((index.memory_usage().total() + state.memory_usage().total()) as u64);
 
     if !cfg.json {
         println!(
@@ -2640,7 +2663,14 @@ fn run_adsampling(
             );
             emit_result(
                 &cfg.results_path,
-                &json_line("adsampling", &params_json, build_time_s, rss, &result),
+                &json_line_with_storage(
+                    "adsampling",
+                    &params_json,
+                    build_time_s,
+                    rss,
+                    &result,
+                    &in_memory_storage(index_bytes),
+                ),
             );
         } else {
             print_row(&format!("ef={}", ef), &result);

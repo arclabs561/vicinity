@@ -404,6 +404,14 @@ impl DualBranchHNSW {
 
         for i in 0..self.num_vectors {
             if self.lid_estimates[i].lid > threshold {
+                let remaining = self
+                    .config
+                    .m_high_lid
+                    .saturating_sub(self.neighbors[i].len());
+                if remaining == 0 {
+                    continue;
+                }
+
                 // High-LID node: add more neighbors
                 let query = self.get_vector(i);
                 let entry = self.entry_point.unwrap_or(0);
@@ -418,7 +426,7 @@ impl DualBranchHNSW {
                 for (neighbor, _) in candidates {
                     if neighbor as usize != i
                         && !current_neighbors.contains(&neighbor)
-                        && added < self.config.m_high_lid - self.neighbors[i].len()
+                        && added < remaining
                     {
                         self.neighbors[i].push(neighbor);
                         self.neighbors[neighbor as usize].push(i as u32);
@@ -648,6 +656,36 @@ impl DualBranchHNSW {
             num_skip_bridges: self.skip_bridges.len(),
             high_lid_nodes: high_lid_count,
             lid_stats: self.lid_stats.clone(),
+        }
+    }
+
+    /// Estimated heap memory used by this index.
+    pub fn memory_usage(&self) -> crate::memory::MemoryReport {
+        let vectors_bytes = self.vectors.capacity() * std::mem::size_of::<f32>();
+        let graph_bytes = self.neighbors.capacity() * std::mem::size_of::<Vec<u32>>()
+            + self
+                .neighbors
+                .iter()
+                .map(|neighbors| neighbors.capacity() * std::mem::size_of::<u32>())
+                .sum::<usize>()
+            + self.skip_bridges.capacity() * std::mem::size_of::<SkipBridge>()
+            + self.skip_adjacency.capacity() * std::mem::size_of::<Vec<usize>>()
+            + self
+                .skip_adjacency
+                .iter()
+                .map(|bridges| bridges.capacity() * std::mem::size_of::<usize>())
+                .sum::<usize>();
+        let metadata_bytes = self.lid_estimates.capacity() * std::mem::size_of::<LidEstimate>()
+            + self
+                .lid_stats
+                .as_ref()
+                .map_or(0, |_| std::mem::size_of::<LidStats>());
+
+        crate::memory::MemoryReport {
+            vectors_bytes,
+            graph_bytes,
+            quantized_bytes: 0,
+            metadata_bytes,
         }
     }
 
@@ -1007,6 +1045,51 @@ mod tests {
 
         // The outliers should have higher LID
         assert!(stats.high_lid_nodes > 0, "Should detect high-LID outliers");
+    }
+
+    #[test]
+    fn test_high_lid_enhancement_skips_full_nodes() {
+        let config = DualBranchConfig {
+            m: 2,
+            m_high_lid: 2,
+            seed: Some(42),
+            ..Default::default()
+        };
+        let mut index = DualBranchHNSW::new(2, config);
+        index.vectors = vec![0.0, 0.0, 1.0, 1.0, 2.0, 2.0];
+        index.num_vectors = 3;
+        index.neighbors = vec![vec![1, 2], vec![0], vec![0]];
+        index.lid_estimates = vec![
+            LidEstimate {
+                lid: 10.0,
+                k: 2,
+                max_dist: 1.0,
+            },
+            LidEstimate {
+                lid: 0.1,
+                k: 2,
+                max_dist: 1.0,
+            },
+            LidEstimate {
+                lid: 0.2,
+                k: 2,
+                max_dist: 1.0,
+            },
+        ];
+        index.lid_stats = Some(LidStats {
+            mean: 3.43,
+            median: 0.1,
+            std_dev: 0.0,
+            min: 0.1,
+            max: 10.0,
+            count: 3,
+        });
+        index.entry_point = Some(0);
+
+        let mut rng = StdRng::seed_from_u64(42);
+        index.enhance_high_lid_nodes(&mut rng).unwrap();
+
+        assert_eq!(index.neighbors[0], vec![1, 2]);
     }
 
     /// Test that LID-conditional skip bridge activation works:

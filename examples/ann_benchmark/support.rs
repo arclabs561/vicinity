@@ -1555,7 +1555,7 @@ pub(crate) fn json_line(
     json_line_with_storage(algorithm, params, build_time_s, rss_kb, result, &storage)
 }
 
-#[cfg(any(feature = "fresh_graph", feature = "hnsw"))]
+#[cfg(all(test, any(feature = "fresh_graph", feature = "hnsw")))]
 pub(crate) fn json_line_with_extra_fields(
     algorithm: &str,
     params: &str,
@@ -1564,7 +1564,29 @@ pub(crate) fn json_line_with_extra_fields(
     result: &BenchResult,
     extra_fields: &str,
 ) -> String {
-    let mut line = json_line(algorithm, params, build_time_s, rss_kb, result);
+    let storage = storage_context_from_params(params);
+    json_line_with_storage_and_extra_fields(
+        algorithm,
+        params,
+        build_time_s,
+        rss_kb,
+        result,
+        &storage,
+        extra_fields,
+    )
+}
+
+#[cfg(any(feature = "fresh_graph", feature = "hnsw"))]
+pub(crate) fn json_line_with_storage_and_extra_fields(
+    algorithm: &str,
+    params: &str,
+    build_time_s: f64,
+    rss_kb: Option<u64>,
+    result: &BenchResult,
+    storage: &ResultStorage<'_>,
+    extra_fields: &str,
+) -> String {
+    let mut line = json_line_with_storage(algorithm, params, build_time_s, rss_kb, result, storage);
     append_extra_fields(&mut line, extra_fields);
     line
 }
@@ -1998,6 +2020,28 @@ mod tests {
         assert!(line.contains("\"params\":{\"cycles\":8}"));
         assert!(line.contains("\"update_qps\":12.5"));
         assert!(line.contains("\"active_count\":64"));
+        assert!(line.ends_with('}'));
+    }
+
+    #[cfg(any(feature = "fresh_graph", feature = "hnsw"))]
+    #[test]
+    fn json_line_with_storage_and_extra_fields_keeps_index_bytes() {
+        let storage = ResultStorage {
+            index_bytes: Some(4096),
+            ..ResultStorage::default()
+        };
+        let line = json_line_with_storage_and_extra_fields(
+            "lsm_churn",
+            "{\"cycles\":8}",
+            1.0,
+            None,
+            &sample_result(),
+            &storage,
+            "\"update_qps\":12.5",
+        );
+
+        assert!(line.contains("\"index_bytes\":4096"));
+        assert!(line.contains("\"update_qps\":12.5"));
         assert!(line.ends_with('}'));
     }
 

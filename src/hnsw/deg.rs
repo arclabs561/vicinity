@@ -196,6 +196,30 @@ impl DEGIndex {
         snapshot.into_index()
     }
 
+    /// Estimated heap memory used by this index.
+    pub fn memory_usage(&self) -> crate::memory::MemoryReport {
+        let vectors_bytes = self
+            .vectors
+            .iter()
+            .map(|vector| vector.capacity() * std::mem::size_of::<f32>())
+            .sum();
+        let graph_bytes = self.edges.capacity() * std::mem::size_of::<Vec<u32>>()
+            + self
+                .edges
+                .iter()
+                .map(|edges| edges.capacity() * std::mem::size_of::<u32>())
+                .sum::<usize>();
+        let metadata_bytes = self.vectors.capacity() * std::mem::size_of::<Vec<f32>>()
+            + self.density.capacity() * std::mem::size_of::<DensityInfo>();
+
+        crate::memory::MemoryReport {
+            vectors_bytes,
+            graph_bytes,
+            quantized_bytes: 0,
+            metadata_bytes,
+        }
+    }
+
     /// Estimate local density for each node.
     fn estimate_densities(&mut self) -> Result<(), RetrieveError> {
         let n = self.vectors.len();

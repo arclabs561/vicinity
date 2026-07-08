@@ -1444,6 +1444,15 @@ impl MappedInPlaceIndex {
         self.inner.stats()
     }
 
+    /// Estimated heap memory used by this mapped index.
+    pub fn memory_usage(&self) -> crate::memory::MemoryReport {
+        let mut report = self.inner.memory_usage();
+        let map_entry_bytes = std::mem::size_of::<u32>() * 2;
+        report.metadata_bytes +=
+            (self.id_map.capacity() + self.reverse_map.capacity()) * map_entry_bytes;
+        report
+    }
+
     /// Search with an explicit beam width, returning external IDs.
     pub fn search_with_beam(
         &self,

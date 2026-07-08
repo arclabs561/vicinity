@@ -116,6 +116,18 @@ impl ADSamplingState {
         Self::new(index.vectors_raw(), index.dimension, params)
     }
 
+    /// Estimated heap memory used by ADSampling's rotation and rotated vectors.
+    #[must_use]
+    pub fn memory_usage(&self) -> crate::memory::MemoryReport {
+        crate::memory::MemoryReport {
+            vectors_bytes: self.rotated_vectors.capacity() * std::mem::size_of::<f32>(),
+            graph_bytes: 0,
+            quantized_bytes: 0,
+            metadata_bytes: self.rotation_t.capacity() * std::mem::size_of::<f32>()
+                + self.ratio_table.capacity() * std::mem::size_of::<f32>(),
+        }
+    }
+
     /// Build ADSampling state with automatic `delta_d` tuning via spectral analysis.
     ///
     /// Computes the covariance spectrum of a sample of vectors, then uses

@@ -113,6 +113,26 @@ impl Level {
         self.count == 0
     }
 
+    fn memory_usage(&self) -> crate::memory::MemoryReport {
+        let mut report = crate::memory::MemoryReport {
+            vectors_bytes: self.vectors.capacity() * std::mem::size_of::<f32>(),
+            graph_bytes: 0,
+            quantized_bytes: 0,
+            metadata_bytes: self.doc_ids.capacity() * std::mem::size_of::<u32>(),
+        };
+
+        #[cfg(feature = "hnsw")]
+        if let Some(hnsw) = &self.hnsw {
+            let hnsw_report = hnsw.memory_usage();
+            report.vectors_bytes += hnsw_report.vectors_bytes;
+            report.graph_bytes += hnsw_report.graph_bytes;
+            report.quantized_bytes += hnsw_report.quantized_bytes;
+            report.metadata_bytes += hnsw_report.metadata_bytes;
+        }
+
+        report
+    }
+
     /// Brute-force search (used for L0 or when HNSW is not available).
     fn brute_force_search(
         &self,
@@ -478,6 +498,27 @@ impl LsmIndex {
             level_sizes: self.level_sizes(),
             tombstone_count: self.tombstones.len(),
         }
+    }
+
+    /// Estimated heap memory used by all levels and tombstone metadata.
+    pub fn memory_usage(&self) -> crate::memory::MemoryReport {
+        let mut report = crate::memory::MemoryReport {
+            vectors_bytes: 0,
+            graph_bytes: 0,
+            quantized_bytes: 0,
+            metadata_bytes: self.levels.capacity() * std::mem::size_of::<Level>()
+                + self.tombstones.capacity() * std::mem::size_of::<u32>(),
+        };
+
+        for level in &self.levels {
+            let level_report = level.memory_usage();
+            report.vectors_bytes += level_report.vectors_bytes;
+            report.graph_bytes += level_report.graph_bytes;
+            report.quantized_bytes += level_report.quantized_bytes;
+            report.metadata_bytes += level_report.metadata_bytes;
+        }
+
+        report
     }
 
     /// Force-compact all levels into a single bottom level.
