@@ -795,7 +795,9 @@ cargo run --example ann_benchmark --no-default-features --features nsw,vamana --
 
 Smoke rows included `storage_mode=in_memory`, `cache_state=warm_after_build`,
 and positive `index_bytes` (`nsw=33,600`, `vamana=72,000`). Treat this as row
-coverage evidence, not performance evidence.
+coverage evidence, not performance or footprint-magnitude evidence. Those
+specific graph byte values predate the later correction that made
+`smallvec_u32_bytes` count inline `SmallVec` element storage.
 
 IVF-PQ now emits the same in-memory heap estimate for both approximate and
 rerank rows. A bounded schema smoke used 500 GloVe-25 vectors and 20 queries:
@@ -1860,13 +1862,15 @@ cargo run --release --no-default-features \
 ```
 
 The blanket trial changed Vamana, NSG, FINGER, PiPNN, EMG, FilteredGraph, and
-FreshGraph to 32-inline neighbor lists. It was rejected for the families where
-the heap-estimated graph footprint grew by roughly one third:
+FreshGraph to 32-inline neighbor lists. The original JSONL rows used a
+payload-only `SmallVec` estimator that missed the inline `SmallVec` element
+storage, so the byte deltas in that run are useful only as a spill-buffer
+signal:
 
-| Algorithm | Blanket QPS change | Blanket `index_bytes` change | Decision |
+| Algorithm | Blanket QPS change | Original payload-only byte signal | Decision |
 | --- | ---: | ---: | --- |
-| Vamana | +5.93% | +0.00% | kept |
-| PiPNN | +5.46% | +0.00% | kept |
+| Vamana | +5.93% | +0.00% | kept for corrected measurement |
+| PiPNN | +5.46% | +0.00% | kept for corrected measurement |
 | EMG | +3.11% | +6.92% | kept for now |
 | NSG | -5.59% | +34.56% | rejected |
 | FINGER | +5.22% | +35.74% | rejected |
@@ -1875,19 +1879,23 @@ the heap-estimated graph footprint grew by roughly one third:
 
 The trimmed change leaves NSW, SNG, NSG, FINGER, FilteredGraph, FreshGraph, and
 SparseMIPS at 16-inline lists, and keeps 32-inline lists for Vamana, PiPNN, and
-EMG. The post-trim diagnostic preserved recall on the same 2K-vector cap:
+EMG. A follow-up fixed `smallvec_u32_bytes` to count the resident
+`Vec<SmallVec<_>>` element storage plus spilled buffers. The corrected current
+2K-vector diagnostic is:
 
-| Algorithm | Baseline QPS | Trimmed QPS | Baseline bytes | Trimmed bytes |
-| --- | ---: | ---: | ---: | ---: |
-| Vamana | 52,482.0 | 55,837.4 | 720,000 | 720,000 |
-| PiPNN | 7,641.6 | 8,127.1 | 465,200 | 465,200 |
-| EMG | 9,083.2 | 9,406.6 | 480,920 | 514,200 |
+| Algorithm | Recall@10 | Current QPS | Corrected `index_bytes` |
+| --- | ---: | ---: | ---: |
+| Vamana | 100.00% | 60,381.8 | 1,008,000 |
+| PiPNN | 99.40% | 8,181.1 | 497,200 |
+| EMG | 99.70% | 9,711.8 | 546,200 |
 
 These rows are diagnostic, not publishable QPS targets: the train/query cap is
-small, and the unchanged families in the trimmed run still moved within normal
-benchmark noise. The useful result is the storage decision: do not blanket-grow
-inline neighbor capacity across graph families unless the footprint is part of
-the before/after evidence.
+small, the old byte deltas undercounted inline storage, and the unchanged
+families in the trimmed run still moved within normal benchmark noise. The
+useful result is the storage decision: do not blanket-grow inline neighbor
+capacity across graph families unless corrected footprint or RSS is part of the
+before/after evidence. The 32-inline Vamana/PiPNN/EMG choice still needs
+full-corpus memory review before it should be treated as a recommendation.
 
 ### IVF-PQ Search Loop
 
