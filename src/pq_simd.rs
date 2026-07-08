@@ -313,28 +313,6 @@ mod x86_64 {
         false
     }
 
-    /// AVX2 batch ADC with 8-way parallelism.
-    ///
-    /// Processes 8 candidates simultaneously using gather instructions.
-    ///
-    /// # Safety
-    ///
-    /// Requires AVX2. Caller must verify via runtime detection.
-    #[cfg(target_arch = "x86_64")]
-    #[target_feature(enable = "avx2")]
-    pub(super) unsafe fn adc_batch_avx2<L: PackedLUTData>(
-        codes_batch: &[u8],
-        num_codebooks: usize,
-        lut: &L,
-    ) -> Vec<f32> {
-        let mut distances = Vec::new();
-        // SAFETY: caller guarantees AVX2 is available.
-        unsafe {
-            adc_batch_avx2_into(codes_batch, num_codebooks, lut, &mut distances);
-        }
-        distances
-    }
-
     /// AVX2 batch ADC into a caller-owned buffer.
     ///
     /// # Safety
@@ -391,27 +369,6 @@ mod x86_64 {
             let codes = &codes_batch[i * num_codebooks..(i + 1) * num_codebooks];
             distances[i] = lut.adc_distance(codes);
         }
-    }
-
-    /// AVX-512 batch ADC with 16-way parallelism.
-    ///
-    /// # Safety
-    ///
-    /// Requires AVX-512F. Caller must verify via runtime detection.
-    #[cfg(target_arch = "x86_64")]
-    #[target_feature(enable = "avx512f")]
-    #[allow(clippy::incompatible_msrv)] // AVX-512 intrinsics: stable since 1.89, but only reachable on avx512f hardware
-    pub(super) unsafe fn adc_batch_avx512<L: PackedLUTData>(
-        codes_batch: &[u8],
-        num_codebooks: usize,
-        lut: &L,
-    ) -> Vec<f32> {
-        let mut distances = Vec::new();
-        // SAFETY: caller guarantees AVX-512F is available.
-        unsafe {
-            adc_batch_avx512_into(codes_batch, num_codebooks, lut, &mut distances);
-        }
-        distances
     }
 
     /// AVX-512 batch ADC into a caller-owned buffer.
@@ -514,25 +471,6 @@ mod aarch64 {
         // SAFETY: aarch64 has NEON. `fastscan_block_neon` validates the slice
         // lengths before issuing vector loads.
         unsafe { fastscan_block_neon(block_data, lut_quantized, num_codebooks) }
-    }
-
-    /// NEON batch ADC with 4-way parallelism.
-    ///
-    /// # Safety
-    ///
-    /// NEON is always available on aarch64.
-    #[target_feature(enable = "neon")]
-    pub(super) unsafe fn adc_batch_neon<L: PackedLUTData>(
-        codes_batch: &[u8],
-        num_codebooks: usize,
-        lut: &L,
-    ) -> Vec<f32> {
-        let mut distances = Vec::new();
-        // SAFETY: caller guarantees NEON is available.
-        unsafe {
-            adc_batch_neon_into(codes_batch, num_codebooks, lut, &mut distances);
-        }
-        distances
     }
 
     /// NEON batch ADC into a caller-owned buffer.
