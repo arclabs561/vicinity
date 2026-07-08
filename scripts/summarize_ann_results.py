@@ -287,6 +287,7 @@ class CoverageRow:
     index_bytes_at_recall_floor: int | None
     index_bytes_kind_at_recall_floor: str | None
     best_row_diagnostics: dict[str, float] | None
+    storage_scope_observed: bool
     index_bytes_required: bool
     missing_index_bytes_rows: int
     required_missing_index_bytes_rows: int
@@ -559,6 +560,9 @@ def coverage_rows(
                     else None
                 ),
                 best_row_diagnostics=summary.best_qps_diagnostics if summary else None,
+                storage_scope_observed=(
+                    summary.storage_scope_observed if summary else False
+                ),
                 index_bytes_required=summary.index_bytes_required if summary else False,
                 missing_index_bytes_rows=(
                     summary.missing_index_bytes_rows if summary else 0
@@ -575,6 +579,61 @@ def format_params(params: dict[str, Any] | None) -> str:
     if params is None:
         return "-"
     return f"`{json.dumps(params, sort_keys=True, separators=(',', ':'))}`"
+
+
+def dataset_base_and_train_scope(dataset: str) -> tuple[str, int | None]:
+    if "[" not in dataset or not dataset.endswith("]"):
+        return dataset, None
+    base, scope = dataset[:-1].split("[", 1)
+    train = None
+    for part in scope.split(","):
+        key, sep, value = part.partition("=")
+        if key == "train" and sep:
+            try:
+                train = int(value)
+            except ValueError:
+                train = None
+    return base, train
+
+
+def train_scope_dominates(candidate: int | None, gap: int | None) -> bool:
+    if candidate is None:
+        return True
+    if gap is None:
+        return False
+    return candidate >= gap
+
+
+def recall_gap_row(row: CoverageRow) -> bool:
+    return (
+        row.status == "measured"
+        and row.storage_scope_observed
+        and row.qps_at_recall_floor is None
+    )
+
+
+def suppress_dominated_recall_gaps(rows: list[CoverageRow]) -> list[CoverageRow]:
+    qualifying_scopes: dict[tuple[str, str, str], list[int | None]] = defaultdict(list)
+    for row in rows:
+        if row.status != "measured" or row.qps_at_recall_floor is None:
+            continue
+        base, train_scope = dataset_base_and_train_scope(row.dataset)
+        qualifying_scopes[(base, row.algorithm, row.storage_mode)].append(train_scope)
+
+    filtered = []
+    for row in rows:
+        if not recall_gap_row(row):
+            filtered.append(row)
+            continue
+        base, gap_train_scope = dataset_base_and_train_scope(row.dataset)
+        candidates = qualifying_scopes.get((base, row.algorithm, row.storage_mode), [])
+        if any(
+            train_scope_dominates(candidate, gap_train_scope)
+            for candidate in candidates
+        ):
+            continue
+        filtered.append(row)
+    return filtered
 
 
 def format_optional_int(value: int | None) -> str:
@@ -762,6 +821,15 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--suppress-dominated-recall-gaps",
+        action="store_true",
+        help=(
+            "When used with --recall-gap-only, hide a scoped gap if the same "
+            "base dataset, algorithm, and storage mode has another scoped row "
+            "at the recall floor with at least the same train limit."
+        ),
+    )
+    parser.add_argument(
         "--profile-dir",
         action="append",
         default=[],
@@ -818,8 +886,14 @@ def main() -> None:
         args.recall_floor,
         only_datasets=only_datasets,
         missing_only=args.missing_only,
-        recall_gap_only=args.recall_gap_only,
+        recall_gap_only=(
+            args.recall_gap_only and not args.suppress_dominated_recall_gaps
+        ),
     )
+    if args.suppress_dominated_recall_gaps:
+        rows = suppress_dominated_recall_gaps(rows)
+        if args.recall_gap_only:
+            rows = [row for row in rows if recall_gap_row(row)]
     if args.require_index_bytes:
         require_index_bytes(rows)
     if args.require_declared_index_bytes:

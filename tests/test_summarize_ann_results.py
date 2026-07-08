@@ -225,6 +225,42 @@ def test_cli_recall_floor_gaps_ignore_unscoped_current_rows(
     ]
 
 
+def test_cli_recall_floor_gaps_can_suppress_dominated_scopes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = load_script()
+    path = tmp_path / "rows.jsonl"
+    path.write_text(
+        '{"_meta":{"dataset":"data/ann-benchmarks/glove-25-angular","result_schema":2,"train_limit":50000,"query_limit":1000}}\n'
+        '{"algorithm":"rp_forest","storage_mode":"in_memory","recall_at_10":0.24,"qps":42}\n'
+        '{"algorithm":"ivf_avq","storage_mode":"in_memory","recall_at_10":0.20,"qps":24}\n'
+        '{"_meta":{"dataset":"data/ann-benchmarks/glove-25-angular","result_schema":2,"train_limit":50000,"query_limit":500}}\n'
+        '{"algorithm":"rp_forest","storage_mode":"in_memory","recall_at_10":0.98,"qps":12}\n'
+        '{"_meta":{"dataset":"data/ann-benchmarks/glove-25-angular","result_schema":2,"train_limit":5000,"query_limit":500}}\n'
+        '{"algorithm":"ivf_avq","storage_mode":"in_memory","recall_at_10":0.97,"qps":6}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "summarize_ann_results.py",
+            str(path),
+            "--current-schema-only",
+            "--recall-gap-only",
+            "--suppress-dominated-recall-gaps",
+            "--json",
+        ],
+    )
+
+    script.main()
+
+    output = json.loads(capsys.readouterr().out)
+    assert [(row["dataset"], row["algorithm"]) for row in output] == [
+        ("glove-25-angular[train=50000,queries=1000]", "ivf_avq")
+    ]
+
+
 def test_markdown_table_is_stable(tmp_path: Path) -> None:
     script = load_script()
     path = tmp_path / "rows.jsonl"

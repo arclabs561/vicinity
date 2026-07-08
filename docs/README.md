@@ -59,7 +59,10 @@ record train/query cardinality metadata. Pass `--profile-dir PATH` to attach
 matching `profile_ann_dataset.py` JSON paths to coverage rows.
 Pass `--recall-gap-only` to list scoped measured rows that still have no row
 meeting the recall floor. Exploratory rows without train/query cardinality
-metadata are ignored.
+metadata are ignored. Add `--suppress-dominated-recall-gaps` when reviewing a
+mixed historical directory; it hides an older scoped gap when the same base
+dataset, algorithm, and storage mode already has a row at the recall floor with
+at least the same train limit.
 
 ## Background
 
