@@ -158,10 +158,18 @@ class Summary:
         None
     )
     storage_scope_observed: bool = False
+    index_bytes_required: bool = False
 
-    def add(self, row: dict[str, Any], *, storage_scope_observed: bool = False) -> None:
+    def add(
+        self,
+        row: dict[str, Any],
+        *,
+        storage_scope_observed: bool = False,
+        index_bytes_required: bool = False,
+    ) -> None:
         self.rows += 1
         self.storage_scope_observed |= storage_scope_observed
+        self.index_bytes_required |= index_bytes_required
         recall = float(row.get("recall_at_10", 0.0))
         qps = float(row.get("qps", 0.0))
         index_bytes = row.get("index_bytes")
@@ -230,6 +238,7 @@ class CoverageRow:
     params_at_recall_floor: dict[str, Any] | None
     index_bytes_at_recall_floor: int | None
     best_row_diagnostics: dict[str, float] | None
+    index_bytes_required: bool
 
 
 def scoped_dataset_name(meta: dict[str, Any]) -> str | None:
@@ -297,6 +306,7 @@ def load_summaries(
     for path in paths:
         current_dataset: str | None = None
         storage_expectation_scope = False
+        index_bytes_required = False
         seen_meta = False
         with path.open(encoding="utf-8") as f:
             for line in f:
@@ -309,6 +319,7 @@ def load_summaries(
                     if isinstance(meta, dict):
                         current_dataset = scoped_dataset_name(meta)
                         storage_expectation_scope = has_storage_expectation_scope(meta)
+                        index_bytes_required = meta.get("index_bytes_required") is True
                         seen_meta = True
                     continue
                 if current_schema_only and not seen_meta:
@@ -323,6 +334,7 @@ def load_summaries(
                 summaries[(dataset, algorithm, storage_mode)].add(
                     row,
                     storage_scope_observed=storage_expectation_scope,
+                    index_bytes_required=index_bytes_required,
                 )
     return dict(summaries)
 
@@ -398,6 +410,7 @@ def coverage_rows(
                     summary.index_bytes_at_recall(recall_floor) if summary else None
                 ),
                 best_row_diagnostics=summary.best_qps_diagnostics if summary else None,
+                index_bytes_required=summary.index_bytes_required if summary else False,
             )
         )
     return rows
@@ -409,9 +422,15 @@ def format_params(params: dict[str, Any] | None) -> str:
     return f"`{json.dumps(params, sort_keys=True, separators=(',', ':'))}`"
 
 
-def rows_missing_index_bytes(rows: list[CoverageRow]) -> list[CoverageRow]:
+def rows_missing_index_bytes(
+    rows: list[CoverageRow], *, declared_only: bool = False
+) -> list[CoverageRow]:
     return [
-        row for row in rows if row.status == "measured" and row.best_index_bytes is None
+        row
+        for row in rows
+        if row.status == "measured"
+        and row.best_index_bytes is None
+        and (not declared_only or row.index_bytes_required)
     ]
 
 
@@ -419,8 +438,10 @@ def format_row_key(row: CoverageRow) -> str:
     return f"{row.dataset}:{row.algorithm}:{row.storage_mode}"
 
 
-def require_index_bytes(rows: list[CoverageRow]) -> None:
-    missing = rows_missing_index_bytes(rows)
+def require_index_bytes(
+    rows: list[CoverageRow], *, declared_only: bool = False
+) -> None:
+    missing = rows_missing_index_bytes(rows, declared_only=declared_only)
     if not missing:
         return
 
@@ -573,6 +594,14 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Exit non-zero if any measured summary row lacks index_bytes",
     )
+    parser.add_argument(
+        "--require-declared-index-bytes",
+        action="store_true",
+        help=(
+            "Exit non-zero only for measured rows under "
+            "_meta.index_bytes_required=true that lack index_bytes"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -605,6 +634,8 @@ def main() -> None:
     )
     if args.require_index_bytes:
         require_index_bytes(rows)
+    if args.require_declared_index_bytes:
+        require_index_bytes(rows, declared_only=True)
     if args.json:
         print(
             json.dumps(
@@ -626,6 +657,7 @@ def main() -> None:
                         "qps_at_recall_floor": row.qps_at_recall_floor,
                         "params_at_recall_floor": row.params_at_recall_floor,
                         "index_bytes_at_recall_floor": row.index_bytes_at_recall_floor,
+                        "index_bytes_required": row.index_bytes_required,
                     }
                     for row in rows
                 ],

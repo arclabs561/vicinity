@@ -294,7 +294,7 @@ fn emit_result(
 
 fn meta_line(cfg: &Config, graph_build_s: Option<f64>) -> String {
     let mut line = format!(
-        "{{\"_meta\":{{\"workload\":\"acorn_selectivity\",\"result_schema\":1,\"n\":{},\"dim\":{},\"queries\":{},\"k\":{},\"neighbors\":{},\"ef_search\":{},\"acorn_max_two_hop_neighbors\":{},\"fallback_selectivity_threshold\":{:.4}",
+        "{{\"_meta\":{{\"workload\":\"acorn_selectivity\",\"result_schema\":1,\"index_bytes_required\":true,\"n\":{},\"dim\":{},\"queries\":{},\"k\":{},\"neighbors\":{},\"ef_search\":{},\"acorn_max_two_hop_neighbors\":{},\"fallback_selectivity_threshold\":{:.4}",
         cfg.n,
         cfg.dim,
         cfg.queries,

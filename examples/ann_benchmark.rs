@@ -3612,7 +3612,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let meta = || {
         format!(
-            "{{\"_meta\":{{\"dataset\":\"{}\",\"metric\":\"{}\",\"result_schema\":2,\"rustc\":\"{}\",\"rust_msrv\":\"{}\",\"vicinity\":\"{}\",\"features\":{},\"train_limit\":{},\"indexed_vectors\":{},\"query_limit\":{},\"queries\":{},\"warmup_queries\":{}}}}}",
+            "{{\"_meta\":{{\"dataset\":\"{}\",\"metric\":\"{}\",\"result_schema\":2,\"index_bytes_required\":true,\"rustc\":\"{}\",\"rust_msrv\":\"{}\",\"vicinity\":\"{}\",\"features\":{},\"train_limit\":{},\"indexed_vectors\":{},\"query_limit\":{},\"queries\":{},\"warmup_queries\":{}}}}}",
             cfg.data_dir,
             if cfg.is_euclidean { "l2" } else { "cosine" },
             rustc_version(),

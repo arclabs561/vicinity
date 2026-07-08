@@ -452,6 +452,67 @@ def test_cli_index_byte_requirement_ignores_missing_expectations(
     assert by_algorithm["store"]["status"] == "missing"
 
 
+def test_cli_can_require_only_declared_index_bytes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = load_script()
+    path = tmp_path / "rows.jsonl"
+    path.write_text(
+        '{"_meta":{"dataset":"data/ann-benchmarks/glove-25-angular","query_limit":1000}}\n'
+        '{"algorithm":"legacy_hnsw","storage_mode":"in_memory","recall_at_10":1.0,"qps":42}\n'
+        '{"_meta":{"dataset":"data/ann-benchmarks/glove-25-angular","query_limit":1000,"index_bytes_required":true}}\n'
+        '{"algorithm":"hnsw","storage_mode":"in_memory","recall_at_10":1.0,"qps":24,"index_bytes":4096}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "summarize_ann_results.py",
+            str(path),
+            "--require-declared-index-bytes",
+            "--json",
+        ],
+    )
+
+    script.main()
+
+    output = json.loads(capsys.readouterr().out)
+    by_algorithm = {row["algorithm"]: row for row in output}
+    assert by_algorithm["legacy_hnsw"]["best_index_bytes"] is None
+    assert not by_algorithm["legacy_hnsw"]["index_bytes_required"]
+    assert by_algorithm["hnsw"]["best_index_bytes"] == 4096
+    assert by_algorithm["hnsw"]["index_bytes_required"]
+
+
+def test_declared_index_byte_requirement_fails_when_marked_row_lacks_bytes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = load_script()
+    path = tmp_path / "rows.jsonl"
+    path.write_text(
+        '{"_meta":{"dataset":"data/ann-benchmarks/glove-25-angular","query_limit":1000,"index_bytes_required":true}}\n'
+        '{"algorithm":"hnsw","storage_mode":"in_memory","recall_at_10":1.0,"qps":42}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "summarize_ann_results.py",
+            str(path),
+            "--require-declared-index-bytes",
+            "--json",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        script.main()
+
+    assert exc_info.value.code == 1
+    assert "glove-25-angular[queries=1000]:hnsw:in_memory" in capsys.readouterr().err
+
+
 def test_json_output_preserves_churn_diagnostics(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
