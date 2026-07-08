@@ -78,7 +78,7 @@ impl ADSamplingState {
     pub fn new(vectors: &[f32], dimension: usize, params: ADSamplingParams) -> Self {
         let num_vectors = vectors.len() / dimension;
         let rotation = generate_orthogonal_rotation(dimension, params.seed);
-        // Transpose Q so rotate_vector can do contiguous row reads + innr::dot.
+        // Transpose Q so rotate_vector can do contiguous row reads + simd::dot.
         let rotation_t = transpose_square(&rotation, dimension);
         let rotated_vectors = rotate_all(vectors, &rotation_t, dimension, num_vectors);
 
@@ -437,18 +437,7 @@ fn rotate_vector(v: &[f32], rotation_t: &[f32], dim: usize) -> Vec<f32> {
     let mut result = vec![0.0f32; dim];
     for i in 0..dim {
         let row = &rotation_t[i * dim..(i + 1) * dim];
-        #[cfg(feature = "innr")]
-        {
-            result[i] = innr::dot(row, v);
-        }
-        #[cfg(not(feature = "innr"))]
-        {
-            let mut sum = 0.0f32;
-            for j in 0..dim {
-                sum += row[j] * v[j];
-            }
-            result[i] = sum;
-        }
+        result[i] = crate::simd::dot(row, v);
     }
     result
 }
@@ -461,18 +450,7 @@ fn rotate_all(vectors: &[f32], rotation_t: &[f32], dim: usize, n: usize) -> Vec<
         let dst = &mut result[idx * dim..(idx + 1) * dim];
         for i in 0..dim {
             let row = &rotation_t[i * dim..(i + 1) * dim];
-            #[cfg(feature = "innr")]
-            {
-                dst[i] = innr::dot(row, src);
-            }
-            #[cfg(not(feature = "innr"))]
-            {
-                let mut sum = 0.0f32;
-                for j in 0..dim {
-                    sum += row[j] * src[j];
-                }
-                dst[i] = sum;
-            }
+            dst[i] = crate::simd::dot(row, src);
         }
     }
     result
