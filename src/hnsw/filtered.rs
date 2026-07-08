@@ -24,6 +24,8 @@
 use crate::RetrieveError;
 use std::collections::{BinaryHeap, HashSet, VecDeque};
 
+const MAX_VISITED_CAPACITY_HINT: usize = 1_000_000;
+
 /// Filter predicate for ACORN search.
 pub trait FilterPredicate: Sync {
     /// Check if a node passes the filter.
@@ -132,9 +134,9 @@ struct SearchState {
 }
 
 impl SearchState {
-    fn new() -> Self {
+    fn new(capacity_hint: usize) -> Self {
         Self {
-            visited: HashSet::new(),
+            visited: HashSet::with_capacity(capacity_hint),
             filtered_count: 0,
             visited_count: 0,
         }
@@ -159,6 +161,16 @@ impl SearchState {
             self.filtered_count as f32 / self.visited_count as f32
         }
     }
+}
+
+fn visited_capacity_hint(config: &AcornConfig, k: usize) -> usize {
+    config
+        .ef_search
+        .saturating_mul(3)
+        .saturating_add(config.max_two_hop_neighbors)
+        .saturating_add(k)
+        .saturating_add(1)
+        .min(MAX_VISITED_CAPACITY_HINT)
 }
 
 /// Candidate for search (ordered by distance, reversed for max-heap).
@@ -289,7 +301,7 @@ where
     D: Fn(u32) -> f32,
 {
     let mut stats = AcornStats::default();
-    let mut state = SearchState::new();
+    let mut state = SearchState::new(visited_capacity_hint(config, k));
 
     // Result candidates (filtered nodes only)
     let mut results: BinaryHeap<Candidate> = BinaryHeap::new();

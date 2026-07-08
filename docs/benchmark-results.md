@@ -843,6 +843,37 @@ cargo run --release --example acorn_selectivity --no-default-features \
 | `selectivity_acorn` | 2% | 96.45% | 3,767.4 | 272.1 us | 454,113 | stays on tuned ACORN because the threshold is `< 0.02` |
 | `selectivity_acorn` | 50% | 99.85% | 3,083.5 | 339.7 us | 430,710 | stays on tuned ACORN |
 
+The ACORN search loop now has a dedicated Criterion target:
+
+```bash
+CARGO_TARGET_DIR=/tmp/vicinity-acorn-visited-bench CARGO_INCREMENTAL=0 \
+  RUSTC_WRAPPER= cargo bench --bench acorn_search --no-default-features \
+  --features hnsw -- acorn_search_only --sample-size 20 \
+  --warm-up-time 1 --measurement-time 3 --save-baseline acorn_visited_before
+```
+
+A `samply` profile of `acorn_search_only/selectivity_0.10` saved
+`/tmp/vicinity-acorn-search-s0p10-20260708.json.gz`. The benchmark thread had
+9,568 samples. After resolving the hottest addresses with `atos`, the largest
+leaf buckets were `hashbrown::HashMap::insert` and
+`hashbrown::raw::RawTable::reserve_rehash`; `innr::dense::dot` was only about
+1-2% of leaf samples. That makes this filtered-search shape a safe
+data-structure target, not an unsafe SIMD target.
+
+Pre-sizing ACORN's per-query visited set to the same order as the traversal cap
+(`ef_search * 3`, plus two-hop and result slack, bounded at 1M entries) improved
+the same saved-baseline comparison:
+
+| Workload | Before | After | Criterion change |
+| --- | ---: | ---: | --- |
+| `acorn_search_only/selectivity_0.50` | 35.980 ms / 128 queries | 27.386 ms / 128 queries | 23.9% faster, p < 0.05 |
+| `acorn_search_only/selectivity_0.10` | 33.455 ms / 128 queries | 25.969 ms / 128 queries | 22.5% faster, p < 0.05 |
+| `acorn_search_only/selectivity_0.02` | 33.563 ms / 128 queries | 24.982 ms / 128 queries | 24.0% faster, p < 0.05 |
+
+The benchmark counters stayed in the same regime after the change: roughly
+127-139 two-hop invocations per query, 2.1K-2.3K two-hop nodes examined per
+query, and 10 returned results per query.
+
 Full-train IVF-PQ storage sweep from the same day, using all 1,183,514
 GloVe-25 vectors and 500 queries:
 
