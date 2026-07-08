@@ -164,7 +164,9 @@ cargo run --example ann_benchmark --release --features hnsw,ivf_pq,ivf_avq -- \
   --algo hnsw --algo ivfpq --algo ivf_avq --json --fresh
 ```
 
-Selected GloVe-25 rows:
+Selected GloVe-25 rows. Current validation rows are full-corpus builds with a
+500-query cap recorded in JSONL metadata; historical rows predate the current
+schema.
 
 | Algorithm | Recall@10 | QPS |
 | --- | ---: | ---: |
