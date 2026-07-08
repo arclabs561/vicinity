@@ -103,6 +103,7 @@ fn main() {
     let build_start = Instant::now();
     let graph = build_mutual_knn_graph(&vectors, cfg.neighbors);
     let build_time_s = build_start.elapsed().as_secs_f64();
+    let acorn_index_bytes = synthetic_acorn_index_bytes(&vectors, &graph);
 
     #[cfg(feature = "filtered_graph")]
     let filtered_graph = build_filtered_graph_index(&cfg, &vectors);
@@ -147,6 +148,7 @@ fn main() {
             actual_selectivity,
             target_count,
             &result,
+            Some(acorn_index_bytes),
         );
         let result = run_selectivity_gated(&cfg, &vectors, &queries, &graph, target_count);
         emit_result(
@@ -156,10 +158,12 @@ fn main() {
             actual_selectivity,
             target_count,
             &result,
+            Some(acorn_index_bytes),
         );
 
         #[cfg(feature = "filtered_graph")]
         {
+            let index_bytes = Some(filtered_graph.memory_usage().total() as u64);
             let result = run_filtered_graph_selectivity(
                 &cfg,
                 &vectors,
@@ -174,11 +178,13 @@ fn main() {
                 actual_selectivity,
                 target_count,
                 &result,
+                index_bytes,
             );
         }
 
         #[cfg(all(feature = "range_filtered", feature = "hnsw"))]
         {
+            let index_bytes = Some(range_filtered.memory_usage().total() as u64);
             let result = run_range_filtered_selectivity(
                 &cfg,
                 &vectors,
@@ -193,11 +199,13 @@ fn main() {
                 actual_selectivity,
                 target_count,
                 &result,
+                index_bytes,
             );
         }
 
         #[cfg(feature = "curator")]
         {
+            let index_bytes = Some(curator.memory_usage().total() as u64);
             let result = run_curator_selectivity(&cfg, &vectors, &queries, &curator, target_count);
             emit_result(
                 &cfg,
@@ -206,6 +214,7 @@ fn main() {
                 actual_selectivity,
                 target_count,
                 &result,
+                index_bytes,
             );
         }
     }
@@ -218,6 +227,7 @@ fn emit_result(
     actual_selectivity: f64,
     target_count: usize,
     result: &BenchResult,
+    index_bytes: Option<u64>,
 ) {
     if cfg.json {
         if cfg.resume && row_completed(cfg, completed, algorithm, target_count) {
@@ -245,8 +255,11 @@ fn emit_result(
                 cfg.fallback_selectivity_threshold
             ));
         }
+        let index_bytes = index_bytes
+            .map(|bytes| format!(",\"index_bytes\":{bytes}"))
+            .unwrap_or_default();
         let line = format!(
-            "{{\"algorithm\":\"{}\",\"params\":{{{}}},\"recall_at_{}\":{:.4},\"qps\":{:.1},\"latency_us\":{:.1},\"p50_us\":{:.1},\"p95_us\":{:.1},\"p99_us\":{:.1},\"mean_returned\":{:.1},\"two_hop_invocations\":{},\"two_hop_nodes_examined\":{}}}",
+            "{{\"algorithm\":\"{}\",\"params\":{{{}}},\"storage_mode\":\"in_memory\",\"cache_state\":\"warm_after_build\",\"recall_at_{}\":{:.4},\"qps\":{:.1},\"latency_us\":{:.1},\"p50_us\":{:.1},\"p95_us\":{:.1},\"p99_us\":{:.1},\"mean_returned\":{:.1},\"two_hop_invocations\":{},\"two_hop_nodes_examined\":{}{}}}",
             algorithm,
             params,
             cfg.k,
@@ -258,7 +271,8 @@ fn emit_result(
             result.p99_us,
             result.mean_returned,
             result.two_hop_invocations,
-            result.two_hop_nodes_examined
+            result.two_hop_nodes_examined,
+            index_bytes
         );
         emit_json_line(cfg, &line);
     } else {
@@ -295,6 +309,20 @@ fn meta_line(cfg: &Config, graph_build_s: Option<f64>) -> String {
     }
     line.push_str("}}");
     line
+}
+
+fn synthetic_acorn_index_bytes(vectors: &[Vec<f32>], graph: &[Vec<u32>]) -> u64 {
+    let vector_headers = std::mem::size_of_val(vectors);
+    let vector_payload: usize = vectors
+        .iter()
+        .map(|vector| vector.capacity() * std::mem::size_of::<f32>())
+        .sum();
+    let graph_headers = std::mem::size_of_val(graph);
+    let graph_payload: usize = graph
+        .iter()
+        .map(|neighbors| neighbors.capacity() * std::mem::size_of::<u32>())
+        .sum();
+    (vector_headers + vector_payload + graph_headers + graph_payload) as u64
 }
 
 fn default_results_path(cfg: &Config) -> PathBuf {
