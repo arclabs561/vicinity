@@ -71,13 +71,26 @@ pub struct SparseVector {
 impl SparseVector {
     /// Create a new sparse vector from unsorted (index, value) pairs.
     ///
-    /// Sorts by index. Pairs with duplicate indices are silently deduplicated
-    /// (last value wins after sorting).
+    /// Sorts by index. Pairs with duplicate indices are summed, matching
+    /// bag-of-words and term-frequency emitters that may produce repeated
+    /// dimensions before compaction.
     pub fn from_pairs(mut pairs: Vec<(u32, f32)>) -> Self {
         pairs.sort_unstable_by_key(|&(i, _)| i);
-        pairs.dedup_by_key(|p| p.0);
-        let indices = pairs.iter().map(|&(i, _)| i).collect();
-        let values = pairs.iter().map(|&(_, v)| v).collect();
+
+        let mut indices = Vec::with_capacity(pairs.len());
+        let mut values = Vec::with_capacity(pairs.len());
+        for (idx, value) in pairs {
+            if let Some((&last_idx, last_value)) = indices.last().zip(values.last_mut()) {
+                if last_idx == idx {
+                    *last_value += value;
+                    continue;
+                }
+            }
+
+            indices.push(idx);
+            values.push(value);
+        }
+
         Self { indices, values }
     }
 
@@ -846,7 +859,6 @@ mod tests {
     fn from_pairs_sorts_and_deduplicates() {
         let sv = SparseVector::from_pairs(vec![(3, 1.0), (1, 2.0), (3, 5.0), (0, 0.5)]);
         assert_eq!(sv.indices, vec![0, 1, 3]);
-        // dedup_by_key keeps the first occurrence for duplicate indices
-        assert_eq!(sv.values, vec![0.5, 2.0, 1.0]);
+        assert_eq!(sv.values, vec![0.5, 2.0, 6.0]);
     }
 }
