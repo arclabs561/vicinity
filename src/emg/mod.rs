@@ -120,7 +120,7 @@ pub struct EmgIndex {
     doc_ids: Vec<u32>,
 
     /// Single-layer neighbor lists.
-    neighbors: Vec<SmallVec<[u32; 16]>>,
+    neighbors: Vec<SmallVec<[u32; 32]>>,
 
     /// Medoid (closest to centroid), used as search entry point.
     medoid: u32,

@@ -1842,6 +1842,53 @@ SmallVec capacity change. The `m_max=32` graph exposes more base-layer
 neighbors and is slower on this 10K-vector synthetic fixture; the inline
 capacity change still avoids heap spills for that default-degree topology.
 
+### Graph-Family Inline Neighbor Capacity
+
+Several graph-family implementations still used `SmallVec<[u32; 16]>` for
+neighbor lists even when their default or typical maximum degree is 32. A
+bounded GloVe-25 diagnostic compared the current code, a blanket 32-inline
+trial, and the trimmed version that kept only the changes with an acceptable
+QPS/footprint tradeoff:
+
+```bash
+cargo run --release --no-default-features \
+  --features vamana,nsg,finger,pipnn,emg,filtered_graph,fresh_graph \
+  --example ann_benchmark -- data/ann-benchmarks/glove-25-angular \
+  --algo vamana --algo nsg --algo finger --algo pipnn --algo emg \
+  --algo filtered_graph --algo fresh_graph \
+  --max-train 2000 --max-queries 100 --ef-search 50 --json --fresh
+```
+
+The blanket trial changed Vamana, NSG, FINGER, PiPNN, EMG, FilteredGraph, and
+FreshGraph to 32-inline neighbor lists. It was rejected for the families where
+the heap-estimated graph footprint grew by roughly one third:
+
+| Algorithm | Blanket QPS change | Blanket `index_bytes` change | Decision |
+| --- | ---: | ---: | --- |
+| Vamana | +5.93% | +0.00% | kept |
+| PiPNN | +5.46% | +0.00% | kept |
+| EMG | +3.11% | +6.92% | kept for now |
+| NSG | -5.59% | +34.56% | rejected |
+| FINGER | +5.22% | +35.74% | rejected |
+| FilteredGraph | +2.79% | +36.07% | rejected |
+| FreshGraph | +11.19% | +34.99% | rejected pending larger churn evidence |
+
+The trimmed change leaves NSW, SNG, NSG, FINGER, FilteredGraph, FreshGraph, and
+SparseMIPS at 16-inline lists, and keeps 32-inline lists for Vamana, PiPNN, and
+EMG. The post-trim diagnostic preserved recall on the same 2K-vector cap:
+
+| Algorithm | Baseline QPS | Trimmed QPS | Baseline bytes | Trimmed bytes |
+| --- | ---: | ---: | ---: | ---: |
+| Vamana | 52,482.0 | 55,837.4 | 720,000 | 720,000 |
+| PiPNN | 7,641.6 | 8,127.1 | 465,200 | 465,200 |
+| EMG | 9,083.2 | 9,406.6 | 480,920 | 514,200 |
+
+These rows are diagnostic, not publishable QPS targets: the train/query cap is
+small, and the unchanged families in the trimmed run still moved within normal
+benchmark noise. The useful result is the storage decision: do not blanket-grow
+inline neighbor capacity across graph families unless the footprint is part of
+the before/after evidence.
+
 ### IVF-PQ Search Loop
 
 The `ivfpq_search` benchmark's profiled counters show the remaining hot path is

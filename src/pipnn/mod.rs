@@ -112,7 +112,7 @@ pub struct PipnnIndex {
     doc_ids: Vec<u32>,
 
     /// Single-layer neighbor graph.
-    neighbors: Vec<SmallVec<[u32; 16]>>,
+    neighbors: Vec<SmallVec<[u32; 32]>>,
 
     /// Entry point (medoid).
     medoid: u32,
@@ -666,7 +666,7 @@ impl PipnnIndex {
         let max_deg = self.params.max_degree;
 
         for i in 0..n {
-            let nbs: SmallVec<[u32; 16]> = self.neighbors[i].clone();
+            let nbs: SmallVec<[u32; 32]> = self.neighbors[i].clone();
             for &nb in &nbs {
                 let nb = nb as usize;
                 if nb < n

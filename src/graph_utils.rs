@@ -7,11 +7,11 @@
 //! are enabled. Allow dead_code at the module level to avoid per-feature-combo lint noise.
 #![allow(dead_code)]
 
-use smallvec::SmallVec;
+use smallvec::{Array, SmallVec};
 
 /// Build a kNN graph using NN-descent (Dong et al., 2011).
 ///
-/// Returns neighbor lists as `Vec<SmallVec<[u32; 16]>>` where each entry contains
+/// Returns neighbor lists where each entry contains
 /// the `k` approximate nearest neighbor IDs for that node, sorted by distance (closest first).
 ///
 /// # Arguments
@@ -19,13 +19,14 @@ use smallvec::SmallVec;
 /// - `k`: target neighbor count per node
 /// - `dist_fn`: `dist_fn(i, j)` returns the distance between nodes `i` and `j`
 #[allow(clippy::needless_range_loop)]
-pub fn build_knn_graph_nndescent<F>(n: usize, k: usize, dist_fn: F) -> Vec<SmallVec<[u32; 16]>>
+pub fn build_knn_graph_nndescent<A, F>(n: usize, k: usize, dist_fn: F) -> Vec<SmallVec<A>>
 where
+    A: Array<Item = u32>,
     F: Fn(usize, usize) -> f32,
 {
     let k = k.min(n.saturating_sub(1));
     if k == 0 {
-        return vec![SmallVec::new(); n];
+        return vec![SmallVec::<A>::new(); n];
     }
 
     let mut nn: Vec<Vec<(f32, u32)>> = vec![Vec::with_capacity(k + 1); n];
@@ -123,8 +124,9 @@ where
 /// - `neighbors`: mutable neighbor adjacency lists
 /// - `entry_point`: the root/medoid node index
 /// - `dist_fn`: `dist_fn(i, j)` returns the distance between nodes `i` and `j`
-pub fn ensure_connectivity<F>(neighbors: &mut [SmallVec<[u32; 16]>], entry_point: u32, dist_fn: F)
+pub fn ensure_connectivity<A, F>(neighbors: &mut [SmallVec<A>], entry_point: u32, dist_fn: F)
 where
+    A: Array<Item = u32>,
     F: Fn(usize, usize) -> f32,
 {
     let n = neighbors.len();
@@ -185,9 +187,9 @@ where
         let mut best_dist = dist_fn(i, entry_point as usize);
 
         // Check neighbors-of-neighbors for a bridge.
-        let my_neighbors: SmallVec<[u32; 16]> = neighbors[i].clone();
+        let my_neighbors: SmallVec<A> = neighbors[i].clone();
         for &nb in &my_neighbors {
-            let nb_neighbors: SmallVec<[u32; 16]> = neighbors[nb as usize].clone();
+            let nb_neighbors: SmallVec<A> = neighbors[nb as usize].clone();
             for &nb2 in &nb_neighbors {
                 if find(&mut parent, nb2) == entry_root {
                     let d = dist_fn(i, nb2 as usize);
@@ -200,7 +202,7 @@ where
         }
 
         // Scan entry point's neighbors (guaranteed reachable).
-        let entry_neighbors: SmallVec<[u32; 16]> = neighbors[entry_point as usize].clone();
+        let entry_neighbors: SmallVec<A> = neighbors[entry_point as usize].clone();
         for &nb in &entry_neighbors {
             let d = dist_fn(i, nb as usize);
             if d < best_dist {
@@ -212,7 +214,7 @@ where
         // Two-hop: scan entry neighbors' neighbors for better bridge candidates.
         // Costs O(k^2) per isolated node but covers a much larger neighborhood.
         for &enb in &entry_neighbors {
-            let enb_neighbors: SmallVec<[u32; 16]> = neighbors[enb as usize].clone();
+            let enb_neighbors: SmallVec<A> = neighbors[enb as usize].clone();
             for &enb2 in &enb_neighbors {
                 if find(&mut parent, enb2) == entry_root {
                     let d = dist_fn(i, enb2 as usize);
@@ -245,7 +247,7 @@ mod tests {
             (dx * dx + dy * dy).sqrt()
         };
 
-        let neighbors = build_knn_graph_nndescent(5, 2, dist_fn);
+        let neighbors: Vec<SmallVec<[u32; 16]>> = build_knn_graph_nndescent(5, 2, dist_fn);
         assert_eq!(neighbors.len(), 5);
         // Each node should have 2 neighbors
         for nb in &neighbors {

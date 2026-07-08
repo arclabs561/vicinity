@@ -35,7 +35,7 @@ fn initialize_random_graph(index: &mut VamanaIndex) -> Result<(), RetrieveError>
         let mut selected = std::collections::HashSet::with_capacity(k + 1);
         selected.insert(i as u32); // sentinel: never pick self
 
-        let mut neighbors: SmallVec<[u32; 16]> = SmallVec::with_capacity(k);
+        let mut neighbors: SmallVec<[u32; 32]> = SmallVec::with_capacity(k);
         while neighbors.len() < k {
             let j = rng.random_range(0u32..n as u32);
             if selected.insert(j) {
@@ -61,7 +61,7 @@ fn greedy_search_vamana(
     query: &[f32],
     entry_point: u32,
     query_id: u32,
-    neighbors: &[SmallVec<[u32; 16]>],
+    neighbors: &[SmallVec<[u32; 32]>],
     vectors: &[f32],
     dimension: usize,
     ef: usize,

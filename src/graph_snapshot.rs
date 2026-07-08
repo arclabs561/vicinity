@@ -82,7 +82,7 @@ macro_rules! cfg_dense_graph_shape {
 }
 
 cfg_graph_neighbors! {
-    use smallvec::SmallVec;
+    use smallvec::{Array, SmallVec};
     use std::io::Read;
 }
 
@@ -132,11 +132,14 @@ pub(crate) fn write_u64_atomic(path: &Path, values: &[u64]) -> Result<(), Retrie
 }
 
 cfg_graph_neighbors! {
-    pub(crate) fn write_neighbors_atomic(
+    pub(crate) fn write_neighbors_atomic<A>(
         path: &Path,
         magic: &[u8; 8],
-        neighbors: &[SmallVec<[u32; 16]>],
-    ) -> Result<(), RetrieveError> {
+        neighbors: &[SmallVec<A>],
+    ) -> Result<(), RetrieveError>
+    where
+        A: Array<Item = u32>,
+    {
         write_atomic(path, |writer| {
             writer.write_all(magic)?;
             writer.write_all(&(neighbors.len() as u64).to_le_bytes())?;
@@ -239,11 +242,14 @@ pub(crate) fn read_u64_exact(path: &Path, expected_len: usize) -> Result<Vec<u64
 }
 
 cfg_graph_neighbors! {
-    pub(crate) fn read_neighbors(
+    pub(crate) fn read_neighbors<A>(
         path: &Path,
         magic: &[u8; 8],
         expected_nodes: usize,
-    ) -> Result<Vec<SmallVec<[u32; 16]>>, RetrieveError> {
+    ) -> Result<Vec<SmallVec<A>>, RetrieveError>
+    where
+        A: Array<Item = u32>,
+    {
         let mut reader = BufReader::new(std::fs::File::open(path)?);
         let mut actual_magic = [0u8; 8];
         reader.read_exact(&mut actual_magic)?;
@@ -274,7 +280,7 @@ cfg_graph_neighbors! {
                     "node {node} has too many neighbors: {len}"
                 )));
             }
-            let mut list = SmallVec::<[u32; 16]>::new();
+            let mut list = SmallVec::<A>::new();
             for _ in 0..len {
                 let id = read_one_u32(&mut reader)?;
                 let id_usize = usize::try_from(id).map_err(|_| {
@@ -301,15 +307,18 @@ cfg_graph_neighbors! {
 }
 
 cfg_dense_graph_shape! {
-    pub(crate) fn validate_graph_shape(
+    pub(crate) fn validate_graph_shape<A>(
         name: &str,
         dimension: usize,
         num_vectors: usize,
         vectors: &[f32],
         doc_ids: &[u32],
-        neighbors: &[SmallVec<[u32; 16]>],
+        neighbors: &[SmallVec<A>],
         entry: Option<u32>,
-    ) -> Result<(), RetrieveError> {
+    ) -> Result<(), RetrieveError>
+    where
+        A: Array<Item = u32>,
+    {
         if dimension == 0 {
             return Err(RetrieveError::FormatError(format!(
                 "{name} manifest has zero dimension"

@@ -61,7 +61,7 @@ pub struct VamanaIndex {
     pub(crate) vectors: Vec<f32>,
 
     /// Neighbor lists for each vector
-    pub(crate) neighbors: Vec<SmallVec<[u32; 16]>>,
+    pub(crate) neighbors: Vec<SmallVec<[u32; 32]>>,
 
     /// Parameters
     pub(crate) params: VamanaParams,
