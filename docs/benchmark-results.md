@@ -126,6 +126,8 @@ cargo run --example ann_benchmark --release \
 # distances, so it is cheap enough to run before comparing benchmark curves.
 uv run scripts/profile_ann_dataset.py data/ann-benchmarks/glove-25-angular \
   --sample-train 4096 --sample-queries 1000 --pair-samples 20000
+
+uv run scripts/summarize_dataset_profiles.py /tmp/vicinity-dataset-profiles/*.json
 ```
 
 These commands intentionally separate low-recall, high-throughput operating
@@ -423,7 +425,8 @@ reranking, and locality.
 
 A lighter cross-dataset pass used `--sample-train 2048 --sample-queries 500
 --pair-samples 5000 --coarse-clusters 64 --coarse-iters 8` on every locally
-converted standard dataset.
+converted standard dataset, then rendered with
+`scripts/summarize_dataset_profiles.py`.
 
 | Dataset | Metric | Train | Dim | Pair p50 | NN p50 | Top-2 gap p50 | LID p50 | Contrast p50 | Hub Gini | Coarse Gini |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
