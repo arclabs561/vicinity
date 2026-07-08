@@ -73,10 +73,11 @@ impl LemurEncoder {
         })
     }
 
-    /// Create an encoder with random weights for tests.
+    /// Create an encoder with random weights for tests and fixtures.
     ///
     /// Random weights produce random retrieval quality. Use [`LemurEncoder::new`]
     /// with externally trained weights for indexing or search experiments.
+    #[cfg(any(test, feature = "lemur-fixtures"))]
     #[doc(hidden)]
     #[deprecated(
         note = "random weights are test fixtures; use LemurEncoder::new with trained weights for retrieval"

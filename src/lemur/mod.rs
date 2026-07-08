@@ -12,8 +12,8 @@
 //!    [`LemurEncoder`]; there is no training loop, no loss computation, and
 //!    no integration with any ML framework. Random encoder weights produce
 //!    random retrieval. Bring your own externally-trained encoder weights
-//!    (the `LemurEncoder::random` constructor exists for tests, not for
-//!    production indexing).
+//!    (the hidden `LemurEncoder::random` constructor exists only for tests
+//!    and explicit `lemur-fixtures` builds, not for production indexing).
 //! 2. **Mean-pool substitutes for OLS.** Document weight vectors are computed
 //!    as the mean of `psi`-encoded tokens, not the full OLS solve described
 //!    in the paper (which requires a shared feature matrix Z across all

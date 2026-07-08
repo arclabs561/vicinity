@@ -183,9 +183,10 @@ benchmarking, persistence, Python bindings, and performance work.
   the estimator to include inline `SmallVec` element storage, so the kept
   Vamana/PiPNN/EMG rows still need full-corpus memory review before they become
   recommendations. Live follow-ups from that note are HNSW distance-dispatch
-  profiling, trained/model-loaded LEMUR weights, eventual removal of LEMUR's deprecated
-  hidden random fixture constructor in a breaking release, and fixed-recall
-  rows for experimental families. The `ivf_pq/search.rs` size item has been
+  profiling, trained/model-loaded LEMUR weights, and fixed-recall rows for
+  experimental families. LEMUR's random-weight fixture constructor is now hidden
+  behind test builds or the explicit `lemur-fixtures` feature. The
+  `ivf_pq/search.rs` size item has been
   reduced without behavior changes by extracting manifest, cluster, and
   file-storage helpers; continue splitting only when a coherent private
   boundary appears.
