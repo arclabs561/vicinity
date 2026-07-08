@@ -59,29 +59,46 @@ STORAGE_EXPECTATION_GROUPS = {
     ("segmented_store",): ("store", "store_snapshot"),
 }
 
-ALIAS_STORAGE_EXPECTATIONS = {
-    "diskann": ("in_memory",),
-    "diskann_file": ("file",),
-    "diskann_mmap": ("mmap",),
-}
+DISKANN_EXPECTATION_ROWS = (
+    ("diskann", "in_memory"),
+    ("diskann_file", "file"),
+    ("diskann_mmap", "mmap"),
+)
+ExpectationRow = tuple[str, str]
+ExpectationFamily = tuple[frozenset[str], tuple[ExpectationRow, ...]]
+
+
+def standard_storage_expectation_families() -> tuple[ExpectationFamily, ...]:
+    families = []
+    for storage_modes, algorithms in STORAGE_EXPECTATION_GROUPS.items():
+        for algorithm in algorithms:
+            families.append(
+                (
+                    frozenset({algorithm}),
+                    tuple((algorithm, storage_mode) for storage_mode in storage_modes),
+                )
+            )
+    diskann_algorithms = frozenset(
+        algorithm for algorithm, _storage_mode in DISKANN_EXPECTATION_ROWS
+    )
+    families.append((diskann_algorithms, DISKANN_EXPECTATION_ROWS))
+    return tuple(families)
+
+
+STANDARD_STORAGE_EXPECTATION_FAMILIES = standard_storage_expectation_families()
 
 
 def standard_storage_expectations() -> list[tuple[str, str]]:
-    rows: set[tuple[str, str]] = set()
-    for storage_modes, algorithms in STORAGE_EXPECTATION_GROUPS.items():
-        rows.update(
-            (algorithm, storage_mode)
-            for algorithm in algorithms
-            for storage_mode in storage_modes
-        )
-    for algorithm, storage_modes in ALIAS_STORAGE_EXPECTATIONS.items():
-        rows.update((algorithm, storage_mode) for storage_mode in storage_modes)
+    rows = {
+        row
+        for _observed_algorithms, expected_rows in STANDARD_STORAGE_EXPECTATION_FAMILIES
+        for row in expected_rows
+    }
     return sorted(rows)
 
 
 STANDARD_STORAGE_EXPECTATIONS = standard_storage_expectations()
 
-DISKANN_ALIASES = frozenset({"diskann", "diskann_file", "diskann_mmap"})
 DIAGNOSTIC_KEYS = (
     "avg_visited_nodes",
     "avg_graph_reads",
@@ -90,14 +107,6 @@ DIAGNOSTIC_KEYS = (
     "avg_vector_bytes",
     "avg_retained_candidates",
 )
-
-
-def expectation_matches_observed_algorithm(
-    algorithm: str, observed_algorithms: set[str]
-) -> bool:
-    if algorithm in DISKANN_ALIASES:
-        return bool(DISKANN_ALIASES & observed_algorithms)
-    return algorithm in observed_algorithms
 
 
 def observed_standard_storage_expectations(
@@ -109,11 +118,13 @@ def observed_standard_storage_expectations(
             observed_by_dataset[dataset].add(algorithm)
 
     expected_by_dataset = {}
+    families = STANDARD_STORAGE_EXPECTATION_FAMILIES
     for dataset, observed_algorithms in observed_by_dataset.items():
         expected_by_dataset[dataset] = [
-            (algorithm, storage_mode)
-            for algorithm, storage_mode in STANDARD_STORAGE_EXPECTATIONS
-            if expectation_matches_observed_algorithm(algorithm, observed_algorithms)
+            row
+            for family_algorithms, expected_rows in families
+            if family_algorithms & observed_algorithms
+            for row in expected_rows
         ]
     return expected_by_dataset
 

@@ -351,11 +351,14 @@ def test_standard_storage_expectations_cover_current_storage_classes() -> None:
     script = load_script()
 
     rows = set(script.standard_storage_expectations())
+    families = script.STANDARD_STORAGE_EXPECTATION_FAMILIES
+    family_rows = {
+        row for _observed_algorithms, expected_rows in families for row in expected_rows
+    }
 
     for storage_modes, algorithms in script.STORAGE_EXPECTATION_GROUPS.items():
         for algorithm in algorithms:
             for storage_mode in storage_modes:
                 assert (algorithm, storage_mode) in rows
-    for algorithm, storage_modes in script.ALIAS_STORAGE_EXPECTATIONS.items():
-        for storage_mode in storage_modes:
-            assert (algorithm, storage_mode) in rows
+    assert set(script.DISKANN_EXPECTATION_ROWS) <= rows
+    assert rows == family_rows
