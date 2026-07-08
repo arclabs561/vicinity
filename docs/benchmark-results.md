@@ -575,6 +575,26 @@ without growing snapshots.
 These are incremental profiling findings from the current optimization pass.
 They are workload-specific and should be re-run before making release claims.
 
+### Build-Path Profiling Note
+
+During the HNSW tombstone-persistence verification pass, a local
+`hnsw,persistence` test compile appeared stuck for several minutes. A macOS
+`sample` capture of the live `rustc` process showed the main thread almost
+entirely in `readdir` while scanning the dependency search path
+(`target/debug/deps`), not in type checking or code generation. The compile had
+actually finished shortly after the sample; rerunning the same test with the
+built artifact took 0.41s to start and the test itself completed immediately.
+
+Practical takeaways for future profiling/verification runs:
+
+- use a dedicated `CARGO_TARGET_DIR=/tmp/vicinity-...` for profile targets or
+  heavy feature-matrix checks when the shared `target/debug/deps` directory has
+  grown large;
+- if a Rust compile looks idle, sample `rustc` before assuming source-level
+  complexity or a cargo lock;
+- keep final gates reproducible by recording any `RUSTC_WRAPPER=`,
+  `CARGO_INCREMENTAL=0`, and `CARGO_TARGET_DIR=...` overrides.
+
 ### HNSW Search Loop
 
 Search-only Criterion benchmark:
