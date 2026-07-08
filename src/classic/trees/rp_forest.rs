@@ -339,15 +339,15 @@ impl RpForestIndex {
             });
         }
 
-        // Search all trees and collect candidates
-        let mut candidate_set = std::collections::HashSet::new();
-
+        // Search all trees and collect candidate internal IDs. Preallocating
+        // and inserting the leaf slices directly avoids one heap allocation
+        // per tree while preserving the old duplicate-removal strategy.
+        let mut candidate_set = std::collections::HashSet::with_capacity(
+            self.params.num_trees * self.params.tree_params.max_leaf_size,
+        );
         for tree in &self.trees {
             if let Some(ref root) = tree.root {
-                let candidates = self.search_tree(root, query);
-                for idx in candidates {
-                    candidate_set.insert(idx);
-                }
+                self.collect_leaf_candidates(root, query, &mut candidate_set);
             }
         }
 
@@ -366,10 +366,15 @@ impl RpForestIndex {
         Ok(results.into_iter().take(k).collect())
     }
 
-    /// Search a single tree.
-    fn search_tree(&self, node: &TreeNode, query: &[f32]) -> Vec<u32> {
+    /// Search a single tree and append the leaf's candidate IDs.
+    fn collect_leaf_candidates(
+        &self,
+        node: &TreeNode,
+        query: &[f32],
+        candidates: &mut std::collections::HashSet<u32>,
+    ) {
         match node {
-            TreeNode::Leaf { indices } => indices.clone(),
+            TreeNode::Leaf { indices } => candidates.extend(indices.iter().copied()),
             TreeNode::Internal {
                 hyperplane,
                 threshold: _,
@@ -378,9 +383,9 @@ impl RpForestIndex {
             } => {
                 let projection = simd::dot(query, hyperplane);
                 if projection < 0.0 {
-                    self.search_tree(left, query)
+                    self.collect_leaf_candidates(left, query, candidates);
                 } else {
-                    self.search_tree(right, query)
+                    self.collect_leaf_candidates(right, query, candidates);
                 }
             }
         }

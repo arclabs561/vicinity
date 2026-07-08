@@ -709,6 +709,16 @@ cargo run --release --example ann_benchmark --no-default-features --features kme
 | K-means tree | in_memory | 100.00% | 440.6 | n/a | 8,469,516 |
 | K-means tree | snapshot_loaded | 100.00% | 445.3 | 0.1552 | 30,286,231 |
 
+A later RP-forest candidate-collection pass checked two safe allocation
+changes on the same 50K, 500-query, 50-tree, leaf-200 row. Replacing the
+per-query `HashSet` with sort/dedup of the collected leaf IDs was rejected:
+in-memory QPS stayed flat (3,376.2 -> 3,369.7) and snapshot-loaded QPS dropped
+to 1,622.1. Keeping the `HashSet`, preallocating it to the expected candidate
+budget, and inserting leaf slices directly removed the per-leaf `Vec` clone
+while preserving the old duplicate-removal strategy. That measured 97.54%
+recall at 3,581.1 QPS in memory and 3,220.3 QPS after snapshot load on the
+same isolated run.
+
 A later K-means tree pass added a separate global best-first leaf-budget search
 path instead of changing the older per-node branch-budget rows. The leaf budget
 counts leaf clusters popped from a center-distance frontier, then reranks the
