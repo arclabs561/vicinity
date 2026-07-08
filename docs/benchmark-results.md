@@ -1021,7 +1021,7 @@ The search-only DiskANN benchmark isolates in-memory, file, and mmap search
 from construction:
 
 ```bash
-cargo bench --bench diskann_search --no-default-features --features diskann -- \
+cargo bench --bench diskann_search --no-default-features --features diskann,benchmark -- \
   diskann_search_only --measurement-time 3 --warm-up-time 1 --sample-size 20
 ```
 
@@ -1078,7 +1078,7 @@ CARGO_TARGET_DIR=/tmp/vicinity-diskann-debug-profile-target \
   samply record --save-only \
   -o /tmp/vicinity-diskann-file-ef75-debug-10s.json.gz -- \
   cargo bench --bench diskann_search --no-default-features \
-  --features diskann -- diskann_search_only/file_ef75 --profile-time 10
+  --features diskann,benchmark -- diskann_search_only/file_ef75 --profile-time 10
 ```
 
 Two setup lessons came out of this profile. A warmed target is required; a cold
@@ -1135,7 +1135,7 @@ direct-file path:
 ```bash
 samply record --unstable-presymbolicate --save-only \
   -o /tmp/vicinity-diskann-file-ef250-presym-20260707.json.gz -- \
-  cargo bench --bench diskann_search --no-default-features --features diskann -- \
+  cargo bench --bench diskann_search --no-default-features --features diskann,benchmark -- \
   diskann_search_only/file_ef250 --profile-time 10
 ```
 
