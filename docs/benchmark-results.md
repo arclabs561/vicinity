@@ -833,9 +833,9 @@ The row included `storage_mode=in_memory`, `cache_state=warm_after_build`, and
 positive heap-estimated `index_bytes=129,684`. File and mmap AVQ rows continue
 to report saved snapshot bytes instead of heap residency.
 
-The full-train AVQ rerank-pool sweep did not reproduce the 50K capped recall.
-With all 1,183,514 GloVe-25 vectors, 1,000 queries, and `num_reorder=500`, the
-best recall row was still below the 95% target:
+The first full-train AVQ rerank-pool sweep did not reproduce the 50K capped
+recall. With all 1,183,514 GloVe-25 vectors, 1,000 queries, and
+`num_reorder=500`, the best recall row was still below the 95% target:
 
 ```bash
 cargo run --release --no-default-features --features ivf_avq --example ann_benchmark -- \
@@ -852,9 +852,9 @@ cargo run --release --no-default-features --features ivf_avq --example ann_bench
 | 128 | 500 | 89.23% | 162.1 | 230,751,106 |
 
 Treat the earlier 50K `99.22%` row as capped evidence that `num_reorder`
-matters, not as a full-corpus fixed-recall result. AVQ still needs either a
-larger reorder pool, different codebook/subspace settings, or a deeper
-quantizer review before it belongs in the 95% recall comparison table.
+matters, not as a full-corpus fixed-recall result. The later full-train storage
+sweep below confirms that larger reorder pools can clear 95% recall on the full
+corpus, but at much lower QPS than the capped run.
 
 The flat quantized rows for RpQuant, BinaryFlat, and SQ4 now emit the same
 in-memory heap estimate. A bounded schema smoke used 200 GloVe-25 vectors and
@@ -2120,8 +2120,43 @@ GloVe-25 row.
 
 The earlier all-results recall-gap report still shows the old full-train
 `queries=500` IVF-AVQ rows at 20.5% recall because capped 50K evidence should
-not dominate full-train evidence. The remaining IVF-AVQ benchmark task is a
-full-train fixed-recall sweep.
+not dominate full-train evidence.
+
+### IVF-AVQ full-train fixed-recall storage diagnostic (2026-07-08)
+
+Command:
+
+```sh
+cargo run --example ann_benchmark --release --features ivf_avq,persistence -- \
+  data/ann-benchmarks/glove-25-angular --algo ivf_avq \
+  --max-queries 500 --warmup-queries 50 \
+  --pq-nprobes 20,50,100,256 --pq-rerank-pools 500,1000,5000 \
+  --snapshot-load --json --fresh \
+  --results data/ann-benchmarks/results/vicinity-ivf-avq-fulltrain-20260708.jsonl
+```
+
+The full-corpus run clears 95% recall only when the exact reorder pool is
+larger than the first `num_reorder=500` sweep. The fastest in-memory and mmap
+95%+ row is `nprobe=20,num_reorder=5000`; the fastest direct-file 95%+ row is
+`nprobe=50,num_reorder=1000`.
+
+| Config | Storage | Recall@10 | QPS | p95 us | Index bytes | Bytes kind | Notes |
+| --- | --- | ---: | ---: | ---: | ---: | --- | --- |
+| `nprobe=20,reorder=5000` | in_memory | 0.9836 | 1,867.8 | 632.5 | 230,751,106 | heap_estimate | fastest heap 95%+ row |
+| `nprobe=20,reorder=5000` | snapshot_loaded | 0.9836 | 1,875.8 | 632.9 | 133,792,609 | snapshot_bytes | heap search after reload |
+| `nprobe=20,reorder=5000` | file | 0.9836 | 325.6 | 3,447.7 | 133,792,609 | storage_bytes | 20 partition reads/query, 5,000 raw vector reads/query |
+| `nprobe=20,reorder=5000` | mmap | 0.9836 | 1,059.4 | 1,108.1 | 133,792,609 | storage_bytes | fastest mmap 95%+ row |
+| `nprobe=50,reorder=1000` | in_memory | 0.9512 | 1,088.7 | 1,092.1 | 230,751,106 | heap_estimate | closest measured heap row above 95% |
+| `nprobe=50,reorder=1000` | snapshot_loaded | 0.9512 | 1,092.1 | 1,086.3 | 133,792,609 | snapshot_bytes | closest measured reload row above 95% |
+| `nprobe=50,reorder=1000` | file | 0.9512 | 489.1 | 2,343.5 | 133,792,609 | storage_bytes | fastest direct-file 95%+ row |
+| `nprobe=50,reorder=1000` | mmap | 0.9512 | 661.8 | 1,783.8 | 133,792,609 | storage_bytes | fewer raw-vector reads than the fastest mmap row |
+
+This keeps the Perplexity read honest in both directions. AVQ was not
+architecturally capped below 95% on full GloVe-25, but the full-train fixed-
+recall QPS is roughly 17x lower than the capped 50K heap row and roughly 19x
+lower than the capped 50K mmap row. The direct-file rows are raw-vector-rerank
+bound, just like IVF-PQ rerank, and should be profiled with storage locality
+and read batching before adding another layout.
 
 ### IVF-PQ sampled-training diagnostic (2026-07-06)
 
