@@ -818,10 +818,10 @@ cargo run --release --example acorn_selectivity --no-default-features \
 | `ef=800`, 128 two-hop | 5% | 98.90% | 3,942.7 | 261.5 us | 10.0 | clears 95% |
 | `ef=800`, 128 two-hop | 50% | 99.85% | 3,895.4 | 264.3 us | 10.0 | clears 95% |
 
-This supports a selectivity-gated filtered-search plan. ACORN can be tuned into
-a useful moderate-selectivity path, but below 2% selectivity the benchmark still
-points toward a pre-filtered exact/fallback candidate path rather than more
-graph traversal.
+This supports a selectivity-gated filtered-search plan. With the node-count
+dense visited path, ACORN is a useful moderate-selectivity path on this
+synthetic benchmark, but below 2% selectivity the benchmark still points toward
+a pre-filtered exact/fallback candidate path rather than more graph traversal.
 
 The example now emits a `selectivity_acorn` row that uses the same tuned ACORN
 path above a configurable threshold and an exact scan over pre-filtered matching
@@ -838,10 +838,10 @@ cargo run --release --example acorn_selectivity --no-default-features \
 
 | Algorithm | Selectivity | Recall@10 | QPS | p95 latency | 2-hop nodes | Notes |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| ACORN | 1% | 93.80% | 3,770.6 | 272.0 us | 454,465 | graph traversal still misses the fixed-recall floor |
-| `selectivity_acorn` | 1% | 100.00% | 2,012,436.9 | 0.5 us | 0 | exact over 30 pre-filtered IDs; useful as a policy check, not a production QPS claim |
-| `selectivity_acorn` | 2% | 96.45% | 3,767.4 | 272.1 us | 454,113 | stays on tuned ACORN because the threshold is `< 0.02` |
-| `selectivity_acorn` | 50% | 99.85% | 3,083.5 | 339.7 us | 430,710 | stays on tuned ACORN |
+| ACORN | 1% | 93.60% | 13,784.5 | 75.8 us | 454,489 | graph traversal still misses the fixed-recall floor |
+| `selectivity_acorn` | 1% | 100.00% | 3,440,741.8 | 0.4 us | 0 | exact over 30 pre-filtered IDs; useful as a policy check, not a production QPS claim |
+| `selectivity_acorn` | 2% | 97.20% | 13,646.4 | 77.1 us | 454,138 | stays on tuned ACORN because the threshold is `< 0.02` |
+| `selectivity_acorn` | 50% | 99.90% | 11,833.5 | 91.0 us | 430,706 | stays on tuned ACORN |
 
 The ACORN search loop now has a dedicated Criterion target:
 

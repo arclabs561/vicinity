@@ -12,13 +12,13 @@ from typing import Any
 
 def recall_value(row: dict[str, Any]) -> tuple[str, float | None]:
     for key, value in row.items():
-        if key.startswith("recall_at_") and isinstance(value, int | float):
+        if key.startswith("recall_at_") and isinstance(value, (int, float)):
             return key, float(value)
     return "recall", None
 
 
 def number(value: Any) -> float | None:
-    if isinstance(value, int | float):
+    if isinstance(value, (int, float)):
         return float(value)
     return None
 
@@ -85,7 +85,7 @@ def parse_row(row: dict[str, Any], workload: str) -> SelectivityRow | None:
         params = {}
     recall_key, recall = recall_value(row)
     target_count = params.get("target_count")
-    target_count = int(target_count) if isinstance(target_count, int | float) else None
+    target_count = int(target_count) if isinstance(target_count, (int, float)) else None
     return SelectivityRow(
         workload=workload,
         algorithm=algorithm,
