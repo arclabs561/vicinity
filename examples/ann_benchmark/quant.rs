@@ -48,6 +48,7 @@ fn snapshot_storage(load_time_s: f64, index_bytes: Option<u64>) -> ResultStorage
         cache_state: "warm_after_load",
         load_time_s: Some(load_time_s),
         index_bytes,
+        index_bytes_kind: None,
         diagnostics: None,
     }
 }
@@ -64,6 +65,7 @@ fn opened_storage_with_diagnostics(
         cache_state: "warm_after_open",
         load_time_s: Some(load_time_s),
         index_bytes,
+        index_bytes_kind: None,
         diagnostics: Some(diagnostics),
     }
 }
