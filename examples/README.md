@@ -29,7 +29,7 @@ Synthetic workloads for algorithm behavior and parameter effects.
 | Example | Lines | Algorithm | Covers |
 |---------|-------|-----------|---------|
 | `semantic_search_demo` | 334 | HNSW | Document search with categories |
-| `acorn_selectivity` | 740 | ACORN | Filtered-search selectivity sweep |
+| `acorn_selectivity` | 802 | ACORN | Filtered-search selectivity sweep |
 | `ivf_pq_demo` | 306 | IVF-PQ | Compressed inverted-file search |
 | `lid_demo` | 344 | LID | Intrinsic dimensionality estimation |
 | `rabitq_demo` | 261 | RaBitQ | Randomized binary quantization |
@@ -42,7 +42,7 @@ cargo run --example acorn_selectivity --release --features hnsw
 cargo run --example acorn_selectivity --release --features hnsw,filtered_graph,range_filtered,curator -- \
   --json --fresh
 cargo run --example acorn_selectivity --release --features hnsw,filtered_graph,range_filtered,curator -- \
-  --json --fresh --ef-search 400 --acorn-max-two-hop-neighbors 64
+  --json --fresh --ef-search 400 --acorn-max-two-hop-neighbors 64 --fallback-selectivity-threshold 0.02
 uv run scripts/summarize_selectivity_results.py data/ann-benchmarks/results/acorn-selectivity-*.jsonl
 cargo run --example ivf_pq_demo --release --features ivf_pq
 cargo run --example lid_demo --release

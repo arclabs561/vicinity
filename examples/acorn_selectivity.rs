@@ -26,6 +26,7 @@ const DEFAULT_QUERIES: usize = 100;
 const DEFAULT_K: usize = 10;
 const DEFAULT_NEIGHBORS: usize = 32;
 const DEFAULT_EF_SEARCH: usize = 200;
+const DEFAULT_FALLBACK_SELECTIVITY_THRESHOLD: f64 = 0.02;
 const SELECTIVITIES: [f64; 6] = [0.50, 0.20, 0.10, 0.05, 0.02, 0.01];
 
 #[derive(Clone)]
@@ -37,6 +38,7 @@ struct Config {
     neighbors: usize,
     ef_search: usize,
     acorn_max_two_hop_neighbors: Option<usize>,
+    fallback_selectivity_threshold: f64,
     json: bool,
     results_path: PathBuf,
     fresh: bool,
@@ -59,6 +61,7 @@ impl Default for Config {
             neighbors: DEFAULT_NEIGHBORS,
             ef_search: DEFAULT_EF_SEARCH,
             acorn_max_two_hop_neighbors: None,
+            fallback_selectivity_threshold: DEFAULT_FALLBACK_SELECTIVITY_THRESHOLD,
             json: false,
             results_path: PathBuf::new(),
             fresh: false,
@@ -145,6 +148,15 @@ fn main() {
             target_count,
             &result,
         );
+        let result = run_selectivity_gated(&cfg, &vectors, &queries, &graph, target_count);
+        emit_result(
+            &cfg,
+            &completed,
+            "selectivity_acorn",
+            actual_selectivity,
+            target_count,
+            &result,
+        );
 
         #[cfg(feature = "filtered_graph")]
         {
@@ -221,10 +233,16 @@ fn emit_result(
             cfg.queries,
             cfg.ef_search
         );
-        if algorithm == "acorn" {
+        if algorithm == "acorn" || algorithm == "selectivity_acorn" {
             params.push_str(&format!(
                 ",\"acorn_max_two_hop_neighbors\":{}",
                 cfg.acorn_max_two_hop_neighbors()
+            ));
+        }
+        if algorithm == "selectivity_acorn" {
+            params.push_str(&format!(
+                ",\"fallback_selectivity_threshold\":{:.4}",
+                cfg.fallback_selectivity_threshold
             ));
         }
         let line = format!(
@@ -262,14 +280,15 @@ fn emit_result(
 
 fn meta_line(cfg: &Config, graph_build_s: Option<f64>) -> String {
     let mut line = format!(
-        "{{\"_meta\":{{\"workload\":\"acorn_selectivity\",\"result_schema\":1,\"n\":{},\"dim\":{},\"queries\":{},\"k\":{},\"neighbors\":{},\"ef_search\":{},\"acorn_max_two_hop_neighbors\":{}",
+        "{{\"_meta\":{{\"workload\":\"acorn_selectivity\",\"result_schema\":1,\"n\":{},\"dim\":{},\"queries\":{},\"k\":{},\"neighbors\":{},\"ef_search\":{},\"acorn_max_two_hop_neighbors\":{},\"fallback_selectivity_threshold\":{:.4}",
         cfg.n,
         cfg.dim,
         cfg.queries,
         cfg.k,
         cfg.neighbors,
         cfg.ef_search,
-        cfg.acorn_max_two_hop_neighbors()
+        cfg.acorn_max_two_hop_neighbors(),
+        cfg.fallback_selectivity_threshold
     );
     if let Some(graph_build_s) = graph_build_s {
         line.push_str(&format!(",\"graph_build_s\":{graph_build_s:.3}"));
@@ -282,13 +301,18 @@ fn default_results_path(cfg: &Config) -> PathBuf {
     let path = Path::new("data/ann-benchmarks/results");
     std::fs::create_dir_all(path).ok();
     path.join(format!(
-        "acorn-selectivity-n{}-d{}-q{}-ef{}-hop{}.jsonl",
+        "acorn-selectivity-n{}-d{}-q{}-ef{}-hop{}-fallback{}.jsonl",
         cfg.n,
         cfg.dim,
         cfg.queries,
         cfg.ef_search,
-        cfg.acorn_max_two_hop_neighbors()
+        cfg.acorn_max_two_hop_neighbors(),
+        threshold_slug(cfg.fallback_selectivity_threshold)
     ))
+}
+
+fn threshold_slug(value: f64) -> String {
+    format!("{value:.4}").replace('.', "p")
 }
 
 fn emit_json_line(cfg: &Config, line: &str) {
@@ -310,6 +334,7 @@ fn load_completed_results(path: &Path) -> Vec<String> {
 }
 
 fn row_completed(cfg: &Config, lines: &[String], algorithm: &str, target_count: usize) -> bool {
+    let uses_acorn_params = matches!(algorithm, "acorn" | "selectivity_acorn");
     lines.iter().any(|line| {
         line.contains(&format!("\"algorithm\":\"{algorithm}\""))
             && line.contains(&format!("\"target_count\":{target_count}"))
@@ -318,10 +343,15 @@ fn row_completed(cfg: &Config, lines: &[String], algorithm: &str, target_count: 
             && line.contains(&format!("\"dim\":{}", cfg.dim))
             && line.contains(&format!("\"queries\":{}", cfg.queries))
             && line.contains(&format!("\"ef_search\":{}", cfg.ef_search))
-            && (algorithm != "acorn"
+            && (!uses_acorn_params
                 || line.contains(&format!(
                     "\"acorn_max_two_hop_neighbors\":{}",
                     cfg.acorn_max_two_hop_neighbors()
+                )))
+            && (algorithm != "selectivity_acorn"
+                || line.contains(&format!(
+                    "\"fallback_selectivity_threshold\":{:.4}",
+                    cfg.fallback_selectivity_threshold
                 )))
     })
 }
@@ -372,6 +402,14 @@ fn parse_args() -> Config {
                 i += 1;
                 if i < args.len() {
                     cfg.acorn_max_two_hop_neighbors = args[i].parse().ok();
+                }
+            }
+            "--fallback-selectivity-threshold" => {
+                i += 1;
+                if i < args.len() {
+                    cfg.fallback_selectivity_threshold = args[i]
+                        .parse()
+                        .unwrap_or(DEFAULT_FALLBACK_SELECTIVITY_THRESHOLD);
                 }
             }
             "--json" => cfg.json = true,
@@ -443,6 +481,31 @@ fn run_selectivity(
         two_hop_invocations,
         two_hop_nodes_examined,
     )
+}
+
+fn run_selectivity_gated(
+    cfg: &Config,
+    vectors: &[Vec<f32>],
+    queries: &[Vec<f32>],
+    graph: &[Vec<u32>],
+    target_count: usize,
+) -> BenchResult {
+    let actual_selectivity = target_count as f64 / cfg.n as f64;
+    if actual_selectivity >= cfg.fallback_selectivity_threshold {
+        return run_selectivity(cfg, vectors, queries, graph, target_count);
+    }
+
+    let matching: Vec<bool> = (0..cfg.n).map(|id| id < target_count).collect();
+    let matching_ids: Vec<u32> = (0..target_count as u32).collect();
+    run_index_selectivity(cfg, vectors, queries, &matching, |query, k| {
+        let mut distances: Vec<(u32, f32)> = matching_ids
+            .iter()
+            .map(|&id| (id, cosine_distance_normalized(query, &vectors[id as usize])))
+            .collect();
+        distances.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+        distances.truncate(k);
+        distances
+    })
 }
 
 #[cfg(feature = "filtered_graph")]

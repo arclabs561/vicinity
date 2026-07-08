@@ -823,6 +823,26 @@ a useful moderate-selectivity path, but below 2% selectivity the benchmark still
 points toward a pre-filtered exact/fallback candidate path rather than more
 graph traversal.
 
+The example now emits a `selectivity_acorn` row that uses the same tuned ACORN
+path above a configurable threshold and an exact scan over pre-filtered matching
+IDs below it:
+
+```bash
+cargo run --release --example acorn_selectivity --no-default-features \
+  --features hnsw -- \
+  --n 3000 --queries 200 --k 10 --neighbors 32 \
+  --ef-search 800 --acorn-max-two-hop-neighbors 128 \
+  --fallback-selectivity-threshold 0.02 --json --fresh \
+  --results data/ann-benchmarks/results/acorn-selectivity-n3000-d32-q200-ef800-hop128-fallback0p0200-20260708.jsonl
+```
+
+| Algorithm | Selectivity | Recall@10 | QPS | p95 latency | 2-hop nodes | Notes |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| ACORN | 1% | 93.80% | 3,770.6 | 272.0 us | 454,465 | graph traversal still misses the fixed-recall floor |
+| `selectivity_acorn` | 1% | 100.00% | 2,012,436.9 | 0.5 us | 0 | exact over 30 pre-filtered IDs; useful as a policy check, not a production QPS claim |
+| `selectivity_acorn` | 2% | 96.45% | 3,767.4 | 272.1 us | 454,113 | stays on tuned ACORN because the threshold is `< 0.02` |
+| `selectivity_acorn` | 50% | 99.85% | 3,083.5 | 339.7 us | 430,710 | stays on tuned ACORN |
+
 Full-train IVF-PQ storage sweep from the same day, using all 1,183,514
 GloVe-25 vectors and 500 queries:
 

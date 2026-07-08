@@ -34,6 +34,7 @@ def write_results(path: Path) -> None:
                 "neighbors": 32,
                 "ef_search": 200,
                 "acorn_max_two_hop_neighbors": 64,
+                "fallback_selectivity_threshold": 0.02,
             }
         },
         {
@@ -76,7 +77,8 @@ def test_load_rows_keeps_selectivity_curve(tmp_path: Path) -> None:
     assert len(rows) == 2
     assert rows[0].workload == (
         "acorn_selectivity[n=1200,dim=32,queries=100,k=10,neighbors=32,"
-        "ef_search=200,acorn_max_two_hop_neighbors=64]"
+        "ef_search=200,acorn_max_two_hop_neighbors=64,"
+        "fallback_selectivity_threshold=0.02]"
     )
     assert rows[0].algorithm == "acorn"
     assert rows[0].selectivity == 0.1

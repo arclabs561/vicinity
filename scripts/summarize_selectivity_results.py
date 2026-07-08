@@ -64,10 +64,13 @@ def scoped_workload(meta: dict[str, Any], path: Path) -> str:
         "neighbors",
         "ef_search",
         "acorn_max_two_hop_neighbors",
+        "fallback_selectivity_threshold",
     ):
         value = meta.get(key)
-        if isinstance(value, int | float):
+        if isinstance(value, int):
             scope.append(f"{key}={int(value)}")
+        elif isinstance(value, float):
+            scope.append(f"{key}={value:g}")
     if scope:
         return f"{workload}[{','.join(scope)}]"
     return workload
