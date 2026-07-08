@@ -32,8 +32,12 @@ from collections.abc import Mapping
 from typing import Any, cast
 
 import numpy as np
+from numpy.typing import NDArray
 
 from pyvicinity._core import DistanceMetric, HNSWIndex, IVFPQIndex
+
+Float32Array = NDArray[np.float32]
+Int64Array = NDArray[np.int64]
 
 
 class VicinityHNSW:
@@ -46,9 +50,9 @@ class VicinityHNSW:
         self._ef_construction = int(cast(int, method_param.get("efConstruction", 200)))
         self._ef_search = 50
         self._index: HNSWIndex | None = None
-        self._batch_results: np.ndarray | None = None
+        self._batch_results: Int64Array | None = None
 
-    def fit(self, X: np.ndarray) -> None:
+    def fit(self, X: Float32Array) -> None:
         """Build the index from training data."""
         if X.ndim != 2:
             msg = f"fit() expects a 2-D array, got shape {X.shape}"
@@ -76,14 +80,14 @@ class VicinityHNSW:
         if self._index is not None:
             self._index.set_ef_search(self._ef_search)
 
-    def query(self, q: np.ndarray, n: int) -> np.ndarray:
+    def query(self, q: Float32Array, n: int) -> Int64Array:
         """Single-query interface (ann-benchmarks). Returns ids only."""
         index = self._require_index()
         q = np.ascontiguousarray(q, dtype=np.float32)
         ids, _dists = index.search(q, k=n, ef=self._ef_search)
         return ids
 
-    def batch_query(self, X: np.ndarray, n: int) -> None:
+    def batch_query(self, X: Float32Array, n: int) -> None:
         """Batch-query interface (big-ann-benchmarks / VIBE).
 
         Stores results internally; retrieve with :meth:`get_batch_results`.
@@ -93,7 +97,7 @@ class VicinityHNSW:
         ids, _dists = index.batch_search(X, k=n, ef=self._ef_search)
         self._batch_results = ids
 
-    def get_batch_results(self) -> np.ndarray:
+    def get_batch_results(self) -> Int64Array:
         """Return ids from the last :meth:`batch_query` call."""
         if self._batch_results is None:
             msg = "no batch results: call batch_query(...) first"
@@ -144,9 +148,9 @@ class VicinityIVFPQ:
         self._nprobe = int(cast(int, method_param.get("nprobe", 1)))
         self._rerank_pool = _normalize_rerank_pool(method_param.get("rerank_pool"))
         self._index: IVFPQIndex | None = None
-        self._batch_results: np.ndarray | None = None
+        self._batch_results: Int64Array | None = None
 
-    def fit(self, X: np.ndarray) -> None:
+    def fit(self, X: Float32Array) -> None:
         """Build the index from training data."""
         if X.ndim != 2:
             msg = f"fit() expects a 2-D array, got shape {X.shape}"
@@ -181,7 +185,7 @@ class VicinityIVFPQ:
         if self._index is not None:
             self._index.set_nprobe(self._nprobe)
 
-    def query(self, q: np.ndarray, n: int) -> np.ndarray:
+    def query(self, q: Float32Array, n: int) -> Int64Array:
         """Single-query interface (ann-benchmarks). Returns ids only."""
         index = self._require_index()
         q = np.ascontiguousarray(q, dtype=np.float32)
@@ -193,7 +197,7 @@ class VicinityIVFPQ:
         )
         return ids
 
-    def batch_query(self, X: np.ndarray, n: int) -> None:
+    def batch_query(self, X: Float32Array, n: int) -> None:
         """Batch-query interface (big-ann-benchmarks / VIBE)."""
         index = self._require_index()
         X = np.ascontiguousarray(X, dtype=np.float32)
@@ -205,7 +209,7 @@ class VicinityIVFPQ:
         )
         self._batch_results = ids
 
-    def get_batch_results(self) -> np.ndarray:
+    def get_batch_results(self) -> Int64Array:
         """Return ids from the last :meth:`batch_query` call."""
         if self._batch_results is None:
             msg = "no batch results: call batch_query(...) first"

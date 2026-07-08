@@ -5,13 +5,17 @@ use std::cell::RefCell;
 use std::time::Instant;
 
 use crate::support::{
-    current_rss_kb, emit_result, evaluate, json_line, print_header, print_row, BenchResult, Config,
+    current_rss_kb, emit_result, evaluate, json_line, print_header, print_row, Config,
 };
 
 #[cfg(feature = "ivf_pq")]
 use crate::support::ivfpq_params_json;
 #[cfg(any(feature = "ivf_pq", feature = "ivf_avq", feature = "ivf_rabitq"))]
 use crate::support::nprobe_values;
+#[cfg(feature = "ivf_pq")]
+use crate::support::BenchResult;
+#[cfg(feature = "ivf_pq")]
+use crate::support::StorageDiagnostics;
 #[cfg(any(
     feature = "ivf_pq",
     feature = "ivf_avq",
@@ -23,7 +27,7 @@ use crate::support::nprobe_values;
     feature = "sq8",
     all(feature = "hnsw", feature = "ivf_rabitq", feature = "serde")
 ))]
-use crate::support::{dir_size_bytes, json_line_with_storage, ResultStorage, StorageDiagnostics};
+use crate::support::{dir_size_bytes, json_line_with_storage, ResultStorage};
 
 #[cfg(any(
     feature = "ivf_pq",
