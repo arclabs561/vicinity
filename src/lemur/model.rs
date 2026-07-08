@@ -73,7 +73,13 @@ impl LemurEncoder {
         })
     }
 
-    /// Create an encoder with random weights (for testing).
+    /// Create an encoder with random weights for tests.
+    ///
+    /// Random weights produce random retrieval quality. Use [`LemurEncoder::new`]
+    /// with externally trained weights for indexing or search experiments.
+    #[deprecated(
+        note = "random weights are test fixtures; use LemurEncoder::new with trained weights for retrieval"
+    )]
     pub fn random(input_dim: usize, hidden_dim: usize, seed: u64) -> Self {
         use rand::prelude::*;
         let mut rng = StdRng::seed_from_u64(seed);
@@ -150,7 +156,7 @@ fn gelu(x: f32) -> f32 {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, deprecated)]
 mod tests {
     use super::*;
 
