@@ -541,13 +541,7 @@ pub fn greedy_search_layer_multi_entry(
                     id: ep,
                     distance: ep_dist,
                 });
-                results.push(MaxResult {
-                    id: ep,
-                    distance: ep_dist,
-                });
-                if results.len() > ef {
-                    results.pop();
-                }
+                let _ = insert_result_if_accepted(&mut results, ef, ep, ep_dist);
             }
         }
 
