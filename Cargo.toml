@@ -308,6 +308,11 @@ harness = false
 required-features = ["hnsw"]
 
 [[bench]]
+name = "acorn_search"
+harness = false
+required-features = ["hnsw"]
+
+[[bench]]
 name = "distance"
 harness = false
 
