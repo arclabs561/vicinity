@@ -1925,6 +1925,29 @@ mod tests {
         )
     }
 
+    fn lines_for_storage_modes(
+        algorithm: &str,
+        params: &str,
+        modes: impl IntoIterator<Item = &'static str>,
+    ) -> Vec<String> {
+        modes
+            .into_iter()
+            .map(|storage_mode| single_line_with_storage(algorithm, params, storage_mode))
+            .collect()
+    }
+
+    fn snapshot_lines(algorithm: &str, params: &str) -> Vec<String> {
+        lines_for_storage_modes(algorithm, params, ["in_memory", "snapshot_loaded"])
+    }
+
+    fn file_open_lines(algorithm: &str, params: &str) -> Vec<String> {
+        lines_for_storage_modes(
+            algorithm,
+            params,
+            std::iter::once("in_memory").chain(open_storage_modes().iter().copied()),
+        )
+    }
+
     #[test]
     fn algorithm_options_are_unique_and_resume_checked() {
         let cfg = Config {
@@ -2490,23 +2513,8 @@ mod tests {
             ],
             ..CompletedResults::default()
         };
-        #[cfg(not(feature = "persistence"))]
-        let completed_lines = vec![
-            single_line_with_storage("ivf_avq", avq_params, "in_memory"),
-            single_line_with_storage("ivf_avq", avq_params, "snapshot_loaded"),
-            single_line_with_storage("ivf_avq", avq_params, "file"),
-            single_line_with_storage("ivf_rabitq", rabitq_params, "in_memory"),
-            single_line_with_storage("ivf_rabitq", rabitq_params, "snapshot_loaded"),
-        ];
-        #[cfg(feature = "persistence")]
-        let completed_lines = vec![
-            single_line_with_storage("ivf_avq", avq_params, "in_memory"),
-            single_line_with_storage("ivf_avq", avq_params, "snapshot_loaded"),
-            single_line_with_storage("ivf_avq", avq_params, "file"),
-            single_line_with_storage("ivf_avq", avq_params, "mmap"),
-            single_line_with_storage("ivf_rabitq", rabitq_params, "in_memory"),
-            single_line_with_storage("ivf_rabitq", rabitq_params, "snapshot_loaded"),
-        ];
+        let mut completed_lines = file_open_lines("ivf_avq", avq_params);
+        completed_lines.extend(snapshot_lines("ivf_rabitq", rabitq_params));
         let completed = CompletedResults {
             lines: completed_lines,
             ..CompletedResults::default()
@@ -2559,29 +2567,12 @@ mod tests {
         };
         let reorder_50_params = ivfavq_params_json(256, 16, 256, 1, 50);
         let reorder_100_params = ivfavq_params_json(256, 16, 256, 1, 100);
-        let storage_rows = |params: &str| {
-            let lines = vec![
-                single_line_with_storage("ivf_avq", params, "in_memory"),
-                single_line_with_storage("ivf_avq", params, "snapshot_loaded"),
-                single_line_with_storage("ivf_avq", params, "file"),
-            ];
-            #[cfg(feature = "persistence")]
-            {
-                let mut lines = lines;
-                lines.push(single_line_with_storage("ivf_avq", params, "mmap"));
-                lines
-            }
-            #[cfg(not(feature = "persistence"))]
-            {
-                lines
-            }
-        };
         let missing_second_reorder = CompletedResults {
-            lines: storage_rows(&reorder_50_params),
+            lines: file_open_lines("ivf_avq", &reorder_50_params),
             ..CompletedResults::default()
         };
-        let mut completed_lines = storage_rows(&reorder_50_params);
-        completed_lines.extend(storage_rows(&reorder_100_params));
+        let mut completed_lines = file_open_lines("ivf_avq", &reorder_50_params);
+        completed_lines.extend(file_open_lines("ivf_avq", &reorder_100_params));
         let completed = CompletedResults {
             lines: completed_lines,
             ..CompletedResults::default()
@@ -2613,42 +2604,14 @@ mod tests {
         };
         let approx_params = ivfpq_params_json(4, 4, 16, 1, None, None, 100);
         let rerank_params = ivfpq_params_json(4, 4, 16, 1, Some(20), None, 100);
+        let mut missing_file_lines = snapshot_lines("ivfpq", &approx_params);
+        missing_file_lines.extend(snapshot_lines("ivfpq_rerank", &rerank_params));
         let missing_file = CompletedResults {
-            lines: vec![
-                single_line_with_storage("ivfpq", &approx_params, "in_memory"),
-                single_line_with_storage("ivfpq", &approx_params, "snapshot_loaded"),
-                single_line_with_storage("ivfpq_rerank", &rerank_params, "in_memory"),
-                single_line_with_storage("ivfpq_rerank", &rerank_params, "snapshot_loaded"),
-            ],
+            lines: missing_file_lines,
             ..CompletedResults::default()
         };
-        #[cfg(not(feature = "persistence"))]
-        let completed_lines = vec![
-            single_line_with_storage("ivfpq", &approx_params, "in_memory"),
-            single_line_with_storage("ivfpq", &approx_params, "snapshot_loaded"),
-            single_line_with_storage("ivfpq", &approx_params, "file"),
-            single_line_with_storage("ivfpq_rerank", &rerank_params, "in_memory"),
-            single_line_with_storage("ivfpq_rerank", &rerank_params, "snapshot_loaded"),
-            single_line_with_storage("ivfpq_rerank", &rerank_params, "file"),
-        ];
-        #[cfg(feature = "persistence")]
-        let mut completed_lines = vec![
-            single_line_with_storage("ivfpq", &approx_params, "in_memory"),
-            single_line_with_storage("ivfpq", &approx_params, "snapshot_loaded"),
-            single_line_with_storage("ivfpq", &approx_params, "file"),
-            single_line_with_storage("ivfpq_rerank", &rerank_params, "in_memory"),
-            single_line_with_storage("ivfpq_rerank", &rerank_params, "snapshot_loaded"),
-            single_line_with_storage("ivfpq_rerank", &rerank_params, "file"),
-        ];
-        #[cfg(feature = "persistence")]
-        {
-            completed_lines.push(single_line_with_storage("ivfpq", &approx_params, "mmap"));
-            completed_lines.push(single_line_with_storage(
-                "ivfpq_rerank",
-                &rerank_params,
-                "mmap",
-            ));
-        }
+        let mut completed_lines = file_open_lines("ivfpq", &approx_params);
+        completed_lines.extend(file_open_lines("ivfpq_rerank", &rerank_params));
         let completed = CompletedResults {
             lines: completed_lines,
             ..CompletedResults::default()
