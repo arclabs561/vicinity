@@ -874,6 +874,20 @@ The benchmark counters stayed in the same regime after the change: roughly
 127-139 two-hop invocations per query, 2.1K-2.3K two-hop nodes examined per
 query, and 10 returned results per query.
 
+A follow-up `samply` profile of the same row after preallocation saved
+`/tmp/vicinity-acorn-search-s0p10-postprealloc-20260708.json.gz`; the benchmark
+thread had 10,532 samples. The largest resolved leaf buckets were still
+`hashbrown::HashMap::insert`, while `reserve_rehash` dropped out of the top
+resolved addresses. Generalizing the neighbor callback from `Vec<u32>` to
+`AsRef<[u32]>` removes forced cloning for in-memory HNSW and slice-backed
+benchmarks, but did not produce a statistically significant Criterion change:
+
+| Workload | Before | After | Criterion result |
+| --- | ---: | ---: | --- |
+| `acorn_search_only/selectivity_0.50` | 28.881 ms / 128 queries | 28.182 ms / 128 queries | no significant change, p = 0.58 |
+| `acorn_search_only/selectivity_0.10` | 27.101 ms / 128 queries | 25.572 ms / 128 queries | no significant change, p = 0.26 |
+| `acorn_search_only/selectivity_0.02` | 26.748 ms / 128 queries | 24.698 ms / 128 queries | no significant change, p = 0.78 |
+
 Full-train IVF-PQ storage sweep from the same day, using all 1,183,514
 GloVe-25 vectors and 500 queries:
 

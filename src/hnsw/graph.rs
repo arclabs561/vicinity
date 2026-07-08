@@ -2689,7 +2689,7 @@ impl HNSWIndex {
             k,
             config,
             &node_filter,
-            |node| self.layers[0].get_neighbors(node).to_vec(),
+            |node| self.layers[0].get_neighbors(node),
             |node| dist_fn(query, self.get_vector(node as usize)),
             base_entry,
         )?;

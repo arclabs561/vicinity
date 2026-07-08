@@ -261,7 +261,7 @@ pub struct AcornStats {
 ///
 /// Use [`acorn_search_with_stats`] when you also need the internal
 /// branch-fired counters (`AcornStats`) for testing.
-pub fn acorn_search<F, N, D>(
+pub fn acorn_search<F, N, D, G>(
     k: usize,
     config: &AcornConfig,
     filter: &F,
@@ -271,7 +271,8 @@ pub fn acorn_search<F, N, D>(
 ) -> Result<Vec<(u32, f32)>, RetrieveError>
 where
     F: FilterPredicate,
-    N: Fn(u32) -> Vec<u32>,
+    N: Fn(u32) -> G,
+    G: AsRef<[u32]>,
     D: Fn(u32) -> f32,
 {
     acorn_search_with_stats(
@@ -287,7 +288,7 @@ where
 
 /// Same as [`acorn_search`] but also returns the internal `AcornStats`
 /// counters. Equivalent in behavior; only the return type differs.
-pub fn acorn_search_with_stats<F, N, D>(
+pub fn acorn_search_with_stats<F, N, D, G>(
     k: usize,
     config: &AcornConfig,
     filter: &F,
@@ -297,7 +298,8 @@ pub fn acorn_search_with_stats<F, N, D>(
 ) -> Result<(Vec<(u32, f32)>, AcornStats), RetrieveError>
 where
     F: FilterPredicate,
-    N: Fn(u32) -> Vec<u32>,
+    N: Fn(u32) -> G,
+    G: AsRef<[u32]>,
     D: Fn(u32) -> f32,
 {
     let mut stats = AcornStats::default();
@@ -343,7 +345,7 @@ where
         let neighbors = get_neighbors(current.node_id);
 
         // Process direct neighbors
-        for &neighbor in &neighbors {
+        for &neighbor in neighbors.as_ref() {
             let neighbor_passes = filter.matches(neighbor);
             if !state.visit(neighbor, neighbor_passes) {
                 continue; // Already visited
@@ -386,7 +388,7 @@ where
                 let two_hop_neighbors = get_neighbors(neighbor);
                 let mut two_hop_count = 0;
 
-                for &two_hop in &two_hop_neighbors {
+                for &two_hop in two_hop_neighbors.as_ref() {
                     if two_hop_count >= config.max_two_hop_neighbors {
                         break;
                     }
@@ -486,7 +488,7 @@ impl Default for SelectivityConfig {
 }
 
 /// Estimate selectivity by probing random neighbors from the entry point.
-fn estimate_selectivity<F, N>(
+fn estimate_selectivity<F, N, G>(
     filter: &F,
     get_neighbors: &N,
     entry_point: u32,
@@ -494,7 +496,8 @@ fn estimate_selectivity<F, N>(
 ) -> f32
 where
     F: FilterPredicate,
-    N: Fn(u32) -> Vec<u32>,
+    N: Fn(u32) -> G,
+    G: AsRef<[u32]>,
 {
     let mut visited = HashSet::new();
     let mut queue = VecDeque::with_capacity(probe_size);
@@ -514,7 +517,8 @@ where
         if filter.matches(node) {
             matches += 1;
         }
-        for &neighbor in &get_neighbors(node) {
+        let neighbors = get_neighbors(node);
+        for &neighbor in neighbors.as_ref() {
             if !visited.contains(&neighbor) {
                 queue.push_back(neighbor);
             }
@@ -548,7 +552,7 @@ where
 /// * `entry_point` - HNSW entry point
 /// * `matching_ids` - Pre-computed matching IDs for low-selectivity fallback.
 ///   If `None` and regime is Low, falls back to aggressive ACORN.
-pub fn selectivity_search<F, N, D>(
+pub fn selectivity_search<F, N, D, G>(
     k: usize,
     config: &SelectivityConfig,
     filter: &F,
@@ -559,7 +563,8 @@ pub fn selectivity_search<F, N, D>(
 ) -> Result<Vec<(u32, f32)>, RetrieveError>
 where
     F: FilterPredicate,
-    N: Fn(u32) -> Vec<u32>,
+    N: Fn(u32) -> G,
+    G: AsRef<[u32]>,
     D: Fn(u32) -> f32,
 {
     // Determine regime

@@ -459,7 +459,7 @@ fn run_selectivity(
             cfg.k,
             &config,
             &filter,
-            |id| graph[id as usize].clone(),
+            |id| graph[id as usize].as_slice(),
             |id| cosine_distance_normalized(query, &vectors[id as usize]),
             entry_point,
         )
