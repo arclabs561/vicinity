@@ -203,6 +203,18 @@ pub(crate) mod graph_utils;
 #[cfg(feature = "hnsw")]
 pub mod lid;
 pub mod memory;
+#[cfg(any(
+    feature = "diskann",
+    feature = "emg",
+    feature = "finger",
+    feature = "fresh_graph",
+    feature = "hnsw",
+    feature = "nsg",
+    feature = "nsw",
+    feature = "pipnn",
+    feature = "sng",
+    feature = "vamana"
+))]
 pub(crate) mod prefetch;
 pub(crate) mod simd;
 

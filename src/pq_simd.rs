@@ -179,7 +179,10 @@ impl PackedLUT {
             codebook_idx,
             self.num_codebooks
         );
-        unsafe { self.data.as_ptr().add(codebook_idx * self.codebook_size) }
+        debug_assert!(self.data.len() >= self.num_codebooks * self.codebook_size);
+        self.data
+            .as_ptr()
+            .wrapping_add(codebook_idx * self.codebook_size)
     }
 
     /// Number of codebooks.
@@ -224,11 +227,10 @@ pub(crate) trait PackedLUTData {
             codebook_idx,
             self.num_codebooks()
         );
-        unsafe {
-            self.data()
-                .as_ptr()
-                .add(codebook_idx * self.codebook_size())
-        }
+        debug_assert!(self.data().len() >= self.num_codebooks() * self.codebook_size());
+        self.data()
+            .as_ptr()
+            .wrapping_add(codebook_idx * self.codebook_size())
     }
 
     #[inline]
