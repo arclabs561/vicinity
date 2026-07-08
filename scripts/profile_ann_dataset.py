@@ -44,6 +44,25 @@ def read_nbr1(path: Path) -> np.memmap:
     return np.memmap(path, dtype=np.int32, mode="r", offset=12, shape=(rows, k))
 
 
+def label_count(path: Path) -> int:
+    try:
+        with path.open("rb") as f:
+            header = f.read(8)
+    except FileNotFoundError as exc:
+        raise SystemExit(f"missing {path}") from exc
+    if len(header) != 8 or header[:4] != b"LBL1":
+        raise SystemExit(f"{path} is not a LBL1 file")
+    (rows,) = struct.unpack("<I", header[4:])
+    expected_size = 8 + rows * 4
+    actual_size = path.stat().st_size
+    if actual_size != expected_size:
+        raise SystemExit(
+            f"{path} has {actual_size} bytes, expected {expected_size} "
+            f"for {rows} labels"
+        )
+    return rows
+
+
 def quantiles(values: np.ndarray) -> dict[str, float]:
     finite = np.asarray(values[np.isfinite(values)], dtype=np.float64)
     if finite.size == 0:
@@ -89,6 +108,86 @@ def infer_metric(dataset: Path, requested: str) -> Metric:
     if "euclidean" in name:
         return "l2"
     return "cosine"
+
+
+def optional_split(
+    dataset: Path,
+    *,
+    name: str,
+    kind: str,
+    query_file: str,
+    neighbor_file: str,
+    label_file: str | None = None,
+) -> dict[str, Any] | None:
+    query_path = dataset / query_file
+    neighbor_path = dataset / neighbor_file
+    if not query_path.exists() and not neighbor_path.exists():
+        return None
+    queries, dim = binary_shape(query_path, b"VEC1")
+    neighbor_queries, k = binary_shape(neighbor_path, b"NBR1")
+    if queries != neighbor_queries:
+        raise SystemExit(
+            f"{query_file} query count {queries} does not match "
+            f"{neighbor_file} count {neighbor_queries}"
+        )
+    row: dict[str, Any] = {
+        "name": name,
+        "kind": kind,
+        "queries": queries,
+        "dim": dim,
+        "ground_truth_k": k,
+    }
+    if label_file is not None and (dataset / label_file).exists():
+        labels = label_count(dataset / label_file)
+        if labels != queries:
+            raise SystemExit(
+                f"{label_file} label count {labels} does not match {queries}"
+            )
+        row["label_file"] = label_file
+    return row
+
+
+def query_splits(
+    dataset: Path, test_shape: tuple[int, int], neighbor_k: int
+) -> list[dict[str, Any]]:
+    rows = [
+        {
+            "name": "base",
+            "kind": "in_distribution",
+            "queries": test_shape[0],
+            "dim": test_shape[1],
+            "ground_truth_k": neighbor_k,
+        }
+    ]
+    for split in (
+        optional_split(
+            dataset,
+            name="drift",
+            kind="ood_drift",
+            query_file="test_drift.bin",
+            neighbor_file="neighbors_drift.bin",
+        ),
+        optional_split(
+            dataset,
+            name="filter",
+            kind="filtered",
+            query_file="test_filter.bin",
+            neighbor_file="neighbors_filter.bin",
+            label_file="test_filter_topics.bin",
+        ),
+    ):
+        if split is not None:
+            rows.append(split)
+    difficulty = dataset / "test_difficulty.bin"
+    if difficulty.exists():
+        labels = label_count(difficulty)
+        if labels != test_shape[0]:
+            raise SystemExit(
+                f"test_difficulty.bin label count {labels} does not match "
+                f"{test_shape[0]}"
+            )
+        rows[0]["difficulty_labels"] = "test_difficulty.bin"
+    return rows
 
 
 def vector_norms(vectors: np.ndarray) -> np.ndarray:
@@ -347,6 +446,11 @@ def profile_dataset(
             "dim": int(train.shape[1]),
             "ground_truth_k": int(neighbors.shape[1]),
         },
+        "query_splits": query_splits(
+            dataset,
+            (int(test.shape[0]), int(test.shape[1])),
+            int(neighbors.shape[1]),
+        ),
         "samples": {
             "train": int(len(train_ids)),
             "queries": int(len(query_ids)),

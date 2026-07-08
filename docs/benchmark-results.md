@@ -32,7 +32,9 @@ distribution, duplicate rate, hubness, cluster or posting-list imbalance, and
 whether the query set is in-distribution or OOD. Use
 `scripts/profile_ann_dataset.py` for the first sampled profile pass over
 converted `VEC1`/`NBR1` datasets, including sampled coarse-partition imbalance.
-These fields are dataset metadata, not algorithm result rows.
+It also reports optional `query_splits` for generated drift, filtered, topic,
+and difficulty-label files when those sidecars exist. These fields are dataset
+metadata, not algorithm result rows.
 
 Recommended current commands:
 
