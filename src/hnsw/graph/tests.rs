@@ -555,6 +555,50 @@ fn test_builder_produces_working_index() {
     );
 }
 
+#[cfg(feature = "id-compression")]
+#[test]
+fn unsupported_id_compression_method_fails_build() {
+    let params = HNSWParams {
+        m: 4,
+        m_max: 8,
+        auto_normalize: true,
+        seed: Some(42),
+        id_compression: Some(crate::compression::IdCompressionMethod::EliasFano),
+        compression_threshold: 0,
+        ..Default::default()
+    };
+    let mut index = HNSWIndex::with_params(4, params).unwrap();
+    for i in 0..16_u32 {
+        let mut vector = vec![0.0; 4];
+        vector[i as usize % 4] = 1.0;
+        vector[((i as usize) + 1) % 4] = 0.5;
+        index.add(i, vector).unwrap();
+    }
+
+    let err = index.build().unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("unsupported HNSW ID compression method"),
+        "unexpected error: {err}"
+    );
+}
+
+#[cfg(feature = "id-compression")]
+#[test]
+fn compression_threshold_preserves_small_neighbor_lists() {
+    let neighbors: Vec<NeighborList> = vec![
+        [1, 2].into_iter().collect(),
+        [0, 2, 3, 4].into_iter().collect(),
+    ];
+    let mut layer = Layer::new_uncompressed(neighbors.clone());
+    let compressor = crate::compression::DeltaVarintCompressor::new();
+
+    layer.compress(&compressor, 8, 3).unwrap();
+
+    assert_eq!(layer.get_neighbors(0).as_ref(), neighbors[0].as_slice());
+    assert_eq!(layer.get_neighbors(1).as_ref(), neighbors[1].as_slice());
+}
+
 #[test]
 fn test_auto_normalize_symmetric_for_angular() {
     // Angular metric: parallel to the Python binding's

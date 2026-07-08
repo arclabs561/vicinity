@@ -198,6 +198,7 @@ pub struct HNSWParams {
 
 /// Default compression threshold for serde deserialization.
 #[cfg(feature = "id-compression")]
+#[cfg_attr(not(feature = "serde"), allow(dead_code))]
 fn default_compression_threshold() -> usize {
     32
 }
@@ -328,7 +329,6 @@ enum NeighborStorage {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 struct CompressedNeighborList {
     data: Vec<u8>,
-    num_neighbors: usize,
 }
 
 /// Graph layer containing neighbor lists for all vectors in that layer.
@@ -346,6 +346,7 @@ pub(crate) struct Layer {
 impl Layer {
     /// Default empty decompression cache (used by serde skip default).
     #[cfg(feature = "id-compression")]
+    #[cfg_attr(not(feature = "serde"), allow(dead_code))]
     fn empty_cache() -> std::sync::Mutex<std::collections::HashMap<u32, NeighborList>> {
         std::sync::Mutex::new(std::collections::HashMap::new())
     }
@@ -379,66 +380,57 @@ impl Layer {
         universe_size: u32,
         threshold: usize,
     ) -> Result<(), crate::compression::CompressionError> {
-        // Extract uncompressed neighbors
-        let neighbors =
-            match std::mem::replace(&mut self.storage, NeighborStorage::Uncompressed(Vec::new())) {
-                NeighborStorage::Uncompressed(n) => n,
-                NeighborStorage::Compressed { .. } => {
-                    // Already compressed, nothing to do
-                    return Ok(());
-                }
-            };
+        let compressed_layer = match &self.storage {
+            NeighborStorage::Uncompressed(neighbors) => {
+                Self::new_compressed(neighbors, compressor, universe_size, threshold)?
+            }
+            NeighborStorage::Compressed { .. } => return Ok(()),
+        };
 
-        // Compress
-        let compressed_layer =
-            Self::new_compressed(neighbors, compressor, universe_size, threshold)?;
-        *self = compressed_layer;
+        if let Some(compressed_layer) = compressed_layer {
+            *self = compressed_layer;
+        }
         Ok(())
     }
 
     /// Create compressed layer.
     #[cfg(feature = "id-compression")]
     fn new_compressed(
-        neighbors: Vec<NeighborList>,
+        neighbors: &[NeighborList],
         _compressor: &crate::compression::DeltaVarintCompressor,
         universe_size: u32,
         threshold: usize,
-    ) -> Result<Self, crate::compression::CompressionError> {
-        let mut compressed_lists = Vec::with_capacity(neighbors.len());
-
-        for neighbor_list in &neighbors {
-            if neighbor_list.len() >= threshold {
-                // Compress this neighbor list
-                let mut sorted = neighbor_list.to_vec();
-                sorted.sort();
-                sorted.dedup();
-
-                let compressed = crate::compression::compress_set_enveloped(
-                    &sorted,
-                    universe_size,
-                    crate::compression::ChooseConfig::default(),
-                )?;
-
-                compressed_lists.push(CompressedNeighborList {
-                    data: compressed,
-                    num_neighbors: sorted.len(),
-                });
-            } else {
-                // Too small, store uncompressed (use empty data as marker)
-                compressed_lists.push(CompressedNeighborList {
-                    data: Vec::new(), // Empty = uncompressed
-                    num_neighbors: neighbor_list.len(),
-                });
-            }
+    ) -> Result<Option<Self>, crate::compression::CompressionError> {
+        if neighbors
+            .iter()
+            .any(|neighbor_list| neighbor_list.len() < threshold)
+        {
+            return Ok(None);
         }
 
-        Ok(Self {
+        let mut compressed_lists = Vec::with_capacity(neighbors.len());
+
+        for neighbor_list in neighbors {
+            let mut sorted = neighbor_list.to_vec();
+            sorted.sort();
+            sorted.dedup();
+
+            let compressed = crate::compression::compress_set_enveloped(
+                &sorted,
+                universe_size,
+                crate::compression::ChooseConfig::default(),
+            )?;
+
+            compressed_lists.push(CompressedNeighborList { data: compressed });
+        }
+
+        Ok(Some(Self {
             storage: NeighborStorage::Compressed {
                 data: compressed_lists,
                 universe_size,
             },
             decompressed_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
-        })
+        }))
     }
 
     /// Get neighbors for a node.
@@ -1934,6 +1926,7 @@ impl HNSWIndex {
         method: &crate::compression::IdCompressionMethod,
     ) -> Result<(), crate::compression::CompressionError> {
         match method {
+            crate::compression::IdCompressionMethod::None => {}
             crate::compression::IdCompressionMethod::DeltaVarint => {
                 let compressor = crate::compression::DeltaVarintCompressor::new();
                 let universe_size = self.num_vectors as u32;
@@ -1943,8 +1936,14 @@ impl HNSWIndex {
                     layer.compress(&compressor, universe_size, threshold)?;
                 }
             }
+            #[allow(unreachable_patterns)]
             _ => {
-                // Other methods not implemented yet
+                return Err(crate::compression::CompressionError::CompressionFailed(
+                    format!(
+                        "unsupported HNSW ID compression method: {method:?}; \
+                         only None and DeltaVarint are implemented"
+                    ),
+                ));
             }
         }
 

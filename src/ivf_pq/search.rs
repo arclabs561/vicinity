@@ -872,6 +872,20 @@ impl IVFPQIndex {
             }
         }
 
+        #[cfg(feature = "id-compression")]
+        if let Some(method) = self.params.id_compression.as_ref() {
+            if !matches!(
+                method,
+                crate::compression::IdCompressionMethod::None
+                    | crate::compression::IdCompressionMethod::DeltaVarint
+            ) {
+                return Err(RetrieveError::Other(format!(
+                    "unsupported IVF-PQ ID compression method: {method:?}; \
+                     only None and DeltaVarint are implemented"
+                )));
+            }
+        }
+
         // Convert to Cluster structs with optional compression
         self.clusters = temp_clusters
             .into_iter()
@@ -896,7 +910,13 @@ impl IVFPQIndex {
                                     )
                                     .unwrap_or_else(|_| Cluster::new(ids_clone, bitmask))
                                 }
-                                _ => Cluster::new(ids, bitmask), // Other methods not implemented yet
+                                crate::compression::IdCompressionMethod::None => {
+                                    Cluster::new(ids, bitmask)
+                                }
+                                #[allow(unreachable_patterns)]
+                                _ => {
+                                    unreachable!("unsupported compression methods are preflighted")
+                                }
                             }
                         } else {
                             Cluster::new(ids, bitmask)
@@ -2519,6 +2539,35 @@ mod tests {
 
         let after = index.search(&query, 5).unwrap();
         assert_eq!(before, after);
+    }
+
+    #[cfg(feature = "id-compression")]
+    #[test]
+    fn unsupported_id_compression_method_fails_build() {
+        let dim = 4;
+        let params = IVFPQParams {
+            num_clusters: 2,
+            num_codebooks: 2,
+            codebook_size: 4,
+            nprobe: 2,
+            id_compression: Some(crate::compression::IdCompressionMethod::EliasFano),
+            compression_threshold: 0,
+            ..IVFPQParams::default()
+        };
+        let mut index = IVFPQIndex::new(dim, params).unwrap();
+        for i in 0..16_u32 {
+            let mut vector = vec![0.0; dim];
+            vector[i as usize % dim] = 1.0;
+            vector[((i as usize) + 1) % dim] = 0.5;
+            index.add(i, vector).unwrap();
+        }
+
+        let err = index.build().unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("unsupported IVF-PQ ID compression method"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
