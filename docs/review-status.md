@@ -175,10 +175,12 @@ benchmarking, persistence, Python bindings, and performance work.
   SNG overclaim, unsupported compression fallback, and 4-bit NEON FastScan
   claims are resolved or mitigated. Live follow-ups from that note are HNSW
   distance-dispatch profiling, broader graph-family 16-inline neighbor lists,
-  the public random LEMUR encoder constructor, and fixed-recall rows for
-  experimental families. The `ivf_pq/search.rs` size item has been reduced
-  without behavior changes by extracting manifest, cluster, and file-storage
-  helpers; continue splitting only when a coherent private boundary appears.
+  trained/model-loaded LEMUR weights, eventual removal of LEMUR's deprecated
+  hidden random fixture constructor in a breaking release, and fixed-recall
+  rows for experimental families. The `ivf_pq/search.rs` size item has been
+  reduced without behavior changes by extracting manifest, cluster, and
+  file-storage helpers; continue splitting only when a coherent private
+  boundary appears.
 - The 4-bit IVF-PQ FastScan path now has an aarch64 NEON `tbl` block kernel.
   The direct `pq_fastscan_lut_shape/flat_lut` microbench improved from
   3.3636 us to 934.32 ns, with parity covered against the portable block

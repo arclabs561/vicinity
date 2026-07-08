@@ -77,6 +77,7 @@ impl LemurEncoder {
     ///
     /// Random weights produce random retrieval quality. Use [`LemurEncoder::new`]
     /// with externally trained weights for indexing or search experiments.
+    #[doc(hidden)]
     #[deprecated(
         note = "random weights are test fixtures; use LemurEncoder::new with trained weights for retrieval"
     )]
