@@ -169,7 +169,9 @@ benchmarking, persistence, Python bindings, and performance work.
   edits narrowed stale KD-tree exactness wording, marked old GloVe-25 rows as
   legacy context, clarified DiskANN's current file/mmap path versus target
   co-located pages, and aligned LEMUR docs with the current mean-pool
-  implementation.
+  implementation. SAQ docs now say the current helper uses direct segmentation
+  and variance-weighted bit allocation; PCA projection, dynamic-programming
+  allocation, and trained k-means codebooks remain future work.
 - A 50K-vector classical sweep with broader tree settings now separates the
   classical baselines more clearly. KD-tree, ball tree, and RP-tree reach
   high recall on the cap but remain much slower than HNSW at the same scale.

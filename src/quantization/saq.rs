@@ -1,13 +1,14 @@
 //! SAQ (Segmented Adaptive Quantization) implementation.
 //!
-//! SAQ-style segmented adaptive quantization helper with:
-//! - Dimension segmentation with PCA projection
-//! - Dynamic programming for optimal bit allocation
-//! - Code adjustment with coordinate-descent refinement
+//! SAQ-style segmented adaptive quantization helper with direct dimension
+//! segmentation, variance-weighted bit allocation, and code adjustment with
+//! coordinate-descent refinement.
 //!
 //! Treat this as experimental until local quantization-error, encoding
 //! throughput, and downstream recall rows justify it against the other
-//! quantizers in this crate.
+//! quantizers in this crate. This is not yet a full SAQ paper reproduction:
+//! PCA projection, dynamic-programming bit allocation, and trained k-means
+//! codebooks are reserved future work in the current implementation.
 //!
 //! # References
 //!
@@ -25,7 +26,7 @@ pub struct SAQQuantizer {
     codebooks: Vec<Vec<Vec<f32>>>,       // [segment][codeword][dimension]
     segment_bounds: Vec<(usize, usize)>, // (start, end) for each segment
     #[allow(dead_code)]
-    pca_matrix: Option<Vec<Vec<f32>>>, // PCA projection matrix (optional, reserved)
+    pca_matrix: Option<Vec<Vec<f32>>>, // Reserved for future PCA projection.
 }
 
 impl SAQQuantizer {
