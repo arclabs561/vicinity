@@ -417,7 +417,10 @@ def load_dataset_profiles(profile_dirs: list[Path]) -> dict[str, DatasetProfile]
 
 
 def load_summaries(
-    paths: list[Path], *, current_schema_only: bool = False
+    paths: list[Path],
+    *,
+    current_schema_only: bool = False,
+    footprint_contract_only: bool = False,
 ) -> dict[tuple[str, str, str], Summary]:
     summaries: dict[tuple[str, str, str], Summary] = defaultdict(Summary)
     for path in paths:
@@ -425,6 +428,7 @@ def load_summaries(
         storage_expectation_scope = False
         index_bytes_required = False
         active_current_schema = not current_schema_only
+        active_footprint_contract = not footprint_contract_only
         with path.open(encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
@@ -439,13 +443,19 @@ def load_summaries(
                             storage_expectation_scope = False
                             index_bytes_required = False
                             active_current_schema = False
+                            active_footprint_contract = False
                             continue
                         current_dataset = scoped_dataset_name(meta)
                         storage_expectation_scope = has_storage_expectation_scope(meta)
                         index_bytes_required = meta.get("index_bytes_required") is True
                         active_current_schema = True
+                        active_footprint_contract = (
+                            not footprint_contract_only or index_bytes_required
+                        )
                     continue
                 if current_schema_only and not active_current_schema:
+                    continue
+                if footprint_contract_only and not active_footprint_contract:
                     continue
                 algorithm = row.get("algorithm")
                 if not isinstance(algorithm, str):
@@ -796,6 +806,14 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--footprint-contract-only",
+        action="store_true",
+        help=(
+            "Ignore measured rows whose active _meta does not declare "
+            "index_bytes_required=true"
+        ),
+    )
+    parser.add_argument(
         "--dataset",
         action="append",
         default=[],
@@ -866,6 +884,7 @@ def main() -> None:
     summaries = load_summaries(
         args.paths,
         current_schema_only=args.current_schema_only,
+        footprint_contract_only=args.footprint_contract_only,
     )
     expected = list(args.expect)
     if args.expect_standard_storage:
