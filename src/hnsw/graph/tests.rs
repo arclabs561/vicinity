@@ -78,6 +78,10 @@ fn test_search_adaptive_conservative_matches_search() {
 
     // Conservative config should return the same top-k (or very close)
     assert_eq!(adaptive.len(), baseline.len());
+    assert!(
+        adaptive.windows(2).all(|w| w[0].1 <= w[1].1),
+        "adaptive results should stay sorted by ascending distance",
+    );
     // At minimum the nearest neighbor should match
     assert_eq!(adaptive[0].0, baseline[0].0);
 }

@@ -2748,7 +2748,7 @@ impl HNSWIndex {
         // Base layer: adaptive search
         let num_evaluated;
         if !self.layers.is_empty() {
-            let (mut base_results, evaluated) = crate::hnsw::search::greedy_search_layer_adaptive(
+            let (base_results, evaluated) = crate::hnsw::search::greedy_search_layer_adaptive(
                 query,
                 current_closest,
                 &self.layers[0],
@@ -2760,8 +2760,6 @@ impl HNSWIndex {
                 self.dist_fn(),
             );
             num_evaluated = evaluated;
-
-            base_results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
 
             #[cfg(feature = "id-compression")]
             {
