@@ -626,6 +626,29 @@ This makes heap traffic visible for future work, but the counts are bounded and
 do not yet justify a heap-first rewrite without a profile showing allocator time
 or result-heap maintenance as the bottleneck.
 
+A follow-up negative control tested replacing the normal HNSW base-layer
+function-pointer distance dispatch with metric-specialized generic wrappers at
+the `search` and MQO API boundary:
+
+```bash
+cargo bench --bench hnsw_search --features hnsw,benchmark -- \
+  hnsw_search_only --measurement-time 3 --warm-up-time 1 --sample-size 20
+```
+
+Criterion reported no useful win and clear high-ef regressions against the
+stored baseline:
+
+| Workload | Criterion mean change | Decision |
+| --- | ---: | --- |
+| `hnsw_search_only/ef/10` | +0.45% time | no change |
+| `hnsw_search_only/ef/50` | +5.84% time | rejected |
+| `hnsw_search_only/ef/100` | +5.60% time | rejected |
+| `hnsw_search_only/ef/200` | +10.17% time | rejected |
+
+The patch was not committed. If distance dispatch is revisited, use binary
+inspection or a narrower distance-kernel entrypoint rather than generic wrappers
+around the whole graph traversal.
+
 ### Dense Distance Kernel
 
 Direct Criterion measurements on the 128-d L2 kernel:

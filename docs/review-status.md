@@ -93,6 +93,11 @@ benchmarking, persistence, Python bindings, and performance work.
   source-line claims need a richer debuginfo/dSYM profile, but the current
   evidence points at batch/heap update structure, distance kernel
   dispatch/inlining, and graph/vector locality.
+- A direct generic-wrapper attempt for normal HNSW metric dispatch was measured
+  and rejected. It left `ef=10` unchanged but regressed `ef=50`, `ef=100`, and
+  `ef=200` by about 5.8%, 5.6%, and 10.2% respectively in the search-only
+  Criterion target. Future dispatch work should start from binary inspection or
+  a narrower distance-kernel boundary, not a traversal-wide generic wrapper.
 - A thresholded `flush_batch` follow-up now caches the worst result distance
   only for `ef >= 64`. The first all-ef version improved high-ef rows but
   regressed `ef=10`; the thresholded version avoids putting low-recall search
