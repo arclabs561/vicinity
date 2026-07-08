@@ -670,6 +670,25 @@ The patch was not committed. If distance dispatch is revisited, use binary
 inspection or a narrower distance-kernel entrypoint rather than generic wrappers
 around the whole graph traversal.
 
+A follow-up binary inspection pass on the current code confirmed that the
+function-pointer concern is real, but also narrows where it appears. The command
+used:
+
+```bash
+CARGO_TARGET_DIR=/tmp/vicinity-asm-target CARGO_INCREMENTAL=0 RUSTC_WRAPPER= \
+  cargo asm --lib --features hnsw --rust --context=1 greedy_search_layer 1 \
+  > /tmp/vicinity-hnsw-greedy-search-layer.asm
+```
+
+The saved assembly has 16,562 lines. The relevant excerpt is in the
+`flush_batch` symbol, where the unrolled batched-distance loop lowers
+`dists[i] = dist_fn(query, vec)` to an indirect `blr x7` call. That validates
+the dispatch hypothesis at the machine-code level, but the rejected benchmark
+above says the next experiment should not be another whole-search generic
+wrapper. The next candidate should isolate either `flush_batch` or the
+distance-kernel entrypoint and keep the same ef=10/50/100/200 negative-control
+rows.
+
 ### Dense Distance Kernel
 
 Direct Criterion measurements on the 128-d L2 kernel:
