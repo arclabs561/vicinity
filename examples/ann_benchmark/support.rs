@@ -2486,14 +2486,21 @@ mod tests {
         let reorder_50_params = ivfavq_params_json(256, 16, 256, 1, 50);
         let reorder_100_params = ivfavq_params_json(256, 16, 256, 1, 100);
         let storage_rows = |params: &str| {
-            let mut lines = vec![
+            let lines = vec![
                 single_line_with_storage("ivf_avq", params, "in_memory"),
                 single_line_with_storage("ivf_avq", params, "snapshot_loaded"),
                 single_line_with_storage("ivf_avq", params, "file"),
             ];
             #[cfg(feature = "persistence")]
-            lines.push(single_line_with_storage("ivf_avq", params, "mmap"));
-            lines
+            {
+                let mut lines = lines;
+                lines.push(single_line_with_storage("ivf_avq", params, "mmap"));
+                lines
+            }
+            #[cfg(not(feature = "persistence"))]
+            {
+                lines
+            }
         };
         let missing_second_reorder = CompletedResults {
             lines: storage_rows(&reorder_50_params),
