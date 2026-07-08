@@ -3374,46 +3374,32 @@ fn run_kmeans_tree(
                     let rss = current_rss_kb();
                     let index_bytes = Some(index.memory_usage().total() as u64);
 
-                    let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
-                    let params_json = kmeans_tree_params_json(
-                        params.num_clusters,
-                        params.max_leaf_size,
-                        params.max_depth,
-                        params.max_iterations,
-                    );
-                    let label = format!(
-                        "clusters={} leaf={} depth={} iters={}",
-                        params.num_clusters,
-                        params.max_leaf_size,
-                        params.max_depth,
-                        params.max_iterations
-                    );
-                    if cfg.json {
-                        emit_result(
-                            &cfg.results_path,
-                            &json_line_with_storage(
-                                "kmeans_tree",
-                                &params_json,
-                                build_time_s,
-                                rss,
-                                &result,
-                                &in_memory_storage(index_bytes),
-                            ),
+                    for &search_branches in &cfg.kmeans_search_branches {
+                        let result = evaluate(
+                            &|q, k| {
+                                index
+                                    .search_with_branch_budget(q, k, search_branches)
+                                    .unwrap()
+                            },
+                            test,
+                            neighbors,
+                            10,
                         );
-                    } else {
-                        print_row(&label, &result);
-                    }
-
-                    if cfg.snapshot_load {
-                        let temp_dir = tempfile::tempdir()
-                            .expect("create temp dir for K-means tree snapshot benchmark");
-                        index.save_to_dir(temp_dir.path()).unwrap();
-                        let index_bytes = dir_size_bytes(temp_dir.path()).ok();
-                        let load_start = Instant::now();
-                        let loaded = KMeansTreeIndex::load_from_dir(temp_dir.path()).unwrap();
-                        let load_time_s = load_start.elapsed().as_secs_f64();
-                        let loaded_result =
-                            evaluate(&|q, k| loaded.search(q, k).unwrap(), test, neighbors, 10);
+                        let params_json = kmeans_tree_params_json(
+                            params.num_clusters,
+                            params.max_leaf_size,
+                            params.max_depth,
+                            params.max_iterations,
+                            search_branches,
+                        );
+                        let label = format!(
+                            "clusters={} leaf={} depth={} iters={} branches={}",
+                            params.num_clusters,
+                            params.max_leaf_size,
+                            params.max_depth,
+                            params.max_iterations,
+                            search_branches
+                        );
                         if cfg.json {
                             emit_result(
                                 &cfg.results_path,
@@ -3422,12 +3408,47 @@ fn run_kmeans_tree(
                                     &params_json,
                                     build_time_s,
                                     rss,
-                                    &loaded_result,
-                                    &snapshot_storage(load_time_s, index_bytes),
+                                    &result,
+                                    &in_memory_storage(index_bytes),
                                 ),
                             );
                         } else {
-                            print_row(&format!("{label} snapshot_loaded"), &loaded_result);
+                            print_row(&label, &result);
+                        }
+
+                        if cfg.snapshot_load {
+                            let temp_dir = tempfile::tempdir()
+                                .expect("create temp dir for K-means tree snapshot benchmark");
+                            index.save_to_dir(temp_dir.path()).unwrap();
+                            let index_bytes = dir_size_bytes(temp_dir.path()).ok();
+                            let load_start = Instant::now();
+                            let loaded = KMeansTreeIndex::load_from_dir(temp_dir.path()).unwrap();
+                            let load_time_s = load_start.elapsed().as_secs_f64();
+                            let loaded_result = evaluate(
+                                &|q, k| {
+                                    loaded
+                                        .search_with_branch_budget(q, k, search_branches)
+                                        .unwrap()
+                                },
+                                test,
+                                neighbors,
+                                10,
+                            );
+                            if cfg.json {
+                                emit_result(
+                                    &cfg.results_path,
+                                    &json_line_with_storage(
+                                        "kmeans_tree",
+                                        &params_json,
+                                        build_time_s,
+                                        rss,
+                                        &loaded_result,
+                                        &snapshot_storage(load_time_s, index_bytes),
+                                    ),
+                                );
+                            } else {
+                                print_row(&format!("{label} snapshot_loaded"), &loaded_result);
+                            }
                         }
                     }
                 }

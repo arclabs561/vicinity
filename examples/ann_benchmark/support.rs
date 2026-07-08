@@ -151,6 +151,7 @@ pub(crate) struct Config {
     pub(crate) kmeans_leaf_sizes: Vec<usize>,
     pub(crate) kmeans_depths: Vec<usize>,
     pub(crate) kmeans_iters: Vec<usize>,
+    pub(crate) kmeans_search_branches: Vec<usize>,
     pub(crate) batch: bool,
     pub(crate) resume: bool,
     pub(crate) snapshot_load: bool,
@@ -187,6 +188,7 @@ impl Default for Config {
             kmeans_leaf_sizes: vec![50],
             kmeans_depths: vec![10],
             kmeans_iters: vec![10],
+            kmeans_search_branches: vec![1],
             batch: false,
             resume: false,
             snapshot_load: false,
@@ -627,16 +629,21 @@ fn kmeans_tree_snapshot_checks(cfg: &Config) -> Vec<ExpectedResult> {
             cfg.kmeans_leaf_sizes.iter().flat_map(move |&leaf_size| {
                 cfg.kmeans_depths.iter().flat_map(move |&depth| {
                     cfg.kmeans_iters.iter().flat_map(move |&max_iterations| {
-                        snapshot_check(
-                            "kmeans_tree",
-                            &kmeans_tree_params_json(
-                                num_clusters,
-                                leaf_size,
-                                depth,
-                                max_iterations,
-                            ),
-                            cfg,
-                        )
+                        cfg.kmeans_search_branches
+                            .iter()
+                            .flat_map(move |&search_branches| {
+                                snapshot_check(
+                                    "kmeans_tree",
+                                    &kmeans_tree_params_json(
+                                        num_clusters,
+                                        leaf_size,
+                                        depth,
+                                        max_iterations,
+                                        search_branches,
+                                    ),
+                                    cfg,
+                                )
+                            })
                     })
                 })
             })
@@ -1065,11 +1072,17 @@ pub(crate) fn kmeans_tree_params_json(
     max_leaf_size: usize,
     max_depth: usize,
     max_iterations: usize,
+    search_branches: usize,
 ) -> String {
-    format!(
+    let mut params = format!(
         "{{\"num_clusters\":{},\"max_leaf_size\":{},\"max_depth\":{},\"max_iterations\":{}}}",
         num_clusters, max_leaf_size, max_depth, max_iterations
-    )
+    );
+    if search_branches != 1 {
+        params.pop();
+        params.push_str(&format!(",\"search_branches\":{search_branches}}}"));
+    }
+    params
 }
 
 fn diskann_params_json(cfg: &Config, ef_search: usize, storage: &str) -> String {
@@ -1275,6 +1288,12 @@ pub(crate) fn parse_args() -> Config {
                 i += 1;
                 if i < args.len() {
                     cfg.kmeans_iters = parse_usize_list(&args[i], &[10]);
+                }
+            }
+            "--kmeans-search-branches" => {
+                i += 1;
+                if i < args.len() {
+                    cfg.kmeans_search_branches = parse_usize_list(&args[i], &[1]);
                 }
             }
             "--batch" => {

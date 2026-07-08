@@ -238,21 +238,23 @@ impl KMeansTreeIndex {
         let (centers, assignments) = self.kmeans_cluster(indices)?;
 
         // Group indices by cluster
-        let mut cluster_groups: Vec<Vec<u32>> = vec![Vec::new(); self.params.num_clusters];
+        let mut cluster_groups: Vec<Vec<u32>> = vec![Vec::new(); centers.len()];
         for (idx, &cluster_idx) in indices.iter().zip(assignments.iter()) {
             cluster_groups[cluster_idx].push(*idx);
         }
 
         // Recursively build children
+        let mut active_centers = Vec::new();
         let mut children = Vec::new();
-        for cluster_indices in cluster_groups {
+        for (cluster_idx, cluster_indices) in cluster_groups.into_iter().enumerate() {
             if !cluster_indices.is_empty() {
+                active_centers.push(centers[cluster_idx].clone());
                 children.push(self.build_tree(&cluster_indices, depth + 1)?);
             }
         }
 
         Ok(KMeansNode::Internal {
-            centers,
+            centers: active_centers,
             children,
             cluster_assignments: assignments,
         })
@@ -410,9 +412,24 @@ impl KMeansTreeIndex {
 
     /// Search for k nearest neighbors.
     pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, RetrieveError> {
+        self.search_with_branch_budget(query, k, 1)
+    }
+
+    /// Search for k nearest neighbors while visiting multiple child clusters per internal node.
+    pub fn search_with_branch_budget(
+        &self,
+        query: &[f32],
+        k: usize,
+        branch_budget: usize,
+    ) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
             return Err(RetrieveError::InvalidParameter(
                 "Index must be built before search".to_string(),
+            ));
+        }
+        if branch_budget == 0 {
+            return Err(RetrieveError::InvalidParameter(
+                "branch_budget must be greater than 0".to_string(),
             ));
         }
 
@@ -427,8 +444,11 @@ impl KMeansTreeIndex {
         let root = self.root.as_ref().ok_or(RetrieveError::EmptyIndex)?;
         let mut candidates = Vec::new();
 
-        // Search tree
-        self.search_node(root, query, &mut candidates);
+        if branch_budget == 1 {
+            self.search_node(root, query, &mut candidates);
+        } else {
+            self.search_node_with_branch_budget(root, query, branch_budget, &mut candidates);
+        }
 
         // Compute exact distances and sort
         let mut results: Vec<(u32, f32)> = candidates
@@ -470,6 +490,40 @@ impl KMeansTreeIndex {
                 // Search closest cluster's subtree
                 if best_cluster < children.len() {
                     self.search_node(&children[best_cluster], query, candidates);
+                }
+            }
+        }
+    }
+
+    fn search_node_with_branch_budget(
+        &self,
+        node: &KMeansNode,
+        query: &[f32],
+        branch_budget: usize,
+        candidates: &mut Vec<u32>,
+    ) {
+        match node {
+            KMeansNode::Leaf { indices, .. } => {
+                candidates.extend_from_slice(indices);
+            }
+            KMeansNode::Internal {
+                centers, children, ..
+            } => {
+                let mut ranked: Vec<(usize, f32)> = centers
+                    .iter()
+                    .zip(children.iter())
+                    .enumerate()
+                    .map(|(idx, (center, _))| (idx, euclidean_distance(query, center)))
+                    .collect();
+                ranked.sort_unstable_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+
+                for (idx, _) in ranked.into_iter().take(branch_budget) {
+                    self.search_node_with_branch_budget(
+                        &children[idx],
+                        query,
+                        branch_budget,
+                        candidates,
+                    );
                 }
             }
         }
@@ -548,5 +602,58 @@ mod tests {
             tree.search(&query, 8).unwrap(),
             loaded.search(&query, 8).unwrap()
         );
+    }
+
+    #[test]
+    fn internal_centers_match_non_empty_children() {
+        let params = KMeansTreeParams {
+            num_clusters: 8,
+            max_leaf_size: 1,
+            max_depth: 3,
+            max_iterations: 10,
+        };
+        let mut tree = KMeansTreeIndex::new(2, params).unwrap();
+        for i in 0..6u32 {
+            tree.add(i, vec![0.0, 0.0]).unwrap();
+        }
+        for i in 6..12u32 {
+            tree.add(i, vec![100.0, 100.0]).unwrap();
+        }
+        tree.build().unwrap();
+
+        fn assert_aligned(node: &KMeansNode) {
+            match node {
+                KMeansNode::Internal {
+                    centers, children, ..
+                } => {
+                    assert_eq!(centers.len(), children.len());
+                    for child in children {
+                        assert_aligned(child);
+                    }
+                }
+                KMeansNode::Leaf { .. } => {}
+            }
+        }
+
+        assert_aligned(tree.root.as_ref().unwrap());
+    }
+
+    #[test]
+    fn branch_budget_one_matches_default_search() {
+        let tree = build_index();
+        let query = vec![50.0, 100.0, 150.0];
+        assert_eq!(
+            tree.search(&query, 8).unwrap(),
+            tree.search_with_branch_budget(&query, 8, 1).unwrap()
+        );
+    }
+
+    #[test]
+    fn branch_budget_must_be_positive() {
+        let tree = build_index();
+        let err = tree
+            .search_with_branch_budget(&[50.0, 100.0, 150.0], 8, 0)
+            .unwrap_err();
+        assert!(matches!(err, RetrieveError::InvalidParameter(_)));
     }
 }
