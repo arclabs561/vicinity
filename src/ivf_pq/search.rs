@@ -251,6 +251,16 @@ pub struct IVFPQFileSearcher {
 /// Per-query diagnostics for [`IVFPQFileSearcher`] exact reranking.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct IVFPQFileSearchDiagnostics {
+    /// Number of IVF lists probed during approximate search.
+    pub probed_lists: usize,
+    /// Number of vectors scanned across probed IVF lists.
+    pub scanned_vectors: usize,
+    /// Number of logical PQ-code storage reads.
+    pub code_reads: usize,
+    /// Number of PQ-code bytes read from storage.
+    pub code_bytes: usize,
+    /// Number of approximate candidates retained after top-k selection.
+    pub retained_candidates: usize,
     /// Number of full-precision vectors read for exact reranking.
     pub raw_vector_reads: usize,
     /// Number of raw vector bytes read for exact reranking.
@@ -1603,6 +1613,20 @@ impl IVFPQFileSearcher {
             .collect())
     }
 
+    /// Search using approximate IVF-PQ distances and return storage diagnostics.
+    pub fn search_with_diagnostics(
+        &mut self,
+        query: &[f32],
+        k: usize,
+    ) -> Result<(Vec<(u32, f32)>, IVFPQFileSearchDiagnostics), RetrieveError> {
+        let (candidates, diagnostics) = self.search_approx_internal_with_diagnostics(query, k)?;
+        let results = candidates
+            .into_iter()
+            .map(|(vector_idx, dist)| (self.doc_ids[vector_idx as usize], dist))
+            .collect();
+        Ok((results, diagnostics))
+    }
+
     /// Search with approximate retrieval followed by exact reranking from `raw_vectors.bin`.
     pub fn search_reranked(
         &mut self,
@@ -1635,21 +1659,20 @@ impl IVFPQFileSearcher {
         }
 
         let pool = candidate_pool.max(k);
-        let mut candidates = self.search_approx_internal(query, pool)?;
+        let (mut candidates, mut diagnostics) =
+            self.search_approx_internal_with_diagnostics(query, pool)?;
         let raw_vector_byte_len = checked_len(
             self.dimension,
             std::mem::size_of::<f32>(),
             "IVF-PQ diagnostic vector byte length overflow",
         )?;
-        let diagnostics = IVFPQFileSearchDiagnostics {
-            raw_vector_reads: candidates.len(),
-            raw_vector_bytes: checked_len(
-                candidates.len(),
-                raw_vector_byte_len,
-                "IVF-PQ diagnostic raw-vector byte count overflow",
-            )?,
-            reranked_candidates: candidates.len(),
-        };
+        diagnostics.raw_vector_reads = candidates.len();
+        diagnostics.raw_vector_bytes = checked_len(
+            candidates.len(),
+            raw_vector_byte_len,
+            "IVF-PQ diagnostic raw-vector byte count overflow",
+        )?;
+        diagnostics.reranked_candidates = candidates.len();
         let query_normalized = normalize_query(query);
         let mut reranked = Vec::with_capacity(candidates.len());
         let Some(storage) = self.raw_vectors.as_mut() else {
@@ -1680,6 +1703,15 @@ impl IVFPQFileSearcher {
         query: &[f32],
         k: usize,
     ) -> Result<Vec<(u32, f32)>, RetrieveError> {
+        self.search_approx_internal_with_diagnostics(query, k)
+            .map(|(candidates, _)| candidates)
+    }
+
+    fn search_approx_internal_with_diagnostics(
+        &mut self,
+        query: &[f32],
+        k: usize,
+    ) -> Result<(Vec<(u32, f32)>, IVFPQFileSearchDiagnostics), RetrieveError> {
         if query.len() != self.dimension {
             return Err(RetrieveError::DimensionMismatch {
                 query_dim: query.len(),
@@ -1690,6 +1722,10 @@ impl IVFPQFileSearcher {
         let query_normalized = normalize_query(query);
         let query = query_normalized.as_slice();
         let cluster_distances = self.find_nearest_centroids(query, self.params.nprobe);
+        let mut diagnostics = IVFPQFileSearchDiagnostics {
+            probed_lists: cluster_distances.len(),
+            ..IVFPQFileSearchDiagnostics::default()
+        };
         let expected_candidates = cluster_distances
             .iter()
             .map(|(cluster_idx, _)| self.clusters[*cluster_idx].len())
@@ -1703,6 +1739,12 @@ impl IVFPQFileSearcher {
         for (cluster_idx, _) in &cluster_distances {
             let cluster = &self.clusters[*cluster_idx];
             let ids = cluster.get_ids_ref();
+            diagnostics.scanned_vectors += ids.len();
+            let code_bytes = checked_len(
+                ids.len(),
+                self.params.num_codebooks,
+                "IVF-PQ diagnostic code byte count overflow",
+            )?;
             let centroid = self.get_centroid(*cluster_idx);
             for (i, (q, c)) in query.iter().zip(centroid.iter()).enumerate() {
                 query_residual[i] = q - c;
@@ -1712,6 +1754,8 @@ impl IVFPQFileSearcher {
 
             if ids.len() >= SIMD_BATCH_THRESHOLD {
                 if let Some(list_codes) = self.list_codes.as_mut() {
+                    diagnostics.code_reads += usize::from(!ids.is_empty());
+                    diagnostics.code_bytes += code_bytes;
                     read_list_codes_for_cluster(
                         list_codes,
                         *cluster_idx,
@@ -1720,6 +1764,8 @@ impl IVFPQFileSearcher {
                         &mut codes_batch,
                     )?;
                 } else {
+                    diagnostics.code_reads += ids.len();
+                    diagnostics.code_bytes += code_bytes;
                     append_codes_for_ids(
                         &mut self.codes,
                         &mut codes_batch,
@@ -1752,6 +1798,8 @@ impl IVFPQFileSearcher {
                     }
                 }
             } else {
+                diagnostics.code_reads += ids.len();
+                diagnostics.code_bytes += code_bytes;
                 for &vector_idx in ids.as_ref() {
                     let codes = read_code_from_storage(
                         &mut self.codes,
@@ -1765,7 +1813,9 @@ impl IVFPQFileSearcher {
             }
         }
 
-        Ok(finish_top_k_by_distance(candidates, k))
+        let results = finish_top_k_by_distance(candidates, k);
+        diagnostics.retained_candidates = results.len();
+        Ok((results, diagnostics))
     }
 
     #[inline]
@@ -2645,6 +2695,50 @@ mod tests {
             diagnostics.raw_vector_bytes,
             diagnostics.raw_vector_reads * dim * std::mem::size_of::<f32>()
         );
+    }
+
+    #[test]
+    fn file_approx_diagnostics_report_code_reads() {
+        let dim = 16;
+        let n = 240;
+        use rand::{Rng, SeedableRng};
+        let mut rng = rand::rngs::StdRng::seed_from_u64(109);
+
+        let params = IVFPQParams {
+            num_clusters: 4,
+            num_codebooks: 4,
+            codebook_size: 32,
+            nprobe: 3,
+            seed: 131,
+            ..IVFPQParams::default()
+        };
+        let mut index = IVFPQIndex::new(dim, params).unwrap();
+        for i in 0..n {
+            let vector: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
+            index.add(90_000 + i as u32, vector).unwrap();
+        }
+        index.build().unwrap();
+
+        let query: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
+        let dir = tempfile::tempdir().unwrap();
+        index.save_to_dir(dir.path()).unwrap();
+        let mut file_searcher = IVFPQFileSearcher::load(dir.path()).unwrap();
+
+        let plain = file_searcher.search(&query, 10).unwrap();
+        let (with_diagnostics, diagnostics) =
+            file_searcher.search_with_diagnostics(&query, 10).unwrap();
+
+        assert_eq!(with_diagnostics, plain);
+        assert_eq!(diagnostics.probed_lists, 3);
+        assert!(diagnostics.scanned_vectors >= with_diagnostics.len());
+        assert!(diagnostics.code_reads > 0);
+        assert_eq!(
+            diagnostics.code_bytes,
+            diagnostics.scanned_vectors * file_searcher.num_codebooks()
+        );
+        assert_eq!(diagnostics.retained_candidates, with_diagnostics.len());
+        assert_eq!(diagnostics.raw_vector_reads, 0);
+        assert_eq!(diagnostics.raw_vector_bytes, 0);
     }
 
     #[test]

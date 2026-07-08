@@ -102,9 +102,13 @@ STANDARD_STORAGE_EXPECTATIONS = standard_storage_expectations()
 
 DIAGNOSTIC_KEYS = (
     "avg_visited_nodes",
+    "avg_probed_lists",
+    "avg_scanned_vectors",
     "avg_graph_reads",
+    "avg_code_reads",
     "avg_vector_reads",
     "avg_graph_bytes",
+    "avg_code_bytes",
     "avg_vector_bytes",
     "avg_retained_candidates",
     "active_count",

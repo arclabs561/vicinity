@@ -1507,9 +1507,13 @@ pub(crate) struct ResultStorage<'a> {
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct StorageDiagnostics {
     pub(crate) avg_visited_nodes: f64,
+    pub(crate) avg_probed_lists: f64,
+    pub(crate) avg_scanned_vectors: f64,
     pub(crate) avg_graph_reads: f64,
+    pub(crate) avg_code_reads: f64,
     pub(crate) avg_vector_reads: f64,
     pub(crate) avg_graph_bytes: f64,
+    pub(crate) avg_code_bytes: f64,
     pub(crate) avg_vector_bytes: f64,
     pub(crate) avg_retained_candidates: f64,
 }
@@ -1621,11 +1625,15 @@ pub(crate) fn json_line_with_storage(
     }
     if let Some(diagnostics) = storage.diagnostics {
         s.push_str(&format!(
-            ",\"avg_visited_nodes\":{:.2},\"avg_graph_reads\":{:.2},\"avg_vector_reads\":{:.2},\"avg_graph_bytes\":{:.2},\"avg_vector_bytes\":{:.2},\"avg_retained_candidates\":{:.2}",
+            ",\"avg_visited_nodes\":{:.2},\"avg_probed_lists\":{:.2},\"avg_scanned_vectors\":{:.2},\"avg_graph_reads\":{:.2},\"avg_code_reads\":{:.2},\"avg_vector_reads\":{:.2},\"avg_graph_bytes\":{:.2},\"avg_code_bytes\":{:.2},\"avg_vector_bytes\":{:.2},\"avg_retained_candidates\":{:.2}",
             diagnostics.avg_visited_nodes,
+            diagnostics.avg_probed_lists,
+            diagnostics.avg_scanned_vectors,
             diagnostics.avg_graph_reads,
+            diagnostics.avg_code_reads,
             diagnostics.avg_vector_reads,
             diagnostics.avg_graph_bytes,
+            diagnostics.avg_code_bytes,
             diagnostics.avg_vector_bytes,
             diagnostics.avg_retained_candidates
         ));
@@ -2054,9 +2062,13 @@ mod tests {
             index_bytes: Some(4096),
             diagnostics: Some(StorageDiagnostics {
                 avg_visited_nodes: 12.0,
+                avg_probed_lists: 3.0,
+                avg_scanned_vectors: 128.0,
                 avg_graph_reads: 8.5,
+                avg_code_reads: 4.0,
                 avg_vector_reads: 12.0,
                 avg_graph_bytes: 544.0,
+                avg_code_bytes: 512.0,
                 avg_vector_bytes: 1200.0,
                 avg_retained_candidates: 10.0,
             }),
@@ -2075,7 +2087,11 @@ mod tests {
         assert!(line.contains("\"load_time_s\":0.1250"));
         assert!(line.contains("\"index_bytes\":4096"));
         assert!(line.contains("\"avg_visited_nodes\":12.00"));
+        assert!(line.contains("\"avg_probed_lists\":3.00"));
+        assert!(line.contains("\"avg_scanned_vectors\":128.00"));
         assert!(line.contains("\"avg_graph_reads\":8.50"));
+        assert!(line.contains("\"avg_code_reads\":4.00"));
+        assert!(line.contains("\"avg_code_bytes\":512.00"));
         assert!(line.contains("\"avg_vector_bytes\":1200.00"));
     }
 

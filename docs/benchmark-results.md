@@ -1861,10 +1861,14 @@ touching mmap or heap paths:
 
 The remaining file-backed IVF-PQ locality problem is layout, not cursor
 movement: exact rerank still reads raw full-precision vectors by vector ID.
-IVF-PQ file and mmap rerank benchmark rows now report this directly via
-`avg_vector_reads`, `avg_vector_bytes`, and `avg_retained_candidates`.
+IVF-PQ file and mmap approximate rows now report `avg_probed_lists`,
+`avg_scanned_vectors`, `avg_code_reads`, `avg_code_bytes`, and
+`avg_retained_candidates`. Rerank rows also report this approximate phase plus
+raw-vector work through `avg_vector_reads`, `avg_vector_bytes`, and
+`avg_retained_candidates`.
 
-A 5K-vector smoke row verifies the diagnostic fields on the benchmark output:
+A 5K-vector smoke row verifies the rerank diagnostic fields on the benchmark
+output:
 
 ```bash
 cargo run --release --example ann_benchmark --no-default-features --features ivf_pq,persistence -- \
@@ -1879,6 +1883,24 @@ cargo run --release --example ann_benchmark --no-default-features --features ivf
 The file and mmap rerank rows both report `avg_vector_reads=20.00`,
 `avg_vector_bytes=2000.00`, and `avg_retained_candidates=20.00`, which matches
 `rerank_pool=20` on 25-d `f32` vectors.
+
+A smaller approximate-only schema smoke used the same path with 500 indexed
+vectors and 20 queries:
+
+```bash
+cargo run --no-default-features --features ivf_pq,persistence \
+  --example ann_benchmark -- data/ann-benchmarks/glove-25-angular \
+  --algo ivfpq --max-train 500 --max-queries 20 --warmup-queries 0 \
+  --pq-clusters 16 --pq-codebooks 5 --pq-codebook-size 16 --pq-nprobes 1 \
+  --snapshot-load --json --fresh \
+  --results /tmp/vicinity-ivfpq-approx-diagnostics-smoke-codex.jsonl
+```
+
+The file row reported 48,367.5 QPS and the mmap row 51,347.9 QPS at 29.00%
+recall. Both rows reported `avg_probed_lists=1.00`,
+`avg_scanned_vectors=34.40`, `avg_code_reads=1.00`, `avg_code_bytes=172.00`,
+and `avg_retained_candidates=10.00`. Treat these as schema coverage numbers
+only; the workload is intentionally too small for performance claims.
 
 An external read-only implementation review found the same shape in other
 systems: FAISS on-disk IVF and SPANN/SPFresh organize work around posting-list
