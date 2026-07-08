@@ -461,19 +461,6 @@ impl StorageExpectation {
     }
 }
 
-fn rows_for_storage_modes(
-    algorithm: &str,
-    params_json: &str,
-    modes: impl IntoIterator<Item = &'static str>,
-) -> Vec<ExpectedResult> {
-    modes
-        .into_iter()
-        .map(|storage_mode| {
-            ExpectedResult::with_params(algorithm, params_json).with_storage(storage_mode)
-        })
-        .collect()
-}
-
 fn open_storage_modes() -> &'static [&'static str] {
     #[cfg(feature = "persistence")]
     {
@@ -530,11 +517,12 @@ fn storage_expectation_checks(
     cfg: &Config,
     expectation: StorageExpectation,
 ) -> Vec<ExpectedResult> {
-    rows_for_storage_modes(
-        algorithm,
-        params_json,
-        std::iter::once("in_memory").chain(expectation.required_modes(cfg).iter().copied()),
-    )
+    std::iter::once("in_memory")
+        .chain(expectation.required_modes(cfg).iter().copied())
+        .map(|storage_mode| {
+            ExpectedResult::with_params_and_storage(algorithm, params_json, storage_mode)
+        })
+        .collect()
 }
 
 fn snapshot_check(algorithm: &str, params_json: &str, cfg: &Config) -> Vec<ExpectedResult> {
