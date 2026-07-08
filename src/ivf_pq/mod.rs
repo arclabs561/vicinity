@@ -150,6 +150,7 @@
 
 // IVF-PQ core implementation (always available when ivf_pq feature is enabled)
 mod cluster;
+mod file_storage;
 mod manifest;
 pub mod opq;
 pub mod pq;
