@@ -274,6 +274,39 @@ impl SymphonyQGIndex {
         &self.index
     }
 
+    /// Estimated heap memory used by this index.
+    #[must_use]
+    pub fn memory_usage(&self) -> crate::memory::MemoryReport {
+        let inner = self.index.memory_usage();
+        let quantized_bytes = inner.quantized_bytes
+            + self.codes.capacity() * std::mem::size_of::<QuantizedVector>()
+            + self
+                .codes
+                .iter()
+                .map(|code| {
+                    code.binary_codes.capacity()
+                        + code.extended_codes.capacity()
+                        + code.codes.capacity() * std::mem::size_of::<u16>()
+                })
+                .sum::<usize>();
+        let quantizer_bytes = self
+            .quantizer
+            .as_ref()
+            .map(|_| {
+                let dim = self.index.dimension;
+                // RaBitQ stores a square rotation matrix plus the fitted centroid.
+                (dim * dim + dim) * std::mem::size_of::<f32>()
+            })
+            .unwrap_or(0);
+
+        crate::memory::MemoryReport {
+            vectors_bytes: inner.vectors_bytes,
+            graph_bytes: inner.graph_bytes,
+            quantized_bytes,
+            metadata_bytes: inner.metadata_bytes + quantizer_bytes,
+        }
+    }
+
     // ── internal ──────────────────────────────────────────────────────────
 
     fn check_search_ready(&self, query: &[f32]) -> Result<(), RetrieveError> {
@@ -1200,6 +1233,29 @@ mod tests {
         let results = index.search_reranked(&q, 5, 32, 50).unwrap();
         assert!(!results.is_empty());
         assert_eq!(results[0].0, 0, "self-query should return doc_id 0");
+    }
+
+    #[test]
+    fn memory_usage_reports_graph_and_quantized_buffers() {
+        let dim = 16;
+        let n = 80;
+        let mut index = SymphonyQGIndex::new(dim, 8, 16).unwrap();
+
+        for i in 0..n {
+            index
+                .add_slice(i as u32, &make_normalized_vector(i, dim))
+                .unwrap();
+        }
+        index.build().unwrap();
+
+        let report = index.memory_usage();
+        assert!(report.vectors_bytes >= n * dim * std::mem::size_of::<f32>());
+        assert!(report.graph_bytes > 0);
+        assert!(report.quantized_bytes > n * dim.div_ceil(8));
+        assert!(
+            report.metadata_bytes
+                >= n * std::mem::size_of::<u32>() + (dim * dim + dim) * std::mem::size_of::<f32>()
+        );
     }
 
     #[cfg(feature = "serde")]

@@ -865,6 +865,22 @@ heap-estimated `index_bytes` (`34,328`, `29,924`, and `29,524` respectively).
 Treat these as schema coverage numbers only; the workload is intentionally
 tiny.
 
+The graph-quantized rows for SymphonyQG and SQ4U now emit the same in-memory
+heap estimate. A bounded schema smoke used 200 GloVe-25 vectors and 5 queries:
+
+```bash
+cargo run --no-default-features --features hnsw,ivf_rabitq,sq4 --example ann_benchmark -- \
+  data/ann-benchmarks/glove-25-angular \
+  --algo symphony_qg --algo sq4u \
+  --max-train 200 --max-queries 5 --ef-search 10 --json --fresh \
+  --results /tmp/vicinity-graph-quant-memory-smoke.jsonl
+```
+
+The `symphony_qg` and `sq4u` in-memory rows included
+`storage_mode=in_memory`, `cache_state=warm_after_build`, and positive
+heap-estimated `index_bytes` (`110,000` and `105,500` respectively). Treat
+these as schema coverage numbers only; the workload is intentionally tiny.
+
 The same row-coverage pass now includes the classical tree family. A bounded
 schema smoke used 200 GloVe-25 vectors and 5 queries:
 
