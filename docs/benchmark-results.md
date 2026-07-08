@@ -740,6 +740,18 @@ lowers to an aarch64 NEON loop with paired vector loads and `fmla.4s`
 accumulation. The actionable conclusion is to use `innr` for full-vector dense
 distance and spend `vicinity` work on search layout, pruning, and storage.
 
+A follow-up read of `innr` found that its safe dense API already covers the
+current `vicinity::simd` boundary (`dot`, `cosine`, `l2_distance`,
+`l2_distance_squared`, and `norm`). Its `VerticalBatch` API is useful when a
+candidate set is already materialized in a dense columnar batch, but HNSW
+neighbor traversal visits graph-adjacent vectors by scattered ids. Packing each
+small neighbor batch into `VerticalBatch` inside `flush_batch` would add
+allocation/transposition to the hot loop, so it is not a justified HNSW change
+without a profile showing candidate locality or a storage layout that amortizes
+the packing. New unsafe SIMD in `vicinity` should remain limited to local
+layout-specific kernels such as PQ code/LUT scans; dense full-vector kernels
+should continue to enter through innr's safe API.
+
 ### DiskANN File And Mmap Search
 
 The search-only DiskANN benchmark isolates in-memory, file, and mmap search

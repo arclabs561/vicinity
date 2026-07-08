@@ -14,6 +14,7 @@ benchmarking, persistence, Python bindings, and performance work.
 | Graph prefetch unsafe surface | Reduced | `RUSTFLAGS=-Dwarnings CARGO_TARGET_DIR=/tmp/vicinity-prefetch-target CARGO_INCREMENTAL=0 RUSTC_WRAPPER= cargo check --no-default-features --features diskann,emg,finger,fresh_graph,hnsw,nsg,nsw,pipnn,sng,vamana`; `CARGO_TARGET_DIR=/tmp/vicinity-prefetch-target CARGO_INCREMENTAL=0 RUSTC_WRAPPER= cargo clippy --no-default-features --features diskann,emg,finger,fresh_graph,hnsw,nsg,nsw,pipnn,sng,vamana --lib -- -D warnings` |
 | PQ SIMD unsafe surface | Reduced | `CARGO_TARGET_DIR=/tmp/vicinity-pq-unsafe-target CARGO_INCREMENTAL=0 RUSTC_WRAPPER= cargo test --no-default-features --features ivf_pq --lib pq_simd::tests`; `CARGO_TARGET_DIR=/tmp/vicinity-pq-unsafe-target CARGO_INCREMENTAL=0 RUSTC_WRAPPER= cargo clippy --no-default-features --features ivf_pq --lib -- -D warnings` |
 | PQ SIMD unsafe boundary | Reduced | Architecture-specific dispatch wrappers now own runtime feature checks and target-feature calls. `CARGO_TARGET_DIR=/tmp/vicinity-pq-boundary-target CARGO_INCREMENTAL=0 RUSTC_WRAPPER= cargo test --no-default-features --features ivf_pq --lib pq_simd::tests`; `CARGO_TARGET_DIR=/tmp/vicinity-pq-boundary-target CARGO_INCREMENTAL=0 RUSTC_WRAPPER= cargo clippy --no-default-features --features ivf_pq --lib -- -D warnings` |
+| innr SIMD boundary | Keep | `vicinity::simd` already re-exports innr's safe dense full-vector kernels. innr batch APIs require a materialized columnar candidate batch, so they are not a measured fit for scattered HNSW neighbor traversal yet. |
 | IVF-PQ FastScan split | Resolved | The FastScan gate is intentional: `codebook_size = 16` uses the 4-bit packed block layout, while the main fixed-recall GloVe-25 path uses `codebook_size = 256` and the standard 8-bit ADC batch kernel. Tests cover both prepacked layouts. |
 | Python exposed API | Passing | `uv run maturin develop --release --features hnsw,python,parallel`; `uv run pytest tests/test_python.py`; `uv run python -m mypy.stubtest pyvicinity._core` |
 | Algorithm recommendation docs | Updated | README and `docs/algorithms.md` distinguish brute force, in-memory, file-backed graph, and file-backed compressed search |
@@ -102,6 +103,10 @@ benchmarking, persistence, Python bindings, and performance work.
   source-line claims need a richer debuginfo/dSYM profile, but the current
   evidence points at batch/heap update structure, distance kernel
   dispatch/inlining, and graph/vector locality.
+- Unsafe remains a last resort for the current perf queue. Dense vector math
+  should keep using innr's safe API. New unsafe belongs only in small, local,
+  layout-specific kernels with parity tests and before/after profiles, as with
+  the existing PQ SIMD wrappers.
 - A direct generic-wrapper attempt for normal HNSW metric dispatch was measured
   and rejected. It left `ef=10` unchanged but regressed `ef=50`, `ef=100`, and
   `ef=200` by about 5.8%, 5.6%, and 10.2% respectively in the search-only
