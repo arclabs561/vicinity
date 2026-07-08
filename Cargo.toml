@@ -358,7 +358,7 @@ unexpected_cfgs = "warn"
 # Documentation lints: temporarily relaxed, enable incrementally
 # missing_docs = "warn"
 # missing_doc_code_examples = "warn"
-unsafe_code = "warn"
+unsafe_code = "deny"
 unstable_features = "deny"
 unused_import_braces = "warn"
 # unused_qualifications = "warn"  # Relaxed: explicit paths often improve clarity
@@ -368,7 +368,7 @@ variant_size_differences = "warn"
 unused_extern_crates = "warn"
 unused_lifetimes = "warn"
 semicolon_in_expressions_from_macros = "warn"
-unsafe_op_in_unsafe_fn = "warn"
+unsafe_op_in_unsafe_fn = "deny"
 unused_macro_rules = "warn"
 
 [lints.clippy]
