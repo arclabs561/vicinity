@@ -77,6 +77,15 @@ pub fn adc_distance(codes: &[u8], lut: &[Vec<f32>]) -> f32 {
 ///
 /// Vector of distances, one per candidate.
 pub fn adc_batch_distances(codes_batch: &[u8], num_codebooks: usize, lut: &[Vec<f32>]) -> Vec<f32> {
+    assert_adc_batch_shape(codes_batch, num_codebooks);
+    assert_eq!(
+        lut.len(),
+        num_codebooks,
+        "lut codebook count {} does not match num_codebooks {}",
+        lut.len(),
+        num_codebooks
+    );
+
     let n_candidates = codes_batch.len() / num_codebooks;
     let mut distances = Vec::with_capacity(n_candidates);
 
@@ -95,6 +104,8 @@ pub fn adc_batch_distances_into<L: PackedLUTData>(
     lut: &L,
     distances: &mut Vec<f32>,
 ) {
+    assert_packed_adc_batch_shape(codes_batch, num_codebooks, lut);
+
     let n_candidates = codes_batch.len() / num_codebooks;
     distances.clear();
     distances.resize(n_candidates, 0.0);
@@ -103,6 +114,44 @@ pub fn adc_batch_distances_into<L: PackedLUTData>(
         let codes = &codes_batch[i * num_codebooks..(i + 1) * num_codebooks];
         distances[i] = lut.adc_distance(codes);
     }
+}
+
+#[inline]
+fn assert_adc_batch_shape(codes_batch: &[u8], num_codebooks: usize) {
+    assert!(num_codebooks > 0, "num_codebooks must be non-zero");
+    assert_eq!(
+        codes_batch.len() % num_codebooks,
+        0,
+        "codes_batch length {} is not a multiple of num_codebooks {}",
+        codes_batch.len(),
+        num_codebooks
+    );
+}
+
+#[inline]
+fn assert_packed_adc_batch_shape<L: PackedLUTData>(
+    codes_batch: &[u8],
+    num_codebooks: usize,
+    lut: &L,
+) {
+    assert_adc_batch_shape(codes_batch, num_codebooks);
+    assert_eq!(
+        lut.num_codebooks(),
+        num_codebooks,
+        "packed LUT codebook count {} does not match num_codebooks {}",
+        lut.num_codebooks(),
+        num_codebooks
+    );
+    let expected_len = match lut.num_codebooks().checked_mul(lut.codebook_size()) {
+        Some(value) => value,
+        None => panic!("packed LUT shape overflows usize"),
+    };
+    assert!(
+        lut.data().len() >= expected_len,
+        "packed LUT length {} is smaller than required length {}",
+        lut.data().len(),
+        expected_len
+    );
 }
 
 /// Packed LUT for SIMD operations.
@@ -296,6 +345,10 @@ mod x86_64 {
         lut: &L,
         distances: &mut Vec<f32>,
     ) -> bool {
+        if lut.codebook_size() != 256 || lut.data().len() < num_codebooks.saturating_mul(256) {
+            return false;
+        }
+
         let n_candidates = codes_batch.len() / num_codebooks;
 
         if n_candidates >= 16 && std::is_x86_feature_detected!("avx512f") {
@@ -700,6 +753,8 @@ pub fn adc_batch_dispatch_into<L: PackedLUTData>(
     lut: &L,
     distances: &mut Vec<f32>,
 ) {
+    assert_packed_adc_batch_shape(codes_batch, num_codebooks, lut);
+
     #[cfg(target_arch = "x86_64")]
     {
         if x86_64::dispatch_into(codes_batch, num_codebooks, lut, distances) {
@@ -1179,6 +1234,59 @@ mod tests {
 
         let result = adc_batch_dispatch(&[], 4, &packed_lut);
         assert!(result.is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "num_codebooks must be non-zero")]
+    fn test_adc_batch_rejects_zero_codebooks() {
+        let lut = create_test_lut(1, 256);
+        let packed_lut = PackedLUT::from_nested(&lut);
+
+        let _ = adc_batch_dispatch(&[], 0, &packed_lut);
+    }
+
+    #[test]
+    #[should_panic(expected = "is not a multiple of num_codebooks")]
+    fn test_adc_batch_rejects_partial_candidate_row() {
+        let lut = create_test_lut(2, 256);
+        let packed_lut = PackedLUT::from_nested(&lut);
+
+        let _ = adc_batch_dispatch(&[1, 2, 3], 2, &packed_lut);
+    }
+
+    #[test]
+    #[should_panic(expected = "does not match num_codebooks")]
+    fn test_adc_batch_rejects_lut_codebook_mismatch() {
+        let lut = create_test_lut(3, 256);
+        let packed_lut = PackedLUT::from_nested(&lut);
+
+        let _ = adc_batch_dispatch(&[1, 2, 3, 4], 4, &packed_lut);
+    }
+
+    #[test]
+    fn test_non_256_lut_dispatch_matches_scalar_oracle() {
+        let lut = create_test_lut(3, 16);
+        let packed_lut = PackedLUT::from_nested(&lut);
+        let n_candidates = 37;
+        let num_codebooks = 3;
+        let codes_batch: Vec<u8> = (0..n_candidates * num_codebooks)
+            .map(|i| ((i * 7 + 3) % 16) as u8)
+            .collect();
+
+        let batch_result = adc_batch_dispatch(&codes_batch, num_codebooks, &packed_lut);
+
+        for i in 0..n_candidates {
+            let codes = &codes_batch[i * num_codebooks..(i + 1) * num_codebooks];
+            let expected = packed_lut.adc_distance(codes);
+            let actual = batch_result[i];
+            assert!(
+                (expected - actual).abs() < 1e-5,
+                "candidate {}: expected {}, got {}",
+                i,
+                expected,
+                actual
+            );
+        }
     }
 
     #[test]
