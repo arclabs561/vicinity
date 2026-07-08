@@ -58,7 +58,7 @@ must be part of the benchmark row.
 
 | Index family | Save/load | Memory search | File search | Mmap search | Updates | Storage direction |
 | --- | --- | --- | --- | --- | --- | --- |
-| HNSW | JSON via `serde`; binary segments via `persistence` | Yes | No | No | Tombstones and repair in memory; `store` for durable segments | Keep JSON and binary segment paths. HNSW JSON snapshots do not persist tombstones; use `store` for durable segmented HNSW with deletes. |
+| HNSW | JSON via `serde`; binary segments via `persistence` | Yes | No | No | Tombstones and repair in memory; `store` for durable segments | Keep JSON and binary segment paths. HNSW snapshots preserve tombstone flags for restart parity. Use `store` when the workload needs WAL-backed segmented durability, checkpoint/reopen, and compaction. |
 | `store::UpdatableIndex` | Open/checkpoint/reopen via `segstore` + HNSW sidecars | Segment sidecars loaded into memory | No | No | Add/delete/compact/checkpoint | Keep on `segstore`; this is the segmented-HNSW path. Benchmark both live post-checkpoint search and reopened `SnapshotIndex` search when validating restart behavior. |
 | DiskANN | Yes, graph + vector files | Yes | Yes | Yes | Build-once | Save writes the current graph/vector files directly. File and mmap searchers read those files, with mmap using `durability`. Page/co-location layout remains next. Do not route through `segstore`. |
 | NSW / SNG / Vamana / NSG / FINGER / PiPNN / EMG / LSH | Yes, directory format | Yes | No | No | Build-once | Persists the built in-memory graph state and restores it directly. This is snapshot-memory persistence, not file-backed search. |
@@ -122,8 +122,8 @@ For file-backed searchers, recall should also be measured against ground truth.
 6. Extend range-filtered persistence to file-backed search only if the filtered
    benchmark contract needs it; current load rebuilds an in-memory HNSW.
 7. Keep ADSampling and PRT as derived HNSW accelerators until benchmark rows
-   show rebuild cost matters. Persisting base HNSW plus raw vectors is enough
-   for correctness today.
+   show rebuild cost matters. Persisting base HNSW plus raw vectors and
+   tombstone flags is enough for correctness today.
 8. Decide FreshGraph persistence separately. Its update model is not the same
    as segment append/compact, and forcing it through `segstore` would hide the
    in-place-update tradeoff.
