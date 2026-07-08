@@ -849,6 +849,50 @@ fn ivfpq_result_checks(cfg: &Config, dim: usize) -> Vec<ExpectedResult> {
         .collect()
 }
 
+fn ivfavq_result_checks(cfg: &Config, dim: usize, train_len: usize) -> Vec<ExpectedResult> {
+    let num_partitions = 256.min(train_len).max(1);
+    let num_codebooks = (1..=16.min(dim))
+        .rev()
+        .find(|&c| dim.is_multiple_of(c))
+        .unwrap_or(1);
+    nprobe_values(cfg, num_partitions)
+        .into_iter()
+        .flat_map(|nprobe| {
+            ivfavq_num_reorder_values(cfg)
+                .into_iter()
+                .flat_map(move |num_reorder| {
+                    snapshot_file_checks(
+                        "ivf_avq",
+                        &ivfavq_params_json(
+                            num_partitions,
+                            num_codebooks,
+                            256,
+                            nprobe,
+                            num_reorder,
+                        ),
+                        cfg,
+                    )
+                })
+        })
+        .collect()
+}
+
+fn ivf_rabitq_result_checks(cfg: &Config) -> Vec<ExpectedResult> {
+    nprobe_values(cfg, 256)
+        .into_iter()
+        .flat_map(|nprobe| {
+            snapshot_check(
+                "ivf_rabitq",
+                &format!(
+                    "{{\"num_clusters\":256,\"total_bits\":4,\"nprobe\":{}}}",
+                    nprobe
+                ),
+                cfg,
+            )
+        })
+        .collect()
+}
+
 fn lsh_result_checks(cfg: &Config, dim: usize) -> Vec<ExpectedResult> {
     const TABLE_SWEEP: usize = 3;
     let num_tables_values = [8, 16, 32];
@@ -900,46 +944,8 @@ fn required_result_checks(
             format!("{{\"m\":{},\"ef_search\":{}}}", cfg.m, ef)
         }),
         "ivfpq" => ivfpq_result_checks(cfg, dim),
-        "ivf_avq" => {
-            let num_partitions = 256.min(train_len).max(1);
-            let num_codebooks = (1..=16.min(dim))
-                .rev()
-                .find(|&c| dim.is_multiple_of(c))
-                .unwrap_or(1);
-            nprobe_values(cfg, num_partitions)
-                .into_iter()
-                .flat_map(|nprobe| {
-                    ivfavq_num_reorder_values(cfg)
-                        .into_iter()
-                        .flat_map(move |num_reorder| {
-                            snapshot_file_checks(
-                                "ivf_avq",
-                                &ivfavq_params_json(
-                                    num_partitions,
-                                    num_codebooks,
-                                    256,
-                                    nprobe,
-                                    num_reorder,
-                                ),
-                                cfg,
-                            )
-                        })
-                })
-                .collect()
-        }
-        "ivf_rabitq" => nprobe_values(cfg, 256)
-            .into_iter()
-            .flat_map(|nprobe| {
-                snapshot_check(
-                    "ivf_rabitq",
-                    &format!(
-                        "{{\"num_clusters\":256,\"total_bits\":4,\"nprobe\":{}}}",
-                        nprobe
-                    ),
-                    cfg,
-                )
-            })
-            .collect(),
+        "ivf_avq" => ivfavq_result_checks(cfg, dim, train_len),
+        "ivf_rabitq" => ivf_rabitq_result_checks(cfg),
         "rp_quant" => snapshot_check(
             "rp_quant",
             &format!("{{\"projected_dim\":{},\"rerank_factor\":10}}", 64.min(dim)),
