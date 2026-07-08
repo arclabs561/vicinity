@@ -598,6 +598,20 @@ fn ef_serde_snapshot_checks(
         .collect()
 }
 
+fn ef_exact_checks(
+    algorithm: &str,
+    cfg: &Config,
+    params_json: impl Fn(usize) -> String,
+) -> Vec<ExpectedResult> {
+    cfg.ef_search_values
+        .iter()
+        .map(|&ef| {
+            let params_json = params_json(ef);
+            ExpectedResult::with_params(algorithm, &params_json)
+        })
+        .collect()
+}
+
 fn tree_snapshot_checks(enabled: bool, algorithm: &str, cfg: &Config) -> Vec<ExpectedResult> {
     if !enabled {
         return Vec::new();
@@ -896,17 +910,12 @@ fn required_result_checks(
                 ef
             )
         }),
-        "inplace" => cfg
-            .ef_search_values
-            .iter()
-            .flat_map(|beam_width| {
-                let params_json = format!(
-                    "{{\"max_degree\":32,\"build_beam_width\":{},\"beam_width\":{}}}",
-                    cfg.ef_construction, beam_width
-                );
-                serde_snapshot_check("inplace", &params_json, cfg)
-            })
-            .collect(),
+        "inplace" => ef_serde_snapshot_checks("inplace", cfg, |beam_width| {
+            format!(
+                "{{\"max_degree\":32,\"build_beam_width\":{},\"beam_width\":{}}}",
+                cfg.ef_construction, beam_width
+            )
+        }),
         "pipnn" => ef_snapshot_checks("pipnn", cfg, |ef| {
             format!(
                 "{{\"max_degree\":32,\"max_leaf_size\":2048,\"ef_search\":{}}}",
@@ -958,18 +967,12 @@ fn required_result_checks(
             let Some((base_size, cycles, queries)) = churn_shape(cfg, train_len, test_len) else {
                 return Vec::new();
             };
-            cfg.ef_search_values
-                .iter()
-                .map(|beam_width| {
-                    ExpectedResult::with_params(
-                        "inplace_churn",
-                        &format!(
-                            "{{\"max_degree\":32,\"build_beam_width\":{},\"beam_width\":{},\"base_size\":{},\"cycles\":{},\"queries\":{}}}",
-                            cfg.ef_construction, beam_width, base_size, cycles, queries
-                        ),
-                    )
-                })
-                .collect()
+            ef_exact_checks("inplace_churn", cfg, |beam_width| {
+                format!(
+                    "{{\"max_degree\":32,\"build_beam_width\":{},\"beam_width\":{},\"base_size\":{},\"cycles\":{},\"queries\":{}}}",
+                    cfg.ef_construction, beam_width, base_size, cycles, queries
+                )
+            })
         }
         "lsm_churn" => {
             let Some((base_size, cycles, queries)) = churn_shape(cfg, train_len, test_len) else {
@@ -986,33 +989,20 @@ fn required_result_checks(
                 ]
             })
         }
-        "adsampling" => cfg
-            .ef_search_values
-            .iter()
-            .map(|ef| {
-                ExpectedResult::with_params(
-                    "adsampling",
-                    &format!(
-                        "{{\"m\":{},\"ef_construction\":{},\"ef_search\":{},\"epsilon0\":2.1}}",
-                        cfg.m, cfg.ef_construction, ef
-                    ),
-                )
-            })
-            .collect(),
+        "adsampling" => ef_exact_checks("adsampling", cfg, |ef| {
+            format!(
+                "{{\"m\":{},\"ef_construction\":{},\"ef_search\":{},\"epsilon0\":2.1}}",
+                cfg.m, cfg.ef_construction, ef
+            )
+        }),
         "hnsw_prt" => {
             let num_projections = (dim / 4).clamp(8, 64);
-            cfg.ef_search_values
-                .iter()
-                .map(|ef| {
-                    ExpectedResult::with_params(
-                        "hnsw_prt",
-                        &format!(
-                            "{{\"m\":{},\"ef_construction\":{},\"ef_search\":{},\"num_projections\":{}}}",
-                            cfg.m, cfg.ef_construction, ef, num_projections
-                        ),
-                    )
-                })
-                .collect()
+            ef_exact_checks("hnsw_prt", cfg, |ef| {
+                format!(
+                    "{{\"m\":{},\"ef_construction\":{},\"ef_search\":{},\"num_projections\":{}}}",
+                    cfg.m, cfg.ef_construction, ef, num_projections
+                )
+            })
         }
         "sq8u" | "sq4u" => hnsw_quantized_snapshot_checks(algo, cfg),
         "symphony_qg_vr" => {
