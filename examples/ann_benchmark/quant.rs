@@ -638,6 +638,7 @@ pub(crate) fn run_ivf_rabitq(
     index.build().unwrap();
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
+    let index_bytes = Some(index.memory_usage().total() as u64);
     let mut snapshot_index = if cfg.snapshot_load {
         let temp_dir =
             tempfile::tempdir().expect("create temp dir for IVF-RaBitQ snapshot benchmark");
@@ -670,7 +671,17 @@ pub(crate) fn run_ivf_rabitq(
             );
             emit_result(
                 &cfg.results_path,
-                &json_line("ivf_rabitq", &params_json, build_time_s, rss, &result),
+                &json_line_with_storage(
+                    "ivf_rabitq",
+                    &params_json,
+                    build_time_s,
+                    rss,
+                    &result,
+                    &ResultStorage {
+                        index_bytes,
+                        ..ResultStorage::default()
+                    },
+                ),
             );
         } else {
             print_row(&format!("np={}", nprobe), &result);
