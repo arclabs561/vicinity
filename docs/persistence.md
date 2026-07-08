@@ -74,7 +74,8 @@ must be part of the benchmark row.
 | Filtered graph | Yes, directory format | Yes | No | No | Build-once | Persists normalized vectors, graph neighbors, medoid, and inverted filter payloads. |
 | BinaryFlat / RP-Quant | Yes, directory format | Yes | No | No | Build-once | Persists full-precision vectors and params, then rebuilds quantizer or projection-derived payloads on load. |
 | SparseMIPS | Yes, directory format | Yes | No | No | Build-once | Persists sparse vectors in CSR-style offsets, indices, and values files plus the built graph. Current persistence coverage is API-level; dense `ann_benchmark` datasets skip SparseMIPS, while the SPV1 smoke harness covers benchmark plumbing until real SPLADE/BM25 data exists. |
-| streaming LSM / LEMUR | No | Yes | No | No | Varies | Keep persistence memory-only until a concrete persistence consumer exists. LSM already has churn benchmark rows, but its multi-level mutable structure needs a durable tiering contract before snapshots. LEMUR is an inference scaffold rather than a complete ANN index. |
+| streaming LSM | Yes, directory snapshot | Yes | No | No | Insert/delete/compact | Snapshot persists L0, compacted levels, tombstones, config, and counters, then rebuilds compacted-level HNSW graphs on load when `hnsw` is enabled. This is restart persistence, not WAL/checkpoint durability. |
+| LEMUR | No | Yes | No | No | Inference scaffold | LEMUR requires externally trained encoder weights and still scans document weights linearly. Add model loading/training and a real multi-vector benchmark before adding persistence. |
 | EVoC | No | No ANN search row | No | No | Clustering | EVoC is a clustering wrapper, not a nearest-neighbor index. Evaluate it with clustering metrics and add persistence only if clustered outputs become a durable API. |
 | Classic trees | Yes, directory format | Yes | No | No | Build-once | KD-tree, Ball tree, K-means tree, RP-tree, and RP-forest persist built trees and preserve external doc IDs. |
 
@@ -131,9 +132,9 @@ For file-backed searchers, recall should also be measured against ground truth.
 8. Decide FreshGraph persistence separately. Its update model is not the same
    as segment append/compact, and forcing it through `segstore` would hide the
    in-place-update tradeoff.
-9. Design streaming LSM durability before adding any snapshot. A correct design
-   needs level manifests, tombstone semantics, and compaction recovery, not just
-   serde over the current heap state.
+9. Design streaming LSM durability separately from snapshots. The current
+   snapshot path is useful for restart parity, but WAL/checkpoint recovery still
+   needs level manifests, tombstone semantics, and compaction recovery.
 
 ## Benchmark Contract
 

@@ -44,7 +44,16 @@
 
 use crate::distance::DistanceMetric;
 use crate::error::{Result, RetrieveError};
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+#[cfg(feature = "serde")]
+use std::io::{BufReader, BufWriter, Write};
+#[cfg(feature = "serde")]
+use std::path::Path;
+
+#[cfg(feature = "serde")]
+const LSM_FORMAT_VERSION: u32 = 1;
 
 /// Configuration for LSM-tiered streaming.
 #[derive(Debug, Clone)]
@@ -96,6 +105,83 @@ struct Level {
     /// HNSW index (None for L0, Some for L1+).
     #[cfg(feature = "hnsw")]
     hnsw: Option<crate::hnsw::HNSWIndex>,
+}
+
+#[cfg(feature = "serde")]
+#[derive(Debug, Serialize, Deserialize)]
+struct LsmManifest {
+    version: u32,
+    config: PersistedLsmConfig,
+    level_counts: Vec<usize>,
+    tombstone_count: usize,
+    total_inserts: u64,
+    total_deletes: u64,
+    total_compactions: u64,
+}
+
+#[cfg(feature = "serde")]
+#[derive(Debug, Serialize, Deserialize)]
+struct PersistedLsmConfig {
+    dimension: usize,
+    buffer_capacity: usize,
+    size_ratio: usize,
+    max_levels: usize,
+    hnsw_m: usize,
+    hnsw_ef_construction: usize,
+    ef_search: usize,
+    distance_metric: DistanceMetric,
+}
+
+#[cfg(feature = "serde")]
+impl From<&LsmConfig> for PersistedLsmConfig {
+    fn from(config: &LsmConfig) -> Self {
+        Self {
+            dimension: config.dimension,
+            buffer_capacity: config.buffer_capacity,
+            size_ratio: config.size_ratio,
+            max_levels: config.max_levels,
+            hnsw_m: config.hnsw_m,
+            hnsw_ef_construction: config.hnsw_ef_construction,
+            ef_search: config.ef_search,
+            distance_metric: config.distance_metric,
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl PersistedLsmConfig {
+    fn into_config(self) -> Result<LsmConfig> {
+        if self.dimension == 0 {
+            return Err(RetrieveError::FormatError(
+                "LSM manifest has zero dimension".into(),
+            ));
+        }
+        if self.buffer_capacity == 0 {
+            return Err(RetrieveError::FormatError(
+                "LSM manifest has zero buffer_capacity".into(),
+            ));
+        }
+        if self.size_ratio == 0 {
+            return Err(RetrieveError::FormatError(
+                "LSM manifest has zero size_ratio".into(),
+            ));
+        }
+        if self.max_levels == 0 {
+            return Err(RetrieveError::FormatError(
+                "LSM manifest has zero max_levels".into(),
+            ));
+        }
+        Ok(LsmConfig {
+            dimension: self.dimension,
+            buffer_capacity: self.buffer_capacity,
+            size_ratio: self.size_ratio,
+            max_levels: self.max_levels,
+            hnsw_m: self.hnsw_m,
+            hnsw_ef_construction: self.hnsw_ef_construction,
+            ef_search: self.ef_search,
+            distance_metric: self.distance_metric,
+        })
+    }
 }
 
 impl Level {
@@ -191,6 +277,196 @@ impl LsmIndex {
             total_deletes: 0,
             total_compactions: 0,
         }
+    }
+
+    /// Save the current LSM state as a restart snapshot.
+    ///
+    /// This is not a write-ahead log. It writes the current mutable L0,
+    /// compacted levels, tombstones, config, and counters. HNSW graphs in
+    /// compacted levels are derived state and are rebuilt by [`Self::load_from_dir`].
+    #[cfg(feature = "serde")]
+    pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<()> {
+        let output_dir = output_dir.as_ref();
+        std::fs::create_dir_all(output_dir)?;
+        self.validate_snapshot_shape()?;
+
+        let mut tombstones: Vec<u32> = self.tombstones.iter().copied().collect();
+        tombstones.sort_unstable();
+        let manifest = LsmManifest {
+            version: LSM_FORMAT_VERSION,
+            config: PersistedLsmConfig::from(&self.config),
+            level_counts: self.levels.iter().map(|level| level.count).collect(),
+            tombstone_count: tombstones.len(),
+            total_inserts: self.total_inserts,
+            total_deletes: self.total_deletes,
+            total_compactions: self.total_compactions,
+        };
+
+        write_json_atomic(&output_dir.join("manifest.json"), &manifest)?;
+        write_u32_atomic(&output_dir.join("tombstones.bin"), &tombstones)?;
+        for (level_idx, level) in self.levels.iter().enumerate() {
+            write_f32_atomic(
+                &output_dir.join(format!("level_{level_idx}_vectors.bin")),
+                &level.vectors,
+            )?;
+            write_u32_atomic(
+                &output_dir.join(format!("level_{level_idx}_doc_ids.bin")),
+                &level.doc_ids,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Load an LSM restart snapshot saved by [`Self::save_to_dir`].
+    ///
+    /// When compiled with `hnsw`, compacted levels rebuild their HNSW graphs
+    /// from the saved vectors and doc IDs. Without `hnsw`, all levels remain
+    /// searchable through the brute-force fallback.
+    #[cfg(feature = "serde")]
+    pub fn load_from_dir(input_dir: impl AsRef<Path>) -> Result<Self> {
+        let input_dir = input_dir.as_ref();
+        let manifest: LsmManifest = read_json(&input_dir.join("manifest.json"))?;
+        if manifest.version != LSM_FORMAT_VERSION {
+            return Err(RetrieveError::FormatError(format!(
+                "unsupported LSM format version {}",
+                manifest.version
+            )));
+        }
+        if manifest.level_counts.is_empty() {
+            return Err(RetrieveError::FormatError(
+                "LSM manifest has no levels".into(),
+            ));
+        }
+
+        let config = manifest.config.into_config()?;
+        if manifest.level_counts.len() > config.max_levels {
+            return Err(RetrieveError::FormatError(format!(
+                "LSM manifest level count {} exceeds max_levels {}",
+                manifest.level_counts.len(),
+                config.max_levels
+            )));
+        }
+
+        let tombstones =
+            read_u32_exact(&input_dir.join("tombstones.bin"), manifest.tombstone_count)?
+                .into_iter()
+                .collect();
+        let mut levels = Vec::with_capacity(manifest.level_counts.len());
+        for (level_idx, &count) in manifest.level_counts.iter().enumerate() {
+            let vector_len = count.checked_mul(config.dimension).ok_or_else(|| {
+                RetrieveError::FormatError(format!("LSM level {level_idx} vector length overflow"))
+            })?;
+            let vectors = read_f32_exact(
+                &input_dir.join(format!("level_{level_idx}_vectors.bin")),
+                vector_len,
+            )?;
+            let doc_ids = read_u32_exact(
+                &input_dir.join(format!("level_{level_idx}_doc_ids.bin")),
+                count,
+            )?;
+            levels.push(Self::level_from_snapshot(
+                &config, level_idx, vectors, doc_ids,
+            )?);
+        }
+
+        Ok(Self {
+            config,
+            levels,
+            tombstones,
+            total_inserts: manifest.total_inserts,
+            total_deletes: manifest.total_deletes,
+            total_compactions: manifest.total_compactions,
+        })
+    }
+
+    #[cfg(feature = "serde")]
+    fn validate_snapshot_shape(&self) -> Result<()> {
+        let dim = self.config.dimension;
+        if dim == 0 {
+            return Err(RetrieveError::InvalidParameter(
+                "cannot save LSM index with zero dimension".into(),
+            ));
+        }
+        if self.levels.is_empty() {
+            return Err(RetrieveError::InvalidParameter(
+                "cannot save LSM index with no levels".into(),
+            ));
+        }
+        if self.levels.len() > self.config.max_levels {
+            return Err(RetrieveError::InvalidParameter(format!(
+                "LSM level count {} exceeds max_levels {}",
+                self.levels.len(),
+                self.config.max_levels
+            )));
+        }
+        for (level_idx, level) in self.levels.iter().enumerate() {
+            let expected_vectors = level.count.checked_mul(dim).ok_or_else(|| {
+                RetrieveError::InvalidParameter(format!(
+                    "LSM level {level_idx} vector length overflow"
+                ))
+            })?;
+            if level.vectors.len() != expected_vectors {
+                return Err(RetrieveError::InvalidParameter(format!(
+                    "LSM level {level_idx} has {} vector scalars, expected {}",
+                    level.vectors.len(),
+                    expected_vectors
+                )));
+            }
+            if level.doc_ids.len() != level.count {
+                return Err(RetrieveError::InvalidParameter(format!(
+                    "LSM level {level_idx} has {} doc ids, expected {}",
+                    level.doc_ids.len(),
+                    level.count
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "serde")]
+    fn level_from_snapshot(
+        config: &LsmConfig,
+        level_idx: usize,
+        vectors: Vec<f32>,
+        doc_ids: Vec<u32>,
+    ) -> Result<Level> {
+        let count = doc_ids.len();
+        let expected_vectors = count.checked_mul(config.dimension).ok_or_else(|| {
+            RetrieveError::FormatError(format!("LSM level {level_idx} vector length overflow"))
+        })?;
+        if vectors.len() != expected_vectors {
+            return Err(RetrieveError::FormatError(format!(
+                "LSM level {level_idx} has {} vector scalars, expected {}",
+                vectors.len(),
+                expected_vectors
+            )));
+        }
+
+        #[cfg(feature = "hnsw")]
+        let hnsw = if level_idx > 0 && count > 0 {
+            let mut hnsw = crate::hnsw::HNSWIndex::builder(config.dimension)
+                .m(config.hnsw_m)
+                .ef_construction(config.hnsw_ef_construction)
+                .metric(config.distance_metric)
+                .auto_normalize(false)
+                .build()?;
+            for (i, &doc_id) in doc_ids.iter().enumerate() {
+                let start = i * config.dimension;
+                hnsw.add_slice(doc_id, &vectors[start..start + config.dimension])?;
+            }
+            hnsw.build()?;
+            Some(hnsw)
+        } else {
+            None
+        };
+
+        Ok(Level {
+            vectors,
+            doc_ids,
+            count,
+            #[cfg(feature = "hnsw")]
+            hnsw,
+        })
     }
 
     /// Insert a vector.
@@ -603,6 +879,97 @@ pub struct LsmStats {
     pub tombstone_count: usize,
 }
 
+#[cfg(feature = "serde")]
+fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+    write_atomic(path, |writer| {
+        serde_json::to_writer_pretty(writer, value)
+            .map_err(|e| std::io::Error::other(e.to_string()))
+    })
+}
+
+#[cfg(feature = "serde")]
+fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {
+    let file = std::fs::File::open(path)?;
+    serde_json::from_reader(BufReader::new(file))
+        .map_err(|e| RetrieveError::FormatError(e.to_string()))
+}
+
+#[cfg(feature = "serde")]
+fn write_f32_atomic(path: &Path, values: &[f32]) -> Result<()> {
+    write_atomic(path, |writer| {
+        for value in values {
+            writer.write_all(&value.to_le_bytes())?;
+        }
+        Ok(())
+    })
+}
+
+#[cfg(feature = "serde")]
+fn read_f32_exact(path: &Path, expected_len: usize) -> Result<Vec<f32>> {
+    let bytes = std::fs::read(path)?;
+    let expected_bytes = expected_len
+        .checked_mul(std::mem::size_of::<f32>())
+        .ok_or_else(|| RetrieveError::FormatError("f32 byte length overflow".into()))?;
+    if bytes.len() != expected_bytes {
+        return Err(RetrieveError::FormatError(format!(
+            "{} size mismatch: expected {} bytes, got {}",
+            path.display(),
+            expected_bytes,
+            bytes.len()
+        )));
+    }
+    Ok(bytes
+        .chunks_exact(4)
+        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        .collect())
+}
+
+#[cfg(feature = "serde")]
+fn write_u32_atomic(path: &Path, values: &[u32]) -> Result<()> {
+    write_atomic(path, |writer| {
+        for value in values {
+            writer.write_all(&value.to_le_bytes())?;
+        }
+        Ok(())
+    })
+}
+
+#[cfg(feature = "serde")]
+fn read_u32_exact(path: &Path, expected_len: usize) -> Result<Vec<u32>> {
+    let bytes = std::fs::read(path)?;
+    let expected_bytes = expected_len
+        .checked_mul(std::mem::size_of::<u32>())
+        .ok_or_else(|| RetrieveError::FormatError("u32 byte length overflow".into()))?;
+    if bytes.len() != expected_bytes {
+        return Err(RetrieveError::FormatError(format!(
+            "{} size mismatch: expected {} bytes, got {}",
+            path.display(),
+            expected_bytes,
+            bytes.len()
+        )));
+    }
+    Ok(bytes
+        .chunks_exact(4)
+        .map(|chunk| u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        .collect())
+}
+
+#[cfg(feature = "serde")]
+fn write_atomic(
+    path: &Path,
+    write: impl FnOnce(&mut BufWriter<std::fs::File>) -> std::io::Result<()>,
+) -> Result<()> {
+    let tmp_path = path.with_extension("tmp");
+    {
+        let file = std::fs::File::create(&tmp_path)?;
+        let mut writer = BufWriter::new(file);
+        write(&mut writer)?;
+        writer.flush()?;
+    }
+    std::fs::rename(&tmp_path, path)?;
+    Ok(())
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -769,6 +1136,70 @@ mod tests {
 
         let results = index.search(&make_vector(8, 100), 1).unwrap();
         assert_eq!(results[0].0, 0);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn snapshot_roundtrip_preserves_levels_tombstones_and_counters() {
+        let mut index = LsmIndex::new(make_config(8));
+
+        for i in 0..35u32 {
+            index.insert(i, make_vector(8, i)).unwrap();
+        }
+        index.delete(5);
+        index.delete(7);
+
+        let before_sizes = index.level_sizes();
+        let before_stats = index.stats();
+        let dir = tempfile::tempdir().unwrap();
+        index.save_to_dir(dir.path()).unwrap();
+
+        let loaded = LsmIndex::load_from_dir(dir.path()).unwrap();
+        assert_eq!(loaded.level_sizes(), before_sizes);
+        assert_eq!(loaded.stats().total_inserts, before_stats.total_inserts);
+        assert_eq!(loaded.stats().total_deletes, before_stats.total_deletes);
+        assert_eq!(
+            loaded.stats().total_compactions,
+            before_stats.total_compactions
+        );
+        assert_eq!(loaded.stats().tombstone_count, 2);
+
+        let results = loaded.search(&make_vector(8, 5), 20).unwrap();
+        for (id, _) in results {
+            assert_ne!(id, 5);
+            assert_ne!(id, 7);
+        }
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn load_rejects_future_snapshot_version() {
+        let mut index = LsmIndex::new(make_config(4));
+        index.insert(0, make_vector(4, 0)).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        index.save_to_dir(dir.path()).unwrap();
+
+        let manifest_path = dir.path().join("manifest.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+        manifest["version"] = serde_json::json!(LSM_FORMAT_VERSION + 1);
+        std::fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let err = match LsmIndex::load_from_dir(dir.path()) {
+            Ok(_) => panic!("future LSM snapshot version should be rejected"),
+            Err(err) => err,
+        };
+        match err {
+            RetrieveError::FormatError(message) => {
+                assert!(message.contains("unsupported LSM format version"));
+            }
+            other => panic!("expected format error, got {other:?}"),
+        }
     }
 
     #[test]
