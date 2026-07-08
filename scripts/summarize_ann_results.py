@@ -312,8 +312,9 @@ def coverage_rows(
 def markdown_table(rows: list[CoverageRow], recall_floor: float = 0.95) -> str:
     lines = [
         "| Dataset | Algorithm | Storage | Status | Rows | Best Recall@10 | Best QPS | "
-        f"Best Index Bytes | Best QPS @ R>={recall_floor:.2f} |",
-        "| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |",
+        f"Best Index Bytes | Best QPS @ R>={recall_floor:.2f} | "
+        f"Index Bytes @ R>={recall_floor:.2f} |",
+        "| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for row in rows:
         recall = "-" if row.best_recall is None else f"{row.best_recall:.4f}"
@@ -322,10 +323,15 @@ def markdown_table(rows: list[CoverageRow], recall_floor: float = 0.95) -> str:
         floor_qps = (
             "-" if row.qps_at_recall_floor is None else f"{row.qps_at_recall_floor:.1f}"
         )
+        floor_index_bytes = (
+            "-"
+            if row.index_bytes_at_recall_floor is None
+            else str(row.index_bytes_at_recall_floor)
+        )
         lines.append(
             f"| {row.dataset} | {row.algorithm} | {row.storage_mode} | "
             f"{row.status} | {row.rows} | {recall} | {qps} | {index_bytes} | "
-            f"{floor_qps} |"
+            f"{floor_qps} | {floor_index_bytes} |"
         )
     return "\n".join(lines)
 

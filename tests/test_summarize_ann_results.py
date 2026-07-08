@@ -153,8 +153,8 @@ def test_markdown_table_is_stable(tmp_path: Path) -> None:
     table = script.markdown_table(script.coverage_rows(script.load_summaries([path])))
 
     assert (
-        "| rows | hnsw | in_memory | measured | 1 | 1.0000 | 42.0 | 4096 | 42.0 |"
-        in table
+        "| rows | hnsw | in_memory | measured | 1 | 1.0000 | 42.0 | "
+        "4096 | 42.0 | 4096 |" in table
     )
 
 
