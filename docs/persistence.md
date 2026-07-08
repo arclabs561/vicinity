@@ -67,7 +67,7 @@ must be part of the benchmark row.
 | HNSW query accelerators | No separate accelerator snapshot | Yes | No | No | Derived from HNSW | ADSampling and PRT state are derived from a built HNSW's reordered raw vectors. Persist the base HNSW first; add accelerator snapshots only if rebuild cost shows up in benchmark rows. |
 | IVF-PQ | Yes, directory format | Yes | Yes | Yes, with `persistence` | Build-once | `load_from_dir` rebuilds an in-memory snapshot, including optional filter field and document metadata. `IVFPQFileSearcher` reads persisted PQ codes and optional raw vectors from files or mmap. PQ-code sidecars are list-contiguous; exact rerank still reads optional raw vectors by vector ID. |
 | IVF-AVQ | Yes, directory format | Yes | Yes | No | Build-once | `load_from_dir` rebuilds an in-memory snapshot. `IVFAVQFileSearcher` reads partition IDs, AVQ codes, and raw rerank vectors directly from the saved files. Mmap search remains separate. |
-| IVF-RaBitQ | Yes, directory format for non-compacted indexes | Yes | No | No | Build-once | Persists raw vectors, centroids, and cluster membership, then rebuilds RaBitQ edge codes on load. |
+| IVF-RaBitQ | Yes, directory format for non-compacted indexes | Yes | No | No | Build-once | Persists raw vectors, centroids, and cluster membership, then rebuilds RaBitQ edge codes on load. Manifest validation rejects impossible dimensions, cluster counts, bit widths, and byte lengths before reading payload files. |
 | FreshGraph / in-place graph | Yes | Yes | No | No | Insert/delete/compact | FreshGraph uses a snapshot directory with tombstones and inbound counts. `InPlaceIndex` and `MappedInPlaceIndex` use `serde`-gated file snapshots that preserve free slots and external-ID maps. WAL/checkpoint durability remains separate from `segstore`. |
 | Curator | Yes, directory format | Yes | No | No | Build-once | Persists normalized vectors, doc IDs, labels, and parameters, then rebuilds the tree on load. |
 | Range-filtered graph | Yes, directory format | Yes | No | No | Build-once | Persists normalized vectors and sorted attributes, then rebuilds HNSW on load. |
@@ -120,7 +120,9 @@ For file-backed searchers, recall should also be measured against ground truth.
    benchmark evidence. Current direct file search opens the saved partition and
    raw-vector files without unsafe code.
 5. Extend IVF-RaBitQ persistence to compacted indexes only after `qntz` exposes
-   a safe serialized edge-code representation.
+   a safe serialized edge-code representation. Current non-compacted snapshots
+   validate manifest sizes before reading raw payloads and deliberately rebuild
+   qntz edge codes instead of reconstructing private edge-code fields.
 6. Extend range-filtered persistence to file-backed search only if the filtered
    benchmark contract needs it; current load rebuilds an in-memory HNSW.
 7. Keep ADSampling and PRT as derived HNSW accelerators until benchmark rows

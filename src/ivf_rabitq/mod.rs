@@ -248,10 +248,11 @@ impl IVFRaBitQIndex {
 
     /// Add a batch of vectors.
     pub fn add_batch(&mut self, doc_ids: &[u32], vectors: &[f32]) -> Result<(), RetrieveError> {
-        if vectors.len() != doc_ids.len() * self.dimension {
+        let expected_len = checked_batch_len(doc_ids.len(), self.dimension)?;
+        if vectors.len() != expected_len {
             return Err(RetrieveError::InvalidParameter(format!(
                 "expected {} floats for {} vectors of dim {}, got {}",
-                doc_ids.len() * self.dimension,
+                expected_len,
                 doc_ids.len(),
                 self.dimension,
                 vectors.len()
@@ -395,7 +396,8 @@ impl IVFRaBitQIndex {
                 "cannot save unbuilt IVF-RaBitQ index".into(),
             ));
         }
-        if self.compacted || self.vectors.len() != self.num_vectors * self.dimension {
+        let expected_vector_len = checked_batch_len(self.num_vectors, self.dimension)?;
+        if self.compacted || self.vectors.len() != expected_vector_len {
             return Err(RetrieveError::InvalidParameter(
                 "cannot save compacted IVF-RaBitQ index".into(),
             ));
@@ -425,35 +427,17 @@ impl IVFRaBitQIndex {
     pub fn load_from_dir(input_dir: impl AsRef<Path>) -> Result<Self, RetrieveError> {
         let input_dir = input_dir.as_ref();
         let manifest: IVFRaBitQManifest = read_json(&input_dir.join("manifest.json"))?;
-        if manifest.version != IVFRABITQ_FORMAT_VERSION {
-            return Err(RetrieveError::FormatError(format!(
-                "unsupported IVF-RaBitQ format version {}",
-                manifest.version
-            )));
-        }
-        if manifest.dimension == 0 {
-            return Err(RetrieveError::FormatError(
-                "IVF-RaBitQ manifest has zero dimension".into(),
-            ));
-        }
-        if manifest.num_vectors == 0 {
-            return Err(RetrieveError::FormatError(
-                "IVF-RaBitQ manifest has zero vectors".into(),
-            ));
-        }
+        validate_manifest(&manifest)?;
+        let raw_vector_len = checked_len(manifest.num_vectors, manifest.dimension, "raw vector")?;
+        let centroid_len =
+            checked_len(manifest.params.num_clusters, manifest.dimension, "centroid")?;
 
         let params = manifest.params.into_params();
         let mut index = Self::new(manifest.dimension, params)?;
         index.num_vectors = manifest.num_vectors;
-        index.vectors = read_f32_exact(
-            &input_dir.join("raw_vectors.bin"),
-            manifest.num_vectors * manifest.dimension,
-        )?;
+        index.vectors = read_f32_exact(&input_dir.join("raw_vectors.bin"), raw_vector_len)?;
         index.doc_ids = read_u32_exact(&input_dir.join("doc_ids.bin"), manifest.num_vectors)?;
-        index.centroids = read_f32_exact(
-            &input_dir.join("centroids.bin"),
-            index.params.num_clusters * manifest.dimension,
-        )?;
+        index.centroids = read_f32_exact(&input_dir.join("centroids.bin"), centroid_len)?;
         let cluster_indices = read_cluster_ids(
             &input_dir.join("clusters.bin"),
             index.params.num_clusters,
@@ -487,6 +471,9 @@ impl IVFRaBitQIndex {
                 query_dim: query.len(),
                 doc_dim: self.dimension,
             });
+        }
+        if k == 0 {
+            return Ok(Vec::new());
         }
 
         // Normalize query
@@ -657,6 +644,51 @@ impl IVFRaBitQIndex {
     }
 }
 
+fn validate_manifest(manifest: &IVFRaBitQManifest) -> Result<(), RetrieveError> {
+    if manifest.version != IVFRABITQ_FORMAT_VERSION {
+        return Err(RetrieveError::FormatError(format!(
+            "unsupported IVF-RaBitQ format version {}",
+            manifest.version
+        )));
+    }
+    if manifest.dimension == 0 {
+        return Err(RetrieveError::FormatError(
+            "IVF-RaBitQ manifest has zero dimension".into(),
+        ));
+    }
+    if manifest.num_vectors == 0 {
+        return Err(RetrieveError::FormatError(
+            "IVF-RaBitQ manifest has zero vectors".into(),
+        ));
+    }
+    if manifest.params.num_clusters == 0 {
+        return Err(RetrieveError::FormatError(
+            "IVF-RaBitQ manifest has zero clusters".into(),
+        ));
+    }
+    if !(1..=8).contains(&manifest.params.total_bits) {
+        return Err(RetrieveError::FormatError(format!(
+            "IVF-RaBitQ manifest has invalid total_bits {}",
+            manifest.params.total_bits
+        )));
+    }
+    checked_len(manifest.num_vectors, manifest.dimension, "raw vector")?;
+    checked_len(manifest.params.num_clusters, manifest.dimension, "centroid")?;
+    Ok(())
+}
+
+fn checked_batch_len(vector_count: usize, dimension: usize) -> Result<usize, RetrieveError> {
+    vector_count
+        .checked_mul(dimension)
+        .ok_or_else(|| RetrieveError::InvalidParameter("vector count overflows usize".into()))
+}
+
+fn checked_len(count: usize, dimension: usize, label: &str) -> Result<usize, RetrieveError> {
+    count.checked_mul(dimension).ok_or_else(|| {
+        RetrieveError::FormatError(format!("IVF-RaBitQ {label} length overflows usize"))
+    })
+}
+
 fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), RetrieveError> {
     write_atomic(path, |writer| {
         serde_json::to_writer_pretty(writer, value)
@@ -770,7 +802,7 @@ fn read_cluster_ids(
             "invalid IVF-RaBitQ cluster file magic".into(),
         ));
     }
-    let cluster_count = read_u64(&mut reader)? as usize;
+    let cluster_count = usize_from_u64(read_u64(&mut reader)?, "cluster count")?;
     if cluster_count != expected_clusters {
         return Err(RetrieveError::FormatError(format!(
             "cluster count mismatch: expected {}, got {}",
@@ -781,7 +813,7 @@ fn read_cluster_ids(
     let mut seen = vec![false; num_vectors];
     let mut clusters = Vec::with_capacity(cluster_count);
     for _ in 0..cluster_count {
-        let len = read_u64(&mut reader)? as usize;
+        let len = usize_from_u64(read_u64(&mut reader)?, "cluster length")?;
         if len > num_vectors {
             return Err(RetrieveError::FormatError(format!(
                 "cluster length {} exceeds vector count {}",
@@ -791,7 +823,9 @@ fn read_cluster_ids(
         let mut ids = Vec::with_capacity(len);
         for _ in 0..len {
             let id = read_u32(&mut reader)?;
-            let idx = id as usize;
+            let idx = usize::try_from(id).map_err(|_| {
+                RetrieveError::FormatError(format!("cluster id {id} cannot fit usize"))
+            })?;
             if idx >= num_vectors {
                 return Err(RetrieveError::FormatError(format!(
                     "cluster id {} exceeds vector count {}",
@@ -826,6 +860,11 @@ fn read_cluster_ids(
     Ok(clusters)
 }
 
+fn usize_from_u64(value: u64, label: &str) -> Result<usize, RetrieveError> {
+    usize::try_from(value)
+        .map_err(|_| RetrieveError::FormatError(format!("IVF-RaBitQ {label} cannot fit usize")))
+}
+
 fn read_u64(reader: &mut impl Read) -> Result<u64, RetrieveError> {
     let mut buf = [0u8; 8];
     reader.read_exact(&mut buf)?;
@@ -852,6 +891,14 @@ mod tests {
                 ((rng >> 33) as f32 / (1u64 << 31) as f32) - 1.0
             })
             .collect()
+    }
+
+    fn write_manifest(dir: &Path, manifest: &IVFRaBitQManifest) {
+        std::fs::write(
+            dir.join("manifest.json"),
+            serde_json::to_vec_pretty(manifest).unwrap(),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -882,6 +929,26 @@ mod tests {
             "expected doc_id 0 in results: {:?}",
             results
         );
+    }
+
+    #[test]
+    fn search_zero_k_returns_empty() {
+        let dim = 32;
+        let n = 80;
+        let data = make_vectors(n, dim, 44);
+        let doc_ids: Vec<u32> = (0..n as u32).collect();
+
+        let params = IVFRaBitQParams {
+            num_clusters: 4,
+            nprobe: 4,
+            total_bits: 4,
+            seed: 44,
+        };
+        let mut index = IVFRaBitQIndex::new(dim, params).unwrap();
+        index.add_batch(&doc_ids, &data).unwrap();
+        index.build().unwrap();
+
+        assert!(index.search(&data[0..dim], 0).unwrap().is_empty());
     }
 
     #[test]
@@ -1105,6 +1172,118 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("unsupported IVF-RaBitQ format version"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_rejects_zero_clusters_before_file_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        write_manifest(
+            dir.path(),
+            &IVFRaBitQManifest {
+                version: IVFRABITQ_FORMAT_VERSION,
+                dimension: 32,
+                num_vectors: 10,
+                params: PersistedIVFRaBitQParams {
+                    num_clusters: 0,
+                    nprobe: 1,
+                    total_bits: 4,
+                    seed: 42,
+                },
+            },
+        );
+
+        let err = match IVFRaBitQIndex::load_from_dir(dir.path()) {
+            Ok(_) => panic!("zero-cluster manifest should fail"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("zero clusters"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_rejects_invalid_total_bits_before_file_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        write_manifest(
+            dir.path(),
+            &IVFRaBitQManifest {
+                version: IVFRABITQ_FORMAT_VERSION,
+                dimension: 32,
+                num_vectors: 10,
+                params: PersistedIVFRaBitQParams {
+                    num_clusters: 4,
+                    nprobe: 1,
+                    total_bits: 0,
+                    seed: 42,
+                },
+            },
+        );
+
+        let err = match IVFRaBitQIndex::load_from_dir(dir.path()) {
+            Ok(_) => panic!("invalid-total-bits manifest should fail"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("invalid total_bits"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_rejects_raw_vector_length_overflow_before_file_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        write_manifest(
+            dir.path(),
+            &IVFRaBitQManifest {
+                version: IVFRABITQ_FORMAT_VERSION,
+                dimension: 2,
+                num_vectors: usize::MAX,
+                params: PersistedIVFRaBitQParams {
+                    num_clusters: 1,
+                    nprobe: 1,
+                    total_bits: 4,
+                    seed: 42,
+                },
+            },
+        );
+
+        let err = match IVFRaBitQIndex::load_from_dir(dir.path()) {
+            Ok(_) => panic!("overflowing raw-vector length should fail"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("raw vector length overflows"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_rejects_centroid_length_overflow_before_file_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        write_manifest(
+            dir.path(),
+            &IVFRaBitQManifest {
+                version: IVFRABITQ_FORMAT_VERSION,
+                dimension: 2,
+                num_vectors: 1,
+                params: PersistedIVFRaBitQParams {
+                    num_clusters: usize::MAX,
+                    nprobe: 1,
+                    total_bits: 4,
+                    seed: 42,
+                },
+            },
+        );
+
+        let err = match IVFRaBitQIndex::load_from_dir(dir.path()) {
+            Ok(_) => panic!("overflowing centroid length should fail"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("centroid length overflows"),
             "unexpected error: {err}"
         );
     }
