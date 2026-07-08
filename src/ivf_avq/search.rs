@@ -453,6 +453,41 @@ impl IVFAVQIndex {
         self.params.num_reorder = num_reorder;
     }
 
+    /// Estimated heap memory used by this index.
+    pub fn memory_usage(&self) -> crate::memory::MemoryReport {
+        let vectors_bytes = self.vectors.capacity() * std::mem::size_of::<f32>();
+        let quantized_bytes = self
+            .quantizer
+            .as_ref()
+            .map(|quantizer| std::mem::size_of_val(quantizer.codebooks()))
+            .unwrap_or(0)
+            + self
+                .partitions
+                .iter()
+                .map(|partition| partition.codes.capacity())
+                .sum::<usize>();
+        let metadata_bytes = self.doc_ids.capacity() * std::mem::size_of::<u32>()
+            + self.partitions.capacity() * std::mem::size_of::<Partition>()
+            + self
+                .partitions
+                .iter()
+                .map(|partition| partition.vector_indices.capacity() * std::mem::size_of::<u32>())
+                .sum::<usize>()
+            + self.partition_centroids.capacity() * std::mem::size_of::<Vec<f32>>()
+            + self
+                .partition_centroids
+                .iter()
+                .map(|centroid| centroid.capacity() * std::mem::size_of::<f32>())
+                .sum::<usize>();
+
+        crate::memory::MemoryReport {
+            vectors_bytes,
+            graph_bytes: 0,
+            quantized_bytes,
+            metadata_bytes,
+        }
+    }
+
     fn get_vector(&self, idx: usize) -> &[f32] {
         let start = idx * self.dimension;
         &self.vectors[start..start + self.dimension]
@@ -1188,6 +1223,31 @@ mod tests {
 
         assert!(!results.is_empty());
         assert!(results.len() <= 3);
+    }
+
+    #[test]
+    fn memory_usage_reports_owned_buffers_after_build() {
+        let params = IVFAVQParams {
+            num_partitions: 2,
+            nprobe: 2,
+            num_reorder: 10,
+            num_codebooks: 2,
+            codebook_size: 16,
+            seed: 42,
+        };
+        let mut index = IVFAVQIndex::new(4, params).unwrap();
+        for i in 0..20u32 {
+            index
+                .add(i, vec![i as f32, (i as f32) * 0.5, 1.0, 0.0])
+                .unwrap();
+        }
+        index.build().unwrap();
+
+        let report = index.memory_usage();
+        assert!(report.vectors_bytes >= 20 * 4 * std::mem::size_of::<f32>());
+        assert!(report.quantized_bytes >= 20 * 2);
+        assert!(report.metadata_bytes >= 20 * std::mem::size_of::<u32>());
+        assert!(report.total() >= report.vectors_bytes + report.quantized_bytes);
     }
 
     #[test]

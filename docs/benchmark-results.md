@@ -795,6 +795,20 @@ Smoke rows included `storage_mode=in_memory`, `cache_state=warm_after_build`,
 and positive `index_bytes` (`nsw=33,600`, `vamana=72,000`). Treat this as row
 coverage evidence, not performance evidence.
 
+IVF-AVQ now emits the same in-memory heap estimate. A bounded schema smoke used
+500 GloVe-25 vectors and 20 queries:
+
+```bash
+cargo run --no-default-features --features ivf_avq --example ann_benchmark -- \
+  data/ann-benchmarks/glove-25-angular --algo ivf_avq \
+  --max-train 500 --max-queries 20 --pq-nprobes 1 --pq-rerank-pools 50 \
+  --json --results /tmp/vicinity-avq-memory-smoke.jsonl
+```
+
+The row included `storage_mode=in_memory`, `cache_state=warm_after_build`, and
+positive heap-estimated `index_bytes=129,684`. File and mmap AVQ rows continue
+to report saved snapshot bytes instead of heap residency.
+
 The same row-coverage pass now includes the classical tree family. A bounded
 schema smoke used 200 GloVe-25 vectors and 5 queries:
 

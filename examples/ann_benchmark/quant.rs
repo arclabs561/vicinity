@@ -10,7 +10,6 @@ use crate::support::{current_rss_kb, emit_result, evaluate, print_header, print_
 use crate::support::ivfpq_params_json;
 #[cfg(any(
     feature = "ivf_pq",
-    feature = "ivf_avq",
     feature = "rp_quant",
     feature = "binary_index",
     feature = "lsh",
@@ -562,6 +561,7 @@ pub(crate) fn run_ivf_avq(
     index.build().unwrap();
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
+    let index_bytes = Some(index.memory_usage().total() as u64);
     let mut snapshot_index = if cfg.snapshot_load {
         let temp_dir = tempfile::tempdir().expect("create temp dir for IVF-AVQ snapshot benchmark");
         index.save_to_dir(temp_dir.path()).unwrap();
@@ -618,7 +618,17 @@ pub(crate) fn run_ivf_avq(
                 );
                 emit_result(
                     &cfg.results_path,
-                    &json_line("ivf_avq", &params_json, build_time_s, rss, &result),
+                    &json_line_with_storage(
+                        "ivf_avq",
+                        &params_json,
+                        build_time_s,
+                        rss,
+                        &result,
+                        &ResultStorage {
+                            index_bytes,
+                            ..ResultStorage::default()
+                        },
+                    ),
                 );
             } else {
                 print_row(&format!("np={} reorder={}", nprobe, num_reorder), &result);
