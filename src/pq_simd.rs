@@ -282,7 +282,7 @@ impl PackedLUTData for PackedLUTRef<'_> {
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(target_arch = "x86_64")]
-pub mod x86_64 {
+mod x86_64 {
     //! AVX2/AVX-512 implementations of PQ distance.
 
     use super::*;
@@ -296,7 +296,7 @@ pub mod x86_64 {
     /// Requires AVX2. Caller must verify via runtime detection.
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx2")]
-    pub unsafe fn adc_batch_avx2<L: PackedLUTData>(
+    pub(super) unsafe fn adc_batch_avx2<L: PackedLUTData>(
         codes_batch: &[u8],
         num_codebooks: usize,
         lut: &L,
@@ -316,7 +316,7 @@ pub mod x86_64 {
     /// Requires AVX2. Caller must verify via runtime detection.
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx2")]
-    pub unsafe fn adc_batch_avx2_into<L: PackedLUTData>(
+    pub(super) unsafe fn adc_batch_avx2_into<L: PackedLUTData>(
         codes_batch: &[u8],
         num_codebooks: usize,
         lut: &L,
@@ -375,7 +375,7 @@ pub mod x86_64 {
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx512f")]
     #[allow(clippy::incompatible_msrv)] // AVX-512 intrinsics: stable since 1.89, but only reachable on avx512f hardware
-    pub unsafe fn adc_batch_avx512<L: PackedLUTData>(
+    pub(super) unsafe fn adc_batch_avx512<L: PackedLUTData>(
         codes_batch: &[u8],
         num_codebooks: usize,
         lut: &L,
@@ -396,7 +396,7 @@ pub mod x86_64 {
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx512f")]
     #[allow(clippy::incompatible_msrv)] // AVX-512 intrinsics: stable since 1.89, but only reachable on avx512f hardware
-    pub unsafe fn adc_batch_avx512_into<L: PackedLUTData>(
+    pub(super) unsafe fn adc_batch_avx512_into<L: PackedLUTData>(
         codes_batch: &[u8],
         num_codebooks: usize,
         lut: &L,
@@ -449,7 +449,7 @@ pub mod x86_64 {
 }
 
 #[cfg(target_arch = "aarch64")]
-pub mod aarch64 {
+mod aarch64 {
     //! NEON implementations of PQ distance.
 
     use super::*;
@@ -460,7 +460,7 @@ pub mod aarch64 {
     ///
     /// NEON is always available on aarch64.
     #[target_feature(enable = "neon")]
-    pub unsafe fn adc_batch_neon<L: PackedLUTData>(
+    pub(super) unsafe fn adc_batch_neon<L: PackedLUTData>(
         codes_batch: &[u8],
         num_codebooks: usize,
         lut: &L,
@@ -479,7 +479,7 @@ pub mod aarch64 {
     ///
     /// NEON is always available on aarch64.
     #[target_feature(enable = "neon")]
-    pub unsafe fn adc_batch_neon_into<L: PackedLUTData>(
+    pub(super) unsafe fn adc_batch_neon_into<L: PackedLUTData>(
         codes_batch: &[u8],
         num_codebooks: usize,
         lut: &L,
@@ -546,7 +546,7 @@ pub mod aarch64 {
     /// `num_codebooks * 256` entries, and `codes_batch.len()` must be a
     /// multiple of `num_codebooks`.
     #[target_feature(enable = "neon")]
-    pub unsafe fn adc_batch_neon_flat_256_into(
+    pub(super) unsafe fn adc_batch_neon_flat_256_into(
         codes_batch: &[u8],
         num_codebooks: usize,
         lut_data: &[f32],
@@ -623,7 +623,7 @@ pub mod aarch64 {
     /// NEON is always available on aarch64. `block_data` and `lut_quantized`
     /// must both contain at least `num_codebooks * 16` bytes.
     #[target_feature(enable = "neon")]
-    pub(crate) unsafe fn fastscan_block_neon(
+    pub(super) unsafe fn fastscan_block_neon(
         block_data: &[u8],
         lut_quantized: &[u8],
         num_codebooks: usize,

@@ -10,6 +10,7 @@ use smallvec::SmallVec;
 
 use crate::RetrieveError;
 use durability::mmap::{AccessPattern, MappedFile};
+use std::io::{BufWriter, Write};
 
 /// DiskANN index for disk-based approximate nearest neighbor search.
 ///
@@ -87,15 +88,11 @@ impl DiskANNIndex {
 
         // 1. Save Vectors (vectors.bin)
         let vectors_path = output_dir.join("vectors.bin");
-        let mut vectors_file = std::fs::File::create(&vectors_path)?;
-        let vectors_bytes = unsafe {
-            std::slice::from_raw_parts(
-                self.vectors.as_ptr() as *const u8,
-                self.vectors.len() * std::mem::size_of::<f32>(),
-            )
-        };
-        use std::io::Write;
-        vectors_file.write_all(vectors_bytes)?;
+        let mut vectors_file = BufWriter::new(std::fs::File::create(&vectors_path)?);
+        for value in &self.vectors {
+            vectors_file.write_all(&value.to_le_bytes())?;
+        }
+        vectors_file.flush()?;
 
         // 2. Save Graph (graph.index)
         let graph_path = output_dir.join("graph.index");
@@ -131,14 +128,11 @@ impl DiskANNIndex {
 
         // 3. Save doc_ids (doc_ids.bin)
         let doc_ids_path = output_dir.join("doc_ids.bin");
-        let mut doc_ids_file = std::fs::File::create(&doc_ids_path)?;
-        let doc_ids_bytes = unsafe {
-            std::slice::from_raw_parts(
-                self.doc_ids.as_ptr() as *const u8,
-                self.doc_ids.len() * std::mem::size_of::<u32>(),
-            )
-        };
-        doc_ids_file.write_all(doc_ids_bytes)?;
+        let mut doc_ids_file = BufWriter::new(std::fs::File::create(&doc_ids_path)?);
+        for doc_id in &self.doc_ids {
+            doc_ids_file.write_all(&doc_id.to_le_bytes())?;
+        }
+        doc_ids_file.flush()?;
 
         // 4. Save Metadata (metadata.json)
         let metadata_path = output_dir.join("metadata.json");
