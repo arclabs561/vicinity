@@ -331,6 +331,46 @@ impl CrossPolytopeLSHIndex {
             },
         }
     }
+
+    /// Estimated heap memory used by this index.
+    #[must_use]
+    pub fn memory_usage(&self) -> crate::memory::MemoryReport {
+        let f32_bytes = std::mem::size_of::<f32>();
+        let vectors_bytes = self.vectors.capacity() * f32_bytes;
+        let graph_bytes = self.tables.capacity() * std::mem::size_of::<HashMap<u32, Vec<u32>>>()
+            + self
+                .tables
+                .iter()
+                .map(|table| {
+                    table.capacity()
+                        * (std::mem::size_of::<u32>() + std::mem::size_of::<Vec<u32>>())
+                        + table
+                            .values()
+                            .map(|ids| ids.capacity() * std::mem::size_of::<u32>())
+                            .sum::<usize>()
+                })
+                .sum::<usize>();
+        let metadata_bytes = self.hashers.capacity() * std::mem::size_of::<CrossPolytopeHasher>()
+            + self.hashers.len() * estimated_hasher_rotation_bytes(self.dimension);
+
+        crate::memory::MemoryReport {
+            vectors_bytes,
+            graph_bytes,
+            quantized_bytes: 0,
+            metadata_bytes,
+        }
+    }
+}
+
+fn estimated_hasher_rotation_bytes(dim: usize) -> usize {
+    let rotation_len = if dim <= 64 {
+        dim.saturating_mul(dim)
+    } else {
+        dim.checked_next_power_of_two()
+            .map(|padded| 2usize.saturating_add(3usize.saturating_mul(padded)))
+            .unwrap_or(usize::MAX / std::mem::size_of::<f32>())
+    };
+    rotation_len.saturating_mul(std::mem::size_of::<f32>())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -767,5 +807,33 @@ mod tests {
         assert_eq!(stats.num_tables, 4);
         assert!(stats.num_occupied_buckets > 0);
         assert!(stats.avg_bucket_size > 0.0);
+    }
+
+    #[test]
+    fn memory_usage_reports_vectors_hash_tables_and_hashers() {
+        let dim = 16;
+        let num_tables = 6;
+        let data = clustered_data(4, 20, dim);
+        let params = LSHParams {
+            num_tables,
+            num_probes: 3,
+            seed: Some(42),
+        };
+
+        let mut index = CrossPolytopeLSHIndex::new(dim, params).unwrap();
+        index.add_vectors(&data).unwrap();
+        index.build().unwrap();
+
+        let report = index.memory_usage();
+        assert!(report.vectors_bytes >= data.len() * std::mem::size_of::<f32>());
+        assert!(report.graph_bytes > num_tables * std::mem::size_of::<HashMap<u32, Vec<u32>>>());
+        assert!(
+            report.metadata_bytes
+                >= num_tables
+                    * (std::mem::size_of::<CrossPolytopeHasher>()
+                        + dim * dim * std::mem::size_of::<f32>())
+        );
+        assert_eq!(report.quantized_bytes, 0);
+        assert!(report.total() >= report.vectors_bytes + report.graph_bytes);
     }
 }

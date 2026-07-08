@@ -8,8 +8,6 @@ use crate::support::{current_rss_kb, emit_result, evaluate, print_header, print_
 
 #[cfg(feature = "ivf_pq")]
 use crate::support::ivfpq_params_json;
-#[cfg(feature = "lsh")]
-use crate::support::json_line;
 #[cfg(any(feature = "ivf_pq", feature = "ivf_avq", feature = "ivf_rabitq"))]
 use crate::support::nprobe_values;
 #[cfg(feature = "ivf_pq")]
@@ -1324,6 +1322,7 @@ pub(crate) fn run_lsh(
             let mut search_index = CrossPolytopeLSHIndex::new(dim, search_params).unwrap();
             search_index.add_vectors(&flat).unwrap();
             search_index.build().unwrap();
+            let index_bytes = Some(search_index.memory_usage().total() as u64);
 
             let result = evaluate(
                 &|q, k| search_index.search(q, k).unwrap_or_default(),
@@ -1339,7 +1338,17 @@ pub(crate) fn run_lsh(
                 );
                 emit_result(
                     &cfg.results_path,
-                    &json_line("lsh", &params_json, build_time_s, rss, &result),
+                    &json_line_with_storage(
+                        "lsh",
+                        &params_json,
+                        build_time_s,
+                        rss,
+                        &result,
+                        &ResultStorage {
+                            index_bytes,
+                            ..ResultStorage::default()
+                        },
+                    ),
                 );
             } else {
                 print_row(&format!("probes={}", num_probes), &result);

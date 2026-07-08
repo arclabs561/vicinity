@@ -881,6 +881,23 @@ The `symphony_qg` and `sq4u` in-memory rows included
 heap-estimated `index_bytes` (`110,000` and `105,500` respectively). Treat
 these as schema coverage numbers only; the workload is intentionally tiny.
 
+The cross-polytope LSH row now emits the same in-memory heap estimate. A bounded
+schema smoke used 200 GloVe-25 vectors and 5 queries:
+
+```bash
+cargo run --no-default-features --features lsh --example ann_benchmark -- \
+  data/ann-benchmarks/glove-25-angular --algo lsh \
+  --max-train 200 --max-queries 5 --json --fresh \
+  --results /tmp/vicinity-lsh-memory-smoke.jsonl
+```
+
+The 12 `lsh` in-memory rows included `storage_mode=in_memory`,
+`cache_state=warm_after_build`, and positive heap-estimated `index_bytes`.
+The footprint scaled with table count on this tiny probe: `62,784` bytes for
+8 tables, `106,000` bytes for 16 tables, and `191,712` bytes for 32 tables.
+Treat these as schema coverage numbers only; the workload is intentionally
+tiny.
+
 The same row-coverage pass now includes the classical tree family. A bounded
 schema smoke used 200 GloVe-25 vectors and 5 queries:
 
