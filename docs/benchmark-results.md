@@ -796,6 +796,33 @@ failure modes: ACORN is returning enough candidates but needs traversal tuning,
 FilteredGraph has a sharp slow-path transition, and RangeFiltered visibly
 under-returns at narrow ranges.
 
+Two ACORN-only follow-up rows used the same 3K-vector, 200-query workload after
+`acorn_selectivity` gained explicit tuning flags:
+
+```bash
+cargo run --release --example acorn_selectivity --no-default-features \
+  --features hnsw -- \
+  --n 3000 --queries 200 --k 10 --neighbors 32 \
+  --ef-search 800 --acorn-max-two-hop-neighbors 128 --json --fresh \
+  --results data/ann-benchmarks/results/acorn-selectivity-n3000-d32-q200-ef800-hop128-20260708.jsonl
+```
+
+| ACORN config | Selectivity | Recall@10 | QPS | p95 latency | Mean returned | Notes |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `ef=200`, 32 two-hop | 1% | 56.35% | 6,279.9 | 226.0 us | 10.0 | default diagnostic row |
+| `ef=400`, 64 two-hop | 1% | 63.60% | 7,252.3 | 156.8 us | 10.0 | still below 95% |
+| `ef=800`, 128 two-hop | 1% | 93.55% | 3,816.6 | 286.0 us | 10.0 | close, but still below fixed-recall floor |
+| `ef=200`, 32 two-hop | 2% | 47.50% | 9,804.4 | 120.0 us | 10.0 | default diagnostic row |
+| `ef=400`, 64 two-hop | 2% | 69.00% | 7,321.3 | 149.2 us | 10.0 | improved but not enough |
+| `ef=800`, 128 two-hop | 2% | 97.00% | 3,983.1 | 257.3 us | 10.0 | clears 95% with moderate QPS |
+| `ef=800`, 128 two-hop | 5% | 98.90% | 3,942.7 | 261.5 us | 10.0 | clears 95% |
+| `ef=800`, 128 two-hop | 50% | 99.85% | 3,895.4 | 264.3 us | 10.0 | clears 95% |
+
+This supports a selectivity-gated filtered-search plan. ACORN can be tuned into
+a useful moderate-selectivity path, but below 2% selectivity the benchmark still
+points toward a pre-filtered exact/fallback candidate path rather than more
+graph traversal.
+
 Full-train IVF-PQ storage sweep from the same day, using all 1,183,514
 GloVe-25 vectors and 500 queries:
 
