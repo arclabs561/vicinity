@@ -1,6 +1,4 @@
-//! OPT-SNG: Auto-tuned Sparse Neighborhood Graph.
-//!
-//! **5.9x faster construction** than HNSW with automatic parameter optimization.
+//! Experimental OPT-SNG-style sparse neighborhood graph.
 //!
 //! # Feature Flag
 //!
@@ -10,7 +8,12 @@
 //!
 //! # Status: Experimental
 //!
-//! Implements the 2026 OPT-SNG algorithm. Under active development.
+//! This module implements an OPT-SNG-inspired graph with automatic truncation
+//! parameter selection and snapshot persistence. The current construction path
+//! still performs pairwise distance work and rejects builds above 50,000 vectors
+//! to keep accidental full-corpus runs bounded. Treat it as a research baseline
+//! until benchmark rows show a recall, QPS, or build-time win over HNSW on a
+//! documented workload.
 //!
 //! # Quick Start
 //!
@@ -21,26 +24,15 @@
 //! let mut index = SNGIndex::new(128, SNGParams::default());
 //!
 //! index.add(0, vec![0.1; 128]);
-//! index.build()?;  // Parameters auto-optimized
+//! index.build()?; // Parameters auto-optimized
 //!
 //! let results = index.search(&query, 10)?;
 //! ```
 //!
-//! # The Problem: Parameter Sensitivity
-//!
-//! HNSW performance is **highly sensitive** to parameters:
-//!
-//! | M (wrong) | Effect |
-//! |-----------|--------|
-//! | Too low | 50% recall drop |
-//! | Too high | 3x slower search |
-//!
-//! OPT-SNG eliminates this by auto-tuning during construction.
-//!
 //! # How: Martingale-Based Pruning
 //!
-//! The algorithm models candidate set evolution as a martingale (random process
-//! where expected future value equals current value):
+//! The construction model uses candidate-set evolution and an adaptive
+//! truncation radius during graph construction:
 //!
 //! ```text
 //! Traditional:              OPT-SNG:
@@ -48,8 +40,6 @@
 //! 2. Prune afterward        2. Stop when E[improvement] < threshold
 //!                           3. Truncation radius R adapts per-node
 //! ```
-//!
-//! **Result**: Same recall, 5.9x faster build (15.4x peak on sparse data).
 //!
 //! # Automatic Optimization
 //!
@@ -59,28 +49,22 @@
 //! | Truncation (R) | N/A | Auto per-node |
 //! | ef_construction | Manual | Implicit in martingale |
 //!
-//! # Performance Comparison
-//!
-//! On SIFT-1M benchmark:
-//!
-//! | Method | Build Time | Recall@10 | Memory |
-//! |--------|------------|-----------|--------|
-//! | HNSW (M=16) | 45s | 95% | 1.2 GB |
-//! | OPT-SNG | **8s** | 95% | 0.9 GB |
-//!
 //! # When to Use
 //!
-//! - **Don't want to tune parameters** (most common case)
-//! - Building many indices with varying data
-//! - Research where reproducibility matters
-//! - Want faster index construction
+//! - Research comparisons against sparse-neighborhood graph construction.
+//! - Small or capped benchmark runs where O(n²) construction is acceptable.
+//! - Snapshot-memory persistence checks for graph-family coverage.
 //!
 //! # When NOT to Use
 //!
-//! - Production with well-tuned HNSW (more battle-tested)
-//! - Very small datasets (< 10K, overhead not worth it)
+//! - Production defaults. Start with HNSW, Vamana, NSG, or IVF-PQ.
+//! - Full 1M-vector benchmark builds with the current implementation.
+//! - Claims about external SNG paper numbers without a local benchmark row.
 //!
 //! # Theoretical Guarantees
+//!
+//! These are paper-level targets, not measured guarantees for this
+//! implementation:
 //!
 //! | Metric | Bound |
 //! |--------|-------|
@@ -90,8 +74,9 @@
 //!
 //! # References
 //!
-//! - Ma et al. (2026). "Graph-Based Approximate Nearest Neighbor Search Revisited:
-//!   Theoretical Analysis and Optimization." arXiv:2509.15531
+//! - Ma et al. (2025). "Sparse Neighborhood Graph-Based Approximate Nearest
+//!   Neighbor Search Revisited: Theoretical Analysis and Optimization."
+//!   arXiv:2509.15531
 
 mod graph;
 mod martingale;
