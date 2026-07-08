@@ -308,6 +308,7 @@ def coverage_rows(
     recall_floor: float = 0.95,
     only_datasets: set[str] | None = None,
     missing_only: bool = False,
+    recall_gap_only: bool = False,
 ) -> list[CoverageRow]:
     expected = expected or []
     expected_by_dataset = expected_by_dataset or {}
@@ -336,6 +337,10 @@ def coverage_rows(
             continue
         summary = summaries.get((dataset, algorithm, storage_mode))
         if missing_only and summary:
+            continue
+        if recall_gap_only and (
+            summary is None or summary.qps_at_recall(recall_floor) is not None
+        ):
             continue
         rows.append(
             CoverageRow(
@@ -458,6 +463,14 @@ def parse_args() -> argparse.Namespace:
         help="Emit only expected rows that are missing",
     )
     parser.add_argument(
+        "--recall-gap-only",
+        action="store_true",
+        help=(
+            "Emit only measured rows that have no QPS at the recall floor. "
+            "This identifies fixed-recall sweep gaps."
+        ),
+    )
+    parser.add_argument(
         "--profile-dir",
         action="append",
         default=[],
@@ -501,6 +514,7 @@ def main() -> None:
         args.recall_floor,
         only_datasets=only_datasets,
         missing_only=args.missing_only,
+        recall_gap_only=args.recall_gap_only,
     )
     if args.json:
         print(

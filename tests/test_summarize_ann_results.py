@@ -142,6 +142,39 @@ def test_coverage_rows_can_filter_dataset_and_missing_only(tmp_path: Path) -> No
     ]
 
 
+def test_cli_can_emit_recall_floor_gaps(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = load_script()
+    path = tmp_path / "rows.jsonl"
+    path.write_text(
+        '{"_meta":{"dataset":"data/ann-benchmarks/glove-25-angular"}}\n'
+        '{"algorithm":"hnsw","storage_mode":"in_memory","recall_at_10":0.94,"qps":42}\n'
+        '{"algorithm":"ivfpq","storage_mode":"in_memory","recall_at_10":0.96,"qps":24}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "summarize_ann_results.py",
+            str(path),
+            "--expect",
+            "store:segmented_store",
+            "--recall-gap-only",
+            "--json",
+        ],
+    )
+
+    script.main()
+
+    output = json.loads(capsys.readouterr().out)
+    assert [(row["algorithm"], row["status"]) for row in output] == [
+        ("hnsw", "measured")
+    ]
+    assert output[0]["qps_at_recall_floor"] is None
+
+
 def test_markdown_table_is_stable(tmp_path: Path) -> None:
     script = load_script()
     path = tmp_path / "rows.jsonl"
