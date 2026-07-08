@@ -354,10 +354,15 @@ pub(crate) fn load_completed_results_with_warmup(
     }
 }
 
+enum ParamCheck {
+    Any,
+    Exact(String),
+    Fragments(Vec<String>),
+}
+
 struct ExpectedResult {
     algorithm: String,
-    params_json: Option<String>,
-    param_fragments: Vec<String>,
+    params: ParamCheck,
     storage_mode: &'static str,
 }
 
@@ -365,8 +370,7 @@ impl ExpectedResult {
     fn any_params(algorithm: impl Into<String>) -> Self {
         Self {
             algorithm: algorithm.into(),
-            params_json: None,
-            param_fragments: Vec::new(),
+            params: ParamCheck::Any,
             storage_mode: "in_memory",
         }
     }
@@ -374,8 +378,7 @@ impl ExpectedResult {
     fn with_params(algorithm: impl Into<String>, params_json: &str) -> Self {
         Self {
             algorithm: algorithm.into(),
-            params_json: Some(params_json.to_string()),
-            param_fragments: Vec::new(),
+            params: ParamCheck::Exact(params_json.to_string()),
             storage_mode: "in_memory",
         }
     }
@@ -394,8 +397,7 @@ impl ExpectedResult {
     ) -> Self {
         Self {
             algorithm: algorithm.into(),
-            params_json: None,
-            param_fragments: fragments.into_iter().collect(),
+            params: ParamCheck::Fragments(fragments.into_iter().collect()),
             storage_mode: "in_memory",
         }
     }
@@ -409,17 +411,18 @@ impl ExpectedResult {
         if json_string_field(line, "algorithm").as_deref() != Some(self.algorithm.as_str()) {
             return false;
         }
-        if let Some(expected) = &self.params_json {
-            if json_value_field(line, "params") != Some(expected.as_str()) {
-                return false;
+        match &self.params {
+            ParamCheck::Any => {}
+            ParamCheck::Exact(expected) => {
+                if json_value_field(line, "params") != Some(expected.as_str()) {
+                    return false;
+                }
             }
-        }
-        if !self
-            .param_fragments
-            .iter()
-            .all(|fragment| line.contains(fragment))
-        {
-            return false;
+            ParamCheck::Fragments(fragments) => {
+                if !fragments.iter().all(|fragment| line.contains(fragment)) {
+                    return false;
+                }
+            }
         }
         if json_string_field(line, "storage_mode").as_deref() != Some(self.storage_mode) {
             return false;
