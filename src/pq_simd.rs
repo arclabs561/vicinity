@@ -521,8 +521,12 @@ mod aarch64 {
         lut_quantized: &[u8],
         num_codebooks: usize,
     ) -> [u16; 32] {
-        // SAFETY: aarch64 has NEON. `fastscan_block_neon` validates the slice
-        // lengths before issuing vector loads.
+        let required_len = fastscan_bytes_per_block(num_codebooks);
+        assert!(block_data.len() >= required_len);
+        assert!(lut_quantized.len() >= required_len);
+
+        // SAFETY: aarch64 has NEON, and the checked lengths above guarantee
+        // one packed 16-byte code slice plus one LUT slice per codebook.
         unsafe { fastscan_block_neon(block_data, lut_quantized, num_codebooks) }
     }
 
@@ -686,10 +690,6 @@ mod aarch64 {
             vld1q_u8, vqtbl1q_u8, vshrq_n_u8, vst1q_u16,
         };
 
-        let required_len = num_codebooks * 16;
-        assert!(block_data.len() >= required_len);
-        assert!(lut_quantized.len() >= required_len);
-
         let block_ptr = block_data.as_ptr();
         let lut_ptr = lut_quantized.as_ptr();
         let low_mask = vdupq_n_u8(0x0f);
@@ -814,19 +814,42 @@ pub struct PackedCodes4bit {
     pub block_size: usize,
 }
 
+#[inline]
+fn fastscan_bytes_per_block(num_codebooks: usize) -> usize {
+    match num_codebooks.checked_mul(16) {
+        Some(value) => value,
+        None => panic!("fastscan codebook count overflows usize"),
+    }
+}
+
 impl PackedCodes4bit {
     /// Pack flat 8-bit codes into the FastScan nibble layout.
     ///
     /// `codes` is row-major: `codes[i * num_codebooks + m]` is vector i's
     /// code for subquantizer m. Each value must be in 0..16.
     pub fn pack(codes: &[u8], num_vectors: usize, num_codebooks: usize) -> Self {
-        debug_assert_eq!(codes.len(), num_vectors * num_codebooks);
+        let expected_codes_len = match num_vectors.checked_mul(num_codebooks) {
+            Some(value) => value,
+            None => panic!("packed code shape overflows usize"),
+        };
+        assert_eq!(
+            codes.len(),
+            expected_codes_len,
+            "codes length {} does not match num_vectors {} * num_codebooks {}",
+            codes.len(),
+            num_vectors,
+            num_codebooks
+        );
 
         let block_size = 32usize;
         let num_blocks = num_vectors.div_ceil(block_size);
-        let bytes_per_block = 16 * num_codebooks;
+        let bytes_per_block = fastscan_bytes_per_block(num_codebooks);
+        let total_bytes = match num_blocks.checked_mul(bytes_per_block) {
+            Some(value) => value,
+            None => panic!("packed FastScan storage length overflows usize"),
+        };
 
-        let mut data = vec![0u8; num_blocks * bytes_per_block];
+        let mut data = vec![0u8; total_bytes];
 
         for block in 0..num_blocks {
             let block_base = block * block_size;
@@ -873,7 +896,7 @@ impl PackedCodes4bit {
 
     /// Bytes per block: 16 bytes per subquantizer.
     pub fn bytes_per_block(&self) -> usize {
-        16 * self.num_codebooks
+        fastscan_bytes_per_block(self.num_codebooks)
     }
 
     /// Slice of packed data for a given block.
@@ -1000,6 +1023,9 @@ pub fn fastscan_block_portable(
     num_codebooks: usize,
 ) -> [u16; 32] {
     let mut accum = [0u16; 32];
+    let required_len = fastscan_bytes_per_block(num_codebooks);
+    assert!(block_data.len() >= required_len);
+    assert!(lut_quantized.len() >= required_len);
 
     for m in 0..num_codebooks {
         let lut_offset = m * 16;
@@ -1357,6 +1383,23 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    #[should_panic(expected = "does not match num_vectors")]
+    fn test_packed_codes_4bit_rejects_partial_rows() {
+        let codes = [0u8, 1, 2];
+
+        let _ = PackedCodes4bit::pack(&codes, 2, 2);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_fastscan_block_rejects_short_lut() {
+        let block_data = [0u8; 16];
+        let lut_quantized = [0u8; 15];
+
+        let _ = fastscan_block_portable(&block_data, &lut_quantized, 1);
     }
 
     #[cfg(target_arch = "aarch64")]
