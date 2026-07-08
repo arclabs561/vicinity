@@ -25,6 +25,7 @@ const DEFAULT_DIM: usize = 32;
 const DEFAULT_QUERIES: usize = 100;
 const DEFAULT_K: usize = 10;
 const DEFAULT_NEIGHBORS: usize = 32;
+const DEFAULT_EF_SEARCH: usize = 200;
 const SELECTIVITIES: [f64; 6] = [0.50, 0.20, 0.10, 0.05, 0.02, 0.01];
 
 #[derive(Clone)]
@@ -34,10 +35,18 @@ struct Config {
     queries: usize,
     k: usize,
     neighbors: usize,
+    ef_search: usize,
+    acorn_max_two_hop_neighbors: Option<usize>,
     json: bool,
     results_path: PathBuf,
     fresh: bool,
     resume: bool,
+}
+
+impl Config {
+    fn acorn_max_two_hop_neighbors(&self) -> usize {
+        self.acorn_max_two_hop_neighbors.unwrap_or(self.neighbors)
+    }
 }
 
 impl Default for Config {
@@ -48,6 +57,8 @@ impl Default for Config {
             queries: DEFAULT_QUERIES,
             k: DEFAULT_K,
             neighbors: DEFAULT_NEIGHBORS,
+            ef_search: DEFAULT_EF_SEARCH,
+            acorn_max_two_hop_neighbors: None,
             json: false,
             results_path: PathBuf::new(),
             fresh: false,
@@ -200,15 +211,26 @@ fn emit_result(
         if cfg.resume && row_completed(cfg, completed, algorithm, target_count) {
             return;
         }
-        let line = format!(
-            "{{\"algorithm\":\"{}\",\"params\":{{\"selectivity\":{:.4},\"target_count\":{},\"neighbors\":{},\"n\":{},\"dim\":{},\"queries\":{}}},\"recall_at_{}\":{:.4},\"qps\":{:.1},\"latency_us\":{:.1},\"p50_us\":{:.1},\"p95_us\":{:.1},\"p99_us\":{:.1},\"mean_returned\":{:.1},\"two_hop_invocations\":{},\"two_hop_nodes_examined\":{}}}",
-            algorithm,
+        let mut params = format!(
+            "\"selectivity\":{:.4},\"target_count\":{},\"neighbors\":{},\"n\":{},\"dim\":{},\"queries\":{},\"ef_search\":{}",
             actual_selectivity,
             target_count,
             cfg.neighbors,
             cfg.n,
             cfg.dim,
             cfg.queries,
+            cfg.ef_search
+        );
+        if algorithm == "acorn" {
+            params.push_str(&format!(
+                ",\"acorn_max_two_hop_neighbors\":{}",
+                cfg.acorn_max_two_hop_neighbors()
+            ));
+        }
+        let line = format!(
+            "{{\"algorithm\":\"{}\",\"params\":{{{}}},\"recall_at_{}\":{:.4},\"qps\":{:.1},\"latency_us\":{:.1},\"p50_us\":{:.1},\"p95_us\":{:.1},\"p99_us\":{:.1},\"mean_returned\":{:.1},\"two_hop_invocations\":{},\"two_hop_nodes_examined\":{}}}",
+            algorithm,
+            params,
             cfg.k,
             result.recall,
             result.qps,
@@ -240,8 +262,14 @@ fn emit_result(
 
 fn meta_line(cfg: &Config, graph_build_s: Option<f64>) -> String {
     let mut line = format!(
-        "{{\"_meta\":{{\"workload\":\"acorn_selectivity\",\"result_schema\":1,\"n\":{},\"dim\":{},\"queries\":{},\"k\":{},\"neighbors\":{}",
-        cfg.n, cfg.dim, cfg.queries, cfg.k, cfg.neighbors
+        "{{\"_meta\":{{\"workload\":\"acorn_selectivity\",\"result_schema\":1,\"n\":{},\"dim\":{},\"queries\":{},\"k\":{},\"neighbors\":{},\"ef_search\":{},\"acorn_max_two_hop_neighbors\":{}",
+        cfg.n,
+        cfg.dim,
+        cfg.queries,
+        cfg.k,
+        cfg.neighbors,
+        cfg.ef_search,
+        cfg.acorn_max_two_hop_neighbors()
     );
     if let Some(graph_build_s) = graph_build_s {
         line.push_str(&format!(",\"graph_build_s\":{graph_build_s:.3}"));
@@ -254,8 +282,12 @@ fn default_results_path(cfg: &Config) -> PathBuf {
     let path = Path::new("data/ann-benchmarks/results");
     std::fs::create_dir_all(path).ok();
     path.join(format!(
-        "acorn-selectivity-n{}-d{}-q{}.jsonl",
-        cfg.n, cfg.dim, cfg.queries
+        "acorn-selectivity-n{}-d{}-q{}-ef{}-hop{}.jsonl",
+        cfg.n,
+        cfg.dim,
+        cfg.queries,
+        cfg.ef_search,
+        cfg.acorn_max_two_hop_neighbors()
     ))
 }
 
@@ -285,6 +317,12 @@ fn row_completed(cfg: &Config, lines: &[String], algorithm: &str, target_count: 
             && line.contains(&format!("\"n\":{}", cfg.n))
             && line.contains(&format!("\"dim\":{}", cfg.dim))
             && line.contains(&format!("\"queries\":{}", cfg.queries))
+            && line.contains(&format!("\"ef_search\":{}", cfg.ef_search))
+            && (algorithm != "acorn"
+                || line.contains(&format!(
+                    "\"acorn_max_two_hop_neighbors\":{}",
+                    cfg.acorn_max_two_hop_neighbors()
+                )))
     })
 }
 
@@ -324,6 +362,18 @@ fn parse_args() -> Config {
                     cfg.neighbors = args[i].parse().unwrap_or(DEFAULT_NEIGHBORS);
                 }
             }
+            "--ef-search" => {
+                i += 1;
+                if i < args.len() {
+                    cfg.ef_search = args[i].parse().unwrap_or(DEFAULT_EF_SEARCH);
+                }
+            }
+            "--acorn-max-two-hop-neighbors" => {
+                i += 1;
+                if i < args.len() {
+                    cfg.acorn_max_two_hop_neighbors = args[i].parse().ok();
+                }
+            }
             "--json" => cfg.json = true,
             "--results" => {
                 i += 1;
@@ -352,8 +402,8 @@ fn run_selectivity(
     let config = AcornConfig {
         enable_two_hop: true,
         two_hop_threshold: 0.3,
-        max_two_hop_neighbors: cfg.neighbors,
-        ef_search: 200,
+        max_two_hop_neighbors: cfg.acorn_max_two_hop_neighbors(),
+        ef_search: cfg.ef_search,
     };
 
     let mut total_recall = 0.0;
@@ -405,7 +455,7 @@ fn build_filtered_graph_index(
     let params = FilteredGraphParams {
         max_degree: cfg.neighbors,
         ef_construction: cfg.neighbors * 4,
-        ef_search: 200,
+        ef_search: cfg.ef_search,
         alpha: 1.2,
     };
     let mut index = FilteredGraphIndex::new(cfg.dim, params).expect("filtered graph init failed");
@@ -452,7 +502,7 @@ fn build_range_filtered_index(
     let params = RangeFilteredParams {
         hnsw_m: 16,
         hnsw_ef_construction: 100,
-        ef_search: 200,
+        ef_search: cfg.ef_search,
     };
     let mut index = RangeFilteredIndex::new(cfg.dim, params).expect("range index init failed");
     for (id, vector) in vectors.iter().enumerate() {
@@ -488,7 +538,7 @@ fn build_curator_index(cfg: &Config, vectors: &[Vec<f32>]) -> vicinity::curator:
     let params = CuratorParams {
         branching_factor: 8,
         max_leaf_size: 64,
-        ef_search: 200,
+        ef_search: cfg.ef_search,
         beam_width: 4,
     };
     let mut index = CuratorIndex::new(cfg.dim, params).expect("curator init failed");

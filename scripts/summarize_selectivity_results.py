@@ -56,7 +56,15 @@ def scoped_workload(meta: dict[str, Any], path: Path) -> str:
     if not isinstance(workload, str) or not workload:
         workload = path.stem
     scope = []
-    for key in ("n", "dim", "queries", "k", "neighbors"):
+    for key in (
+        "n",
+        "dim",
+        "queries",
+        "k",
+        "neighbors",
+        "ef_search",
+        "acorn_max_two_hop_neighbors",
+    ):
         value = meta.get(key)
         if isinstance(value, int | float):
             scope.append(f"{key}={int(value)}")
