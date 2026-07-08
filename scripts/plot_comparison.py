@@ -141,8 +141,8 @@ def load_results(paths):
                     continue
                 recall = row.get("recall_at_10")
                 qps = row.get("qps")
-                if not isinstance(recall, int | float) or not isinstance(
-                    qps, int | float
+                if not isinstance(recall, (int, float)) or not isinstance(
+                    qps, (int, float)
                 ):
                     continue
                 by_dataset[current_dataset][series_key(row)].append(
@@ -254,7 +254,7 @@ def plot_one_dataset(dataset, by_algo, output_dir):
 
 
 def plot_comparison(results_paths, output_dir=None):
-    paths = [results_paths] if isinstance(results_paths, str | Path) else results_paths
+    paths = [results_paths] if isinstance(results_paths, (str, Path)) else results_paths
     by_dataset = load_results(paths)
     if not by_dataset:
         print("No results", file=sys.stderr)

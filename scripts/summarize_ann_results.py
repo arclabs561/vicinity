@@ -172,7 +172,7 @@ class Summary:
             diagnostics = {
                 key: float(row[key])
                 for key in DIAGNOSTIC_KEYS
-                if isinstance(row.get(key), int | float)
+                if isinstance(row.get(key), (int, float))
             }
             self.best_qps_diagnostics = diagnostics or None
         if self.recall_qps is None:

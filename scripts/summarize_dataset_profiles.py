@@ -19,13 +19,13 @@ def nested(row: dict[str, Any], path: tuple[str, ...]) -> Any:
 
 
 def fmt_float(value: Any) -> str:
-    if not isinstance(value, int | float):
+    if not isinstance(value, (int, float)):
         return ""
     return f"{float(value):.3g}"
 
 
 def fmt_int(value: Any) -> str:
-    if not isinstance(value, int | float):
+    if not isinstance(value, (int, float)):
         return ""
     return f"{int(value):,}"
 
