@@ -905,6 +905,14 @@ improved the dedicated search-only rows:
 | `acorn_search_only/selectivity_0.10` | 27.101 ms / 128 queries | 8.8395 ms / 128 queries | 67.1% faster, p < 0.05 |
 | `acorn_search_only/selectivity_0.02` | 26.748 ms / 128 queries | 8.5102 ms / 128 queries | 68.2% faster, p < 0.05 |
 
+A post-dense profile saved
+`/tmp/vicinity-acorn-search-s0p10-postdense-20260708.json.gz`. The benchmark
+thread had 10,180 samples. The former `HashMap::insert` hot bucket disappeared;
+the top resolved addresses were inlined ACORN loop work at
+`benches/acorn_search.rs:87`, with `innr::dense::dot` visible again. The next
+ACORN pass should use a more line-attributed profile or targeted loop
+microbenchmarks before changing the search loop further.
+
 Full-train IVF-PQ storage sweep from the same day, using all 1,183,514
 GloVe-25 vectors and 500 queries:
 
