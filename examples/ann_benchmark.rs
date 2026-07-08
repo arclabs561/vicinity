@@ -113,8 +113,8 @@ use support::rp_forest_params_json;
 use support::tree_params_json;
 use support::{
     active_features_json, algorithm_options_help, brute_force_search, current_rss_kb, emit_result,
-    evaluate, json_line, load_completed_results, parse_args, print_header, print_row,
-    request_completed, rustc_version, Config,
+    evaluate, json_line, load_completed_results_with_warmup, parse_args, print_header, print_row,
+    request_completed, rustc_version, set_warmup_queries, Config,
 };
 #[cfg(any(
     feature = "balltree",
@@ -1348,8 +1348,7 @@ fn evaluate_diskann_searcher(
     use std::collections::HashSet;
     use std::time::Instant;
 
-    const WARMUP_QUERIES: usize = 50;
-    let warmup_count = WARMUP_QUERIES.min(test.len());
+    let warmup_count = support::warmup_queries().min(test.len());
     for query in test.iter().take(warmup_count) {
         let _ = searcher.borrow_mut().search(query, k, ef_search);
     }
@@ -3445,6 +3444,7 @@ fn run_kmeans_tree(
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cfg = parse_args();
+    set_warmup_queries(cfg.warmup_queries);
 
     if !Path::new(&cfg.data_dir).join("train.bin").exists() {
         eprintln!("Dataset not found at: {}/train.bin", cfg.data_dir);
@@ -3490,7 +3490,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let meta = || {
         format!(
-            "{{\"_meta\":{{\"dataset\":\"{}\",\"metric\":\"{}\",\"result_schema\":2,\"rustc\":\"{}\",\"rust_msrv\":\"{}\",\"vicinity\":\"{}\",\"features\":{},\"train_limit\":{},\"indexed_vectors\":{},\"query_limit\":{},\"queries\":{}}}}}",
+            "{{\"_meta\":{{\"dataset\":\"{}\",\"metric\":\"{}\",\"result_schema\":2,\"rustc\":\"{}\",\"rust_msrv\":\"{}\",\"vicinity\":\"{}\",\"features\":{},\"train_limit\":{},\"indexed_vectors\":{},\"query_limit\":{},\"queries\":{},\"warmup_queries\":{}}}}}",
             cfg.data_dir,
             if cfg.is_euclidean { "l2" } else { "cosine" },
             rustc_version(),
@@ -3505,6 +3505,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .map(|limit| limit.to_string())
                 .unwrap_or_else(|| "null".to_string()),
             test.len(),
+            cfg.warmup_queries,
         )
     };
 
@@ -3520,11 +3521,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let completed = if cfg.resume {
-        load_completed_results(
+        load_completed_results_with_warmup(
             &cfg.results_path,
             &cfg.data_dir,
             cfg.max_train,
             cfg.max_queries,
+            cfg.warmup_queries,
         )
     } else {
         Default::default()

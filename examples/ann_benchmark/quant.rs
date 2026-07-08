@@ -4,7 +4,9 @@
 use std::cell::RefCell;
 use std::time::Instant;
 
-use crate::support::{current_rss_kb, emit_result, evaluate, print_header, print_row, Config};
+use crate::support::{
+    current_rss_kb, emit_result, evaluate, print_header, print_row, warmup_queries, Config,
+};
 
 #[cfg(feature = "ivf_pq")]
 use crate::support::ivfpq_params_json;
@@ -99,8 +101,7 @@ fn evaluate_ivfpq_file_reranked(
 ) -> (BenchResult, StorageDiagnostics) {
     use std::collections::HashSet;
 
-    const WARMUP_QUERIES: usize = 50;
-    let warmup_count = WARMUP_QUERIES.min(test.len());
+    let warmup_count = warmup_queries().min(test.len());
     for query in test.iter().take(warmup_count) {
         let _ = searcher
             .borrow_mut()

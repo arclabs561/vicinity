@@ -152,7 +152,8 @@ possible.
 For storage rows, also record enough context to avoid false comparisons:
 
 - whether raw full-precision vectors are present for rerank
-- whether the process warmed the OS page cache before timing
+- how many queries the runner used to warm the index or OS page cache before
+  timing
 - whether reads go through mmap, buffered file I/O, direct I/O, or object
   storage/cache fetches
 - how many bytes are heap-owned, mmap-backed, and persisted

@@ -5,7 +5,11 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
+
+pub(crate) const DEFAULT_WARMUP_QUERIES: usize = 50;
+static WARMUP_QUERIES: AtomicUsize = AtomicUsize::new(DEFAULT_WARMUP_QUERIES);
 
 pub(crate) const ALGORITHM_OPTIONS: &[&str] = &[
     "hnsw",
@@ -116,6 +120,14 @@ pub(crate) fn active_features_json() -> String {
     format!("[{quoted}]")
 }
 
+pub(crate) fn set_warmup_queries(count: usize) {
+    WARMUP_QUERIES.store(count, Ordering::Relaxed);
+}
+
+pub(crate) fn warmup_queries() -> usize {
+    WARMUP_QUERIES.load(Ordering::Relaxed)
+}
+
 pub(crate) struct Config {
     pub(crate) data_dir: String,
     pub(crate) algos: Vec<String>,
@@ -144,6 +156,7 @@ pub(crate) struct Config {
     pub(crate) snapshot_load: bool,
     pub(crate) max_train: Option<usize>,
     pub(crate) max_queries: Option<usize>,
+    pub(crate) warmup_queries: usize,
     pub(crate) churn_base_size: usize,
     pub(crate) churn_cycles: usize,
     pub(crate) churn_queries: usize,
@@ -179,6 +192,7 @@ impl Default for Config {
             snapshot_load: false,
             max_train: None,
             max_queries: None,
+            warmup_queries: DEFAULT_WARMUP_QUERIES,
             churn_base_size: 50_000,
             churn_cycles: 5_000,
             churn_queries: 1_000,
@@ -269,11 +283,35 @@ fn meta_usize_field_matches(line: &str, field: &str, expected: Option<usize>) ->
     }
 }
 
+fn meta_warmup_field_matches(line: &str, expected: usize) -> bool {
+    match json_value_field(line, "warmup_queries").map(str::trim) {
+        None => expected == DEFAULT_WARMUP_QUERIES,
+        Some(raw) => raw.parse::<usize>().ok() == Some(expected),
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn load_completed_results(
     path: &Path,
     expected_dataset: &str,
     expected_train_limit: Option<usize>,
     expected_query_limit: Option<usize>,
+) -> CompletedResults {
+    load_completed_results_with_warmup(
+        path,
+        expected_dataset,
+        expected_train_limit,
+        expected_query_limit,
+        DEFAULT_WARMUP_QUERIES,
+    )
+}
+
+pub(crate) fn load_completed_results_with_warmup(
+    path: &Path,
+    expected_dataset: &str,
+    expected_train_limit: Option<usize>,
+    expected_query_limit: Option<usize>,
+    expected_warmup_queries: usize,
 ) -> CompletedResults {
     let mut counts = HashMap::new();
     let mut lines = Vec::new();
@@ -292,6 +330,7 @@ pub(crate) fn load_completed_results(
                 if dataset != expected_dataset
                     || !meta_usize_field_matches(&line, "train_limit", expected_train_limit)
                     || !meta_usize_field_matches(&line, "query_limit", expected_query_limit)
+                    || !meta_warmup_field_matches(&line, expected_warmup_queries)
                 {
                     has_mismatched_meta = true;
                     active_dataset_matches = false;
@@ -1256,6 +1295,12 @@ pub(crate) fn parse_args() -> Config {
                     cfg.max_queries = args[i].parse().ok();
                 }
             }
+            "--warmup-queries" => {
+                i += 1;
+                if i < args.len() {
+                    cfg.warmup_queries = args[i].parse().unwrap_or(DEFAULT_WARMUP_QUERIES);
+                }
+            }
             "--churn-base-size" => {
                 i += 1;
                 if i < args.len() {
@@ -1471,15 +1516,13 @@ fn append_extra_fields(line: &mut String, extra_fields: &str) {
     line.push('}');
 }
 
-const WARMUP_QUERIES: usize = 50;
-
 pub(crate) fn evaluate(
     search_fn: &dyn Fn(&[f32], usize) -> Vec<(u32, f32)>,
     test: &[Vec<f32>],
     neighbors: &[Vec<i32>],
     k: usize,
 ) -> BenchResult {
-    let warmup_count = WARMUP_QUERIES.min(test.len());
+    let warmup_count = warmup_queries().min(test.len());
     for query in test.iter().take(warmup_count) {
         let _ = search_fn(query, k);
     }
@@ -1524,7 +1567,7 @@ where
 {
     use rayon::prelude::*;
 
-    let warmup_count = WARMUP_QUERIES.min(test.len());
+    let warmup_count = warmup_queries().min(test.len());
     for query in test.iter().take(warmup_count) {
         let _ = search_fn(query, k);
     }
@@ -1781,6 +1824,11 @@ mod tests {
     }
 
     #[test]
+    fn default_config_records_warmup_query_count() {
+        assert_eq!(Config::default().warmup_queries, DEFAULT_WARMUP_QUERIES);
+    }
+
+    #[test]
     fn unknown_algorithms_are_not_resume_complete() {
         let cfg = Config::default();
         let completed = CompletedResults {
@@ -1929,6 +1977,32 @@ mod tests {
     }
 
     #[test]
+    fn load_completed_results_matches_warmup_metadata() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            file.as_file(),
+            "{{\"_meta\":{{\"dataset\":\"data/a\",\"train_limit\":1000,\"query_limit\":100,\"warmup_queries\":0}}}}"
+        )
+        .unwrap();
+        writeln!(
+            file.as_file(),
+            "{{\"algorithm\":\"hnsw\",\"params\":{{\"m\":16,\"ef_construction\":200,\"ef_search\":10}},\"storage_mode\":\"in_memory\",\"recall_at_10\":1.0,\"qps\":1.0}}"
+        )
+        .unwrap();
+
+        let matching =
+            load_completed_results_with_warmup(file.path(), "data/a", Some(1000), Some(100), 0);
+        assert!(matching.has_matching_meta);
+        assert_eq!(matching.counts.get("hnsw"), Some(&1));
+
+        let mismatched =
+            load_completed_results_with_warmup(file.path(), "data/a", Some(1000), Some(100), 50);
+        assert!(!mismatched.has_matching_meta);
+        assert!(mismatched.has_mismatched_meta);
+        assert!(mismatched.counts.is_empty());
+    }
+
+    #[test]
     fn load_completed_results_keeps_legacy_uncapped_metadata() {
         let file = tempfile::NamedTempFile::new().unwrap();
         writeln!(
@@ -1945,6 +2019,12 @@ mod tests {
         let matching = load_completed_results(file.path(), "data/a", None, Some(100));
         assert!(matching.has_matching_meta);
         assert_eq!(matching.counts.get("hnsw"), Some(&1));
+
+        let nondefault_warmup =
+            load_completed_results_with_warmup(file.path(), "data/a", None, Some(100), 0);
+        assert!(!nondefault_warmup.has_matching_meta);
+        assert!(nondefault_warmup.has_mismatched_meta);
+        assert!(nondefault_warmup.counts.is_empty());
 
         let mismatched = load_completed_results(file.path(), "data/a", Some(1000), Some(100));
         assert!(!mismatched.has_matching_meta);
