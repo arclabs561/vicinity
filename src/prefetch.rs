@@ -1,25 +1,11 @@
-//! Architecture-specific software prefetch hints.
+//! Compatibility hook for graph-search prefetch sites.
 
-/// Prefetch a memory address into L1 cache for reading.
+/// Compatibility no-op for former software prefetch call sites.
 ///
-/// This is a performance hint only. Unsupported platforms compile to a no-op,
-/// and callers must not rely on it for correctness.
+/// The architecture-specific hint was measured as neutral or slower on the
+/// Apple Silicon HNSW search workloads that dominate the current profiles. Keep
+/// the wrapper so graph-family call sites can be retested without widening the
+/// unsafe surface.
 #[inline(always)]
-#[allow(unsafe_code, unused_variables)]
-pub(crate) fn prefetch_read_data<T>(ptr: *const T) {
-    #[cfg(target_arch = "x86_64")]
-    {
-        // SAFETY: `_mm_prefetch` is a hint and does not dereference `ptr`.
-        unsafe {
-            std::arch::x86_64::_mm_prefetch(ptr as *const i8, std::arch::x86_64::_MM_HINT_T0);
-        }
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        // SAFETY: `prfm` is a hint and does not affect program semantics.
-        // Inline asm is used because the stable intrinsic is not available.
-        unsafe {
-            std::arch::asm!("prfm pldl1keep, [{ptr}]", ptr = in(reg) ptr, options(nostack, preserves_flags));
-        }
-    }
-}
+#[allow(unused_variables)]
+pub(crate) fn prefetch_read_data<T>(ptr: *const T) {}

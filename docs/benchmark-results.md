@@ -324,6 +324,74 @@ and result heap structure, visited-set behavior, and graph/vector layout
 locality. If an `innr` helper is added, the measured shape should be a safe
 row-indexed scorer over `query + flat_vectors + dim + ids -> output`.
 
+### Graph Prefetch Hint Removal
+
+The graph-search prefetch helper was the only product unsafe outside the PQ
+SIMD kernels. It was also only a hint, so the safe negative control was to make
+the helper a no-op while leaving every call site in place. HNSW search-only
+Criterion controls on Apple Silicon used the same target directory before and
+after the change:
+
+```bash
+CARGO_TARGET_DIR=/tmp/vicinity-prefetch-bench-target CARGO_INCREMENTAL=0 \
+  RUSTC_WRAPPER= cargo bench --bench hnsw_search \
+  --features hnsw,benchmark -- hnsw_search_only \
+  --measurement-time 3 --warm-up-time 1 --sample-size 20
+
+CARGO_TARGET_DIR=/tmp/vicinity-prefetch-bench-target CARGO_INCREMENTAL=0 \
+  RUSTC_WRAPPER= cargo bench --bench hnsw_search \
+  --features hnsw,benchmark -- hnsw_search_mmax32 \
+  --measurement-time 3 --warm-up-time 1 --sample-size 20
+```
+
+For the normal `hnsw_search_only` group, replacing the architecture-specific
+hint with a no-op measured:
+
+| Row | Criterion result versus prefetch helper |
+| --- | --- |
+| `ef=10` | no change, -6.02% mean time |
+| `ef=50` | improved, -8.14% mean time |
+| `ef=100` | no change, -8.86% mean time |
+| `ef=200` | improved, -17.54% mean time |
+
+The denser `m_max=32` negative control was run in the opposite order: first
+with the no-op helper, then with the prefetch helper restored. The restored
+prefetch helper regressed `ef=10`, `ef=50`, and `ef=200`, and was within noise
+at `ef=100`, so the no-op was the kept version:
+
+| Row | Restored-prefetch result versus no-op baseline |
+| --- | --- |
+| `ef=10` | regressed, +10.69% mean time |
+| `ef=50` | regressed, +8.86% mean time |
+| `ef=100` | no change, +4.67% mean time |
+| `ef=200` | regressed, +7.48% mean time |
+
+DiskANN controls used the same before/after method on the in-memory direct
+caller and one direct-file row:
+
+```bash
+CARGO_TARGET_DIR=/tmp/vicinity-prefetch-diskann-target CARGO_INCREMENTAL=0 \
+  RUSTC_WRAPPER= cargo bench --bench diskann_search \
+  --features diskann,benchmark -- diskann_search_only/memory_ef75 \
+  --measurement-time 2 --warm-up-time 1 --sample-size 10
+
+CARGO_TARGET_DIR=/tmp/vicinity-prefetch-diskann-target CARGO_INCREMENTAL=0 \
+  RUSTC_WRAPPER= cargo bench --bench diskann_search \
+  --features diskann,benchmark -- diskann_search_only/file_ef75 \
+  --measurement-time 2 --warm-up-time 1 --sample-size 10
+```
+
+The safe no-op helper improved both rows:
+
+| Row | Prefetch helper | No-op helper | Criterion change |
+| --- | ---: | ---: | --- |
+| `memory_ef75` | 10.531 ms / 100 queries | 9.5739 ms / 100 queries | -9.10% mean time |
+| `file_ef75` | 96.019 ms / 100 queries | 87.592 ms / 100 queries | -8.78% mean time |
+
+The kept change removes the prefetch unsafe surface while preserving the helper
+as a safe compatibility hook. If future storage-layout work revisits prefetch,
+measure it per workload and storage mode before adding any unsafe back.
+
 The first `flush_batch` follow-up cached the current worst result distance for
 every beam width. It improved high-ef rows but regressed `ef=10`, so the kept
 change uses the cached-worst loop only for `ef >= 64`. The thresholded
