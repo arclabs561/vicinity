@@ -4,6 +4,8 @@ use crate::ivf_avq::partitioning::KMeans;
 use crate::ivf_avq::quantization::AnisotropicQuantizer;
 use crate::ivf_avq::reranking;
 use crate::RetrieveError;
+#[cfg(feature = "persistence")]
+use durability::mmap::{AccessPattern, MappedFile};
 use serde::{Deserialize, Serialize};
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::Path;
@@ -40,9 +42,10 @@ pub struct IVFAVQFileSearcher {
     partition_locations: Vec<PartitionLocation>,
     partition_centroids: Vec<Vec<f32>>,
     quantizer: AnisotropicQuantizer,
-    partitions_file: std::fs::File,
-    raw_vectors_file: std::fs::File,
+    partitions_storage: IVFAVQByteStorage,
+    raw_vectors_storage: IVFAVQByteStorage,
     id_buf: Vec<u32>,
+    id_byte_buf: Vec<u8>,
     code_buf: Vec<u8>,
     raw_byte_buf: Vec<u8>,
     vector_buf: Vec<f32>,
@@ -136,6 +139,12 @@ struct PartitionLocation {
     ids_offset: u64,
     codes_len: usize,
     codes_offset: u64,
+}
+
+enum IVFAVQByteStorage {
+    File(std::fs::File),
+    #[cfg(feature = "persistence")]
+    Mmap(Box<MappedFile>),
 }
 
 impl IVFAVQIndex {
@@ -453,7 +462,16 @@ impl IVFAVQIndex {
 impl IVFAVQFileSearcher {
     /// Open an IVF-AVQ snapshot for direct file-backed search.
     pub fn open(input_dir: impl AsRef<Path>) -> Result<Self, RetrieveError> {
-        let input_dir = input_dir.as_ref();
+        Self::open_with_storage(input_dir.as_ref(), false)
+    }
+
+    /// Open an IVF-AVQ snapshot with read-only mmap-backed payloads.
+    #[cfg(feature = "persistence")]
+    pub fn open_mmap(input_dir: impl AsRef<Path>) -> Result<Self, RetrieveError> {
+        Self::open_with_storage(input_dir.as_ref(), true)
+    }
+
+    fn open_with_storage(input_dir: &Path, mmap: bool) -> Result<Self, RetrieveError> {
         let manifest: IVFAVQManifest = read_json(&input_dir.join("manifest.json"))?;
         validate_manifest(&manifest)?;
 
@@ -484,6 +502,7 @@ impl IVFAVQFileSearcher {
             manifest.num_vectors,
             params.num_codebooks,
         )?;
+        let expected_partition_bytes = file_len_usize(&partitions_path)?;
         let raw_vector_bytes = checked_byte_len(
             manifest.dimension,
             std::mem::size_of::<f32>(),
@@ -495,7 +514,9 @@ impl IVFAVQFileSearcher {
             raw_vector_bytes,
             "IVF-AVQ raw vector file byte length overflow",
         )?;
-        validate_file_size(&raw_vectors_path, expected_raw_bytes)?;
+        let partitions_storage =
+            open_byte_storage(&partitions_path, expected_partition_bytes, mmap)?;
+        let raw_vectors_storage = open_byte_storage(&raw_vectors_path, expected_raw_bytes, mmap)?;
 
         Ok(Self {
             dimension: manifest.dimension,
@@ -505,9 +526,10 @@ impl IVFAVQFileSearcher {
             partition_locations,
             partition_centroids,
             quantizer,
-            partitions_file: std::fs::File::open(partitions_path)?,
-            raw_vectors_file: std::fs::File::open(raw_vectors_path)?,
+            partitions_storage,
+            raw_vectors_storage,
             id_buf: Vec::new(),
+            id_byte_buf: Vec::new(),
             code_buf: Vec::new(),
             raw_byte_buf: vec![0; raw_vector_bytes],
             vector_buf: vec![0.0; manifest.dimension],
@@ -590,18 +612,38 @@ impl IVFAVQFileSearcher {
     }
 
     fn read_partition(&mut self, location: PartitionLocation) -> Result<(), RetrieveError> {
-        self.id_buf.clear();
-        self.id_buf.reserve(location.ids_len);
-        self.partitions_file
-            .seek(SeekFrom::Start(location.ids_offset))?;
-        for _ in 0..location.ids_len {
-            self.id_buf.push(read_u32(&mut self.partitions_file)?);
+        let id_bytes_len = checked_byte_len(
+            location.ids_len,
+            std::mem::size_of::<u32>(),
+            "IVF-AVQ partition id byte length overflow",
+        )?;
+        self.id_byte_buf.resize(id_bytes_len, 0);
+        read_bytes_from_storage(
+            &mut self.partitions_storage,
+            location.ids_offset,
+            &mut self.id_byte_buf,
+        )?;
+        self.id_buf.resize(location.ids_len, 0);
+        for (slot, chunk) in self
+            .id_buf
+            .iter_mut()
+            .zip(self.id_byte_buf.chunks_exact(std::mem::size_of::<u32>()))
+        {
+            *slot = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+            if *slot as usize >= self.num_vectors {
+                return Err(RetrieveError::FormatError(format!(
+                    "IVF-AVQ partition id {} exceeds vector count {}",
+                    *slot, self.num_vectors
+                )));
+            }
         }
 
         self.code_buf.resize(location.codes_len, 0);
-        self.partitions_file
-            .seek(SeekFrom::Start(location.codes_offset))?;
-        self.partitions_file.read_exact(&mut self.code_buf)?;
+        read_bytes_from_storage(
+            &mut self.partitions_storage,
+            location.codes_offset,
+            &mut self.code_buf,
+        )?;
         for &code in &self.code_buf {
             if code as usize >= self.params.codebook_size {
                 return Err(RetrieveError::FormatError(format!(
@@ -628,9 +670,14 @@ impl IVFAVQFileSearcher {
             vector_idx as usize,
             self.raw_byte_buf.len(),
             "IVF-AVQ raw vector offset overflow",
-        )? as u64;
-        self.raw_vectors_file.seek(SeekFrom::Start(vector_offset))?;
-        self.raw_vectors_file.read_exact(&mut self.raw_byte_buf)?;
+        )?;
+        let vector_offset = u64::try_from(vector_offset)
+            .map_err(|_| RetrieveError::FormatError("IVF-AVQ raw vector offset overflow".into()))?;
+        read_bytes_from_storage(
+            &mut self.raw_vectors_storage,
+            vector_offset,
+            &mut self.raw_byte_buf,
+        )?;
         for (slot, chunk) in self
             .vector_buf
             .iter_mut()
@@ -845,6 +892,80 @@ fn validate_file_size(path: &Path, expected_len: usize) -> Result<(), RetrieveEr
             expected_len,
             actual_len
         )));
+    }
+    Ok(())
+}
+
+fn file_len_usize(path: &Path) -> Result<usize, RetrieveError> {
+    let len = std::fs::metadata(path)?.len();
+    usize::try_from(len).map_err(|_| {
+        RetrieveError::FormatError(format!(
+            "{} size {} exceeds addressable memory",
+            path.display(),
+            len
+        ))
+    })
+}
+
+fn open_byte_storage(
+    path: &Path,
+    expected_len: usize,
+    mmap: bool,
+) -> Result<IVFAVQByteStorage, RetrieveError> {
+    validate_file_size(path, expected_len)?;
+
+    #[cfg(feature = "persistence")]
+    if mmap {
+        let mapped = MappedFile::open(path, AccessPattern::Random).map_err(|e| {
+            RetrieveError::Io(std::sync::Arc::new(std::io::Error::other(format!(
+                "failed to mmap {}: {e}",
+                path.display()
+            ))))
+        })?;
+        if mapped.as_slice().len() != expected_len {
+            return Err(RetrieveError::FormatError(format!(
+                "{} mmap size mismatch: expected {} bytes, got {}",
+                path.display(),
+                expected_len,
+                mapped.as_slice().len()
+            )));
+        }
+        return Ok(IVFAVQByteStorage::Mmap(Box::new(mapped)));
+    }
+
+    let _ = mmap;
+    Ok(IVFAVQByteStorage::File(std::fs::File::open(path)?))
+}
+
+fn read_bytes_from_storage(
+    storage: &mut IVFAVQByteStorage,
+    offset: u64,
+    out: &mut [u8],
+) -> Result<(), RetrieveError> {
+    #[cfg(feature = "persistence")]
+    let start = usize::try_from(offset)
+        .map_err(|_| RetrieveError::FormatError("IVF-AVQ byte storage offset overflow".into()))?;
+    #[cfg(feature = "persistence")]
+    let end = start
+        .checked_add(out.len())
+        .ok_or_else(|| RetrieveError::FormatError("IVF-AVQ byte storage offset overflow".into()))?;
+
+    match storage {
+        IVFAVQByteStorage::File(file) => {
+            crate::file_io::read_exact_at(file, offset, out)?;
+        }
+        #[cfg(feature = "persistence")]
+        IVFAVQByteStorage::Mmap(mapped) => {
+            let bytes = mapped.as_slice();
+            if end > bytes.len() {
+                return Err(RetrieveError::FormatError(format!(
+                    "IVF-AVQ storage read out of bounds: end {} > len {}",
+                    end,
+                    bytes.len()
+                )));
+            }
+            out.copy_from_slice(&bytes[start..end]);
+        }
     }
     Ok(())
 }
@@ -1191,6 +1312,42 @@ mod tests {
 
         assert_eq!(
             file_searcher.search(&query, 10).unwrap(),
+            loaded.search(&query, 10).unwrap()
+        );
+    }
+
+    #[cfg(feature = "persistence")]
+    #[test]
+    fn mmap_searcher_matches_snapshot_loaded_search() {
+        use rand::{Rng, SeedableRng};
+
+        let dim = 8;
+        let n = 96;
+        let params = IVFAVQParams {
+            num_partitions: 4,
+            nprobe: 4,
+            num_reorder: 32,
+            num_codebooks: 4,
+            codebook_size: 16,
+            seed: 81,
+        };
+        let mut rng = rand::rngs::StdRng::seed_from_u64(81);
+        let mut index = IVFAVQIndex::new(dim, params).unwrap();
+        for i in 0..n {
+            let doc_id = 30_000 + i as u32;
+            let vector: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
+            index.add(doc_id, vector).unwrap();
+        }
+        index.build().unwrap();
+
+        let query: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
+        let dir = tempfile::tempdir().unwrap();
+        index.save_to_dir(dir.path()).unwrap();
+        let loaded = IVFAVQIndex::load_from_dir(dir.path()).unwrap();
+        let mut mmap_searcher = IVFAVQFileSearcher::open_mmap(dir.path()).unwrap();
+
+        assert_eq!(
+            mmap_searcher.search(&query, 10).unwrap(),
             loaded.search(&query, 10).unwrap()
         );
     }

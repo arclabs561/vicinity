@@ -66,8 +66,8 @@
 //!
 //! Built indexes can be saved with `IVFAVQIndex::save_to_dir()` and restored
 //! into memory with `IVFAVQIndex::load_from_dir()`. `IVFAVQFileSearcher` opens
-//! the same saved format for direct file-backed search; mmap search is tracked
-//! separately in `docs/persistence.md`.
+//! the same saved format for direct file-backed search, with read-only mmap
+//! available through the `persistence` feature.
 //!
 //! # IVF-AVQ vs IVF-PQ
 //!

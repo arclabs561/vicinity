@@ -520,6 +520,10 @@ pub(crate) fn run_ivf_avq(
         load_time_s: f64,
         file_searcher: RefCell<IVFAVQFileSearcher>,
         file_load_time_s: f64,
+        #[cfg(feature = "persistence")]
+        mmap_searcher: RefCell<IVFAVQFileSearcher>,
+        #[cfg(feature = "persistence")]
+        mmap_load_time_s: f64,
         index_bytes: Option<u64>,
     }
 
@@ -565,12 +569,22 @@ pub(crate) fn run_ivf_avq(
         let file_load_start = Instant::now();
         let file_searcher = RefCell::new(IVFAVQFileSearcher::open(temp_dir.path()).unwrap());
         let file_load_time_s = file_load_start.elapsed().as_secs_f64();
+        #[cfg(feature = "persistence")]
+        let mmap_load_start = Instant::now();
+        #[cfg(feature = "persistence")]
+        let mmap_searcher = RefCell::new(IVFAVQFileSearcher::open_mmap(temp_dir.path()).unwrap());
+        #[cfg(feature = "persistence")]
+        let mmap_load_time_s = mmap_load_start.elapsed().as_secs_f64();
         Some(SnapshotIndexes {
             _temp_dir: temp_dir,
             loaded,
             load_time_s,
             file_searcher,
             file_load_time_s,
+            #[cfg(feature = "persistence")]
+            mmap_searcher,
+            #[cfg(feature = "persistence")]
+            mmap_load_time_s,
             index_bytes,
         })
     } else {
@@ -611,8 +625,17 @@ pub(crate) fn run_ivf_avq(
                 10,
             );
             snapshot.file_searcher.borrow_mut().set_nprobe(nprobe);
+            #[cfg(feature = "persistence")]
+            snapshot.mmap_searcher.borrow_mut().set_nprobe(nprobe);
             let file_result = evaluate(
                 &|q, k| snapshot.file_searcher.borrow_mut().search(q, k).unwrap(),
+                test,
+                neighbors,
+                10,
+            );
+            #[cfg(feature = "persistence")]
+            let mmap_result = evaluate(
+                &|q, k| snapshot.mmap_searcher.borrow_mut().search(q, k).unwrap(),
                 test,
                 neighbors,
                 10,
@@ -644,9 +667,23 @@ pub(crate) fn run_ivf_avq(
                         &opened_storage("file", snapshot.file_load_time_s, snapshot.index_bytes),
                     ),
                 );
+                #[cfg(feature = "persistence")]
+                emit_result(
+                    &cfg.results_path,
+                    &json_line_with_storage(
+                        "ivf_avq",
+                        &params_json,
+                        build_time_s,
+                        rss,
+                        &mmap_result,
+                        &opened_storage("mmap", snapshot.mmap_load_time_s, snapshot.index_bytes),
+                    ),
+                );
             } else {
                 print_row(&format!("np={} snapshot_loaded", nprobe), &loaded_result);
                 print_row(&format!("np={} file", nprobe), &file_result);
+                #[cfg(feature = "persistence")]
+                print_row(&format!("np={} mmap", nprobe), &mmap_result);
             }
         }
     }
