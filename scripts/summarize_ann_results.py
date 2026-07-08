@@ -159,6 +159,8 @@ class Summary:
     )
     storage_scope_observed: bool = False
     index_bytes_required: bool = False
+    missing_index_bytes_rows: int = 0
+    required_missing_index_bytes_rows: int = 0
 
     def add(
         self,
@@ -174,6 +176,10 @@ class Summary:
         qps = float(row.get("qps", 0.0))
         index_bytes = row.get("index_bytes")
         index_bytes = index_bytes if isinstance(index_bytes, int) else None
+        if index_bytes is None:
+            self.missing_index_bytes_rows += 1
+            if index_bytes_required:
+                self.required_missing_index_bytes_rows += 1
         params = row.get("params")
         params = dict(params) if isinstance(params, dict) else None
         if recall >= self.best_recall:
@@ -239,6 +245,8 @@ class CoverageRow:
     index_bytes_at_recall_floor: int | None
     best_row_diagnostics: dict[str, float] | None
     index_bytes_required: bool
+    missing_index_bytes_rows: int
+    required_missing_index_bytes_rows: int
 
 
 def scoped_dataset_name(meta: dict[str, Any]) -> str | None:
@@ -421,6 +429,12 @@ def coverage_rows(
                 ),
                 best_row_diagnostics=summary.best_qps_diagnostics if summary else None,
                 index_bytes_required=summary.index_bytes_required if summary else False,
+                missing_index_bytes_rows=(
+                    summary.missing_index_bytes_rows if summary else 0
+                ),
+                required_missing_index_bytes_rows=(
+                    summary.required_missing_index_bytes_rows if summary else 0
+                ),
             )
         )
     return rows
@@ -439,8 +453,11 @@ def rows_missing_index_bytes(
         row
         for row in rows
         if row.status == "measured"
-        and row.best_index_bytes is None
-        and (not declared_only or row.index_bytes_required)
+        and (
+            row.required_missing_index_bytes_rows > 0
+            if declared_only
+            else row.missing_index_bytes_rows > 0
+        )
     ]
 
 
@@ -668,6 +685,10 @@ def main() -> None:
                         "params_at_recall_floor": row.params_at_recall_floor,
                         "index_bytes_at_recall_floor": row.index_bytes_at_recall_floor,
                         "index_bytes_required": row.index_bytes_required,
+                        "missing_index_bytes_rows": row.missing_index_bytes_rows,
+                        "required_missing_index_bytes_rows": (
+                            row.required_missing_index_bytes_rows
+                        ),
                     }
                     for row in rows
                 ],
