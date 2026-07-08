@@ -140,6 +140,15 @@ impl OptimizedProductQuantizer {
     pub fn rotation_matrix(&self) -> Option<&[f32]> {
         self.rotation.as_deref()
     }
+
+    pub(crate) fn owned_bytes(&self) -> usize {
+        self.pq.owned_bytes()
+            + self
+                .rotation
+                .as_ref()
+                .map(|rotation| rotation.capacity() * std::mem::size_of::<f32>())
+                .unwrap_or(0)
+    }
 }
 
 // ============================================================================

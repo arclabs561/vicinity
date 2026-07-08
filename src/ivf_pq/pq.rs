@@ -294,6 +294,10 @@ impl ProductQuantizer {
     pub fn codebook_size(&self) -> usize {
         self.codebook_size
     }
+
+    pub(crate) fn owned_bytes(&self) -> usize {
+        self.codebooks.capacity() * std::mem::size_of::<f32>()
+    }
 }
 
 /// Get vector from SoA storage.

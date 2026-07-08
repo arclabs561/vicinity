@@ -9,7 +9,6 @@ use crate::support::{current_rss_kb, emit_result, evaluate, print_header, print_
 #[cfg(feature = "ivf_pq")]
 use crate::support::ivfpq_params_json;
 #[cfg(any(
-    feature = "ivf_pq",
     feature = "rp_quant",
     feature = "binary_index",
     feature = "lsh",
@@ -234,6 +233,7 @@ pub(crate) fn run_ivfpq(
         .unwrap();
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
+    let index_bytes = Some(index.memory_usage().total() as u64);
     let mut snapshot_index = if cfg.snapshot_load {
         let temp_dir = tempfile::tempdir().expect("create temp dir for IVF-PQ snapshot benchmark");
         index.save_to_dir(temp_dir.path()).unwrap();
@@ -291,7 +291,17 @@ pub(crate) fn run_ivfpq(
             );
             emit_result(
                 &cfg.results_path,
-                &json_line("ivfpq", &params_json, build_time_s, rss, &result),
+                &json_line_with_storage(
+                    "ivfpq",
+                    &params_json,
+                    build_time_s,
+                    rss,
+                    &result,
+                    &ResultStorage {
+                        index_bytes,
+                        ..ResultStorage::default()
+                    },
+                ),
             );
         } else {
             print_row(&format!("np={}", nprobe), &result);
@@ -395,7 +405,17 @@ pub(crate) fn run_ivfpq(
                 );
                 emit_result(
                     &cfg.results_path,
-                    &json_line("ivfpq_rerank", &params_json, build_time_s, rss, &result),
+                    &json_line_with_storage(
+                        "ivfpq_rerank",
+                        &params_json,
+                        build_time_s,
+                        rss,
+                        &result,
+                        &ResultStorage {
+                            index_bytes,
+                            ..ResultStorage::default()
+                        },
+                    ),
                 );
             } else {
                 print_row(&format!("np={} rr={}", nprobe, rerank_pool), &result);

@@ -795,6 +795,21 @@ Smoke rows included `storage_mode=in_memory`, `cache_state=warm_after_build`,
 and positive `index_bytes` (`nsw=33,600`, `vamana=72,000`). Treat this as row
 coverage evidence, not performance evidence.
 
+IVF-PQ now emits the same in-memory heap estimate for both approximate and
+rerank rows. A bounded schema smoke used 500 GloVe-25 vectors and 20 queries:
+
+```bash
+cargo run --no-default-features --features ivf_pq --example ann_benchmark -- \
+  data/ann-benchmarks/glove-25-angular --algo ivfpq \
+  --max-train 500 --max-queries 20 --pq-nprobes 1 --pq-rerank-pools 50 \
+  --json --results /tmp/vicinity-ivfpq-memory-smoke.jsonl
+```
+
+The `ivfpq` and `ivfpq_rerank` rows included `storage_mode=in_memory`,
+`cache_state=warm_after_build`, and positive heap-estimated
+`index_bytes=137,876`. File and mmap IVF-PQ rows continue to report saved
+snapshot bytes instead of heap residency.
+
 IVF-AVQ now emits the same in-memory heap estimate. A bounded schema smoke used
 500 GloVe-25 vectors and 20 queries:
 

@@ -182,6 +182,13 @@ impl Quantizer {
             Self::Optimized(opq) => opq.distance_with_table(table, codes),
         }
     }
+
+    fn owned_bytes(&self) -> usize {
+        match self {
+            Self::Product(pq) => pq.owned_bytes(),
+            Self::Optimized(opq) => opq.owned_bytes(),
+        }
+    }
 }
 
 /// IVF-PQ index for memory-efficient approximate nearest neighbor search.
@@ -1380,6 +1387,42 @@ impl IVFPQIndex {
         Ok(finish_top_k_by_distance(candidates, k))
     }
 
+    /// Estimated heap memory used by this index.
+    pub fn memory_usage(&self) -> crate::memory::MemoryReport {
+        let vectors_bytes = self.vectors.capacity() * std::mem::size_of::<f32>();
+        let cluster_bytes = self.clusters.capacity() * std::mem::size_of::<Cluster>()
+            + self
+                .clusters
+                .iter()
+                .map(Cluster::owned_bytes)
+                .sum::<usize>();
+        #[cfg(feature = "hnsw")]
+        let coarse_quantizer_bytes = self
+            .coarse_quantizer
+            .as_ref()
+            .map(|index| index.memory_usage().total())
+            .unwrap_or(0);
+        #[cfg(not(feature = "hnsw"))]
+        let coarse_quantizer_bytes = 0;
+        let quantized_bytes = self.quantized_codes.capacity()
+            + self.pq.as_ref().map(Quantizer::owned_bytes).unwrap_or(0);
+        let metadata_bytes = self.doc_ids.capacity() * std::mem::size_of::<u32>()
+            + self.centroids.capacity() * std::mem::size_of::<f32>()
+            + self
+                .filter_field
+                .as_ref()
+                .map(|field| field.capacity())
+                .unwrap_or(0)
+            + cluster_bytes;
+
+        crate::memory::MemoryReport {
+            vectors_bytes,
+            graph_bytes: coarse_quantizer_bytes,
+            quantized_bytes,
+            metadata_bytes,
+        }
+    }
+
     /// Get vector from SoA storage.
     #[inline]
     fn get_vector(&self, idx: usize) -> &[f32] {
@@ -2231,6 +2274,40 @@ mod tests {
             cluster.set_adc_codes(None);
         }
         assert_eq!(index.search(&query, 10).unwrap(), cached);
+    }
+
+    #[test]
+    fn memory_usage_reports_raw_quantized_and_cache_buffers() {
+        let dim = 16;
+        let n = 320;
+        use rand::{Rng, SeedableRng};
+        let mut rng = rand::rngs::StdRng::seed_from_u64(17);
+
+        let params = IVFPQParams {
+            num_clusters: 4,
+            num_codebooks: 4,
+            codebook_size: 256,
+            nprobe: 4,
+            ..IVFPQParams::default()
+        };
+        let mut index = IVFPQIndex::new(dim, params).unwrap();
+
+        for i in 0..n {
+            let v: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
+            index.add(i as u32, v).unwrap();
+        }
+        index.build().unwrap();
+
+        let report = index.memory_usage();
+        assert!(report.vectors_bytes >= n * dim * std::mem::size_of::<f32>());
+        assert!(report.quantized_bytes >= n * index.params.num_codebooks);
+        assert!(report.metadata_bytes >= n * std::mem::size_of::<u32>());
+
+        index.compact();
+        let compacted = index.memory_usage();
+        assert_eq!(compacted.vectors_bytes, 0);
+        assert!(compacted.quantized_bytes >= n * index.params.num_codebooks);
+        assert!(compacted.total() < report.total());
     }
 
     #[test]

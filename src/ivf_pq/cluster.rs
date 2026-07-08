@@ -172,4 +172,32 @@ impl Cluster {
     pub(super) fn set_adc_codes(&mut self, codes: Option<Vec<u8>>) {
         self.adc_codes = codes;
     }
+
+    pub(super) fn owned_bytes(&self) -> usize {
+        let storage_bytes = match &self.storage {
+            ClusterStorage::Uncompressed(ids) => ids.capacity() * std::mem::size_of::<u32>(),
+            #[cfg(feature = "id-compression")]
+            ClusterStorage::Compressed { data, .. } => data.capacity(),
+        };
+        let fastscan_bytes = self
+            .fastscan_codes
+            .as_ref()
+            .map(|codes| codes.data.capacity())
+            .unwrap_or(0);
+        let adc_bytes = self
+            .adc_codes
+            .as_ref()
+            .map(|codes| codes.capacity())
+            .unwrap_or(0);
+        #[cfg(feature = "id-compression")]
+        let cache_bytes = self
+            .decompressed_cache
+            .as_ref()
+            .map(|ids| ids.capacity() * std::mem::size_of::<u32>())
+            .unwrap_or(0);
+        #[cfg(not(feature = "id-compression"))]
+        let cache_bytes = 0;
+
+        storage_bytes + fastscan_bytes + adc_bytes + cache_bytes
+    }
 }
