@@ -14,7 +14,6 @@ STORAGE_EXPECTATION_GROUPS = {
     ("in_memory", "snapshot_loaded"): (
         "hnsw",
         "nsw",
-        "ivf_avq",
         "ivf_rabitq",
         "rp_quant",
         "binary_index",
@@ -55,6 +54,7 @@ STORAGE_EXPECTATION_GROUPS = {
     ("in_memory", "snapshot_loaded", "file", "mmap"): (
         "ivfpq",
         "ivfpq_rerank",
+        "ivf_avq",
     ),
     ("segmented_store",): ("store", "store_snapshot"),
 }

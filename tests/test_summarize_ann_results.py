@@ -531,5 +531,7 @@ def test_standard_storage_expectations_cover_current_storage_classes() -> None:
         for algorithm in algorithms:
             for storage_mode in storage_modes:
                 assert (algorithm, storage_mode) in rows
+    assert ("ivf_avq", "file") in rows
+    assert ("ivf_avq", "mmap") in rows
     assert set(script.DISKANN_EXPECTATION_ROWS) <= rows
     assert rows == family_rows
