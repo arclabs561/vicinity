@@ -1,29 +1,90 @@
 use crate::RetrieveError;
 use serde::{de::DeserializeOwned, Serialize};
-#[cfg(any(
-    feature = "nsw",
-    feature = "sng",
-    feature = "vamana",
-    feature = "nsg",
-    feature = "finger",
-    feature = "pipnn",
-    feature = "emg",
-    feature = "sparse_mips"
-))]
-use smallvec::SmallVec;
-#[cfg(any(
-    feature = "nsw",
-    feature = "sng",
-    feature = "vamana",
-    feature = "nsg",
-    feature = "finger",
-    feature = "pipnn",
-    feature = "emg",
-    feature = "sparse_mips"
-))]
-use std::io::Read;
 use std::io::{BufReader, BufWriter, Write};
 use std::path::Path;
+
+macro_rules! cfg_graph_neighbors {
+    ($($item:item)*) => {
+        $(
+            #[cfg(any(
+                feature = "nsw",
+                feature = "sng",
+                feature = "vamana",
+                feature = "nsg",
+                feature = "finger",
+                feature = "pipnn",
+                feature = "emg",
+                feature = "sparse_mips"
+            ))]
+            $item
+        )*
+    };
+}
+
+macro_rules! cfg_f32_payload {
+    ($($item:item)*) => {
+        $(
+            #[cfg(any(
+                feature = "nsw",
+                feature = "sng",
+                feature = "vamana",
+                feature = "nsg",
+                feature = "finger",
+                feature = "pipnn",
+                feature = "emg",
+                feature = "binary_index",
+                feature = "rp_quant",
+                feature = "sparse_mips",
+                feature = "lsh",
+                feature = "sq4"
+            ))]
+            $item
+        )*
+    };
+}
+
+macro_rules! cfg_u32_payload {
+    ($($item:item)*) => {
+        $(
+            #[cfg(any(
+                feature = "nsw",
+                feature = "sng",
+                feature = "vamana",
+                feature = "nsg",
+                feature = "finger",
+                feature = "pipnn",
+                feature = "emg",
+                feature = "binary_index",
+                feature = "rp_quant",
+                feature = "sparse_mips",
+                feature = "sq4"
+            ))]
+            $item
+        )*
+    };
+}
+
+macro_rules! cfg_dense_graph_shape {
+    ($($item:item)*) => {
+        $(
+            #[cfg(any(
+                feature = "nsw",
+                feature = "sng",
+                feature = "vamana",
+                feature = "nsg",
+                feature = "finger",
+                feature = "pipnn",
+                feature = "emg"
+            ))]
+            $item
+        )*
+    };
+}
+
+cfg_graph_neighbors! {
+    use smallvec::SmallVec;
+    use std::io::Read;
+}
 
 pub(crate) fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), RetrieveError> {
     write_atomic(path, |writer| {
@@ -38,49 +99,26 @@ pub(crate) fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T, RetrieveE
         .map_err(|e| RetrieveError::FormatError(e.to_string()))
 }
 
-#[cfg(any(
-    feature = "nsw",
-    feature = "sng",
-    feature = "vamana",
-    feature = "nsg",
-    feature = "finger",
-    feature = "pipnn",
-    feature = "emg",
-    feature = "binary_index",
-    feature = "rp_quant",
-    feature = "sparse_mips",
-    feature = "lsh",
-    feature = "sq4"
-))]
-pub(crate) fn write_f32_atomic(path: &Path, values: &[f32]) -> Result<(), RetrieveError> {
-    write_atomic(path, |writer| {
-        for value in values {
-            writer.write_all(&value.to_le_bytes())?;
-        }
-        Ok(())
-    })
+cfg_f32_payload! {
+    pub(crate) fn write_f32_atomic(path: &Path, values: &[f32]) -> Result<(), RetrieveError> {
+        write_atomic(path, |writer| {
+            for value in values {
+                writer.write_all(&value.to_le_bytes())?;
+            }
+            Ok(())
+        })
+    }
 }
 
-#[cfg(any(
-    feature = "nsw",
-    feature = "sng",
-    feature = "vamana",
-    feature = "nsg",
-    feature = "finger",
-    feature = "pipnn",
-    feature = "emg",
-    feature = "binary_index",
-    feature = "rp_quant",
-    feature = "sparse_mips",
-    feature = "sq4"
-))]
-pub(crate) fn write_u32_atomic(path: &Path, values: &[u32]) -> Result<(), RetrieveError> {
-    write_atomic(path, |writer| {
-        for value in values {
-            writer.write_all(&value.to_le_bytes())?;
-        }
-        Ok(())
-    })
+cfg_u32_payload! {
+    pub(crate) fn write_u32_atomic(path: &Path, values: &[u32]) -> Result<(), RetrieveError> {
+        write_atomic(path, |writer| {
+            for value in values {
+                writer.write_all(&value.to_le_bytes())?;
+            }
+            Ok(())
+        })
+    }
 }
 
 #[cfg(feature = "sparse_mips")]
@@ -93,32 +131,24 @@ pub(crate) fn write_u64_atomic(path: &Path, values: &[u64]) -> Result<(), Retrie
     })
 }
 
-#[cfg(any(
-    feature = "nsw",
-    feature = "sng",
-    feature = "vamana",
-    feature = "nsg",
-    feature = "finger",
-    feature = "pipnn",
-    feature = "emg",
-    feature = "sparse_mips"
-))]
-pub(crate) fn write_neighbors_atomic(
-    path: &Path,
-    magic: &[u8; 8],
-    neighbors: &[SmallVec<[u32; 16]>],
-) -> Result<(), RetrieveError> {
-    write_atomic(path, |writer| {
-        writer.write_all(magic)?;
-        writer.write_all(&(neighbors.len() as u64).to_le_bytes())?;
-        for list in neighbors {
-            writer.write_all(&(list.len() as u64).to_le_bytes())?;
-            for id in list {
-                writer.write_all(&id.to_le_bytes())?;
+cfg_graph_neighbors! {
+    pub(crate) fn write_neighbors_atomic(
+        path: &Path,
+        magic: &[u8; 8],
+        neighbors: &[SmallVec<[u32; 16]>],
+    ) -> Result<(), RetrieveError> {
+        write_atomic(path, |writer| {
+            writer.write_all(magic)?;
+            writer.write_all(&(neighbors.len() as u64).to_le_bytes())?;
+            for list in neighbors {
+                writer.write_all(&(list.len() as u64).to_le_bytes())?;
+                for id in list {
+                    writer.write_all(&id.to_le_bytes())?;
+                }
             }
-        }
-        Ok(())
-    })
+            Ok(())
+        })
+    }
 }
 
 fn write_atomic(
@@ -136,69 +166,52 @@ fn write_atomic(
     Ok(())
 }
 
-#[cfg(any(
-    feature = "nsw",
-    feature = "sng",
-    feature = "vamana",
-    feature = "nsg",
-    feature = "finger",
-    feature = "pipnn",
-    feature = "emg",
-    feature = "binary_index",
-    feature = "rp_quant",
-    feature = "sparse_mips",
-    feature = "lsh",
-    feature = "sq4"
-))]
-pub(crate) fn read_f32_exact(path: &Path, expected_len: usize) -> Result<Vec<f32>, RetrieveError> {
-    let bytes = std::fs::read(path)?;
-    let expected_bytes = expected_len
-        .checked_mul(std::mem::size_of::<f32>())
-        .ok_or_else(|| RetrieveError::FormatError("f32 byte length overflow".into()))?;
-    if bytes.len() != expected_bytes {
-        return Err(RetrieveError::FormatError(format!(
-            "{} size mismatch: expected {} bytes, got {}",
-            path.display(),
-            expected_bytes,
-            bytes.len()
-        )));
+cfg_f32_payload! {
+    pub(crate) fn read_f32_exact(
+        path: &Path,
+        expected_len: usize,
+    ) -> Result<Vec<f32>, RetrieveError> {
+        let bytes = std::fs::read(path)?;
+        let expected_bytes = expected_len
+            .checked_mul(std::mem::size_of::<f32>())
+            .ok_or_else(|| RetrieveError::FormatError("f32 byte length overflow".into()))?;
+        if bytes.len() != expected_bytes {
+            return Err(RetrieveError::FormatError(format!(
+                "{} size mismatch: expected {} bytes, got {}",
+                path.display(),
+                expected_bytes,
+                bytes.len()
+            )));
+        }
+        Ok(bytes
+            .chunks_exact(4)
+            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+            .collect())
     }
-    Ok(bytes
-        .chunks_exact(4)
-        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-        .collect())
 }
 
-#[cfg(any(
-    feature = "nsw",
-    feature = "sng",
-    feature = "vamana",
-    feature = "nsg",
-    feature = "finger",
-    feature = "pipnn",
-    feature = "emg",
-    feature = "binary_index",
-    feature = "rp_quant",
-    feature = "sparse_mips",
-    feature = "sq4"
-))]
-pub(crate) fn read_u32_exact(path: &Path, expected_len: usize) -> Result<Vec<u32>, RetrieveError> {
-    let bytes = std::fs::read(path)?;
-    let expected_bytes = expected_len
-        .checked_mul(std::mem::size_of::<u32>())
-        .ok_or_else(|| RetrieveError::FormatError("u32 byte length overflow".into()))?;
-    if bytes.len() != expected_bytes {
-        return Err(RetrieveError::FormatError(format!(
-            "{} size mismatch: expected {} bytes, got {}",
-            path.display(),
-            expected_bytes,
-            bytes.len()
-        )));
+cfg_u32_payload! {
+    pub(crate) fn read_u32_exact(
+        path: &Path,
+        expected_len: usize,
+    ) -> Result<Vec<u32>, RetrieveError> {
+        let bytes = std::fs::read(path)?;
+        let expected_bytes = expected_len
+            .checked_mul(std::mem::size_of::<u32>())
+            .ok_or_else(|| RetrieveError::FormatError("u32 byte length overflow".into()))?;
+        if bytes.len() != expected_bytes {
+            return Err(RetrieveError::FormatError(format!(
+                "{} size mismatch: expected {} bytes, got {}",
+                path.display(),
+                expected_bytes,
+                bytes.len()
+            )));
+        }
+        Ok(bytes
+            .chunks_exact(4)
+            .map(|chunk| u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+            .collect())
     }
-    Ok(bytes
-        .chunks_exact(4)
-        .map(|chunk| u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-        .collect())
 }
 
 #[cfg(feature = "sparse_mips")]
@@ -225,157 +238,137 @@ pub(crate) fn read_u64_exact(path: &Path, expected_len: usize) -> Result<Vec<u64
         .collect())
 }
 
-#[cfg(any(
-    feature = "nsw",
-    feature = "sng",
-    feature = "vamana",
-    feature = "nsg",
-    feature = "finger",
-    feature = "pipnn",
-    feature = "emg",
-    feature = "sparse_mips"
-))]
-pub(crate) fn read_neighbors(
-    path: &Path,
-    magic: &[u8; 8],
-    expected_nodes: usize,
-) -> Result<Vec<SmallVec<[u32; 16]>>, RetrieveError> {
-    let mut reader = BufReader::new(std::fs::File::open(path)?);
-    let mut actual_magic = [0u8; 8];
-    reader.read_exact(&mut actual_magic)?;
-    if &actual_magic != magic {
-        return Err(RetrieveError::FormatError(format!(
-            "invalid graph neighbors magic in {}",
-            path.display()
-        )));
-    }
-    let count = read_one_u64(&mut reader)? as usize;
-    if count != expected_nodes {
-        return Err(RetrieveError::FormatError(format!(
-            "neighbor list count {} does not match manifest count {}",
-            count, expected_nodes
-        )));
-    }
-
-    let mut neighbors = Vec::with_capacity(expected_nodes);
-    for node in 0..expected_nodes {
-        let len = read_one_u64(&mut reader)? as usize;
-        let max_reasonable_degree = expected_nodes.saturating_mul(4).max(64);
-        if len > max_reasonable_degree {
+cfg_graph_neighbors! {
+    pub(crate) fn read_neighbors(
+        path: &Path,
+        magic: &[u8; 8],
+        expected_nodes: usize,
+    ) -> Result<Vec<SmallVec<[u32; 16]>>, RetrieveError> {
+        let mut reader = BufReader::new(std::fs::File::open(path)?);
+        let mut actual_magic = [0u8; 8];
+        reader.read_exact(&mut actual_magic)?;
+        if &actual_magic != magic {
             return Err(RetrieveError::FormatError(format!(
-                "node {node} has too many neighbors: {len}"
+                "invalid graph neighbors magic in {}",
+                path.display()
             )));
         }
-        let mut list = SmallVec::<[u32; 16]>::new();
-        for _ in 0..len {
-            let id = read_one_u32(&mut reader)?;
-            if id as usize >= expected_nodes {
+        let count = usize::try_from(read_one_u64(&mut reader)?).map_err(|_| {
+            RetrieveError::FormatError("neighbor list count exceeds usize".into())
+        })?;
+        if count != expected_nodes {
+            return Err(RetrieveError::FormatError(format!(
+                "neighbor list count {} does not match manifest count {}",
+                count, expected_nodes
+            )));
+        }
+
+        let mut neighbors = Vec::with_capacity(expected_nodes);
+        for node in 0..expected_nodes {
+            let len = usize::try_from(read_one_u64(&mut reader)?).map_err(|_| {
+                RetrieveError::FormatError(format!("node {node} neighbor count exceeds usize"))
+            })?;
+            let max_reasonable_degree = expected_nodes.saturating_mul(4).max(64);
+            if len > max_reasonable_degree {
                 return Err(RetrieveError::FormatError(format!(
-                    "neighbor id {id} exceeds vector count {expected_nodes}"
+                    "node {node} has too many neighbors: {len}"
                 )));
             }
-            list.push(id);
+            let mut list = SmallVec::<[u32; 16]>::new();
+            for _ in 0..len {
+                let id = read_one_u32(&mut reader)?;
+                let id_usize = usize::try_from(id).map_err(|_| {
+                    RetrieveError::FormatError(format!("neighbor id {id} exceeds usize"))
+                })?;
+                if id_usize >= expected_nodes {
+                    return Err(RetrieveError::FormatError(format!(
+                        "neighbor id {id} exceeds vector count {expected_nodes}"
+                    )));
+                }
+                list.push(id);
+            }
+            neighbors.push(list);
         }
-        neighbors.push(list);
-    }
 
-    let mut trailing = [0u8; 1];
-    if reader.read(&mut trailing)? != 0 {
-        return Err(RetrieveError::FormatError(
-            "graph neighbors file has trailing bytes".into(),
-        ));
+        let mut trailing = [0u8; 1];
+        if reader.read(&mut trailing)? != 0 {
+            return Err(RetrieveError::FormatError(
+                "graph neighbors file has trailing bytes".into(),
+            ));
+        }
+        Ok(neighbors)
     }
-    Ok(neighbors)
 }
 
-#[cfg(any(
-    feature = "nsw",
-    feature = "sng",
-    feature = "vamana",
-    feature = "nsg",
-    feature = "finger",
-    feature = "pipnn",
-    feature = "emg"
-))]
-pub(crate) fn validate_graph_shape(
-    name: &str,
-    dimension: usize,
-    num_vectors: usize,
-    vectors: &[f32],
-    doc_ids: &[u32],
-    neighbors: &[SmallVec<[u32; 16]>],
-    entry: Option<u32>,
-) -> Result<(), RetrieveError> {
-    if dimension == 0 {
-        return Err(RetrieveError::FormatError(format!(
-            "{name} manifest has zero dimension"
-        )));
-    }
-    if num_vectors == 0 {
-        return Err(RetrieveError::FormatError(format!(
-            "{name} manifest has zero vectors"
-        )));
-    }
-    if vectors.len() != num_vectors * dimension {
-        return Err(RetrieveError::FormatError(format!(
-            "{name} vectors length {} does not match {} vectors of dimension {}",
-            vectors.len(),
-            num_vectors,
-            dimension
-        )));
-    }
-    if doc_ids.len() != num_vectors {
-        return Err(RetrieveError::FormatError(format!(
-            "{name} doc_ids length {} does not match vector count {}",
-            doc_ids.len(),
-            num_vectors
-        )));
-    }
-    if neighbors.len() != num_vectors {
-        return Err(RetrieveError::FormatError(format!(
-            "{name} neighbor list count {} does not match vector count {}",
-            neighbors.len(),
-            num_vectors
-        )));
-    }
-    if let Some(entry) = entry {
-        if entry as usize >= num_vectors {
+cfg_dense_graph_shape! {
+    pub(crate) fn validate_graph_shape(
+        name: &str,
+        dimension: usize,
+        num_vectors: usize,
+        vectors: &[f32],
+        doc_ids: &[u32],
+        neighbors: &[SmallVec<[u32; 16]>],
+        entry: Option<u32>,
+    ) -> Result<(), RetrieveError> {
+        if dimension == 0 {
             return Err(RetrieveError::FormatError(format!(
-                "{name} entry node {entry} exceeds vector count {num_vectors}"
+                "{name} manifest has zero dimension"
             )));
         }
+        if num_vectors == 0 {
+            return Err(RetrieveError::FormatError(format!(
+                "{name} manifest has zero vectors"
+            )));
+        }
+        let expected_vector_len = num_vectors.checked_mul(dimension).ok_or_else(|| {
+            RetrieveError::FormatError(format!("{name} vector length overflow"))
+        })?;
+        if vectors.len() != expected_vector_len {
+            return Err(RetrieveError::FormatError(format!(
+                "{name} vectors length {} does not match {} vectors of dimension {}",
+                vectors.len(),
+                num_vectors,
+                dimension
+            )));
+        }
+        if doc_ids.len() != num_vectors {
+            return Err(RetrieveError::FormatError(format!(
+                "{name} doc_ids length {} does not match vector count {}",
+                doc_ids.len(),
+                num_vectors
+            )));
+        }
+        if neighbors.len() != num_vectors {
+            return Err(RetrieveError::FormatError(format!(
+                "{name} neighbor list count {} does not match vector count {}",
+                neighbors.len(),
+                num_vectors
+            )));
+        }
+        if let Some(entry) = entry {
+            let entry_usize = usize::try_from(entry).map_err(|_| {
+                RetrieveError::FormatError(format!("{name} entry node {entry} exceeds usize"))
+            })?;
+            if entry_usize >= num_vectors {
+                return Err(RetrieveError::FormatError(format!(
+                    "{name} entry node {entry} exceeds vector count {num_vectors}"
+                )));
+            }
+        }
+        Ok(())
     }
-    Ok(())
 }
 
-#[cfg(any(
-    feature = "nsw",
-    feature = "sng",
-    feature = "vamana",
-    feature = "nsg",
-    feature = "finger",
-    feature = "pipnn",
-    feature = "emg",
-    feature = "sparse_mips"
-))]
-fn read_one_u64(reader: &mut impl Read) -> Result<u64, RetrieveError> {
-    let mut bytes = [0u8; 8];
-    reader.read_exact(&mut bytes)?;
-    Ok(u64::from_le_bytes(bytes))
-}
+cfg_graph_neighbors! {
+    fn read_one_u64(reader: &mut impl Read) -> Result<u64, RetrieveError> {
+        let mut bytes = [0u8; 8];
+        reader.read_exact(&mut bytes)?;
+        Ok(u64::from_le_bytes(bytes))
+    }
 
-#[cfg(any(
-    feature = "nsw",
-    feature = "sng",
-    feature = "vamana",
-    feature = "nsg",
-    feature = "finger",
-    feature = "pipnn",
-    feature = "emg",
-    feature = "sparse_mips"
-))]
-fn read_one_u32(reader: &mut impl Read) -> Result<u32, RetrieveError> {
-    let mut bytes = [0u8; 4];
-    reader.read_exact(&mut bytes)?;
-    Ok(u32::from_le_bytes(bytes))
+    fn read_one_u32(reader: &mut impl Read) -> Result<u32, RetrieveError> {
+        let mut bytes = [0u8; 4];
+        reader.read_exact(&mut bytes)?;
+        Ok(u32::from_le_bytes(bytes))
+    }
 }
