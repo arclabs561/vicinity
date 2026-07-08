@@ -1349,6 +1349,7 @@ impl DiskAnnDiagnosticsTotals {
             avg_graph_bytes: self.graph_bytes as f64 / queries,
             avg_vector_bytes: self.vector_bytes as f64 / queries,
             avg_retained_candidates: self.retained_candidates as f64 / queries,
+            ..StorageDiagnostics::default()
         }
     }
 }

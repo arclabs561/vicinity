@@ -10,11 +10,11 @@ use crate::support::{current_rss_kb, emit_result, evaluate, print_header, print_
 use crate::support::ivfpq_params_json;
 #[cfg(any(feature = "ivf_pq", feature = "ivf_avq", feature = "ivf_rabitq"))]
 use crate::support::nprobe_values;
-#[cfg(feature = "ivf_pq")]
+#[cfg(any(feature = "ivf_pq", feature = "ivf_avq"))]
 use crate::support::warmup_queries;
-#[cfg(feature = "ivf_pq")]
+#[cfg(any(feature = "ivf_pq", feature = "ivf_avq"))]
 use crate::support::BenchResult;
-#[cfg(feature = "ivf_pq")]
+#[cfg(any(feature = "ivf_pq", feature = "ivf_avq"))]
 use crate::support::StorageDiagnostics;
 #[cfg(any(
     feature = "ivf_pq",
@@ -52,22 +52,7 @@ fn snapshot_storage(load_time_s: f64, index_bytes: Option<u64>) -> ResultStorage
     }
 }
 
-#[cfg(feature = "ivf_avq")]
-fn opened_storage(
-    storage_mode: &'static str,
-    load_time_s: f64,
-    index_bytes: Option<u64>,
-) -> ResultStorage<'static> {
-    ResultStorage {
-        storage_mode,
-        cache_state: "warm_after_open",
-        load_time_s: Some(load_time_s),
-        index_bytes,
-        diagnostics: None,
-    }
-}
-
-#[cfg(feature = "ivf_pq")]
+#[cfg(any(feature = "ivf_pq", feature = "ivf_avq"))]
 fn opened_storage_with_diagnostics(
     storage_mode: &'static str,
     load_time_s: f64,
@@ -142,6 +127,85 @@ fn evaluate_ivfpq_file_reranked(
             avg_vector_reads: raw_vector_reads as f64 / queries,
             avg_vector_bytes: raw_vector_bytes as f64 / queries,
             avg_retained_candidates: reranked_candidates as f64 / queries,
+            ..StorageDiagnostics::default()
+        },
+    )
+}
+
+#[cfg(feature = "ivf_avq")]
+fn evaluate_ivfavq_file(
+    searcher: &RefCell<vicinity::ivf_avq::IVFAVQFileSearcher>,
+    test: &[Vec<f32>],
+    neighbors: &[Vec<i32>],
+    k: usize,
+) -> (BenchResult, StorageDiagnostics) {
+    use std::collections::HashSet;
+
+    let warmup_count = warmup_queries().min(test.len());
+    for query in test.iter().take(warmup_count) {
+        let _ = searcher.borrow_mut().search(query, k);
+    }
+
+    let mut total_recall = 0.0;
+    let mut latencies_us: Vec<f64> = Vec::with_capacity(test.len());
+    let mut probed_lists = 0usize;
+    let mut scanned_vectors = 0usize;
+    let mut partition_reads = 0usize;
+    let mut partition_bytes = 0usize;
+    let mut code_reads = 0usize;
+    let mut code_bytes = 0usize;
+    let mut vector_reads = 0usize;
+    let mut vector_bytes = 0usize;
+    let mut retained_candidates = 0usize;
+
+    for (i, query) in test.iter().enumerate() {
+        let q_start = Instant::now();
+        let (results, diagnostics) = searcher
+            .borrow_mut()
+            .search_with_diagnostics(query, k)
+            .expect("IVF-AVQ file-backed search failed");
+        let q_elapsed = q_start.elapsed();
+        latencies_us.push(q_elapsed.as_nanos() as f64 / 1000.0);
+
+        probed_lists += diagnostics.probed_lists;
+        scanned_vectors += diagnostics.scanned_vectors;
+        partition_reads += diagnostics.partition_reads;
+        partition_bytes += diagnostics.partition_bytes;
+        code_reads += diagnostics.code_reads;
+        code_bytes += diagnostics.code_bytes;
+        vector_reads += diagnostics.raw_vector_reads;
+        vector_bytes += diagnostics.raw_vector_bytes;
+        retained_candidates += diagnostics.retained_candidates;
+
+        let gt_set: HashSet<u32> = neighbors[i].iter().take(k).map(|&n| n as u32).collect();
+        let found: HashSet<u32> = results.iter().map(|r| r.0).collect();
+        total_recall += gt_set.intersection(&found).count() as f64 / k as f64;
+    }
+
+    latencies_us.sort_unstable_by(|a, b| a.total_cmp(b));
+    let n = latencies_us.len();
+    let total_us: f64 = latencies_us.iter().sum();
+    let queries = n.max(1) as f64;
+
+    (
+        BenchResult {
+            recall_at_k: total_recall / queries,
+            qps: queries / (total_us / 1_000_000.0),
+            latency_us: total_us / queries,
+            p50_us: latencies_us[n / 2],
+            p95_us: latencies_us[(n as f64 * 0.95) as usize],
+            p99_us: latencies_us[(n as f64 * 0.99) as usize],
+        },
+        StorageDiagnostics {
+            avg_probed_lists: probed_lists as f64 / queries,
+            avg_scanned_vectors: scanned_vectors as f64 / queries,
+            avg_partition_reads: partition_reads as f64 / queries,
+            avg_partition_bytes: partition_bytes as f64 / queries,
+            avg_code_reads: code_reads as f64 / queries,
+            avg_code_bytes: code_bytes as f64 / queries,
+            avg_vector_reads: vector_reads as f64 / queries,
+            avg_vector_bytes: vector_bytes as f64 / queries,
+            avg_retained_candidates: retained_candidates as f64 / queries,
             ..StorageDiagnostics::default()
         },
     )
@@ -736,19 +800,11 @@ pub(crate) fn run_ivf_avq(
                     .mmap_searcher
                     .borrow_mut()
                     .set_num_reorder(num_reorder);
-                let file_result = evaluate(
-                    &|q, k| snapshot.file_searcher.borrow_mut().search(q, k).unwrap(),
-                    test,
-                    neighbors,
-                    10,
-                );
+                let (file_result, file_diagnostics) =
+                    evaluate_ivfavq_file(&snapshot.file_searcher, test, neighbors, 10);
                 #[cfg(feature = "persistence")]
-                let mmap_result = evaluate(
-                    &|q, k| snapshot.mmap_searcher.borrow_mut().search(q, k).unwrap(),
-                    test,
-                    neighbors,
-                    10,
-                );
+                let (mmap_result, mmap_diagnostics) =
+                    evaluate_ivfavq_file(&snapshot.mmap_searcher, test, neighbors, 10);
                 let params_json = ivfavq_params_json(
                     num_partitions,
                     num_codebooks,
@@ -776,10 +832,11 @@ pub(crate) fn run_ivf_avq(
                             build_time_s,
                             rss,
                             &file_result,
-                            &opened_storage(
+                            &opened_storage_with_diagnostics(
                                 "file",
                                 snapshot.file_load_time_s,
                                 snapshot.index_bytes,
+                                file_diagnostics,
                             ),
                         ),
                     );
@@ -792,10 +849,11 @@ pub(crate) fn run_ivf_avq(
                             build_time_s,
                             rss,
                             &mmap_result,
-                            &opened_storage(
+                            &opened_storage_with_diagnostics(
                                 "mmap",
                                 snapshot.mmap_load_time_s,
                                 snapshot.index_bytes,
+                                mmap_diagnostics,
                             ),
                         ),
                     );

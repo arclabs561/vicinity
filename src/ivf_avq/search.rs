@@ -51,6 +51,29 @@ pub struct IVFAVQFileSearcher {
     vector_buf: Vec<f32>,
 }
 
+/// Per-query storage diagnostics for [`IVFAVQFileSearcher`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct IVFAVQFileSearchDiagnostics {
+    /// Number of IVF partitions probed.
+    pub probed_lists: usize,
+    /// Number of vectors scanned across probed partitions.
+    pub scanned_vectors: usize,
+    /// Number of logical partition payload reads.
+    pub partition_reads: usize,
+    /// Number of partition payload bytes read, including IDs and codes.
+    pub partition_bytes: usize,
+    /// Number of logical code payload reads.
+    pub code_reads: usize,
+    /// Number of quantized code bytes read.
+    pub code_bytes: usize,
+    /// Number of candidates retained for exact scoring.
+    pub retained_candidates: usize,
+    /// Number of full-precision vectors read for exact scoring.
+    pub raw_vector_reads: usize,
+    /// Number of raw vector bytes read for exact scoring.
+    pub raw_vector_bytes: usize,
+}
+
 /// Parameters for IVF-AVQ index construction and search.
 #[derive(Clone, Debug)]
 pub struct IVFAVQParams {
@@ -573,6 +596,16 @@ impl IVFAVQFileSearcher {
 
     /// Search the saved index using file reads for partitions and exact rerank vectors.
     pub fn search(&mut self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, RetrieveError> {
+        self.search_with_diagnostics(query, k)
+            .map(|(results, _diagnostics)| results)
+    }
+
+    /// Search the saved index and return storage diagnostics for the query.
+    pub fn search_with_diagnostics(
+        &mut self,
+        query: &[f32],
+        k: usize,
+    ) -> Result<(Vec<(u32, f32)>, IVFAVQFileSearchDiagnostics), RetrieveError> {
         if query.len() != self.dimension {
             return Err(RetrieveError::DimensionMismatch {
                 query_dim: query.len(),
@@ -580,7 +613,7 @@ impl IVFAVQFileSearcher {
             });
         }
         if k == 0 {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), IVFAVQFileSearchDiagnostics::default()));
         }
 
         let mut partition_scores: Vec<(usize, f32)> = self
@@ -592,12 +625,28 @@ impl IVFAVQFileSearcher {
         partition_scores.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
 
         let num_probe = self.params.nprobe.min(self.params.num_partitions);
+        let mut diagnostics = IVFAVQFileSearchDiagnostics {
+            probed_lists: num_probe,
+            ..IVFAVQFileSearchDiagnostics::default()
+        };
         let lut = self.quantizer.build_lut_flat(query);
         let codebook_size = self.quantizer.codebook_size();
         let mut candidates = Vec::new();
 
         for (p_idx, center_score) in partition_scores.iter().take(num_probe) {
             let location = self.partition_locations[*p_idx];
+            diagnostics.scanned_vectors += location.ids_len;
+            diagnostics.partition_reads += 1;
+            let id_bytes_len = checked_byte_len(
+                location.ids_len,
+                std::mem::size_of::<u32>(),
+                "IVF-AVQ diagnostic partition id byte length overflow",
+            )?;
+            diagnostics.partition_bytes += id_bytes_len + location.codes_len;
+            if location.codes_len > 0 {
+                diagnostics.code_reads += 1;
+            }
+            diagnostics.code_bytes += location.codes_len;
             self.read_partition(location)?;
             let m = self.params.num_codebooks;
 
@@ -618,6 +667,13 @@ impl IVFAVQFileSearcher {
             candidates.truncate(num_reorder);
         }
 
+        diagnostics.retained_candidates = candidates.len();
+        diagnostics.raw_vector_reads = candidates.len();
+        diagnostics.raw_vector_bytes = checked_byte_len(
+            candidates.len(),
+            self.raw_byte_buf.len(),
+            "IVF-AVQ diagnostic raw-vector byte count overflow",
+        )?;
         let mut reranked = Vec::with_capacity(candidates.len().min(k));
         for (vector_idx, _) in candidates {
             let exact_dist = self.read_exact_distance(query, vector_idx)?;
@@ -626,7 +682,7 @@ impl IVFAVQFileSearcher {
         reranked.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
         reranked.truncate(k);
 
-        reranked
+        let results = reranked
             .into_iter()
             .map(|(vector_idx, dist)| {
                 let doc_id = *self.doc_ids.get(vector_idx as usize).ok_or_else(|| {
@@ -638,7 +694,8 @@ impl IVFAVQFileSearcher {
                 })?;
                 Ok((doc_id, dist))
             })
-            .collect()
+            .collect::<Result<Vec<_>, RetrieveError>>()?;
+        Ok((results, diagnostics))
     }
 
     /// Set the number of partitions probed during search.
@@ -1378,6 +1435,58 @@ mod tests {
         assert_eq!(
             file_searcher.search(&query, 10).unwrap(),
             loaded.search(&query, 10).unwrap()
+        );
+    }
+
+    #[test]
+    fn file_searcher_diagnostics_report_partition_and_vector_reads() {
+        use rand::{Rng, SeedableRng};
+
+        let dim = 8;
+        let n = 96;
+        let params = IVFAVQParams {
+            num_partitions: 4,
+            nprobe: 3,
+            num_reorder: 24,
+            num_codebooks: 4,
+            codebook_size: 16,
+            seed: 82,
+        };
+        let mut rng = rand::rngs::StdRng::seed_from_u64(82);
+        let mut index = IVFAVQIndex::new(dim, params).unwrap();
+        for i in 0..n {
+            let doc_id = 40_000 + i as u32;
+            let vector: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
+            index.add(doc_id, vector).unwrap();
+        }
+        index.build().unwrap();
+
+        let query: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
+        let dir = tempfile::tempdir().unwrap();
+        index.save_to_dir(dir.path()).unwrap();
+        let mut file_searcher = IVFAVQFileSearcher::open(dir.path()).unwrap();
+
+        let plain = file_searcher.search(&query, 10).unwrap();
+        let (with_diagnostics, diagnostics) =
+            file_searcher.search_with_diagnostics(&query, 10).unwrap();
+
+        assert_eq!(with_diagnostics, plain);
+        assert_eq!(diagnostics.probed_lists, 3);
+        assert_eq!(diagnostics.partition_reads, 3);
+        assert!(diagnostics.scanned_vectors >= diagnostics.retained_candidates);
+        assert_eq!(
+            diagnostics.code_bytes,
+            diagnostics.scanned_vectors * file_searcher.params.num_codebooks
+        );
+        assert!(diagnostics.partition_bytes >= diagnostics.code_bytes);
+        assert_eq!(
+            diagnostics.raw_vector_reads,
+            diagnostics.retained_candidates
+        );
+        assert!(diagnostics.raw_vector_reads >= with_diagnostics.len());
+        assert_eq!(
+            diagnostics.raw_vector_bytes,
+            diagnostics.raw_vector_reads * dim * std::mem::size_of::<f32>()
         );
     }
 

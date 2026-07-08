@@ -1902,6 +1902,26 @@ recall. Both rows reported `avg_probed_lists=1.00`,
 and `avg_retained_candidates=10.00`. Treat these as schema coverage numbers
 only; the workload is intentionally too small for performance claims.
 
+The matching IVF-AVQ schema smoke uses the same cap and records partition
+payload reads as well as exact raw-vector reads:
+
+```bash
+cargo run --no-default-features --features ivf_avq,persistence \
+  --example ann_benchmark -- data/ann-benchmarks/glove-25-angular \
+  --algo ivf_avq --max-train 500 --max-queries 20 --warmup-queries 0 \
+  --pq-nprobes 1 --pq-rerank-pools 20 --snapshot-load --json --fresh \
+  --results /tmp/vicinity-ivfavq-diagnostics-smoke-codex.jsonl
+```
+
+The file row reported 3,612.4 QPS and the mmap row 3,623.5 QPS at 20.50%
+recall. Both rows reported `avg_probed_lists=1.00`,
+`avg_scanned_vectors=2.55`, `avg_partition_reads=1.00`,
+`avg_partition_bytes=22.95`, `avg_code_reads=1.00`,
+`avg_code_bytes=12.75`, `avg_vector_reads=2.55`,
+`avg_vector_bytes=255.00`, and `avg_retained_candidates=2.55`.
+Treat these as schema coverage numbers only; the workload is intentionally too
+small for performance claims.
+
 An external read-only implementation review found the same shape in other
 systems: FAISS on-disk IVF and SPANN/SPFresh organize work around posting-list
 locality, while Lance keeps row IDs beside PQ codes and treats row-id stability

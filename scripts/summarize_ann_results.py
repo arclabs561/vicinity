@@ -104,6 +104,8 @@ DIAGNOSTIC_KEYS = (
     "avg_visited_nodes",
     "avg_probed_lists",
     "avg_scanned_vectors",
+    "avg_partition_reads",
+    "avg_partition_bytes",
     "avg_graph_reads",
     "avg_code_reads",
     "avg_vector_reads",
