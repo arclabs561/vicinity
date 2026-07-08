@@ -8,7 +8,7 @@ benchmarking, persistence, Python bindings, and performance work.
 | Area | Status | Evidence |
 | --- | --- | --- |
 | Dataset fetch/generation repeatability | Passing | ANN smoke and multiscale manifests record payload SHA-256 plus byte counts; `uv run pytest tests/test_download_ann_benchmarks.py tests/test_generate_ann_smoke_data.py tests/test_generate_sample_data.py tests/test_generate_multiscale_data.py` |
-| Dataset difficulty profiling | First pass | `uv run pytest tests/test_profile_ann_dataset.py`; `uv run scripts/profile_ann_dataset.py data/ann-benchmarks/glove-25-angular --sample-train 4096 --sample-queries 1000 --pair-samples 20000 --output /tmp/vicinity-glove25-profile.json` |
+| Dataset difficulty profiling | First pass | `uv run pytest tests/test_profile_ann_dataset.py`; `uv run scripts/profile_ann_dataset.py data/ann-benchmarks/glove-25-angular --sample-train 4096 --sample-queries 1000 --pair-samples 20000 --output /tmp/vicinity-glove25-profile.json`; `uv run pytest tests/test_summarize_ann_results.py`; `uv run python scripts/summarize_ann_results.py --json --current-schema-only --require-declared-index-bytes --profile-dir /tmp/vicinity-profile-kind-dir /tmp/vicinity-footprint-kind.jsonl` |
 | Benchmark resume/storage expectations | Passing | `CARGO_TARGET_DIR=/tmp/vicinity-support-refactor-test CARGO_INCREMENTAL=0 RUSTC_WRAPPER= cargo test --example ann_benchmark --no-default-features --features hnsw,ivf_pq,persistence,diskann,serde,store,kdtree,balltree,rptree,kmeans_tree,lsh,filtered_graph,curator,range_filtered,fresh_graph,ivf_avq,ivf_rabitq,emg,nsg,nsw,sng,pipnn,vamana,finger,rp_quant,sparse_mips,binary_index,sq4,sq8 -- support::tests` (32 tests, including dense SparseMIPS skip, storage-mode resume checks, and legacy row rejection without storage mode); `CARGO_TARGET_DIR=/tmp/vicinity-support-refactor-clippy CARGO_INCREMENTAL=0 RUSTC_WRAPPER= cargo clippy --example ann_benchmark --no-default-features --features hnsw,ivf_pq,persistence,diskann,serde,store,kdtree,balltree,rptree,kmeans_tree,lsh,filtered_graph,curator,range_filtered,fresh_graph,ivf_avq,ivf_rabitq,emg,nsg,nsw,sng,pipnn,vamana,finger,rp_quant,sparse_mips,binary_index,sq4,sq8 -- -D warnings` |
 | Feature-matrix compilation | Passing | `CARGO_TARGET_DIR=/tmp/vicinity-feature-matrix-current CARGO_INCREMENTAL=0 RUSTC_WRAPPER= cargo hack check --each-feature --no-dev-deps --exclude-features python` (44 Rust feature configs, including `persistence` and `store`; `python` remains covered by the PyO3-specific gate) |
 | Graph prefetch unsafe surface | Removed | HNSW `hnsw_search_only` and `hnsw_search_mmax32` controls measured the architecture-specific prefetch hint as neutral or slower. DiskANN `memory_ef75` and `file_ef75` also improved after replacing it with a safe no-op helper. `RUSTFLAGS=-Dwarnings CARGO_TARGET_DIR=/tmp/vicinity-prefetch-target CARGO_INCREMENTAL=0 RUSTC_WRAPPER= cargo check --no-default-features --features diskann,emg,finger,fresh_graph,hnsw,nsg,nsw,pipnn,sng,vamana`; `CARGO_TARGET_DIR=/tmp/vicinity-prefetch-target CARGO_INCREMENTAL=0 RUSTC_WRAPPER= cargo clippy --no-default-features --features diskann,emg,finger,fresh_graph,hnsw,nsg,nsw,pipnn,sng,vamana --lib -- -D warnings` |
@@ -58,7 +58,10 @@ benchmarking, persistence, Python bindings, and performance work.
   also contains legacy JSONL. Use `qps_at_recall_floor` for fixed-recall QPS
   claims; `best_qps` is the fastest row at any recall. The summary also reports
   `index_bytes` from the corresponding rows when the benchmark emitted it, so
-  QPS and footprint can be reviewed together.
+  QPS and footprint can be reviewed together. With `--profile-dir`, exact
+  dataset-profile matches now carry metric, shape, sampled distance dispersion,
+  nearest-neighbor margin, LID, sampled contrast, hubness, coarse-partition
+  imbalance, and query-split kinds into the same coverage rows.
 - Python intentionally exposes the stable core today: common HNSW construction,
   HNSW JSON save/load, IVF-PQ directory save/load, IVF-PQ file/mmap search, and
   parallel batch search in release wheels. It should not mirror every
@@ -167,15 +170,15 @@ benchmarking, persistence, Python bindings, and performance work.
   and `ef=50`, and stayed neutral on the remaining controls. The earlier
   32-pop interval was rejected because `m_max=32,ef=200` regressed.
 - The newer Perplexity2/unfinished-risk note was written against an older
-  snapshot. Its HNSW tombstone, IVF-PQ filter metadata, DiskANN rustdoc,
-  SmallVec inline-capacity, random LEMUR encoder warning, and unsupported
-  compression fallback claims are resolved or mitigated at current `HEAD`.
-  The SNG module docs no longer repeat external build-speed claims without a
-  local benchmark row. Live follow-ups from that note are HNSW
-  distance-dispatch profiling and fixed-recall rows for experimental families.
-  The `ivf_pq/search.rs` size item has been reduced without behavior changes by
-  extracting manifest, cluster, and file-storage helpers; continue splitting
-  only when a coherent private boundary appears.
+  snapshot and was re-checked against current `HEAD`. Its HNSW tombstone,
+  IVF-PQ filter metadata, DiskANN rustdoc, HNSW `SmallVec` inline-capacity,
+  SNG overclaim, unsupported compression fallback, and 4-bit NEON FastScan
+  claims are resolved or mitigated. Live follow-ups from that note are HNSW
+  distance-dispatch profiling, broader graph-family 16-inline neighbor lists,
+  the public random LEMUR encoder constructor, and fixed-recall rows for
+  experimental families. The `ivf_pq/search.rs` size item has been reduced
+  without behavior changes by extracting manifest, cluster, and file-storage
+  helpers; continue splitting only when a coherent private boundary appears.
 - The 4-bit IVF-PQ FastScan path now has an aarch64 NEON `tbl` block kernel.
   The direct `pq_fastscan_lut_shape/flat_lut` microbench improved from
   3.3636 us to 934.32 ns, with parity covered against the portable block
@@ -290,7 +293,7 @@ benchmarking, persistence, Python bindings, and performance work.
 | 12 | Python policy | Settled for now: Python exposes stable workflows, not every Rust module. Keep HNSW construction/search/save-load, IVF-PQ snapshot/file/mmap search, and parallel batch search as the supported surface. Add a Rust module to Python only after it has stable benchmarks, persistence behavior, examples, and a clear user workflow. Rust-only gaps today: DiskANN, `store`, FreshGraph, filtered search/update APIs, and HNSW binary segments. |
 | 13 | LSH/sketch boundary | The `lsh` feature uses `sketchir` for cross-polytope hashing primitives. Keep `sketchir` focused on MinHash/SimHash/LSH sketches and durable sketch sidecars; keep vicinity focused on ANN storage, exact reranking, persistence modes, and fixed-recall benchmark rows. Benchmark sharing is useful, but PRT, RP-tree/RP-forest, SparseMIPS, and LEMUR should stay in vicinity unless their role becomes pure sketch generation. |
 | 14 | External research claims | New implementation-scouting evidence points to Qdrant's mmap/residency model, Weaviate sparse visited sets, Qdrant/Vespa selectivity-gated ACORN, Faiss FastScan layout validation, DiskANN provider boundaries, and Qdrant-style private SIMD kernels as the most actionable prior art. Still verify newer roadmap claims before implementation: Extended RaBitQ, VSAG layout tricks, IP-DiskANN, PAG, SAQ, and ARM/SVE2 kernels. Keep `innr` as the optional dense-distance SIMD dependency; use local `pq_simd` work for PQ-code/LUT kernels that `innr` does not cover. |
-| 15 | Dataset difficulty metadata | First sampled profile script exists for VEC1/NBR1 datasets, and local profiles now cover SIFT, GloVe-25/50/100/200, Deep Image, NYTimes, Fashion-MNIST, MNIST, and GIST. Optional generated split labels are reported when present, and `scripts/summarize_dataset_profiles.py` renders profile JSONs into the docs table shape. `scripts/summarize_ann_results.py --profile-dir PATH` now links matching profile JSON paths in coverage output while leaving capped dataset labels unlinked unless an exact profile exists. |
+| 15 | Dataset difficulty metadata | First sampled profile script exists for VEC1/NBR1 datasets, and local profiles now cover SIFT, GloVe-25/50/100/200, Deep Image, NYTimes, Fashion-MNIST, MNIST, and GIST. Optional generated split labels are reported when present, and `scripts/summarize_dataset_profiles.py` renders profile JSONs into the docs table shape. `scripts/summarize_ann_results.py --profile-dir PATH` now joins exact profile metrics into ANN coverage rows while leaving capped dataset labels unlinked unless an exact profile exists. |
 | 16 | Profiling depth | Runtime profiles now cover HNSW search, ACORN filtered search, DiskANN direct-file rows, IVF-PQ ADC/allocation paths, dataset difficulty, and a same-binary `m_max=16` versus `m_max=32` HNSW search-only comparison. The ledger also records a build-path sample where `rustc` stalled in `readdir` over a large `target/debug/deps`; use isolated `CARGO_TARGET_DIR` values for future profile targets. HNSW binary inspection confirmed an indirect `blr x7` in `flush_batch`, and the new `distance_dispatch` Criterion group shows function-pointer dispatch costs on low-dimensional `innr` kernels, but the broad, `flush_batch`, and cosine-only HNSW dispatch rewrites all regressed or missed the keep threshold. The latest plain-HNSW symbolized sample still puts the largest leaf bucket inside `innr::dense::dot`; the ACORN samples first put the largest buckets in `HashMap::insert` and `reserve_rehash`, then shifted after dense tracking to inlined ACORN loop work plus `innr::dense::dot`. The kept ACORN fix is a safe visited-tracker change, not unsafe SIMD. The graph prefetch experiment removed a product unsafe surface and improved or held controls, so do not add local HNSW unsafe before safe heap/frontier/layout experiments. Next actual performance change should still record baseline, profiler target, negative controls, before/after, and rejected hypotheses in `docs/benchmark-results.md`. |
 
 ## Guardrails
