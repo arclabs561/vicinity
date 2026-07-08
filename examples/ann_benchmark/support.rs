@@ -455,13 +455,10 @@ fn params_containing_storage_checks(
     cfg: &Config,
     expectation: StorageExpectation,
 ) -> Vec<ExpectedResult> {
-    std::iter::once("in_memory")
-        .chain(expectation.required_modes(cfg).iter().copied())
-        .map(|storage_mode| {
-            ExpectedResult::with_param_fragments(algorithm, fragments.clone())
-                .with_storage(storage_mode)
-        })
-        .collect()
+    storage_expectation_checks_with(cfg, expectation, |storage_mode| {
+        ExpectedResult::with_param_fragments(algorithm, fragments.clone())
+            .with_storage(storage_mode)
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -539,11 +536,19 @@ fn storage_expectation_checks(
     cfg: &Config,
     expectation: StorageExpectation,
 ) -> Vec<ExpectedResult> {
+    storage_expectation_checks_with(cfg, expectation, |storage_mode| {
+        ExpectedResult::with_params_and_storage(algorithm, params_json, storage_mode)
+    })
+}
+
+fn storage_expectation_checks_with(
+    cfg: &Config,
+    expectation: StorageExpectation,
+    make_expected: impl FnMut(&'static str) -> ExpectedResult,
+) -> Vec<ExpectedResult> {
     std::iter::once("in_memory")
         .chain(expectation.required_modes(cfg).iter().copied())
-        .map(|storage_mode| {
-            ExpectedResult::with_params_and_storage(algorithm, params_json, storage_mode)
-        })
+        .map(make_expected)
         .collect()
 }
 
