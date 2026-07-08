@@ -10,6 +10,7 @@ benchmarking, persistence, Python bindings, and performance work.
 | Dataset fetch/generation repeatability | Passing | `uv run pytest tests/test_download_ann_benchmarks.py tests/test_generate_ann_smoke_data.py tests/test_generate_sample_data.py tests/test_generate_multiscale_data.py` |
 | Dataset difficulty profiling | First pass | `uv run pytest tests/test_profile_ann_dataset.py`; `uv run scripts/profile_ann_dataset.py data/ann-benchmarks/glove-25-angular --sample-train 4096 --sample-queries 1000 --pair-samples 20000 --output /tmp/vicinity-glove25-profile.json` |
 | Benchmark resume/storage expectations | Passing | `cargo test --example ann_benchmark --no-default-features --features hnsw,ivf_pq,persistence,diskann,serde -- support::tests` (25 tests, including dense SparseMIPS skip) |
+| Feature-matrix compilation | Passing | `PYO3_PYTHON=/opt/homebrew/bin/python3.12 CARGO_TARGET_DIR=/tmp/vicinity-feature-matrix-target CARGO_INCREMENTAL=0 RUSTC_WRAPPER= cargo hack check --each-feature --no-dev-deps --exclude-features persistence` |
 | Python exposed API | Passing | `uv run maturin develop --release --features hnsw,python,parallel`; `uv run pytest tests/test_python.py`; `uv run python -m mypy.stubtest pyvicinity._core` |
 | Algorithm recommendation docs | Updated | README and `docs/algorithms.md` distinguish brute force, in-memory, file-backed graph, and file-backed compressed search |
 
@@ -49,6 +50,10 @@ benchmarking, persistence, Python bindings, and performance work.
   parallel batch search in release wheels. It should not mirror every
   experimental Rust module until the Rust module has a clear recommendation or
   benchmark gate.
+- Local cargo builds of the `python` feature need a 3.10+ interpreter because
+  `pyo3` is configured with `abi3-py310`. On macOS, `/usr/bin/python3` may be
+  3.9; set `PYO3_PYTHON=/opt/homebrew/bin/python3.12` or run through the
+  project `uv` environment when checking that feature.
 - The largest validated Perplexity finding so far is IVF-PQ: the old low-QPS
   result was an implementation and layout gap. A full-train GloVe-25 sweep now
   reaches 95.42% recall at 2,640 QPS in memory, 2,553 QPS from direct file
@@ -130,10 +135,10 @@ benchmarking, persistence, Python bindings, and performance work.
   remaining all-family coverage work; measured rows still need separate
   fixed-recall review because several local rows use `--max-train` caps.
 - A read-only storage matrix audit found no unsupported DiskANN or IVF-PQ
-  file/mmap claims. Follow-up edits made HNSW tombstone persistence explicit,
-  marked InPlace/MappedInPlace file snapshots as `serde`-gated, and taught
-  resume that SparseMIPS is an intentional dense-harness skip until a sparse
-  dataset harness exists.
+  file/mmap claims. Follow-up edits made HNSW serde and binary-segment
+  tombstones roundtrip, marked InPlace/MappedInPlace file snapshots as
+  `serde`-gated, and taught resume that SparseMIPS is an intentional
+  dense-harness skip until a sparse dataset harness exists.
 - A subagent read-only review of the experimental-status docs found DiskANN,
   DEG, LEMUR, SQ4U/SymphonyQG, and classical coverage mostly accurate. Follow-up
   edits narrowed stale KD-tree exactness wording, marked old GloVe-25 rows as

@@ -128,7 +128,7 @@ impl TombstoneSet {
     }
 
     /// Construct a tombstone set from persisted internal node IDs.
-    #[cfg(any(feature = "persistence", feature = "store"))]
+    #[cfg(feature = "persistence")]
     pub(crate) fn from_ids(ids: impl IntoIterator<Item = usize>) -> Self {
         let mut set = Self::default();
         for id in ids {

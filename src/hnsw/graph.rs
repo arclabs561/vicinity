@@ -1110,14 +1110,14 @@ impl HNSWIndex {
         self.num_vectors.saturating_sub(self.tombstones.len())
     }
 
-    #[cfg(any(feature = "persistence", feature = "store"))]
+    #[cfg(feature = "persistence")]
     pub(crate) fn tombstone_flags(&self) -> Vec<u8> {
         (0..self.num_vectors)
             .map(|internal_id| u8::from(self.tombstones.is_deleted(internal_id)))
             .collect()
     }
 
-    #[cfg(any(feature = "persistence", feature = "store"))]
+    #[cfg(feature = "persistence")]
     pub(crate) fn restore_tombstone_flags(&mut self, flags: &[u8]) -> Result<(), RetrieveError> {
         if flags.len() != self.num_vectors {
             return Err(RetrieveError::FormatError(format!(
