@@ -779,12 +779,47 @@ cargo run --release --example ann_benchmark --no-default-features --features kme
 | K-means tree | branch_budget=8, leaf 500 | in_memory | 100.00% | 590.5 | 2,036.3 | n/a | 8,303,640 |
 | K-means tree | branch_budget=8, leaf 500 | snapshot_loaded | 100.00% | 536.5 | 2,433.5 | 0.1201 | 29,268,469 |
 
+The same K-means policy was then run on the full GloVe-25 corpus with 1,000
+queries and snapshot reload enabled:
+
+```bash
+CARGO_TARGET_DIR=/tmp/vicinity-kmeans-full-leaf-sweep CARGO_INCREMENTAL=0 RUSTC_WRAPPER= \
+cargo run --release --example ann_benchmark --no-default-features --features kmeans_tree,serde -- \
+  data/ann-benchmarks/glove-25-angular --algo kmeans_tree \
+  --max-queries 1000 --kmeans-clusters 8 \
+  --kmeans-leaf-sizes 500,1000 --kmeans-depths 10 \
+  --kmeans-iters 10 --kmeans-search-branches 1 \
+  --kmeans-leaf-budgets 48,64,96,128 \
+  --snapshot-load --json --fresh \
+  --results data/ann-benchmarks/results/vicinity-kmeans-full-leaf-sweep-20260708.jsonl
+
+CARGO_TARGET_DIR=/tmp/vicinity-kmeans-full-leaf-sweep CARGO_INCREMENTAL=0 RUSTC_WRAPPER= \
+cargo run --release --example ann_benchmark --no-default-features --features kmeans_tree,serde -- \
+  data/ann-benchmarks/glove-25-angular --algo kmeans_tree \
+  --max-queries 1000 --kmeans-clusters 8 \
+  --kmeans-leaf-sizes 1000 --kmeans-depths 10 \
+  --kmeans-iters 10 --kmeans-search-branches 1 \
+  --kmeans-leaf-budgets 160,192,256,384 \
+  --snapshot-load --json --fresh \
+  --results data/ann-benchmarks/results/vicinity-kmeans-full-leaf-sweep-high-budget-20260708.jsonl
+```
+
+| Algorithm | Search policy | Storage mode | Recall@10 | QPS | p95 us | Load s | Index bytes |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
+| K-means tree | leaf_budget=128, leaf 1000 | in_memory | 92.89% | 416.6 | 3,254.2 | n/a | 261,948,416 |
+| K-means tree | leaf_budget=128, leaf 1000 | snapshot_loaded | 92.89% | 426.0 | 3,187.9 | 1.8158 | 731,578,843 |
+| K-means tree | leaf_budget=192, leaf 1000 | in_memory | 95.84% | 310.8 | 4,253.3 | n/a | 261,948,416 |
+| K-means tree | leaf_budget=192, leaf 1000 | snapshot_loaded | 95.84% | 316.7 | 4,159.6 | 1.8306 | 731,578,843 |
+| K-means tree | leaf_budget=256, leaf 1000 | in_memory | 97.58% | 239.3 | 5,465.4 | n/a | 261,948,416 |
+| K-means tree | leaf_budget=256, leaf 1000 | snapshot_loaded | 97.58% | 241.1 | 5,368.2 | 1.7999 | 731,578,843 |
+
 This changes the classical read slightly: RP-forest is not capped below 95%
 recall, but reaching that band costs enough tree and leaf budget that it sits
 well below graph methods at the same 50K cap. K-means tree is controllable via
-search budget. The global leaf-budget path is the useful high-recall baseline:
-it clears 95% at roughly 5K QPS on this 50K cap, while the older branch-budget
-row reaches exact recall by walking too much of the tree.
+search budget. The global leaf-budget path is the useful high-recall baseline
+on the 50K cap, where it clears 95% at roughly 5K QPS. On full GloVe-25 it
+also clears 95%, but only at `leaf_budget=192` and roughly 311-317 QPS. Treat
+that as a completeness row for classical coverage, not a graph competitor.
 
 On 2026-07-08, the in-memory benchmark rows for NSW, Vamana, NSG, SNG, EMG,
 PiPNN, FINGER, and FreshGraph were wired to heap `index_bytes` from explicit
