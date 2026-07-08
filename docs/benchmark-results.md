@@ -689,6 +689,40 @@ wrapper. The next candidate should isolate either `flush_batch` or the
 distance-kernel entrypoint and keep the same ef=10/50/100/200 negative-control
 rows.
 
+That narrower candidate was tested next: `flush_batch` was made generic over
+the distance function, then the normal `HNSWIndex::search` and MQO base-layer
+calls were routed through metric-specialized entrypoints. Construction and
+custom-distance search kept the existing function-pointer API. The candidate
+reduced one allocation per query in the synthetic bench but still regressed the
+search loop:
+
+```bash
+# Baseline, before applying the candidate patch.
+CARGO_TARGET_DIR=/tmp/vicinity-hnsw-metric-bench CARGO_INCREMENTAL=0 \
+  RUSTC_WRAPPER= cargo bench --bench hnsw_search --features hnsw -- \
+  hnsw_search_only --measurement-time 3 --warm-up-time 1 --sample-size 20 \
+  --save-baseline hnsw_metric_before
+
+# Candidate, compared against the saved baseline.
+CARGO_TARGET_DIR=/tmp/vicinity-hnsw-metric-bench CARGO_INCREMENTAL=0 \
+  RUSTC_WRAPPER= cargo bench --bench hnsw_search --features hnsw -- \
+  hnsw_search_only --measurement-time 3 --warm-up-time 1 --sample-size 20 \
+  --baseline hnsw_metric_before
+```
+
+| Workload | Baseline mean | Candidate mean | Criterion change | Decision |
+| --- | ---: | ---: | ---: | --- |
+| `hnsw_search_only/ef/10` | 482.50 us | 508.52 us | +5.27% time | rejected |
+| `hnsw_search_only/ef/50` | 1.8545 ms | 1.9316 ms | +4.51% time | rejected |
+| `hnsw_search_only/ef/100` | 3.6265 ms | 3.7774 ms | +3.41% time | rejected |
+| `hnsw_search_only/ef/200` | 7.1294 ms | 7.1557 ms | +2.01% time | no useful win |
+
+The candidate patch was reverted. This makes the current dispatch evidence
+more specific: the indirect `blr` exists in `flush_batch`, but monomorphizing
+the standard-search entrypoints does not help this workload. Further HNSW
+search work should prioritize heap-update structure, visited/result layout, and
+vector/neighbor locality before another dispatch rewrite.
+
 ### Dense Distance Kernel
 
 Direct Criterion measurements on the 128-d L2 kernel:
