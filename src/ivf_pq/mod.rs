@@ -153,6 +153,7 @@ mod cluster;
 mod file_storage;
 mod manifest;
 pub mod opq;
+mod persistence;
 pub mod pq;
 pub mod search;
 #[cfg(feature = "benchmark")]
