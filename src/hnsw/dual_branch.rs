@@ -334,11 +334,11 @@ impl DualBranchHNSW {
 
                     if should_add {
                         candidates.push(MinCandidate { id: neighbor, dist });
-                        results.push(MaxCandidate { id: neighbor, dist });
-
-                        if results.len() > ef {
-                            results.pop();
-                        }
+                        insert_bounded_result(
+                            &mut results,
+                            ef,
+                            MaxCandidate { id: neighbor, dist },
+                        );
                     }
                 }
             }
@@ -587,11 +587,11 @@ impl DualBranchHNSW {
 
                     if should_add {
                         candidates.push(MinCandidate { id: neighbor, dist });
-                        results.push(MaxCandidate { id: neighbor, dist });
-
-                        if results.len() > ef {
-                            results.pop();
-                        }
+                        insert_bounded_result(
+                            &mut results,
+                            ef,
+                            MaxCandidate { id: neighbor, dist },
+                        );
                     }
                 }
             }
@@ -613,11 +613,11 @@ impl DualBranchHNSW {
 
                         if should_add {
                             candidates.push(MinCandidate { id: target, dist });
-                            results.push(MaxCandidate { id: target, dist });
-
-                            if results.len() > ef {
-                                results.pop();
-                            }
+                            insert_bounded_result(
+                                &mut results,
+                                ef,
+                                MaxCandidate { id: target, dist },
+                            );
                         }
                     }
                 }
@@ -836,6 +836,25 @@ impl Ord for MaxCandidate {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         // Normal order for max-heap
         self.dist.total_cmp(&other.dist)
+    }
+}
+
+fn insert_bounded_result(
+    results: &mut BinaryHeap<MaxCandidate>,
+    limit: usize,
+    candidate: MaxCandidate,
+) {
+    if limit == 0 {
+        return;
+    }
+    if results.len() < limit {
+        results.push(candidate);
+        return;
+    }
+    if let Some(mut worst) = results.peek_mut() {
+        if candidate.dist < worst.dist {
+            *worst = candidate;
+        }
     }
 }
 

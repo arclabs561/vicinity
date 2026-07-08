@@ -192,6 +192,21 @@ impl Ord for Candidate {
     }
 }
 
+fn insert_bounded_result(results: &mut BinaryHeap<Candidate>, limit: usize, candidate: Candidate) {
+    if limit == 0 {
+        return;
+    }
+    if results.len() < limit {
+        results.push(candidate);
+        return;
+    }
+    if let Some(mut worst) = results.peek_mut() {
+        if candidate.distance < worst.distance {
+            *worst = candidate;
+        }
+    }
+}
+
 /// Internal counters for an ACORN search.
 ///
 /// Useful for regression guards that want to assert which branches fired
@@ -326,16 +341,14 @@ where
             let dist = compute_distance(neighbor);
 
             if neighbor_passes {
-                // Add to results
-                results.push(Candidate {
-                    node_id: neighbor,
-                    distance: dist,
-                });
-
-                // Keep only top k
-                while results.len() > k {
-                    results.pop();
-                }
+                insert_bounded_result(
+                    &mut results,
+                    k,
+                    Candidate {
+                        node_id: neighbor,
+                        distance: dist,
+                    },
+                );
 
                 // Update worst distance
                 if let Some(worst) = results.peek() {
@@ -375,14 +388,14 @@ where
                     let two_hop_dist = compute_distance(two_hop);
 
                     if two_hop_passes {
-                        results.push(Candidate {
-                            node_id: two_hop,
-                            distance: two_hop_dist,
-                        });
-
-                        while results.len() > k {
-                            results.pop();
-                        }
+                        insert_bounded_result(
+                            &mut results,
+                            k,
+                            Candidate {
+                                node_id: two_hop,
+                                distance: two_hop_dist,
+                            },
+                        );
 
                         if let Some(worst) = results.peek() {
                             worst_result_dist = worst.distance;

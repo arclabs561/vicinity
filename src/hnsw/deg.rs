@@ -399,13 +399,14 @@ impl DEGIndex {
 
                     // Add to results
                     if results.len() < k || dist < worst_result {
-                        results.push(Candidate {
-                            id: neighbor,
-                            distance: dist,
-                        });
-                        while results.len() > k {
-                            results.pop();
-                        }
+                        insert_bounded_result(
+                            &mut results,
+                            k,
+                            Candidate {
+                                id: neighbor,
+                                distance: dist,
+                            },
+                        );
                     }
 
                     // Add to candidates (with expansion factor)
@@ -566,6 +567,21 @@ impl Ord for Candidate {
         // Max-heap: larger distance = higher priority (for results pruning)
         // Use total_cmp for IEEE 754 total ordering (NaN-safe)
         self.distance.total_cmp(&other.distance)
+    }
+}
+
+fn insert_bounded_result(results: &mut BinaryHeap<Candidate>, limit: usize, candidate: Candidate) {
+    if limit == 0 {
+        return;
+    }
+    if results.len() < limit {
+        results.push(candidate);
+        return;
+    }
+    if let Some(mut worst) = results.peek_mut() {
+        if candidate.distance < worst.distance {
+            *worst = candidate;
+        }
     }
 }
 
