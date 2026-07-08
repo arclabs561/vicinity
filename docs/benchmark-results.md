@@ -1012,6 +1012,34 @@ experiment was reverted.
 | `hnsw_search_only/ef/100` | 5.8881 ms | 6.6302 ms | +13.68% time | rejected |
 | `hnsw_search_only/ef/200` | 10.601 ms | 12.422 ms | no significant change | rejected |
 
+Another finalization experiment tried to drain the result heap with repeated
+`BinaryHeap::pop()` calls followed by `reverse()`, instead of `drain()` plus
+`sort_unstable_by`. The intended invariant was unchanged sorted ascending
+output while preserving the thread-local result heap allocation. It looked
+plausible because the heap already contains ordered structure, but it regressed
+every normal HNSW row and was reverted before the denser control rows finished.
+
+```bash
+CARGO_TARGET_DIR=/tmp/vicinity-hnsw-drain-target CARGO_INCREMENTAL=0 \
+  RUSTC_WRAPPER= cargo bench --bench hnsw_search --features hnsw,benchmark -- \
+  --save-baseline before_drain
+
+CARGO_TARGET_DIR=/tmp/vicinity-hnsw-drain-target CARGO_INCREMENTAL=0 \
+  RUSTC_WRAPPER= cargo bench --bench hnsw_search --features hnsw,benchmark -- \
+  --baseline before_drain
+```
+
+| Workload | Baseline mean | Candidate mean | Criterion change | Decision |
+| --- | ---: | ---: | ---: | --- |
+| `hnsw_search_only/ef/10` | 896.40 us | 1.0351 ms | +13.29% time | rejected |
+| `hnsw_search_only/ef/50` | 3.2261 ms | 3.8112 ms | +18.13% time | rejected |
+| `hnsw_search_only/ef/100` | 6.3245 ms | 7.1811 ms | +13.54% time | rejected |
+| `hnsw_search_only/ef/200` | 11.442 ms | 13.003 ms | +13.65% time | rejected |
+
+Conclusion: keep the current `drain()` plus `sort_unstable_by` finalization for
+the standard HNSW search path. The next heap work should target candidate/result
+maintenance during traversal, not heap teardown after traversal.
+
 A second follow-up swept `DISTANCE_BATCH_SIZE` from 8 to 16 to test whether
 larger independent distance batches help the `flush_batch` hotspot. It was
 measured against both default `m_max=16` and denser `m_max=32` graph rows:
