@@ -798,6 +798,33 @@ Both passed. `cross_algorithm_consistency` was also compiled with only `hnsw`,
 but that integration test is gated on `hnsw,nsw,diskann,sng`, so it emitted
 zero tests in that feature set.
 
+A follow-up finalization experiment tried to remove the intermediate top-k
+`Vec` allocation in `HNSWIndex::search` by chaining `take(k)` directly into
+the tombstone/doc-id conversion. The intended invariant was unchanged
+semantics: `greedy_search_layer` output stayed sorted, `take(k)` still happened
+before tombstone filtering, and external doc-id mapping was unchanged.
+
+```bash
+CARGO_INCREMENTAL=0 RUSTC_WRAPPER= cargo bench --bench hnsw_search \
+  --features hnsw -- hnsw_search_only --sample-size 20 --warm-up-time 1 \
+  --measurement-time 3 --save-baseline finalize_before
+
+CARGO_INCREMENTAL=0 RUSTC_WRAPPER= cargo bench --bench hnsw_search \
+  --features hnsw -- hnsw_search_only --sample-size 20 --warm-up-time 1 \
+  --measurement-time 3 --baseline finalize_before
+```
+
+The allocation diagnostics did not move: all rows stayed at 5 allocation calls
+per query. Criterion also reported regressions on the lower-ef rows, so the
+experiment was reverted.
+
+| Workload | Baseline mean | Candidate mean | Criterion change | Decision |
+| --- | ---: | ---: | ---: | --- |
+| `hnsw_search_only/ef/10` | 686.02 us | 787.98 us | +25.71% time | rejected |
+| `hnsw_search_only/ef/50` | 2.7448 ms | 3.5912 ms | +44.96% time | rejected |
+| `hnsw_search_only/ef/100` | 5.8881 ms | 6.6302 ms | +13.68% time | rejected |
+| `hnsw_search_only/ef/200` | 10.601 ms | 12.422 ms | no significant change | rejected |
+
 ### Dense Distance Kernel
 
 Direct Criterion measurements on the 128-d L2 kernel:
