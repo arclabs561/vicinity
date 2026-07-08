@@ -43,6 +43,8 @@ def test_load_summaries_groups_by_dataset_algorithm_and_storage(tmp_path: Path) 
     hnsw = summaries[("glove-25-angular", "hnsw", "in_memory")]
     assert hnsw.rows == 2
     assert hnsw.best_recall == 0.97
+    assert hnsw.best_recall_params == {"ef_search": 50}
+    assert hnsw.best_recall_index_bytes == 1000
     assert hnsw.best_qps == 20.0
     assert hnsw.best_qps_params == {"ef_search": 10}
     assert hnsw.best_qps_index_bytes == 2000
@@ -220,10 +222,10 @@ def test_markdown_table_is_stable(tmp_path: Path) -> None:
     table = script.markdown_table(script.coverage_rows(script.load_summaries([path])))
     columns = [line.split("|")[1:-1] for line in table.splitlines()]
 
-    assert {len(line_columns) for line_columns in columns} == {13}
+    assert {len(line_columns) for line_columns in columns} == {15}
     assert (
-        "| rows | - | hnsw | in_memory | measured | 1 | 1.0000 | 42.0 | - | "
-        "4096 | 42.0 | - | 4096 |" in table
+        "| rows | - | hnsw | in_memory | measured | 1 | 1.0000 | - | 4096 | "
+        "42.0 | - | 4096 | 42.0 | - | 4096 |" in table
     )
 
 
@@ -242,6 +244,8 @@ def test_json_output_preserves_recall_at_10_key(
 
     output = json.loads(capsys.readouterr().out)
     assert output[0]["best_recall_at_10"] == 1.0
+    assert output[0]["best_recall_params"] is None
+    assert output[0]["best_recall_index_bytes"] == 4096
     assert output[0]["best_index_bytes"] == 4096
     assert output[0]["qps_at_recall_floor"] == 42.0
     assert output[0]["index_bytes_at_recall_floor"] == 4096
@@ -342,6 +346,9 @@ def test_json_output_uses_recall_floor_for_thresholded_qps(
     script.main()
 
     output = json.loads(capsys.readouterr().out)
+    assert output[0]["best_recall_at_10"] == 0.96
+    assert output[0]["best_recall_params"] == {"ef_search": 50}
+    assert output[0]["best_recall_index_bytes"] == 1000
     assert output[0]["best_qps"] == 1000.0
     assert output[0]["best_params"] == {"ef_search": 10}
     assert output[0]["best_index_bytes"] == 2000

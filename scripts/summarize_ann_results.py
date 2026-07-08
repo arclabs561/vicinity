@@ -141,6 +141,8 @@ def observed_standard_storage_expectations(
 class Summary:
     rows: int = 0
     best_recall: float = 0.0
+    best_recall_params: dict[str, Any] | None = None
+    best_recall_index_bytes: int | None = None
     best_qps: float = 0.0
     best_qps_params: dict[str, Any] | None = None
     best_qps_index_bytes: int | None = None
@@ -159,7 +161,10 @@ class Summary:
         index_bytes = index_bytes if isinstance(index_bytes, int) else None
         params = row.get("params")
         params = dict(params) if isinstance(params, dict) else None
-        self.best_recall = max(self.best_recall, recall)
+        if recall >= self.best_recall:
+            self.best_recall = recall
+            self.best_recall_params = params
+            self.best_recall_index_bytes = index_bytes
         if qps >= self.best_qps:
             self.best_qps = qps
             self.best_qps_params = params
@@ -209,6 +214,8 @@ class CoverageRow:
     status: str
     rows: int
     best_recall: float | None
+    best_recall_params: dict[str, Any] | None
+    best_recall_index_bytes: int | None
     best_qps: float | None
     best_params: dict[str, Any] | None
     best_index_bytes: int | None
@@ -367,6 +374,10 @@ def coverage_rows(
                 status="measured" if summary else "missing",
                 rows=summary.rows if summary else 0,
                 best_recall=summary.best_recall if summary else None,
+                best_recall_params=summary.best_recall_params if summary else None,
+                best_recall_index_bytes=(
+                    summary.best_recall_index_bytes if summary else None
+                ),
                 best_qps=summary.best_qps if summary else None,
                 best_params=summary.best_qps_params if summary else None,
                 best_index_bytes=summary.best_qps_index_bytes if summary else None,
@@ -394,16 +405,23 @@ def format_params(params: dict[str, Any] | None) -> str:
 def markdown_table(rows: list[CoverageRow], recall_floor: float = 0.95) -> str:
     lines = [
         "| Dataset | Profile | Algorithm | Storage | Status | Rows | "
-        "Best Recall@10 | Best QPS | Best Params | Best Index Bytes | "
+        "Best Recall@10 | Params @ Best Recall | Index Bytes @ Best Recall | "
+        "Best QPS | Best Params | Best Index Bytes | "
         f"Best QPS @ R>={recall_floor:.2f} | "
         f"Params @ R>={recall_floor:.2f} | "
         f"Index Bytes @ R>={recall_floor:.2f} |",
-        "| --- | --- | --- | --- | --- | ---: | ---: | ---: | --- | "
-        "---: | ---: | --- | ---: |",
+        "| --- | --- | --- | --- | --- | ---: | ---: | --- | ---: | "
+        "---: | --- | ---: | ---: | --- | ---: |",
     ]
     for row in rows:
         profile = "-" if row.dataset_profile is None else row.dataset_profile
         recall = "-" if row.best_recall is None else f"{row.best_recall:.4f}"
+        recall_params = format_params(row.best_recall_params)
+        recall_index_bytes = (
+            "-"
+            if row.best_recall_index_bytes is None
+            else str(row.best_recall_index_bytes)
+        )
         qps = "-" if row.best_qps is None else f"{row.best_qps:.1f}"
         best_params = format_params(row.best_params)
         index_bytes = "-" if row.best_index_bytes is None else str(row.best_index_bytes)
@@ -418,8 +436,9 @@ def markdown_table(rows: list[CoverageRow], recall_floor: float = 0.95) -> str:
         )
         lines.append(
             f"| {row.dataset} | {profile} | {row.algorithm} | {row.storage_mode} | "
-            f"{row.status} | {row.rows} | {recall} | {qps} | {best_params} | "
-            f"{index_bytes} | {floor_qps} | {floor_params} | {floor_index_bytes} |"
+            f"{row.status} | {row.rows} | {recall} | {recall_params} | "
+            f"{recall_index_bytes} | {qps} | {best_params} | {index_bytes} | "
+            f"{floor_qps} | {floor_params} | {floor_index_bytes} |"
         )
     return "\n".join(lines)
 
@@ -558,6 +577,8 @@ def main() -> None:
                         "status": row.status,
                         "rows": row.rows,
                         "best_recall_at_10": row.best_recall,
+                        "best_recall_params": row.best_recall_params,
+                        "best_recall_index_bytes": row.best_recall_index_bytes,
                         "best_qps": row.best_qps,
                         "best_params": row.best_params,
                         "best_index_bytes": row.best_index_bytes,
