@@ -289,6 +289,29 @@ mod x86_64 {
 
     use super::*;
 
+    pub(super) fn dispatch_into<L: PackedLUTData>(
+        codes_batch: &[u8],
+        num_codebooks: usize,
+        lut: &L,
+        distances: &mut Vec<f32>,
+    ) -> bool {
+        let n_candidates = codes_batch.len() / num_codebooks;
+
+        if n_candidates >= 16 && std::is_x86_feature_detected!("avx512f") {
+            // SAFETY: runtime detection guarantees AVX-512F is available for this call.
+            unsafe { adc_batch_avx512_into(codes_batch, num_codebooks, lut, distances) };
+            return true;
+        }
+
+        if n_candidates >= 8 && std::is_x86_feature_detected!("avx2") {
+            // SAFETY: runtime detection guarantees AVX2 is available for this call.
+            unsafe { adc_batch_avx2_into(codes_batch, num_codebooks, lut, distances) };
+            return true;
+        }
+
+        false
+    }
+
     /// AVX2 batch ADC with 8-way parallelism.
     ///
     /// Processes 8 candidates simultaneously using gather instructions.
@@ -455,6 +478,41 @@ mod aarch64 {
     //! NEON implementations of PQ distance.
 
     use super::*;
+
+    pub(super) fn dispatch_into<L: PackedLUTData>(
+        codes_batch: &[u8],
+        num_codebooks: usize,
+        lut: &L,
+        distances: &mut Vec<f32>,
+    ) -> bool {
+        let n_candidates = codes_batch.len() / num_codebooks;
+        if n_candidates < 4 {
+            return false;
+        }
+
+        if lut.codebook_size() == 256 && lut.data().len() >= num_codebooks.saturating_mul(256) {
+            // SAFETY: aarch64 has NEON, and the shape check proves the flat
+            // 256-entry LUT has enough entries for every codebook.
+            unsafe {
+                adc_batch_neon_flat_256_into(codes_batch, num_codebooks, lut.data(), distances)
+            };
+        } else {
+            // SAFETY: aarch64 has NEON. The generic kernel indexes through
+            // checked slices, so only the target-feature call is unsafe.
+            unsafe { adc_batch_neon_into(codes_batch, num_codebooks, lut, distances) };
+        }
+        true
+    }
+
+    pub(super) fn fastscan_block(
+        block_data: &[u8],
+        lut_quantized: &[u8],
+        num_codebooks: usize,
+    ) -> [u16; 32] {
+        // SAFETY: aarch64 has NEON. `fastscan_block_neon` validates the slice
+        // lengths before issuing vector loads.
+        unsafe { fastscan_block_neon(block_data, lut_quantized, num_codebooks) }
+    }
 
     /// NEON batch ADC with 4-way parallelism.
     ///
@@ -702,35 +760,16 @@ pub fn adc_batch_dispatch_into<L: PackedLUTData>(
     lut: &L,
     distances: &mut Vec<f32>,
 ) {
-    let n_candidates = codes_batch.len() / num_codebooks;
-
     #[cfg(target_arch = "x86_64")]
     {
-        if n_candidates >= 16 && is_x86_feature_detected!("avx512f") {
-            unsafe { x86_64::adc_batch_avx512_into(codes_batch, num_codebooks, lut, distances) };
-            return;
-        }
-        if n_candidates >= 8 && is_x86_feature_detected!("avx2") {
-            unsafe { x86_64::adc_batch_avx2_into(codes_batch, num_codebooks, lut, distances) };
+        if x86_64::dispatch_into(codes_batch, num_codebooks, lut, distances) {
             return;
         }
     }
 
     #[cfg(target_arch = "aarch64")]
     {
-        if n_candidates >= 4 {
-            if lut.codebook_size() == 256 && lut.data().len() >= num_codebooks.saturating_mul(256) {
-                unsafe {
-                    aarch64::adc_batch_neon_flat_256_into(
-                        codes_batch,
-                        num_codebooks,
-                        lut.data(),
-                        distances,
-                    )
-                };
-                return;
-            }
-            unsafe { aarch64::adc_batch_neon_into(codes_batch, num_codebooks, lut, distances) };
+        if aarch64::dispatch_into(codes_batch, num_codebooks, lut, distances) {
             return;
         }
     }
@@ -1032,7 +1071,7 @@ fn fastscan_batch_quantized(
         let block_data = &packed.data[block_start..block_end];
 
         #[cfg(target_arch = "aarch64")]
-        let accum = unsafe { aarch64::fastscan_block_neon(block_data, lut_q, num_codebooks) };
+        let accum = aarch64::fastscan_block(block_data, lut_q, num_codebooks);
         #[cfg(not(target_arch = "aarch64"))]
         let accum = fastscan_block_portable(block_data, lut_q, num_codebooks);
 
