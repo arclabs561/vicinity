@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import random
@@ -110,6 +111,14 @@ def read_nbr1_shape(path: Path) -> tuple[int, int] | None:
     return binary_shape(path, b"NBR1")
 
 
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def expected_manifest(train: int, test: int, dim: int, k: int) -> dict[str, Any]:
     return {
         "version": MANIFEST_VERSION,
@@ -120,22 +129,36 @@ def expected_manifest(train: int, test: int, dim: int, k: int) -> dict[str, Any]
     }
 
 
+def manifest_with_outputs(output: Path, manifest: dict[str, Any]) -> dict[str, Any]:
+    full_manifest = dict(manifest)
+    full_manifest["outputs"] = {
+        filename: {
+            "bytes": (output / filename).stat().st_size,
+            "sha256": file_sha256(output / filename),
+        }
+        for filename in ("train.bin", "test.bin", "neighbors.bin")
+    }
+    return full_manifest
+
+
 def matching_outputs(output: Path, manifest: dict[str, Any]) -> bool:
     manifest_path = output / "ann_smoke_dataset.json"
     try:
         existing_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError):
         return False
-    if existing_manifest != manifest:
+    if any(existing_manifest.get(key) != value for key, value in manifest.items()):
         return False
     if read_vec1_shape(output / "train.bin") != (manifest["train"], manifest["dim"]):
         return False
     if read_vec1_shape(output / "test.bin") != (manifest["test"], manifest["dim"]):
         return False
-    return read_nbr1_shape(output / "neighbors.bin") == (
-        manifest["test"],
-        manifest["k"],
-    )
+    if read_nbr1_shape(output / "neighbors.bin") != (manifest["test"], manifest["k"]):
+        return False
+    try:
+        return existing_manifest == manifest_with_outputs(output, manifest)
+    except FileNotFoundError:
+        return False
 
 
 def write_manifest_atomic(path: Path, manifest: dict[str, Any]) -> None:
@@ -176,7 +199,10 @@ def main() -> None:
     write_vec1(args.output / "train.bin", train)
     write_vec1(args.output / "test.bin", test)
     write_nbr1(args.output / "neighbors.bin", neighbors)
-    write_manifest_atomic(args.output / "ann_smoke_dataset.json", manifest)
+    write_manifest_atomic(
+        args.output / "ann_smoke_dataset.json",
+        manifest_with_outputs(args.output, manifest),
+    )
     print(f"Wrote ANN smoke dataset to {args.output}")
 
 

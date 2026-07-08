@@ -7,7 +7,7 @@ benchmarking, persistence, Python bindings, and performance work.
 
 | Area | Status | Evidence |
 | --- | --- | --- |
-| Dataset fetch/generation repeatability | Passing | `uv run pytest tests/test_download_ann_benchmarks.py tests/test_generate_ann_smoke_data.py tests/test_generate_sample_data.py tests/test_generate_multiscale_data.py` |
+| Dataset fetch/generation repeatability | Passing | ANN smoke and multiscale manifests record payload SHA-256 plus byte counts; `uv run pytest tests/test_download_ann_benchmarks.py tests/test_generate_ann_smoke_data.py tests/test_generate_sample_data.py tests/test_generate_multiscale_data.py` |
 | Dataset difficulty profiling | First pass | `uv run pytest tests/test_profile_ann_dataset.py`; `uv run scripts/profile_ann_dataset.py data/ann-benchmarks/glove-25-angular --sample-train 4096 --sample-queries 1000 --pair-samples 20000 --output /tmp/vicinity-glove25-profile.json` |
 | Benchmark resume/storage expectations | Passing | `cargo test --example ann_benchmark --no-default-features --features hnsw,ivf_pq,persistence,diskann,serde -- support::tests` (27 tests, including dense SparseMIPS skip and legacy row rejection without storage mode) |
 | Feature-matrix compilation | Passing | `PYO3_PYTHON=/opt/homebrew/bin/python3.12 CARGO_TARGET_DIR=/tmp/vicinity-feature-matrix-target CARGO_INCREMENTAL=0 RUSTC_WRAPPER= cargo hack check --each-feature --no-dev-deps --exclude-features persistence` |
