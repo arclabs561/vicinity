@@ -424,6 +424,12 @@ fn ef_snapshot_checks(
         .collect()
 }
 
+fn max_degree_ef_snapshot_checks(algorithm: &str, cfg: &Config) -> Vec<ExpectedResult> {
+    ef_snapshot_checks(algorithm, cfg, |ef| {
+        format!("{{\"max_degree\":32,\"ef_search\":{}}}", ef)
+    })
+}
+
 fn ef_serde_snapshot_checks(
     algorithm: &str,
     cfg: &Config,
@@ -699,12 +705,7 @@ fn required_result_checks(
                 })
                 .collect()
         }
-        "emg" | "nsg" => ef_snapshot_checks(algo, cfg, |ef| {
-            format!("{{\"max_degree\":32,\"ef_search\":{}}}", ef)
-        }),
-        "fresh_graph" => ef_snapshot_checks(algo, cfg, |ef| {
-            format!("{{\"max_degree\":32,\"ef_search\":{}}}", ef)
-        }),
+        "emg" | "nsg" | "fresh_graph" => max_degree_ef_snapshot_checks(algo, cfg),
         "dual_branch" => ef_serde_snapshot_checks("dual_branch", cfg, |ef| {
             format!(
                 "{{\"m\":{},\"m_high_lid\":{},\"ef_construction\":{},\"ef_search\":{}}}",
