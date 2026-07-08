@@ -189,21 +189,7 @@ fn greedy_search_vamana(
                     let next_id = nb_list[i + 1] as usize;
                     if next_id < num_vectors {
                         let ptr = vectors.as_ptr().wrapping_add(next_id * dimension);
-                        #[cfg(target_arch = "aarch64")]
-                        unsafe {
-                            std::arch::asm!(
-                                "prfm pldl1keep, [{ptr}]",
-                                ptr = in(reg) ptr,
-                                options(nostack, preserves_flags)
-                            );
-                        }
-                        #[cfg(target_arch = "x86_64")]
-                        unsafe {
-                            std::arch::x86_64::_mm_prefetch(
-                                ptr as *const i8,
-                                std::arch::x86_64::_MM_HINT_T0,
-                            );
-                        }
+                        crate::prefetch::prefetch_read_data(ptr);
                     }
                 }
 

@@ -203,6 +203,7 @@ pub(crate) mod graph_utils;
 #[cfg(feature = "hnsw")]
 pub mod lid;
 pub mod memory;
+pub(crate) mod prefetch;
 pub(crate) mod simd;
 
 // Spectral sanity helpers (feature-gated). Folded into the only

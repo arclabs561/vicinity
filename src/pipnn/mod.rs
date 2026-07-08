@@ -774,7 +774,9 @@ impl PipnnIndex {
                 if idx < marks.len() && marks[idx] != generation {
                     marks[idx] = generation;
                     true
-                } else { idx >= marks.len() }
+                } else {
+                    idx >= marks.len()
+                }
             };
 
             let mut frontier: BinaryHeap<std::cmp::Reverse<(FloatOrd, u32)>> = BinaryHeap::new();
@@ -788,7 +790,8 @@ impl PipnnIndex {
 
             let mut visited_count = 1usize;
 
-            while let Some(std::cmp::Reverse((FloatOrd(current_dist), current_id))) = frontier.pop() {
+            while let Some(std::cmp::Reverse((FloatOrd(current_dist), current_id))) = frontier.pop()
+            {
                 if candidates.len() >= ef {
                     candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
                     if current_dist > candidates[ef - 1].1 * 1.5 {
@@ -802,14 +805,7 @@ impl PipnnIndex {
                     if i + 1 < neighbors.len() {
                         let next_id = neighbors[i + 1] as usize;
                         let ptr = self.vectors.as_ptr().wrapping_add(next_id * self.dimension);
-                        #[cfg(target_arch = "aarch64")]
-                        unsafe {
-                            std::arch::asm!("prfm pldl1keep, [{ptr}]", ptr = in(reg) ptr, options(nostack, preserves_flags));
-                        }
-                        #[cfg(target_arch = "x86_64")]
-                        unsafe {
-                            std::arch::x86_64::_mm_prefetch(ptr as *const i8, std::arch::x86_64::_MM_HINT_T0);
-                        }
+                        crate::prefetch::prefetch_read_data(ptr);
                     }
 
                     if visited_insert(neighbor) {

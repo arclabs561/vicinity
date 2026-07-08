@@ -79,7 +79,9 @@ pub fn search_sng(
             if idx < marks.len() && marks[idx] != generation {
                 marks[idx] = generation;
                 true
-            } else { idx >= marks.len() }
+            } else {
+                idx >= marks.len()
+            }
         };
 
         // Greedy search with early termination
@@ -115,15 +117,11 @@ pub fn search_sng(
                     // Prefetch next neighbor's vector
                     if i + 1 < neighbors.len() {
                         let next_id = neighbors[i + 1] as usize;
-                        let ptr = index.vectors.as_ptr().wrapping_add(next_id * index.dimension);
-                        #[cfg(target_arch = "aarch64")]
-                        unsafe {
-                            std::arch::asm!("prfm pldl1keep, [{ptr}]", ptr = in(reg) ptr, options(nostack, preserves_flags));
-                        }
-                        #[cfg(target_arch = "x86_64")]
-                        unsafe {
-                            std::arch::x86_64::_mm_prefetch(ptr as *const i8, std::arch::x86_64::_MM_HINT_T0);
-                        }
+                        let ptr = index
+                            .vectors
+                            .as_ptr()
+                            .wrapping_add(next_id * index.dimension);
+                        crate::prefetch::prefetch_read_data(ptr);
                     }
 
                     if !visited_insert(neighbor_id) {

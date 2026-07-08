@@ -3,31 +3,7 @@
 use std::cell::RefCell;
 use std::collections::{BinaryHeap, HashSet};
 
-// ─── Software prefetch ──────────────────────────────────────────────────────
-
-/// Prefetch a memory address into L1 cache for reading.
-///
-/// No-op on unsupported platforms. This is a performance hint only;
-/// correctness does not depend on it.
-#[inline(always)]
-#[allow(unsafe_code, unused_variables)]
-pub(crate) fn prefetch_read_data(ptr: *const f32) {
-    #[cfg(target_arch = "x86_64")]
-    {
-        // SAFETY: _mm_prefetch is a hint; invalid addresses are silently ignored.
-        unsafe {
-            std::arch::x86_64::_mm_prefetch(ptr as *const i8, std::arch::x86_64::_MM_HINT_T0);
-        }
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        // SAFETY: prefetch is a hint; invalid addresses are silently ignored.
-        // Using inline asm because the intrinsic is nightly-only.
-        unsafe {
-            std::arch::asm!("prfm pldl1keep, [{ptr}]", ptr = in(reg) ptr, options(nostack, preserves_flags));
-        }
-    }
-}
+pub(crate) use crate::prefetch::prefetch_read_data;
 
 // ─── Visited set ─────────────────────────────────────────────────────────────
 
