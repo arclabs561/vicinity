@@ -23,6 +23,12 @@ const DISTANCE_BATCH_SIZE: usize = 8;
 /// changes often and `peek()` is cheap.
 const CACHED_WORST_MIN_EF: usize = 64;
 
+/// Beam width where periodically pruning stale frontier candidates may pay off.
+const FRONTIER_PRUNE_MIN_EF: usize = 64;
+
+/// Number of candidate pops between frontier-pruning attempts.
+const FRONTIER_PRUNE_INTERVAL: usize = 64;
+
 /// Fast visited-node tracker using the generation-counter pattern.
 ///
 /// Dense variant: a `Vec<u8>` where `visited[id] == generation` means visited.
@@ -348,6 +354,22 @@ fn flush_batch_custom<F: Fn(&[f32], u32) -> f32>(
     }
 }
 
+#[inline]
+fn prune_unpromising_candidates(
+    candidates: &mut BinaryHeap<MinCandidate>,
+    results: &BinaryHeap<MaxResult>,
+    ef: usize,
+) {
+    if ef < FRONTIER_PRUNE_MIN_EF || results.len() < ef || candidates.len() < ef {
+        return;
+    }
+    let Some(worst) = results.peek() else {
+        return;
+    };
+    let worst_dist = worst.distance;
+    candidates.retain(|candidate| candidate.distance <= worst_dist);
+}
+
 // ─── Search functions ────────────────────────────────────────────────────────
 
 /// Greedy search in a single layer using standard HNSW beam search.
@@ -394,12 +416,17 @@ pub fn greedy_search_layer(
 
             // Standard HNSW beam search:
             // Continue while we have candidates that might improve results
+            let should_prune_frontier = ef >= FRONTIER_PRUNE_MIN_EF;
+            let mut pops_since_prune = 0usize;
             while let Some(candidate) = candidates.pop() {
                 // Stopping condition: if best candidate is worse than worst result
                 // and we have enough results, we're done
                 let worst_dist = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
                 if candidate.distance > worst_dist && results.len() >= ef {
                     break;
+                }
+                if should_prune_frontier {
+                    pops_since_prune += 1;
                 }
 
                 // Explore neighbors using batched distance computation.
@@ -455,6 +482,11 @@ pub fn greedy_search_layer(
                         results,
                         ef,
                     );
+                }
+
+                if should_prune_frontier && pops_since_prune >= FRONTIER_PRUNE_INTERVAL {
+                    prune_unpromising_candidates(candidates, results, ef);
+                    pops_since_prune = 0;
                 }
             }
 

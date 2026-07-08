@@ -855,6 +855,44 @@ rather than a global constant change.
 | `hnsw_search_mmax32/ef/100` | 9.1639 ms | 7.8941 ms | no significant change | rejected |
 | `hnsw_search_mmax32/ef/200` | 17.116 ms | 17.993 ms | +21.71% time | rejected |
 
+A frontier-pruning follow-up then targeted the remaining `BinaryHeap::pop`
+bucket. The kept variant prunes stale frontier candidates only for `ef >= 64`,
+only every 64 popped candidates, and keeps candidates with distance equal to the
+current worst result to preserve the strict HNSW stopping condition. An earlier
+32-pop interval was rejected because the densest `m_max=32,ef=200` negative
+control regressed.
+
+```bash
+CARGO_INCREMENTAL=0 RUSTC_WRAPPER= cargo bench --bench hnsw_search \
+  --features hnsw -- hnsw_search_ --sample-size 20 --warm-up-time 1 \
+  --measurement-time 3 --baseline batch8
+```
+
+| Workload | Batch-8 run | Frontier-prune run | Criterion change | Decision |
+| --- | ---: | ---: | ---: | --- |
+| `hnsw_search_only/ef/10` | 885.89 us | 838.68 us | no significant change | kept |
+| `hnsw_search_only/ef/50` | 3.2292 ms | 2.8731 ms | no significant change | kept |
+| `hnsw_search_only/ef/100` | 6.3094 ms | 5.3339 ms | -8.19% time | kept |
+| `hnsw_search_only/ef/200` | 11.390 ms | 10.254 ms | -8.97% time | kept |
+| `hnsw_search_mmax32/ef/10` | 1.4080 ms | 1.2406 ms | -12.59% time | kept |
+| `hnsw_search_mmax32/ef/50` | 5.0563 ms | 4.7936 ms | -11.33% time | kept |
+| `hnsw_search_mmax32/ef/100` | 9.1639 ms | 8.5566 ms | no significant change | kept |
+| `hnsw_search_mmax32/ef/200` | 17.116 ms | 16.373 ms | no significant change | kept |
+
+Correctness checks:
+
+```bash
+cargo test --no-default-features --features hnsw --lib hnsw
+cargo test --no-default-features --features hnsw --test search_with_distance_parity
+cargo test --no-default-features --features hnsw --test regression_known_bugs
+cargo test --no-default-features --features hnsw --test hnsw_e2e
+cargo clippy --no-default-features --features hnsw --lib -- -D warnings
+```
+
+These passed: 99 HNSW lib tests plus 1 ignored measurement-only test, 2
+search-with-distance parity tests, 5 known-regression tests, 13 HNSW e2e tests,
+and the HNSW clippy slice.
+
 ### Dense Distance Kernel
 
 Direct Criterion measurements on the 128-d L2 kernel:

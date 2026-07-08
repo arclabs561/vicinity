@@ -130,6 +130,11 @@ benchmarking, persistence, Python bindings, and performance work.
   improved `ef=10` by 2.57%, `ef=100` by 2.86%, and `ef=200` by 3.93%, with
   no significant `ef=50` change. HNSW lib tests and search-with-distance parity
   passed under `--no-default-features --features hnsw`.
+- Periodic HNSW frontier pruning was measured and kept with a conservative
+  `ef >= 64`, 64-pop interval. It improved the 128-d search-only bench at
+  default `ef=100` and `ef=200`, improved denser `m_max=32` rows at `ef=10`
+  and `ef=50`, and stayed neutral on the remaining controls. The earlier
+  32-pop interval was rejected because `m_max=32,ef=200` regressed.
 - The newer Perplexity2/unfinished-risk note was written against an older
   snapshot. Its HNSW tombstone, IVF-PQ filter metadata, DiskANN rustdoc,
   SmallVec inline-capacity, random LEMUR encoder warning, and unsupported
