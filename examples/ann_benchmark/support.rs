@@ -1520,6 +1520,7 @@ impl Default for ResultStorage<'_> {
     }
 }
 
+#[cfg(test)]
 fn storage_context_from_params(params: &str) -> ResultStorage<'static> {
     if params.contains("\"storage\":\"mmap\"") {
         ResultStorage {
@@ -1538,6 +1539,7 @@ fn storage_context_from_params(params: &str) -> ResultStorage<'static> {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn json_line(
     algorithm: &str,
     params: &str,

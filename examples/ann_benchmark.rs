@@ -111,30 +111,9 @@ use support::rp_forest_params_json;
 use support::tree_params_json;
 use support::{
     active_features_json, algorithm_options_help, brute_force_search, current_rss_kb, emit_result,
-    evaluate, json_line, load_completed_results_with_warmup, parse_args, print_header, print_row,
-    request_completed, rustc_version, set_warmup_queries, Config,
+    evaluate, json_line_with_storage, load_completed_results_with_warmup, parse_args, print_header,
+    print_row, request_completed, rustc_version, set_warmup_queries, Config, ResultStorage,
 };
-#[cfg(any(
-    feature = "balltree",
-    feature = "curator",
-    feature = "diskann",
-    feature = "emg",
-    feature = "finger",
-    feature = "filtered_graph",
-    feature = "fresh_graph",
-    feature = "hnsw",
-    feature = "kdtree",
-    feature = "kmeans_tree",
-    feature = "nsg",
-    feature = "nsw",
-    feature = "pipnn",
-    all(feature = "range_filtered", feature = "hnsw"),
-    feature = "rptree",
-    feature = "sng",
-    feature = "store",
-    feature = "vamana"
-))]
-use support::{json_line_with_storage, ResultStorage};
 #[cfg(feature = "kmeans_tree")]
 use support::{kmeans_tree_leaf_budget_params_json, kmeans_tree_params_json};
 #[cfg(feature = "store")]
@@ -2987,9 +2966,13 @@ fn run_brute(cfg: &Config, train: &[Vec<f32>], test: &[Vec<f32>], neighbors: &[V
 
     if cfg.json {
         let params_json = "{}";
+        let storage = ResultStorage {
+            index_bytes: Some(0),
+            ..ResultStorage::default()
+        };
         emit_result(
             &cfg.results_path,
-            &json_line("brute", params_json, build_time_s, rss, &result),
+            &json_line_with_storage("brute", params_json, build_time_s, rss, &result, &storage),
         );
     } else {
         print_row("--", &result);
