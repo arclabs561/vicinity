@@ -1542,6 +1542,41 @@ These passed: 99 HNSW lib tests plus 1 ignored measurement-only test, 2
 search-with-distance parity tests, 5 known-regression tests, 13 HNSW e2e tests,
 and the HNSW clippy slice.
 
+A later safe borrowed-neighbor experiment tried to bypass `Cow` construction for
+uncompressed HNSW layers by adding a borrowed layer-neighbor accessor and moving
+the standard batched neighbor processing into an always-inlined helper. It was
+rejected and reverted: it reduced allocation counters by one allocation per query
+and improved the high-`ef` sparse control, but regressed the low-recall rows that
+matter for QPS and also regressed a denser-graph control.
+
+```bash
+CARGO_TARGET_DIR=/tmp/vicinity-hnsw-neighbor-slice CARGO_INCREMENTAL=0 \
+  RUSTC_WRAPPER= cargo bench --bench hnsw_search --no-default-features \
+  --features hnsw -- hnsw_search_ --sample-size 20 --warm-up-time 1 \
+  --measurement-time 3 --save-baseline before
+
+CARGO_TARGET_DIR=/tmp/vicinity-hnsw-neighbor-slice CARGO_INCREMENTAL=0 \
+  RUSTC_WRAPPER= cargo bench --bench hnsw_search --no-default-features \
+  --features hnsw -- hnsw_search_ --sample-size 20 --warm-up-time 1 \
+  --measurement-time 3 --baseline before
+```
+
+| Workload | Baseline | Borrowed-neighbor run | Criterion change | Decision |
+| --- | ---: | ---: | ---: | --- |
+| `hnsw_search_only/ef/10` | 496.00 us | 526.37 us | +6.22% time | rejected |
+| `hnsw_search_only/ef/50` | 2.0363 ms | 1.9990 ms | no significant change | rejected |
+| `hnsw_search_only/ef/100` | 3.7640 ms | 3.7415 ms | no significant change | rejected |
+| `hnsw_search_only/ef/200` | 7.3298 ms | 7.2311 ms | -4.38% time | rejected |
+| `hnsw_search_mmax32/ef/10` | 843.15 us | 912.23 us | +7.99% time | rejected |
+| `hnsw_search_mmax32/ef/50` | 3.2397 ms | 3.2444 ms | no significant change | rejected |
+| `hnsw_search_mmax32/ef/100` | 5.9178 ms | 6.0227 ms | +2.10% time | rejected |
+| `hnsw_search_mmax32/ef/200` | 11.092 ms | 11.580 ms | no significant change | rejected |
+
+The result argues that this code-shape change is not a free way to remove
+neighbor `Cow` overhead. Future HNSW neighbor-layout work should avoid adding a
+per-candidate helper boundary or branch to the standard low-`ef` loop unless a
+profile shows a stronger offsetting win.
+
 ### Dense Distance Kernel
 
 Direct Criterion measurements on the 128-d L2 kernel:
