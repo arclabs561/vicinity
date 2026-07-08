@@ -93,9 +93,11 @@ benchmarking, persistence, Python bindings, and performance work.
   reduced the `ef=50` search-only row from 7.0 to 5.0 allocation calls/query
   and measured about 3.9% faster in Criterion.
 - HNSW's internal neighbor-list alias now holds 32 neighbors inline, matching
-  the default base-layer `m_max=32`. The capacity guard passes, but existing
-  `hnsw_search_only` timings use `m_max=16`, so this still needs a dedicated
-  `m_max=32` before/after timing row.
+  the default base-layer `m_max=32`. The capacity guard passes, and
+  `benches/hnsw_search.rs` now has a separate `hnsw_search_mmax32` group. A
+  same-binary synthetic run measured `m=16,m_max=32` slower than the historical
+  `m=16,m_max=16` fixture because the graph exposes more base-layer neighbors;
+  treat this as topology evidence, not a capacity-regression signal.
 - HNSW `samply` profiling on `hnsw_search_only/ef/200` shifted the next search
   target away from allocator-only work. Leaf samples were concentrated in
   `flush_batch` (~40%), `innr::dense::dot` (~30%), and
@@ -211,7 +213,7 @@ benchmarking, persistence, Python bindings, and performance work.
 | 13 | LSH/sketch boundary | The `lsh` feature uses `sketchir` for cross-polytope hashing primitives. Keep `sketchir` focused on MinHash/SimHash/LSH sketches and durable sketch sidecars; keep vicinity focused on ANN storage, exact reranking, persistence modes, and fixed-recall benchmark rows. Benchmark sharing is useful, but PRT, RP-tree/RP-forest, SparseMIPS, and LEMUR should stay in vicinity unless their role becomes pure sketch generation. |
 | 14 | External research claims | Verify newer roadmap claims before implementation: Extended RaBitQ, VSAG layout tricks, IP-DiskANN, ACORN production behavior, PAG, SAQ, and ARM/SVE2 kernels. Keep `innr` as the optional dense-distance SIMD dependency; use local `pq_simd` work for PQ-code/LUT kernels that `innr` does not cover. |
 | 15 | Dataset difficulty metadata | First sampled profile script exists for VEC1/NBR1 datasets, and local profiles now cover SIFT, GloVe-25/50/100/200, Deep Image, NYTimes, Fashion-MNIST, MNIST, and GIST. Optional generated split labels are reported when present, and `scripts/summarize_dataset_profiles.py` renders profile JSONs into the docs table shape. Next review should decide whether benchmark-result summaries should link profile JSON paths directly. |
-| 16 | Profiling depth | Runtime profiles now cover HNSW search, DiskANN direct-file rows, IVF-PQ ADC/allocation paths, and dataset difficulty. The ledger also records a build-path sample where `rustc` stalled in `readdir` over a large `target/debug/deps`; use isolated `CARGO_TARGET_DIR` values for future profile targets. HNSW binary inspection confirmed an indirect `blr x7` in `flush_batch`, but the broad generic-wrapper rewrite regressed high-ef rows, so the next distance-dispatch experiment must isolate `flush_batch` or the distance-kernel entrypoint. Next actual performance change should still record baseline, profiler target, negative controls, before/after, and rejected hypotheses in `docs/benchmark-results.md`. |
+| 16 | Profiling depth | Runtime profiles now cover HNSW search, DiskANN direct-file rows, IVF-PQ ADC/allocation paths, dataset difficulty, and a same-binary `m_max=16` versus `m_max=32` HNSW search-only comparison. The ledger also records a build-path sample where `rustc` stalled in `readdir` over a large `target/debug/deps`; use isolated `CARGO_TARGET_DIR` values for future profile targets. HNSW binary inspection confirmed an indirect `blr x7` in `flush_batch`, but the broad generic-wrapper rewrite regressed high-ef rows, so the next distance-dispatch experiment must isolate `flush_batch` or the distance-kernel entrypoint. Next actual performance change should still record baseline, profiler target, negative controls, before/after, and rejected hypotheses in `docs/benchmark-results.md`. |
 
 ## Guardrails
 

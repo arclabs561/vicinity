@@ -951,9 +951,33 @@ A follow-up changed HNSW's internal neighbor list alias from
 `SmallVec<[u32; 16]>` to `SmallVec<[u32; 32]>`, matching the default
 base-layer `m_max=32`. The guard
 `neighbor_list_holds_default_base_degree_inline` verifies 32 neighbors stay
-inline. Existing `hnsw_search_only` timing rows still build with `m_max=16`, so
-they do not measure this change; the next HNSW benchmark pass should add an
-explicit `m_max=32` search/build row before claiming a QPS delta.
+inline.
+
+The search-only benchmark now includes a separate `hnsw_search_mmax32` group so
+default-degree rows can be measured without changing the historical
+`hnsw_search_only` fixture. A short same-binary Criterion run used:
+
+```bash
+CARGO_TARGET_DIR=/tmp/vicinity-hnsw-mmax32-bench CARGO_INCREMENTAL=0 \
+  RUSTC_WRAPPER= cargo bench --bench hnsw_search --features hnsw -- \
+  hnsw_search_ --sample-size 15 --warm-up-time 0.5 --measurement-time 1
+```
+
+| Workload | Time / 100 queries | Throughput | Alloc bytes/query |
+| --- | ---: | ---: | ---: |
+| `m=16,m_max=16,ef=10` | 459.36 us | 217.69K queries/s | 348 |
+| `m=16,m_max=16,ef=50` | 1.8611 ms | 53.73K queries/s | 1,388 |
+| `m=16,m_max=16,ef=100` | 3.5796 ms | 27.94K queries/s | 2,748 |
+| `m=16,m_max=16,ef=200` | 6.9111 ms | 14.47K queries/s | 3,548 |
+| `m=16,m_max=32,ef=10` | 789.85 us | 126.61K queries/s | 260 |
+| `m=16,m_max=32,ef=50` | 3.0304 ms | 33.00K queries/s | 1,060 |
+| `m=16,m_max=32,ef=100` | 5.5578 ms | 17.99K queries/s | 2,100 |
+| `m=16,m_max=32,ef=200` | 10.658 ms | 9.38K queries/s | 2,900 |
+
+This is a graph-topology result, not a before/after measurement of the
+SmallVec capacity change. The `m_max=32` graph exposes more base-layer
+neighbors and is slower on this 10K-vector synthetic fixture; the inline
+capacity change still avoids heap spills for that default-degree topology.
 
 ### IVF-PQ Search Loop
 

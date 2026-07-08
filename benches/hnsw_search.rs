@@ -73,14 +73,23 @@ fn random_vectors(n: usize, dim: usize, seed: u64) -> Vec<Vec<f32>> {
         .collect()
 }
 
-fn build_index(n_vectors: usize, dim: usize) -> (HNSWIndex, Vec<Vec<f32>>) {
+fn build_index_with_params(
+    n_vectors: usize,
+    dim: usize,
+    m: usize,
+    m_max: usize,
+) -> (HNSWIndex, Vec<Vec<f32>>) {
     let vectors = random_vectors(n_vectors, dim, 42);
-    let mut index = HNSWIndex::new(dim, 16, 16).unwrap();
+    let mut index = HNSWIndex::new(dim, m, m_max).unwrap();
     for (i, v) in vectors.iter().enumerate() {
         index.add_slice(i as u32, v).unwrap();
     }
     index.build().unwrap();
     (index, vectors)
+}
+
+fn build_index(n_vectors: usize, dim: usize) -> (HNSWIndex, Vec<Vec<f32>>) {
+    build_index_with_params(n_vectors, dim, 16, 16)
 }
 
 fn print_allocation_summary(
@@ -134,5 +143,30 @@ fn bench_hnsw_search_only(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_hnsw_search_only);
+fn bench_hnsw_search_mmax32(c: &mut Criterion) {
+    let mut group = c.benchmark_group("hnsw_search_mmax32");
+
+    let dim = 128;
+    let n_vectors = 10_000;
+    let n_queries = 100;
+    let queries = random_vectors(n_queries, dim, 123);
+    let (index, _vectors) = build_index_with_params(n_vectors, dim, 16, 32);
+
+    for ef in [10, 50, 100, 200] {
+        print_allocation_summary("dim128_m16_mmax32", &index, &queries, 10, ef);
+        group.throughput(Throughput::Elements(n_queries as u64));
+        group.bench_with_input(BenchmarkId::new("ef", ef), &ef, |bench, &ef| {
+            bench.iter(|| {
+                queries
+                    .iter()
+                    .map(|q| index.search(black_box(q), 10, ef).unwrap().len())
+                    .sum::<usize>()
+            });
+        });
+    }
+
+    group.finish();
+}
+
+criterion_group!(benches, bench_hnsw_search_only, bench_hnsw_search_mmax32);
 criterion_main!(benches);
