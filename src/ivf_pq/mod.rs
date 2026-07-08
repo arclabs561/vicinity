@@ -149,6 +149,7 @@
 //! - Ge et al. (2014). "Optimized Product Quantization." `https://arxiv.org/abs/1311.4055`
 
 // IVF-PQ core implementation (always available when ivf_pq feature is enabled)
+mod cluster;
 mod manifest;
 pub mod opq;
 pub mod pq;
