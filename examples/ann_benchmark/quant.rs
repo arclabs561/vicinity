@@ -4,12 +4,20 @@
 use std::cell::RefCell;
 use std::time::Instant;
 
-use crate::support::{
-    current_rss_kb, emit_result, evaluate, json_line, print_header, print_row, Config,
-};
+use crate::support::{current_rss_kb, emit_result, evaluate, print_header, print_row, Config};
 
 #[cfg(feature = "ivf_pq")]
 use crate::support::ivfpq_params_json;
+#[cfg(any(
+    feature = "ivf_pq",
+    feature = "ivf_avq",
+    feature = "rp_quant",
+    feature = "binary_index",
+    feature = "lsh",
+    feature = "sq4",
+    all(feature = "hnsw", feature = "ivf_rabitq")
+))]
+use crate::support::json_line;
 #[cfg(any(feature = "ivf_pq", feature = "ivf_avq", feature = "ivf_rabitq"))]
 use crate::support::nprobe_values;
 #[cfg(feature = "ivf_pq")]
