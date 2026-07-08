@@ -1,10 +1,10 @@
-//! DiskANN: Billion-scale ANN on a single machine with SSD.
+//! DiskANN/Vamana-style graph with file and mmap search paths.
 //!
-//! Same algorithm family as Microsoft DiskANN and the Vamana graph used by LanceDB.
-//!
-//! Reported to support billion-scale search with single-digit millisecond latency using NVMe
-//! storage (see DiskANN reference). Real performance depends on dataset, recall target,
-//! hardware, and index parameters.
+//! This module implements an experimental Vamana-family graph index plus
+//! searchers that can read the saved graph and vector files through positional
+//! file I/O or read-only memory maps. It is related to Microsoft DiskANN, but it
+//! is not a full reproduction of the billion-scale DiskANN system described in
+//! the paper.
 //!
 //! # Feature Flag
 //!
@@ -12,11 +12,12 @@
 //! vicinity = { version = "0.10.5", features = ["diskann"] }
 //! ```
 //!
-//! # Status: Experimental
+//! # Current Scope
 //!
-//! Current construction stores data in memory. `DiskANNSearcher` can search the
-//! saved graph and vector files directly, and `search_with_diagnostics` reports
-//! logical graph and vector reads for page-layout work.
+//! Construction stores vectors and graph edges in memory, then serializes them.
+//! `DiskANNSearcher` can search the saved graph and vector files directly, and
+//! `search_with_diagnostics` reports logical graph and vector reads for
+//! page-layout work.
 //!
 //! # Quick Start
 //!
@@ -37,13 +38,15 @@
 //! let results = index.search(&query, 10)?;
 //! ```
 //!
-//! # The Problem: 1B Vectors Don't Fit in RAM
+//! # Why File-Backed Search Matters
 //!
 //! ```text
 //! 1B vectors × 768 dims × 4 bytes = 3 TB
 //! ```
 //!
-//! HNSW/NSW require all data in memory. DiskANN keeps vectors on SSD.
+//! Large dense-vector collections do not always fit comfortably in memory.
+//! This implementation separates in-memory construction from file and mmap
+//! search rows so benchmarks can show the storage cost explicitly.
 //!
 //! # Current Storage Path
 //!
@@ -66,7 +69,10 @@
 //! 2. **Target co-located storage**: Vector + neighbor list in same disk block
 //! 3. **Target prefetch**: Hide SSD latency with batched or async I/O
 //!
-//! # Performance (from Microsoft paper)
+//! # Reference Paper Performance
+//!
+//! These are DiskANN paper results, not vicinity benchmark results. Use
+//! `docs/benchmark-results.md` for measurements from this implementation.
 //!
 //! | Scale | Recall@10 | Latency | Memory | Storage |
 //! |-------|-----------|---------|--------|---------|
@@ -76,7 +82,10 @@
 //! **Throughput**: see the paper for reported throughput; it depends strongly on
 //! hardware and parameter choices.
 //!
-//! # Parameter Recommendations
+//! # Paper-Scale Parameters
+//!
+//! These values are starting points from the DiskANN/Vamana family, not
+//! validated defaults for every dataset.
 //!
 //! | Dataset | m | alpha | ef_construction |
 //! |---------|---|-------|-----------------|
@@ -84,17 +93,10 @@
 //! | 1B | 64 | 1.2 | 200 |
 //! | > 1B | 96 | 1.4 | 400 |
 //!
-//! # When to Use
+//! # Current Fit
 //!
-//! - **Dataset exceeds RAM** (the only reason to use this)
-//! - Have **NVMe SSD** (HDD is 100x slower)
-//! - Can tolerate **1-10ms latency** (vs <1ms in-memory)
-//!
-//! # When NOT to Use
-//!
-//! - Dataset fits in RAM → in-memory methods (e.g. HNSW/NSW) are typically much faster
-//! - Only have HDD → seek time makes this impractical
-//! - Need <1ms latency → use in-memory index with smaller dataset
+//! Use this module to evaluate Vamana-style graph construction and file or mmap
+//! search behavior. Do not read its rustdoc as a production-latency claim.
 //!
 //! # Why Single-Layer (Vamana) Instead of HNSW?
 //!
