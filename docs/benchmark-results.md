@@ -653,6 +653,38 @@ baselines. RP-forest and K-means tree need much larger search
 budgets or reranking to become high-recall methods, at which point their QPS
 advantage is expected to narrow.
 
+A targeted 50K follow-up gave RP-forest and K-means tree those larger budgets
+without reranking:
+
+```bash
+CARGO_TARGET_DIR=/tmp/vicinity-rp-forest-sweep CARGO_INCREMENTAL=0 RUSTC_WRAPPER= \
+cargo run --release --example ann_benchmark --no-default-features --features rptree -- \
+  data/ann-benchmarks/glove-25-angular --algo rp_forest \
+  --max-train 50000 --max-queries 500 \
+  --tree-leaf-sizes 100,200,500 --rp-num-trees 50,100,200 \
+  --json --results /tmp/vicinity-rp-forest-sweep.jsonl
+
+CARGO_TARGET_DIR=/tmp/vicinity-kmeans-branch-sweep CARGO_INCREMENTAL=0 RUSTC_WRAPPER= \
+cargo run --release --example ann_benchmark --no-default-features --features kmeans_tree -- \
+  data/ann-benchmarks/glove-25-angular --algo kmeans_tree \
+  --max-train 50000 --max-queries 500 --kmeans-clusters 8 \
+  --kmeans-leaf-sizes 200,500,1000 --kmeans-depths 10 \
+  --kmeans-iters 10 --kmeans-search-branches 1,2,4,8 \
+  --json --results /tmp/vicinity-kmeans-branch-sweep.jsonl
+```
+
+| Algorithm | Best 95%+ row | Recall@10 | QPS | Index bytes | Notes |
+| --- | --- | ---: | ---: | ---: | --- |
+| RP-forest | 50 trees, leaf 200 | 97.54% | 3,990.4 | 21,294,476 | clears 95% by expanding the candidate budget |
+| RP-forest | 200 trees, leaf 100 | 100.00% | 1,651.0 | 82,971,216 | exact on the 50K cap, but loses most of the speed advantage |
+| K-means tree | 8 clusters, leaf 200, branch 8 | 100.00% | 367.4 | 8,469,516 | broad branch budget makes it effectively high-recall but slow |
+| K-means tree | 8 clusters, leaf 1000, branch 4 | 92.10% | 1,244.8 | 8,042,124 | best near-high-recall speed row, still below 95% |
+
+This changes the classical read slightly: RP-forest is not capped below 95%
+recall, but reaching that band costs enough tree and leaf budget that it sits
+well below graph methods at the same 50K cap. K-means tree is controllable via
+branch budget, but its 95%+ behavior is a baseline, not a competitive target.
+
 On 2026-07-08, the in-memory benchmark rows for NSW, Vamana, NSG, SNG, EMG,
 PiPNN, FINGER, and FreshGraph were wired to heap `index_bytes` from explicit
 `memory_usage()` APIs rather than serialized snapshot sizes. A tiny JSON smoke
