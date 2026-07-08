@@ -255,6 +255,16 @@ impl VamanaIndex {
         Ok(())
     }
 
+    /// Memory usage breakdown for this index.
+    pub fn memory_usage(&self) -> crate::memory::MemoryReport {
+        crate::memory::MemoryReport {
+            vectors_bytes: self.vectors.len() * std::mem::size_of::<f32>(),
+            graph_bytes: crate::memory::smallvec_u32_bytes(&self.neighbors),
+            quantized_bytes: 0,
+            metadata_bytes: self.doc_ids.len() * std::mem::size_of::<u32>(),
+        }
+    }
+
     /// BFS-order graph reordering for cache-friendly traversal.
     fn reorder_for_locality(&mut self) {
         if self.num_vectors <= 1 {

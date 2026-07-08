@@ -304,6 +304,19 @@ impl EmgIndex {
         Ok(index)
     }
 
+    /// Memory usage breakdown for this index.
+    pub fn memory_usage(&self) -> crate::memory::MemoryReport {
+        let quantized_bytes = self.quantized_vectors.len()
+            + (self.quant_mins.len() + self.quant_scales.len()) * std::mem::size_of::<f32>();
+
+        crate::memory::MemoryReport {
+            vectors_bytes: self.vectors.len() * std::mem::size_of::<f32>(),
+            graph_bytes: crate::memory::smallvec_u32_bytes(&self.neighbors),
+            quantized_bytes,
+            metadata_bytes: self.doc_ids.len() * std::mem::size_of::<u32>(),
+        }
+    }
+
     /// Search for k nearest neighbors.
     pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, RetrieveError> {
         self.search_with_ef(query, k, self.params.ef_search)

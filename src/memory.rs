@@ -19,3 +19,13 @@ impl MemoryReport {
         self.vectors_bytes + self.graph_bytes + self.quantized_bytes + self.metadata_bytes
     }
 }
+
+pub(crate) fn smallvec_u32_bytes<A>(lists: &[smallvec::SmallVec<A>]) -> usize
+where
+    A: smallvec::Array<Item = u32>,
+{
+    lists
+        .iter()
+        .map(|list| list.capacity() * std::mem::size_of::<u32>())
+        .sum()
+}

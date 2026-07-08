@@ -552,6 +552,22 @@ baselines. RP-forest and K-means tree need much larger search
 budgets or reranking to become high-recall methods, at which point their QPS
 advantage is expected to narrow.
 
+On 2026-07-08, the in-memory benchmark rows for NSW, Vamana, NSG, SNG, EMG,
+PiPNN, FINGER, and FreshGraph were wired to heap `index_bytes` from explicit
+`memory_usage()` APIs rather than serialized snapshot sizes. A tiny JSON smoke
+validated the emitted schema only, using 200 GloVe-25 vectors and 5 queries:
+
+```bash
+cargo run --example ann_benchmark --no-default-features --features nsw,vamana -- \
+  data/ann-benchmarks/glove-25-angular --algo nsw --algo vamana \
+  --ef-search 10 --max-train 200 --max-queries 5 --json --fresh \
+  --results /tmp/vicinity-index-bytes-smoke.jsonl
+```
+
+Smoke rows included `storage_mode=in_memory`, `cache_state=warm_after_build`,
+and positive `index_bytes` (`nsw=33,600`, `vamana=72,000`). Treat this as row
+coverage evidence, not performance evidence.
+
 Full-train IVF-PQ storage sweep from the same day, using all 1,183,514
 GloVe-25 vectors and 500 queries:
 

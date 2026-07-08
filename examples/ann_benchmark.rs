@@ -181,7 +181,17 @@ fn snapshot_storage(load_time_s: f64, index_bytes: Option<u64>) -> ResultStorage
     }
 }
 
-#[cfg(feature = "hnsw")]
+#[cfg(any(
+    feature = "emg",
+    feature = "finger",
+    feature = "fresh_graph",
+    feature = "hnsw",
+    feature = "nsg",
+    feature = "nsw",
+    feature = "pipnn",
+    feature = "sng",
+    feature = "vamana"
+))]
 fn in_memory_storage(index_bytes: Option<u64>) -> ResultStorage<'static> {
     ResultStorage {
         index_bytes,
@@ -653,6 +663,7 @@ fn run_nsw(
     index.build().unwrap();
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
+    let index_bytes = Some(index.memory_usage().total() as u64);
     let snapshot_index = if cfg.snapshot_load {
         let temp_dir = tempfile::tempdir().expect("create temp dir for NSW snapshot benchmark");
         index.save_to_dir(temp_dir.path()).unwrap();
@@ -680,7 +691,14 @@ fn run_nsw(
             let params_json = format!("{{\"m\":{},\"ef_search\":{}}}", cfg.m, ef);
             emit_result(
                 &cfg.results_path,
-                &json_line("nsw", &params_json, build_time_s, rss, &result),
+                &json_line_with_storage(
+                    "nsw",
+                    &params_json,
+                    build_time_s,
+                    rss,
+                    &result,
+                    &in_memory_storage(index_bytes),
+                ),
             );
             if let Some((_, loaded, load_time_s, index_bytes)) = &snapshot_index {
                 let loaded_result = evaluate(
@@ -751,6 +769,7 @@ fn run_emg(
     index.build().unwrap();
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
+    let index_bytes = Some(index.memory_usage().total() as u64);
     let snapshot_index = if cfg.snapshot_load {
         let temp_dir = tempfile::tempdir().expect("create temp dir for EMG snapshot benchmark");
         index.save_to_dir(temp_dir.path()).unwrap();
@@ -783,7 +802,14 @@ fn run_emg(
             let params_json = format!("{{\"max_degree\":32,\"ef_search\":{}}}", ef);
             emit_result(
                 &cfg.results_path,
-                &json_line("emg", &params_json, build_time_s, rss, &result),
+                &json_line_with_storage(
+                    "emg",
+                    &params_json,
+                    build_time_s,
+                    rss,
+                    &result,
+                    &in_memory_storage(index_bytes),
+                ),
             );
             if let Some((_, loaded, load_time_s, index_bytes)) = &snapshot_index {
                 let loaded_result = evaluate(
@@ -859,6 +885,7 @@ fn run_nsg(
     index.build().unwrap();
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
+    let index_bytes = Some(index.memory_usage().total() as u64);
     let snapshot_index = if cfg.snapshot_load {
         let temp_dir = tempfile::tempdir().expect("create temp dir for NSG snapshot benchmark");
         index.save_to_dir(temp_dir.path()).unwrap();
@@ -891,7 +918,14 @@ fn run_nsg(
             let params_json = format!("{{\"max_degree\":32,\"ef_search\":{}}}", ef);
             emit_result(
                 &cfg.results_path,
-                &json_line("nsg", &params_json, build_time_s, rss, &result),
+                &json_line_with_storage(
+                    "nsg",
+                    &params_json,
+                    build_time_s,
+                    rss,
+                    &result,
+                    &in_memory_storage(index_bytes),
+                ),
             );
             if let Some((_, loaded, load_time_s, index_bytes)) = &snapshot_index {
                 let loaded_result = evaluate(
@@ -963,6 +997,7 @@ fn run_pipnn(
     index.build().unwrap();
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
+    let index_bytes = Some(index.memory_usage().total() as u64);
     let snapshot_index = if cfg.snapshot_load {
         let temp_dir = tempfile::tempdir().expect("create temp dir for PiPNN snapshot benchmark");
         index.save_to_dir(temp_dir.path()).unwrap();
@@ -998,7 +1033,14 @@ fn run_pipnn(
             );
             emit_result(
                 &cfg.results_path,
-                &json_line("pipnn", &params_json, build_time_s, rss, &result),
+                &json_line_with_storage(
+                    "pipnn",
+                    &params_json,
+                    build_time_s,
+                    rss,
+                    &result,
+                    &in_memory_storage(index_bytes),
+                ),
             );
             if let Some((_, loaded, load_time_s, index_bytes)) = &snapshot_index {
                 let loaded_result = evaluate(
@@ -1075,6 +1117,7 @@ fn run_sng(
     index.build().unwrap();
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
+    let index_bytes = Some(index.memory_usage().total() as u64);
     let snapshot_index = if cfg.snapshot_load {
         let temp_dir = tempfile::tempdir().expect("create temp dir for SNG snapshot benchmark");
         index.save_to_dir(temp_dir.path()).unwrap();
@@ -1106,7 +1149,14 @@ fn run_sng(
         let params_json = "{}";
         emit_result(
             &cfg.results_path,
-            &json_line("sng", params_json, build_time_s, rss, &result),
+            &json_line_with_storage(
+                "sng",
+                params_json,
+                build_time_s,
+                rss,
+                &result,
+                &in_memory_storage(index_bytes),
+            ),
         );
         if let Some((_, loaded, load_time_s, index_bytes)) = &snapshot_index {
             let loaded_result = evaluate(
@@ -1167,6 +1217,7 @@ fn run_vamana(
     index.build().unwrap();
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
+    let index_bytes = Some(index.memory_usage().total() as u64);
     let snapshot_index = if cfg.snapshot_load {
         let temp_dir = tempfile::tempdir().expect("create temp dir for Vamana snapshot benchmark");
         index.save_to_dir(temp_dir.path()).unwrap();
@@ -1194,7 +1245,14 @@ fn run_vamana(
             let params_json = format!("{{\"ef_search\":{}}}", ef);
             emit_result(
                 &cfg.results_path,
-                &json_line("vamana", &params_json, build_time_s, rss, &result),
+                &json_line_with_storage(
+                    "vamana",
+                    &params_json,
+                    build_time_s,
+                    rss,
+                    &result,
+                    &in_memory_storage(index_bytes),
+                ),
             );
             if let Some((_, loaded, load_time_s, index_bytes)) = &snapshot_index {
                 let loaded_result = evaluate(
@@ -1501,6 +1559,7 @@ fn run_finger(
     index.build().unwrap();
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
+    let index_bytes = Some(index.memory_usage().total() as u64);
     let snapshot_index = if cfg.snapshot_load {
         let temp_dir = tempfile::tempdir().expect("create temp dir for FINGER snapshot benchmark");
         index.save_to_dir(temp_dir.path()).unwrap();
@@ -1538,7 +1597,14 @@ fn run_finger(
             );
             emit_result(
                 &cfg.results_path,
-                &json_line("finger", &params_json, build_time_s, rss, &result),
+                &json_line_with_storage(
+                    "finger",
+                    &params_json,
+                    build_time_s,
+                    rss,
+                    &result,
+                    &in_memory_storage(index_bytes),
+                ),
             );
             if let Some((_, loaded, load_time_s, index_bytes)) = &snapshot_index {
                 let loaded_result = evaluate(
@@ -1750,6 +1816,7 @@ fn run_fresh_graph(
     index.build().unwrap();
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
+    let index_bytes = Some(index.memory_usage().total() as u64);
     let snapshot_index = if cfg.snapshot_load {
         let temp_dir =
             tempfile::tempdir().expect("create temp dir for FreshGraph snapshot benchmark");
@@ -1783,7 +1850,14 @@ fn run_fresh_graph(
             let params_json = format!("{{\"max_degree\":32,\"ef_search\":{}}}", ef);
             emit_result(
                 &cfg.results_path,
-                &json_line("fresh_graph", &params_json, build_time_s, rss, &result),
+                &json_line_with_storage(
+                    "fresh_graph",
+                    &params_json,
+                    build_time_s,
+                    rss,
+                    &result,
+                    &in_memory_storage(index_bytes),
+                ),
             );
             if let Some((_, loaded, load_time_s, index_bytes)) = &snapshot_index {
                 let loaded_result = evaluate(

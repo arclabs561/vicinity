@@ -413,6 +413,20 @@ impl FreshGraphIndex {
         })
     }
 
+    /// Memory usage breakdown for this index.
+    pub fn memory_usage(&self) -> crate::memory::MemoryReport {
+        let metadata_bytes = (self.doc_ids.len() + self.inbound_count.len())
+            * std::mem::size_of::<u32>()
+            + self.deleted.len() * std::mem::size_of::<bool>();
+
+        crate::memory::MemoryReport {
+            vectors_bytes: self.vectors.len() * std::mem::size_of::<f32>(),
+            graph_bytes: crate::memory::smallvec_u32_bytes(&self.neighbors),
+            quantized_bytes: 0,
+            metadata_bytes,
+        }
+    }
+
     /// Insert a new vector into the built index without a full rebuild.
     ///
     /// Uses beam search from the entry point to find the best neighborhood,

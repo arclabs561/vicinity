@@ -1151,10 +1151,9 @@ impl HNSWIndex {
             .layers
             .iter()
             .map(|layer| match &layer.storage {
-                NeighborStorage::Uncompressed(neighbors) => neighbors
-                    .iter()
-                    .map(|sv| sv.capacity() * std::mem::size_of::<u32>())
-                    .sum::<usize>(),
+                NeighborStorage::Uncompressed(neighbors) => {
+                    crate::memory::smallvec_u32_bytes(neighbors)
+                }
                 #[cfg(feature = "id-compression")]
                 NeighborStorage::Compressed { data, .. } => {
                     data.iter().map(|cl| cl.data.len()).sum::<usize>()
