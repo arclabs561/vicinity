@@ -210,7 +210,7 @@ struct ExpectedResult {
     algorithm: String,
     params_json: Option<String>,
     param_fragments: Vec<String>,
-    storage_mode: Option<String>,
+    storage_mode: String,
 }
 
 impl ExpectedResult {
@@ -219,7 +219,7 @@ impl ExpectedResult {
             algorithm: algorithm.into(),
             params_json: None,
             param_fragments: Vec::new(),
-            storage_mode: Some("in_memory".to_string()),
+            storage_mode: "in_memory".to_string(),
         }
     }
 
@@ -228,7 +228,7 @@ impl ExpectedResult {
             algorithm: algorithm.into(),
             params_json: Some(params_json.to_string()),
             param_fragments: Vec::new(),
-            storage_mode: Some("in_memory".to_string()),
+            storage_mode: "in_memory".to_string(),
         }
     }
 
@@ -241,7 +241,7 @@ impl ExpectedResult {
             algorithm: algorithm.into(),
             params_json: Some(params_json.to_string()),
             param_fragments: Vec::new(),
-            storage_mode: Some(storage_mode.into()),
+            storage_mode: storage_mode.into(),
         }
     }
 
@@ -253,7 +253,7 @@ impl ExpectedResult {
             algorithm: algorithm.into(),
             params_json: None,
             param_fragments: fragments.into_iter().collect(),
-            storage_mode: Some("in_memory".to_string()),
+            storage_mode: "in_memory".to_string(),
         }
     }
 
@@ -273,10 +273,8 @@ impl ExpectedResult {
         {
             return false;
         }
-        if let Some(expected) = &self.storage_mode {
-            if json_string_field(line, "storage_mode").as_deref() != Some(expected.as_str()) {
-                return false;
-            }
+        if json_string_field(line, "storage_mode").as_deref() != Some(self.storage_mode.as_str()) {
+            return false;
         }
         true
     }
