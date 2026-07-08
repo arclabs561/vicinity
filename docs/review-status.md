@@ -115,8 +115,11 @@ benchmarking, persistence, Python bindings, and performance work.
   the existing PQ SIMD wrappers.
 - If innr grows a helper for vicinity, prefer a safe row-indexed dense scoring
   API over exposing raw SIMD details. The evidence gate is current HNSW
-  `flush_batch` versus batch sizes 4/8/16 at 64/128/384/768 dimensions, plus
-  end-to-end HNSW, DiskANN, and IVF rerank/centroid controls.
+  `flush_batch` versus dimension- or workload-aware batch choices at
+  64/128/384/768 dimensions, plus end-to-end HNSW, DiskANN, and IVF
+  rerank/centroid controls. A global batch size of 16 was measured and
+  rejected on the 128-d HNSW search bench because denser-graph negative
+  controls regressed.
 - A direct generic-wrapper attempt for normal HNSW metric dispatch was measured
   and rejected. It left `ef=10` unchanged but regressed `ef=50`, `ef=100`, and
   `ef=200` by about 5.8%, 5.6%, and 10.2% respectively in the search-only

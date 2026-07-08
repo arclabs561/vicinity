@@ -825,6 +825,36 @@ experiment was reverted.
 | `hnsw_search_only/ef/100` | 5.8881 ms | 6.6302 ms | +13.68% time | rejected |
 | `hnsw_search_only/ef/200` | 10.601 ms | 12.422 ms | no significant change | rejected |
 
+A second follow-up swept `DISTANCE_BATCH_SIZE` from 8 to 16 to test whether
+larger independent distance batches help the `flush_batch` hotspot. It was
+measured against both default `m_max=16` and denser `m_max=32` graph rows:
+
+```bash
+CARGO_INCREMENTAL=0 RUSTC_WRAPPER= cargo bench --bench hnsw_search \
+  --features hnsw -- hnsw_search_ --sample-size 20 --warm-up-time 1 \
+  --measurement-time 3 --save-baseline batch8
+
+CARGO_INCREMENTAL=0 RUSTC_WRAPPER= cargo bench --bench hnsw_search \
+  --features hnsw -- hnsw_search_ --sample-size 20 --warm-up-time 1 \
+  --measurement-time 3 --baseline batch8
+```
+
+The default graph rows were statistically neutral, but the denser graph
+negative controls regressed at `ef=10` and `ef=200`, so batch size 16 was
+reverted. The next batch experiment should be dimension-aware or workload-aware
+rather than a global constant change.
+
+| Workload | Batch-8 run | Batch-16 run | Criterion change | Decision |
+| --- | ---: | ---: | ---: | --- |
+| `hnsw_search_only/ef/10` | 885.89 us | 839.79 us | no significant change | rejected |
+| `hnsw_search_only/ef/50` | 3.2292 ms | 3.1887 ms | no significant change | rejected |
+| `hnsw_search_only/ef/100` | 6.3094 ms | 5.9090 ms | no significant change | rejected |
+| `hnsw_search_only/ef/200` | 11.390 ms | 11.830 ms | no significant change | rejected |
+| `hnsw_search_mmax32/ef/10` | 1.4080 ms | 1.7395 ms | +9.50% time | rejected |
+| `hnsw_search_mmax32/ef/50` | 5.0563 ms | 5.2606 ms | no significant change | rejected |
+| `hnsw_search_mmax32/ef/100` | 9.1639 ms | 7.8941 ms | no significant change | rejected |
+| `hnsw_search_mmax32/ef/200` | 17.116 ms | 17.993 ms | +21.71% time | rejected |
+
 ### Dense Distance Kernel
 
 Direct Criterion measurements on the 128-d L2 kernel:
@@ -855,9 +885,10 @@ The narrow future innr helper to test is a safe row-indexed scorer that writes
 one distance or dot product per caller-provided vector id into caller-owned
 output. That matches HNSW/DiskANN row-major storage better than `VerticalBatch`.
 Do not add it speculatively: first compare against current `flush_batch` at
-batch sizes 4/8/16 and dimensions 64/128/384/768, then run end-to-end HNSW,
-DiskANN, and IVF rerank/centroid controls. Any unsafe needed to implement that
-helper should stay inside innr's private dispatch or kernel layer.
+several dimensions and graph densities, then run end-to-end HNSW, DiskANN, and
+IVF rerank/centroid controls. The global HNSW batch-size-16 experiment above
+already regressed denser-graph controls, so a future batch/scoring helper needs
+to be dimension- or workload-aware.
 
 ### DiskANN File And Mmap Search
 
