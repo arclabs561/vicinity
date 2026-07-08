@@ -766,6 +766,36 @@ The in-memory rows emitted positive heap-estimated `index_bytes`
 accounting. Filter selectivity curves and churn fixed-recall sweeps are still
 the publishable evaluation path.
 
+A bounded filtered-search selectivity sweep now exercises the same synthetic
+workload across ACORN, FilteredGraph, RangeFiltered, and Curator:
+
+```bash
+cargo run --release --example acorn_selectivity --no-default-features \
+  --features hnsw,filtered_graph,range_filtered,curator -- \
+  --n 3000 --queries 200 --k 10 --neighbors 32 --json --fresh \
+  --results data/ann-benchmarks/results/acorn-selectivity-n3000-d32-q200-20260708.jsonl
+
+uv run scripts/summarize_selectivity_results.py \
+  data/ann-benchmarks/results/acorn-selectivity-n3000-d32-q200-20260708.jsonl
+```
+
+| Algorithm | Selectivity | Recall@10 | QPS | p95 latency | Mean returned | Notes |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| ACORN | 1% | 56.35% | 6,279.9 | 226.0 us | 10.0 | returns full top-k but default traversal misses the exact filtered neighbors |
+| ACORN | 50% | 69.45% | 10,345.9 | 112.0 us | 10.0 | needs fixed-recall tuning before any QPS target claim |
+| Curator | 1% | 100.00% | 133,299.5 | 8.5 us | 10.0 | synthetic workload fits Curator's candidate path well |
+| Curator | 50% | 100.00% | 18,410.0 | 57.0 us | 10.0 | QPS falls with broader candidate sets |
+| FilteredGraph | 1% | 100.00% | 94,578.0 | 11.5 us | 10.0 | low-selectivity row is fast and exact on this fixture |
+| FilteredGraph | 50% | 82.50% | 94.6 | 11,300.0 us | 10.0 | high-selectivity row collapses to a slow path |
+| RangeFiltered | 1% | 3.50% | 3,809.6 | 269.0 us | 0.3 | under-returns at low selectivity |
+| RangeFiltered | 50% | 100.00% | 5,048.7 | 242.5 us | 10.0 | clears recall only once the range admits enough candidates |
+
+This sweep is diagnostic, not a publishable ACORN comparison. The useful finding
+is that selectivity, returned-count, and latency-tail fields expose different
+failure modes: ACORN is returning enough candidates but needs traversal tuning,
+FilteredGraph has a sharp slow-path transition, and RangeFiltered visibly
+under-returns at narrow ranges.
+
 Full-train IVF-PQ storage sweep from the same day, using all 1,183,514
 GloVe-25 vectors and 500 queries:
 
