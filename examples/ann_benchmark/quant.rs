@@ -1,6 +1,6 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
-#[cfg(feature = "ivf_pq")]
+#[cfg(any(feature = "ivf_pq", feature = "ivf_avq"))]
 use std::cell::RefCell;
 use std::time::Instant;
 
@@ -60,7 +60,7 @@ fn snapshot_storage(load_time_s: f64, index_bytes: Option<u64>) -> ResultStorage
     }
 }
 
-#[cfg(feature = "ivf_pq")]
+#[cfg(any(feature = "ivf_pq", feature = "ivf_avq"))]
 fn opened_storage(
     storage_mode: &'static str,
     load_time_s: f64,
@@ -512,7 +512,16 @@ pub(crate) fn run_ivf_avq(
     neighbors: &[Vec<i32>],
     dim: usize,
 ) {
-    use vicinity::ivf_avq::{IVFAVQIndex, IVFAVQParams};
+    use vicinity::ivf_avq::{IVFAVQFileSearcher, IVFAVQIndex, IVFAVQParams};
+
+    struct SnapshotIndexes {
+        _temp_dir: tempfile::TempDir,
+        loaded: IVFAVQIndex,
+        load_time_s: f64,
+        file_searcher: RefCell<IVFAVQFileSearcher>,
+        file_load_time_s: f64,
+        index_bytes: Option<u64>,
+    }
 
     let num_partitions = 256.min(train.len()).max(1);
     let num_codebooks = (1..=16.min(dim))
@@ -553,7 +562,17 @@ pub(crate) fn run_ivf_avq(
         let load_start = Instant::now();
         let loaded = IVFAVQIndex::load_from_dir(temp_dir.path()).unwrap();
         let load_time_s = load_start.elapsed().as_secs_f64();
-        Some((temp_dir, loaded, load_time_s, index_bytes))
+        let file_load_start = Instant::now();
+        let file_searcher = RefCell::new(IVFAVQFileSearcher::open(temp_dir.path()).unwrap());
+        let file_load_time_s = file_load_start.elapsed().as_secs_f64();
+        Some(SnapshotIndexes {
+            _temp_dir: temp_dir,
+            loaded,
+            load_time_s,
+            file_searcher,
+            file_load_time_s,
+            index_bytes,
+        })
     } else {
         None
     };
@@ -583,9 +602,21 @@ pub(crate) fn run_ivf_avq(
             print_row(&format!("np={}", nprobe), &result);
         }
 
-        if let Some((_temp_dir, loaded, load_time_s, index_bytes)) = snapshot_index.as_mut() {
-            loaded.set_nprobe(nprobe);
-            let loaded_result = evaluate(&|q, k| loaded.search(q, k).unwrap(), test, neighbors, 10);
+        if let Some(snapshot) = snapshot_index.as_mut() {
+            snapshot.loaded.set_nprobe(nprobe);
+            let loaded_result = evaluate(
+                &|q, k| snapshot.loaded.search(q, k).unwrap(),
+                test,
+                neighbors,
+                10,
+            );
+            snapshot.file_searcher.borrow_mut().set_nprobe(nprobe);
+            let file_result = evaluate(
+                &|q, k| snapshot.file_searcher.borrow_mut().search(q, k).unwrap(),
+                test,
+                neighbors,
+                10,
+            );
             let params_json = format!(
                 "{{\"num_partitions\":{},\"num_codebooks\":{},\"codebook_size\":{},\"nprobe\":{},\"num_reorder\":{}}}",
                 num_partitions, num_codebooks, codebook_size, nprobe, num_reorder
@@ -599,11 +630,23 @@ pub(crate) fn run_ivf_avq(
                         build_time_s,
                         rss,
                         &loaded_result,
-                        &snapshot_storage(*load_time_s, *index_bytes),
+                        &snapshot_storage(snapshot.load_time_s, snapshot.index_bytes),
+                    ),
+                );
+                emit_result(
+                    &cfg.results_path,
+                    &json_line_with_storage(
+                        "ivf_avq",
+                        &params_json,
+                        build_time_s,
+                        rss,
+                        &file_result,
+                        &opened_storage("file", snapshot.file_load_time_s, snapshot.index_bytes),
                     ),
                 );
             } else {
                 print_row(&format!("np={} snapshot_loaded", nprobe), &loaded_result);
+                print_row(&format!("np={} file", nprobe), &file_result);
             }
         }
     }

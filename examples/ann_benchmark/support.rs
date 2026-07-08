@@ -442,8 +442,9 @@ fn params_containing_check(
 
 #[derive(Clone, Copy)]
 enum StorageExpectation {
-    SnapshotReload,
-    SnapshotReloadAndFileOpen,
+    Reload,
+    ReloadAndFileOnly,
+    ReloadAndFileOpen,
 }
 
 impl StorageExpectation {
@@ -453,8 +454,9 @@ impl StorageExpectation {
         }
 
         match self {
-            StorageExpectation::SnapshotReload => &["snapshot_loaded"],
-            StorageExpectation::SnapshotReloadAndFileOpen => ivfpq_open_storage_modes(),
+            StorageExpectation::Reload => &["snapshot_loaded"],
+            StorageExpectation::ReloadAndFileOnly => &["snapshot_loaded", "file"],
+            StorageExpectation::ReloadAndFileOpen => ivfpq_open_storage_modes(),
         }
     }
 }
@@ -524,12 +526,7 @@ fn storage_expectation_checks(
 }
 
 fn snapshot_check(algorithm: &str, params_json: &str, cfg: &Config) -> Vec<ExpectedResult> {
-    storage_expectation_checks(
-        algorithm,
-        params_json,
-        cfg,
-        StorageExpectation::SnapshotReload,
-    )
+    storage_expectation_checks(algorithm, params_json, cfg, StorageExpectation::Reload)
 }
 
 fn snapshot_file_checks(algorithm: &str, params_json: &str, cfg: &Config) -> Vec<ExpectedResult> {
@@ -537,7 +534,20 @@ fn snapshot_file_checks(algorithm: &str, params_json: &str, cfg: &Config) -> Vec
         algorithm,
         params_json,
         cfg,
-        StorageExpectation::SnapshotReloadAndFileOpen,
+        StorageExpectation::ReloadAndFileOpen,
+    )
+}
+
+fn snapshot_file_only_checks(
+    algorithm: &str,
+    params_json: &str,
+    cfg: &Config,
+) -> Vec<ExpectedResult> {
+    storage_expectation_checks(
+        algorithm,
+        params_json,
+        cfg,
+        StorageExpectation::ReloadAndFileOnly,
     )
 }
 
@@ -829,7 +839,7 @@ fn required_result_checks(
             nprobe_values(cfg, num_partitions)
                 .into_iter()
                 .flat_map(|nprobe| {
-                    snapshot_check(
+                    snapshot_file_only_checks(
                         "ivf_avq",
                         &format!(
                             "{{\"num_partitions\":{},\"num_codebooks\":{},\"codebook_size\":256,\"nprobe\":{},\"num_reorder\":100}}",
@@ -2309,7 +2319,7 @@ mod tests {
     }
 
     #[test]
-    fn ivf_snapshot_resume_requires_snapshot_storage_rows() {
+    fn ivf_snapshot_resume_requires_expected_storage_rows() {
         let cfg = Config {
             snapshot_load: true,
             pq_nprobe_values: Some(vec![1]),
@@ -2324,7 +2334,7 @@ mod tests {
             ],
             ..CompletedResults::default()
         };
-        let completed = CompletedResults {
+        let missing_file = CompletedResults {
             lines: vec![
                 single_line_with_storage("ivf_avq", avq_params, "in_memory"),
                 single_line_with_storage("ivf_avq", avq_params, "snapshot_loaded"),
@@ -2333,9 +2343,27 @@ mod tests {
             ],
             ..CompletedResults::default()
         };
+        let completed = CompletedResults {
+            lines: vec![
+                single_line_with_storage("ivf_avq", avq_params, "in_memory"),
+                single_line_with_storage("ivf_avq", avq_params, "snapshot_loaded"),
+                single_line_with_storage("ivf_avq", avq_params, "file"),
+                single_line_with_storage("ivf_rabitq", rabitq_params, "in_memory"),
+                single_line_with_storage("ivf_rabitq", rabitq_params, "snapshot_loaded"),
+            ],
+            ..CompletedResults::default()
+        };
 
         assert!(!request_completed(
             &missing_snapshot,
+            "ivf_avq",
+            &cfg,
+            128,
+            2_000,
+            200
+        ));
+        assert!(!request_completed(
+            &missing_file,
             "ivf_avq",
             &cfg,
             128,

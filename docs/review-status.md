@@ -20,6 +20,7 @@ benchmarking, persistence, Python bindings, and performance work.
 | Python exposed API | Passing | `PYO3_PYTHON=/opt/homebrew/bin/python3.12 CARGO_TARGET_DIR=/tmp/vicinity-python-gate CARGO_INCREMENTAL=0 RUSTC_WRAPPER= uv run maturin develop --release --features hnsw,python,parallel`; `uv run --extra test pytest tests/test_python.py`; `uv run --extra test python -m mypy.stubtest pyvicinity._core`; `uv run ruff check pyproject.toml tests/test_python.py examples/python` |
 | Algorithm recommendation docs | Updated | README and `docs/algorithms.md` distinguish brute force, in-memory, file-backed graph, and file-backed compressed search |
 | Classical tree recall knobs | First pass | `CARGO_TARGET_DIR=/tmp/vicinity-rp-forest-sweep CARGO_INCREMENTAL=0 RUSTC_WRAPPER= cargo run --release --example ann_benchmark --no-default-features --features rptree -- data/ann-benchmarks/glove-25-angular --algo rp_forest --max-train 50000 --max-queries 500 --tree-leaf-sizes 100,200,500 --rp-num-trees 50,100,200 --json --results /tmp/vicinity-rp-forest-sweep.jsonl`; `CARGO_TARGET_DIR=/tmp/vicinity-kmeans-branch-sweep CARGO_INCREMENTAL=0 RUSTC_WRAPPER= cargo run --release --example ann_benchmark --no-default-features --features kmeans_tree -- data/ann-benchmarks/glove-25-angular --algo kmeans_tree --max-train 50000 --max-queries 500 --kmeans-clusters 8 --kmeans-leaf-sizes 200,500,1000 --kmeans-depths 10 --kmeans-iters 10 --kmeans-search-branches 1,2,4,8 --json --results /tmp/vicinity-kmeans-branch-sweep.jsonl`; `CARGO_TARGET_DIR=/tmp/vicinity-kmeans-branch-test CARGO_INCREMENTAL=0 RUSTC_WRAPPER= cargo test --no-default-features --features kmeans_tree --lib classic::trees::kmeans_tree::tests`; `CARGO_TARGET_DIR=/tmp/vicinity-kmeans-support-test-full CARGO_INCREMENTAL=0 RUSTC_WRAPPER= cargo test --example ann_benchmark --no-default-features --features kmeans_tree,serde -- support::tests` |
+| IVF-AVQ direct file search | Passing | `CARGO_TARGET_DIR=/tmp/vicinity-ivfavq-file-test CARGO_INCREMENTAL=0 RUSTC_WRAPPER= cargo test --no-default-features --features ivf_avq --lib ivf_avq::search::tests`; `CARGO_TARGET_DIR=/tmp/vicinity-ivfavq-support-test-full CARGO_INCREMENTAL=0 RUSTC_WRAPPER= cargo test --example ann_benchmark --no-default-features --features ivf_avq -- support::tests`; `CARGO_TARGET_DIR=/tmp/vicinity-ivfavq-clippy CARGO_INCREMENTAL=0 RUSTC_WRAPPER= cargo clippy --no-default-features --features ivf_avq --lib -- -D warnings`; `CARGO_TARGET_DIR=/tmp/vicinity-ivfavq-example-clippy CARGO_INCREMENTAL=0 RUSTC_WRAPPER= cargo clippy --example ann_benchmark --no-default-features --features ivf_avq -- -D warnings`; `CARGO_TARGET_DIR=/tmp/vicinity-ivfavq-file-smoke-target CARGO_INCREMENTAL=0 RUSTC_WRAPPER= cargo run --release --example ann_benchmark --no-default-features --features ivf_avq -- data/ann-benchmarks/glove-25-angular --algo ivf_avq --max-train 1024 --max-queries 50 --pq-nprobes 1,2 --snapshot-load --json --results /tmp/vicinity-ivfavq-file-smoke-20260708-rerun.jsonl`; `uv run scripts/summarize_ann_results.py /tmp/vicinity-ivfavq-file-smoke-20260708-rerun.jsonl --expect ivf_avq:in_memory --expect ivf_avq:snapshot_loaded --expect ivf_avq:file` |
 
 ## Current Conclusions
 
@@ -38,9 +39,10 @@ benchmarking, persistence, Python bindings, and performance work.
 - The benchmark resume contract is storage-aware for the implemented storage
   modes. DiskANN requires memory, file, and mmap rows. IVF-PQ requires
   snapshot-loaded and file rows, plus mmap rows when the `persistence` feature
-  is compiled. `store::UpdatableIndex` requires a `segmented_store` row. Other
-  snapshot-capable families require `snapshot_loaded` rows when
-  `--snapshot-load` is requested.
+  is compiled. IVF-AVQ requires snapshot-loaded and direct-file rows.
+  `store::UpdatableIndex` requires a `segmented_store` row. Other snapshot-
+  capable families require `snapshot_loaded` rows when `--snapshot-load` is
+  requested.
 - Benchmark result coverage can be summarized from JSONL with
   `uv run scripts/summarize_ann_results.py data/ann-benchmarks/results/*.jsonl`.
   Add `--expect ALGORITHM:STORAGE` rows when reviewing an intended matrix, so
@@ -87,6 +89,10 @@ benchmarking, persistence, Python bindings, and performance work.
   reads and then switching direct-file graph/vector reads to positional reads
   moved `file_ef75` from 199.28 ms to 72.892 ms per 100 queries, with heap
   and mmap controls staying in family.
+- IVF-AVQ now has a direct file search path over saved partition/code files and
+  raw vectors for exact rerank. The capped smoke row validates equal recall
+  between in-memory, snapshot-loaded, and direct-file storage modes for each
+  nprobe setting; mmap remains open.
 - The full-corpus DiskANN fixed-recall point moved the search-only profiling
   target to `ef=250`. Replacing the file/mmap searcher's per-query `HashSet`
   visited set with the dense generation-counter pattern already used by the

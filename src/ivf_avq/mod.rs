@@ -65,8 +65,9 @@
 //! 3. **Rerank**: Exact computation on top candidates
 //!
 //! Built indexes can be saved with `IVFAVQIndex::save_to_dir()` and restored
-//! with `IVFAVQIndex::load_from_dir()`. The current format reloads into memory;
-//! file-backed and mmap search are tracked separately in `docs/persistence.md`.
+//! into memory with `IVFAVQIndex::load_from_dir()`. `IVFAVQFileSearcher` opens
+//! the same saved format for direct file-backed search; mmap search is tracked
+//! separately in `docs/persistence.md`.
 //!
 //! # IVF-AVQ vs IVF-PQ
 //!
@@ -113,4 +114,4 @@ mod quantization;
 mod reranking;
 pub mod search;
 
-pub use search::{IVFAVQIndex, IVFAVQParams};
+pub use search::{IVFAVQFileSearcher, IVFAVQIndex, IVFAVQParams};
