@@ -680,6 +680,35 @@ cargo run --release --example ann_benchmark --no-default-features --features kme
 | K-means tree | 8 clusters, leaf 200, branch 8 | 100.00% | 367.4 | 8,469,516 | broad branch budget makes it effectively high-recall but slow |
 | K-means tree | 8 clusters, leaf 1000, branch 4 | 92.10% | 1,244.8 | 8,042,124 | best near-high-recall speed row, still below 95% |
 
+Matching snapshot-load spot checks for the best 95%+ rows preserved recall and
+warm-cache QPS:
+
+```bash
+CARGO_TARGET_DIR=/tmp/vicinity-rp-forest-snapshot-target CARGO_INCREMENTAL=0 RUSTC_WRAPPER= \
+cargo run --release --example ann_benchmark --no-default-features --features rptree,serde -- \
+  data/ann-benchmarks/glove-25-angular --algo rp_forest \
+  --max-train 50000 --max-queries 500 \
+  --tree-leaf-sizes 200 --rp-num-trees 50 \
+  --snapshot-load --json \
+  --results data/ann-benchmarks/results/vicinity-rp-forest-snapshot-20260708.jsonl --fresh
+
+CARGO_TARGET_DIR=/tmp/vicinity-kmeans-snapshot-target CARGO_INCREMENTAL=0 RUSTC_WRAPPER= \
+cargo run --release --example ann_benchmark --no-default-features --features kmeans_tree,serde -- \
+  data/ann-benchmarks/glove-25-angular --algo kmeans_tree \
+  --max-train 50000 --max-queries 500 --kmeans-clusters 8 \
+  --kmeans-leaf-sizes 200 --kmeans-depths 10 \
+  --kmeans-iters 10 --kmeans-search-branches 8 \
+  --snapshot-load --json \
+  --results data/ann-benchmarks/results/vicinity-kmeans-snapshot-20260708.jsonl --fresh
+```
+
+| Algorithm | Storage mode | Recall@10 | QPS | Load s | Index bytes |
+| --- | --- | ---: | ---: | ---: | ---: |
+| RP-forest | in_memory | 97.54% | 3,898.1 | n/a | 21,294,476 |
+| RP-forest | snapshot_loaded | 97.54% | 3,897.7 | 0.5247 | 230,692,380 |
+| K-means tree | in_memory | 100.00% | 440.6 | n/a | 8,469,516 |
+| K-means tree | snapshot_loaded | 100.00% | 445.3 | 0.1552 | 30,286,231 |
+
 This changes the classical read slightly: RP-forest is not capped below 95%
 recall, but reaching that band costs enough tree and leaf budget that it sits
 well below graph methods at the same 50K cap. K-means tree is controllable via
