@@ -4,6 +4,7 @@
 //! - Graph structure serialization (layers, neighbors)
 //! - Vector storage (reuses dense segment format)
 //! - Layer assignments
+//! - Tombstone flags
 //! - Parameters
 
 use crate::persistence::directory::Directory;
@@ -38,6 +39,7 @@ impl HNSWSegmentWriter {
     /// Format:
     /// - `vectors.bin`: Vector data (SoA layout, same as dense segment)
     /// - `doc_ids.bin`: External doc_ids aligned with internal indices
+    /// - `tombstones.bin`: One byte per internal id, `1` for soft-deleted
     /// - `layers.bin`: Graph layers (serialized neighbor lists)
     /// - `layer_assignments.bin`: Layer assignment for each vector
     /// - `params.bin`: HNSW parameters
@@ -71,6 +73,12 @@ impl HNSWSegmentWriter {
             doc_ids_file.write_all(&doc_id.to_le_bytes())?;
         }
         doc_ids_file.flush()?;
+
+        // Write tombstone flags (one byte per internal id).
+        let tombstones_path = format!("{}/tombstones.bin", segment_dir);
+        let mut tombstones_file = self.directory.create_file(&tombstones_path)?;
+        tombstones_file.write_all(&index.tombstone_flags())?;
+        tombstones_file.flush()?;
 
         // Write layer assignments
         let assignments_path = format!("{}/layer_assignments.bin", segment_dir);
@@ -369,6 +377,17 @@ impl HNSWSegmentReader {
             (0..self.num_vectors as u32).collect()
         };
 
+        // Load tombstone flags if present. Legacy segments have no sidecar.
+        let tombstones_path = format!("{}/tombstones.bin", segment_dir);
+        let tombstone_flags = if self.directory.exists(&tombstones_path) {
+            let mut tombstones_file = self.directory.open_file(&tombstones_path)?;
+            let mut flags = vec![0u8; self.num_vectors];
+            tombstones_file.read_exact(&mut flags)?;
+            Some(flags)
+        } else {
+            None
+        };
+
         // Load layer assignments
         let assignments_path = format!("{}/layer_assignments.bin", segment_dir);
         let mut assignments_file = self.directory.open_file(&assignments_path)?;
@@ -435,7 +454,7 @@ impl HNSWSegmentReader {
         }
 
         // Reconstruct index (validates structural invariants)
-        Ok(HNSWIndex::from_parts(
+        let mut index = HNSWIndex::from_parts(
             vectors,
             self.dimension,
             self.num_vectors,
@@ -444,7 +463,13 @@ impl HNSWSegmentReader {
             self.params.clone(),
             self.built,
             doc_ids,
-        )?)
+        )?;
+
+        if let Some(flags) = tombstone_flags {
+            index.restore_tombstone_flags(&flags)?;
+        }
+
+        Ok(index)
     }
 }
 
@@ -480,5 +505,42 @@ mod tests {
 
         let r1 = loaded.search(&v1, 1, 50).unwrap();
         assert_eq!(r1[0].0, 7);
+    }
+
+    #[test]
+    fn test_hnsw_segment_preserves_tombstones() {
+        let dim = 4;
+        let mut index = HNSWIndex::new(dim, 8, 8).unwrap();
+
+        let v0 = vec![1.0, 0.0, 0.0, 0.0];
+        let v1 = vec![0.0, 1.0, 0.0, 0.0];
+        index.add(42, v0.clone()).unwrap();
+        index.add(7, v1.clone()).unwrap();
+        index.build().unwrap();
+        index.delete(42).unwrap();
+
+        let mem = MemoryDirectory::new();
+
+        let mut writer = HNSWSegmentWriter::new(Box::new(mem.clone()), 2);
+        writer.write_hnsw_index(&index).unwrap();
+
+        let reader = HNSWSegmentReader::load(Box::new(mem.clone()), 2).unwrap();
+        let loaded = reader.load_index().unwrap();
+
+        assert!(loaded.is_deleted(42));
+        assert!(!loaded.is_deleted(7));
+        assert_eq!(loaded.num_active(), 1);
+
+        let result_ids: Vec<_> = loaded
+            .search(&v0, 2, 50)
+            .unwrap()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert!(
+            !result_ids.contains(&42),
+            "segment roundtrip resurrected deleted doc_id 42"
+        );
+        assert_eq!(result_ids, vec![7]);
     }
 }

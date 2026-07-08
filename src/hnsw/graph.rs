@@ -87,8 +87,7 @@ pub struct HNSWIndex {
 
     /// Soft-deleted nodes. Deleted internal IDs are excluded from search results
     /// but remain in the graph for navigation. Storage is not reclaimed until rebuild.
-    /// Skipped during serialization -- starts empty on deserialization.
-    #[cfg_attr(feature = "serde", serde(skip))]
+    #[cfg_attr(feature = "serde", serde(default))]
     tombstones: TombstoneSet,
 
     /// Internal RNG for layer assignment. Seeded from `params.seed` when set,
@@ -763,14 +762,6 @@ impl HNSWIndex {
     /// Graph edges from/to deleted nodes remain intact for navigation;
     /// deleted nodes are filtered from final results only.
     ///
-    /// # Persistence caveat
-    ///
-    /// Tombstones are *not* serialized by `save_to_writer` or `save_to_file`
-    /// (both `serde`-gated): a tombstoned doc_id will reappear in search
-    /// results after a save / load roundtrip. For deletions that must
-    /// survive serialization, use [`Self::delete_with_repair`], which
-    /// physically removes graph edges and updates the entry point so the
-    /// deletion is captured by the persisted graph state.
     pub fn delete(&mut self, doc_id: u32) -> Result<(), RetrieveError> {
         let internal_id = self
             .doc_id_to_internal
@@ -1119,6 +1110,39 @@ impl HNSWIndex {
         self.num_vectors.saturating_sub(self.tombstones.len())
     }
 
+    #[cfg(any(feature = "persistence", feature = "store"))]
+    pub(crate) fn tombstone_flags(&self) -> Vec<u8> {
+        (0..self.num_vectors)
+            .map(|internal_id| u8::from(self.tombstones.is_deleted(internal_id)))
+            .collect()
+    }
+
+    #[cfg(any(feature = "persistence", feature = "store"))]
+    pub(crate) fn restore_tombstone_flags(&mut self, flags: &[u8]) -> Result<(), RetrieveError> {
+        if flags.len() != self.num_vectors {
+            return Err(RetrieveError::FormatError(format!(
+                "tombstone flag count ({}) != num_vectors ({})",
+                flags.len(),
+                self.num_vectors
+            )));
+        }
+
+        let mut deleted = Vec::new();
+        for (internal_id, &flag) in flags.iter().enumerate() {
+            match flag {
+                0 => {}
+                1 => deleted.push(internal_id),
+                other => {
+                    return Err(RetrieveError::FormatError(format!(
+                        "invalid tombstone flag {other} at internal id {internal_id}"
+                    )));
+                }
+            }
+        }
+        self.tombstones = TombstoneSet::from_ids(deleted);
+        Ok(())
+    }
+
     /// Memory usage breakdown for this index.
     pub fn memory_usage(&self) -> crate::memory::MemoryReport {
         let vectors_bytes = self.vectors.len() * std::mem::size_of::<f32>();
@@ -1155,10 +1179,8 @@ impl HNSWIndex {
     /// serialized. The reverse map is rebuilt on [`Self::load_from_reader`]; metadata
     /// must be re-added if filtered search is needed.
     ///
-    /// **Tombstones are not serialized.** A doc_id removed via
-    /// [`Self::delete`] before this call will reappear in search results
-    /// after [`Self::load_from_reader`]. Use [`Self::delete_with_repair`]
-    /// for deletions that must survive a save / load roundtrip.
+    /// Tombstones are serialized, so ids removed via [`Self::delete`]
+    /// remain excluded after [`Self::load_from_reader`].
     #[cfg(feature = "serde")]
     pub fn save_to_writer<W: std::io::Write>(&self, writer: W) -> Result<(), RetrieveError> {
         serde_json::to_writer(writer, self).map_err(|e| RetrieveError::Serialization(e.to_string()))
@@ -1189,8 +1211,7 @@ impl HNSWIndex {
     /// `Directory` should prefer that path -- it covers the same shape and
     /// composes with the rest of the durability stack (WAL, recovery).
     ///
-    /// **Tombstones are not persisted.** See [`Self::save_to_writer`] for
-    /// details; for durable deletion, use [`Self::delete_with_repair`].
+    /// Tombstones are persisted with the rest of the serde snapshot.
     #[cfg(feature = "serde")]
     pub fn save_to_file<P: AsRef<std::path::Path>>(&self, path: P) -> Result<(), RetrieveError> {
         let path = path.as_ref();
@@ -1280,10 +1301,6 @@ impl HNSWIndex {
     /// `metadata` are skipped and rebuilt on [`Self::from_postcard`]. JSON parsing a
     /// large graph (float arrays as text) can cost as much as a rebuild, which would
     /// defeat the point; postcard keeps load strictly cheaper than reconstruction.
-    ///
-    /// **Tombstones are not serialized** (as with [`Self::save_to_writer`]). The
-    /// `store` layer builds each per-segment index over live ids only, so a
-    /// tombstoned id never enters the persisted graph in the first place.
     #[cfg(any(feature = "persistence", feature = "store"))]
     pub fn to_postcard(&self) -> Result<Vec<u8>, RetrieveError> {
         postcard::to_allocvec(self).map_err(|e| RetrieveError::Serialization(e.to_string()))

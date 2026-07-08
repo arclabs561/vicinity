@@ -50,13 +50,21 @@ use std::collections::HashSet;
 /// Tombstones are stored separately from the main graph structure,
 /// allowing O(1) deletion with deferred cleanup.
 #[derive(Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TombstoneSet {
     /// Set of deleted internal node IDs
     deleted: HashSet<usize>,
     /// Count of deleted nodes (for metrics)
+    #[cfg_attr(feature = "serde", serde(default))]
     delete_count: usize,
     /// Threshold for triggering compaction (fraction of total nodes)
+    #[cfg_attr(feature = "serde", serde(default = "default_compaction_threshold"))]
     compaction_threshold: f32,
+}
+
+#[cfg(feature = "serde")]
+fn default_compaction_threshold() -> f32 {
+    0.1
 }
 
 impl TombstoneSet {
@@ -117,6 +125,16 @@ impl TombstoneSet {
     /// Used during compaction to identify nodes for removal.
     pub fn tombstones(&self) -> impl Iterator<Item = usize> + '_ {
         self.deleted.iter().copied()
+    }
+
+    /// Construct a tombstone set from persisted internal node IDs.
+    #[cfg(any(feature = "persistence", feature = "store"))]
+    pub(crate) fn from_ids(ids: impl IntoIterator<Item = usize>) -> Self {
+        let mut set = Self::default();
+        for id in ids {
+            set.delete(id);
+        }
+        set
     }
 
     /// Clear all tombstones (call after compaction).

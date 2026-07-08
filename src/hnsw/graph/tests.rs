@@ -213,6 +213,55 @@ fn test_hnsw_save_load_roundtrip() {
     }
 }
 
+#[cfg(feature = "serde")]
+#[test]
+fn test_hnsw_save_load_preserves_tombstones() {
+    let (mut index, q) = build_test_index();
+    let k = 20;
+    let ef = 64;
+
+    let nearest_id = index.search(&q, 1, ef).unwrap()[0].0;
+    index.delete(nearest_id).unwrap();
+    assert!(index.is_deleted(nearest_id));
+
+    let mut buf = Vec::new();
+    index.save_to_writer(&mut buf).unwrap();
+    let loaded = HNSWIndex::load_from_reader(buf.as_slice()).unwrap();
+
+    assert!(loaded.is_deleted(nearest_id));
+    assert_eq!(loaded.num_active(), index.num_active());
+    let loaded_ids: Vec<_> = loaded
+        .search(&q, k, ef)
+        .unwrap()
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
+    assert!(
+        !loaded_ids.contains(&nearest_id),
+        "serde roundtrip resurrected deleted doc_id {}",
+        nearest_id
+    );
+
+    #[cfg(any(feature = "persistence", feature = "store"))]
+    {
+        let postcard = index.to_postcard().unwrap();
+        let loaded = HNSWIndex::from_postcard(&postcard).unwrap();
+        assert!(loaded.is_deleted(nearest_id));
+        assert_eq!(loaded.num_active(), index.num_active());
+        let loaded_ids: Vec<_> = loaded
+            .search(&q, k, ef)
+            .unwrap()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert!(
+            !loaded_ids.contains(&nearest_id),
+            "postcard roundtrip resurrected deleted doc_id {}",
+            nearest_id
+        );
+    }
+}
+
 /// Round-trip via the path-based API (covers `save_to_file` /
 /// `load_from_file`, which the in-memory roundtrip above does not).
 /// Also asserts that `save_to_file` leaves no `.tmp` sibling on
