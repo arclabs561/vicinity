@@ -125,7 +125,8 @@ cargo run --example ann_benchmark --release \
   --pq-training-sample-size 100000 --pq-kmeans-max-iter 20 --json --fresh
 
 # Dataset shape and difficulty profile. This uses memmaps and sampled exact
-# distances, so it is cheap enough to run before comparing benchmark curves.
+# distances, including neighbor gaps, hubness, LID, coordinate dispersion, and
+# coarse partition imbalance.
 uv run scripts/profile_ann_dataset.py data/ann-benchmarks/glove-25-angular \
   --sample-train 4096 --sample-queries 1000 --pair-samples 20000
 

@@ -73,6 +73,12 @@ def test_profile_dataset_reports_shape_and_difficulty(tmp_path: Path) -> None:
     assert profile["samples"]["train"] == 16
     assert profile["samples"]["queries"] == 4
     assert profile["norms"]["train"]["p50"] > 0.99
+    dispersion = profile["coordinate_dispersion_sample"]
+    assert dispersion["centroid_norm"] > 0.0
+    assert dispersion["dimension_std"]["p50"] >= 0.0
+    assert 0.0 < dispersion["variance_effective_dim"] <= 6.0
+    assert 0.0 < dispersion["variance_effective_dim_fraction"] <= 1.0
+    assert 0.0 <= dispersion["zero_variance_fraction"] <= 1.0
     assert profile["query_neighbors"]["nearest_distance"]["mean"] >= 0.0
     assert profile["query_neighbors"]["top2_gap"]["mean"] >= 0.0
     assert profile["query_neighbors"]["lid_mle"]["mean"] > 0.0

@@ -203,6 +203,32 @@ def duplicate_fraction(vectors: np.ndarray) -> float:
     return float(1.0 - np.unique(rows).size / len(rows))
 
 
+def coordinate_dispersion(vectors: np.ndarray) -> dict[str, Any]:
+    """Summarize per-coordinate spread without a full covariance eigensolve."""
+    if vectors.size == 0:
+        return {}
+    values = np.asarray(vectors, dtype=np.float64)
+    dim = values.shape[1]
+    means = np.mean(values, axis=0)
+    variances = np.var(values, axis=0)
+    stds = np.sqrt(variances)
+    total_variance = float(np.sum(variances))
+    effective_dim = 0.0
+    if total_variance > 0.0:
+        weights = variances / total_variance
+        effective_dim = float(1.0 / np.sum(weights * weights))
+    return {
+        "centroid_norm": float(np.linalg.norm(means)),
+        "mean_abs_coordinate_mean": float(np.mean(np.abs(means))),
+        "dimension_std": quantiles(stds),
+        "dimension_variance": quantiles(variances),
+        "total_variance": total_variance,
+        "variance_effective_dim": effective_dim,
+        "variance_effective_dim_fraction": float(effective_dim / dim) if dim else 0.0,
+        "zero_variance_fraction": float(np.mean(variances <= 1e-12)),
+    }
+
+
 def pair_distances(
     train: np.ndarray,
     metric: Metric,
@@ -463,6 +489,7 @@ def profile_dataset(
             "train": quantiles(vector_norms(sampled_train)),
             "queries": quantiles(vector_norms(sampled_test)),
         },
+        "coordinate_dispersion_sample": coordinate_dispersion(sampled_train),
         "exact_duplicate_fraction_sample": duplicate_fraction(sampled_train),
         "pair_distance_sample": quantiles(
             pair_distances(sampled_train, metric, pair_samples, rng)
