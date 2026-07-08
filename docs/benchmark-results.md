@@ -759,6 +759,45 @@ the standard-search entrypoints does not help this workload. Further HNSW
 search work should prioritize heap-update structure, visited/result layout, and
 vector/neighbor locality before another dispatch rewrite.
 
+The next safe heap-update experiment replaced the result-heap push-then-pop
+sequence with top replacement through `BinaryHeap::peek_mut`. It targets the
+`BinaryHeap::pop` bucket from the symbolized profile without changing distance
+kernels, graph layout, or unsafe code.
+
+```bash
+# Baseline before applying the heap replacement.
+CARGO_TARGET_DIR=/tmp/vicinity-hnsw-heapreplace-bench CARGO_INCREMENTAL=0 \
+  RUSTC_WRAPPER= cargo bench --bench hnsw_search --features hnsw -- \
+  hnsw_search_only --sample-size 20 --warm-up-time 1 --measurement-time 3
+
+# Candidate after applying the heap replacement, same target dir and flags.
+CARGO_TARGET_DIR=/tmp/vicinity-hnsw-heapreplace-bench CARGO_INCREMENTAL=0 \
+  RUSTC_WRAPPER= cargo bench --bench hnsw_search --features hnsw -- \
+  hnsw_search_only --sample-size 20 --warm-up-time 1 --measurement-time 3
+```
+
+| Workload | Baseline mean | Candidate mean | Criterion change | Decision |
+| --- | ---: | ---: | ---: | --- |
+| `hnsw_search_only/ef/10` | 487.04 us | 479.59 us | -2.57% time | kept |
+| `hnsw_search_only/ef/50` | 1.9160 ms | 1.9090 ms | no significant change | kept |
+| `hnsw_search_only/ef/100` | 3.6831 ms | 3.5919 ms | -2.86% time | kept |
+| `hnsw_search_only/ef/200` | 7.0050 ms | 6.7698 ms | -3.93% time | kept |
+
+Correctness checks:
+
+```bash
+CARGO_TARGET_DIR=/tmp/vicinity-hnsw-heapreplace-tests CARGO_INCREMENTAL=0 \
+  RUSTC_WRAPPER= cargo test --no-default-features --features hnsw --lib hnsw
+
+CARGO_TARGET_DIR=/tmp/vicinity-hnsw-heapreplace-tests CARGO_INCREMENTAL=0 \
+  RUSTC_WRAPPER= cargo test --no-default-features --features hnsw \
+  --test search_with_distance_parity
+```
+
+Both passed. `cross_algorithm_consistency` was also compiled with only `hnsw`,
+but that integration test is gated on `hnsw,nsw,diskann,sng`, so it emitted
+zero tests in that feature set.
+
 ### Dense Distance Kernel
 
 Direct Criterion measurements on the 128-d L2 kernel:

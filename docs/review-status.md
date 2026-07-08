@@ -121,6 +121,11 @@ benchmarking, persistence, Python bindings, and performance work.
   `ef=200` by about 5.8%, 5.6%, and 10.2% respectively in the search-only
   Criterion target. Future dispatch work should start from binary inspection or
   a narrower distance-kernel boundary, not a traversal-wide generic wrapper.
+- Replacing HNSW result-heap push-then-pop with `BinaryHeap::peek_mut`
+  top replacement was measured and kept. The search-only synthetic bench
+  improved `ef=10` by 2.57%, `ef=100` by 2.86%, and `ef=200` by 3.93%, with
+  no significant `ef=50` change. HNSW lib tests and search-with-distance parity
+  passed under `--no-default-features --features hnsw`.
 - The newer Perplexity2/unfinished-risk note was written against an older
   snapshot. Its HNSW tombstone, IVF-PQ filter metadata, DiskANN rustdoc,
   SmallVec inline-capacity, random LEMUR encoder warning, and unsupported

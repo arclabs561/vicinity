@@ -217,6 +217,29 @@ impl PartialOrd for MaxResult {
 
 // ─── Batched distance helpers ────────────────────────────────────────────────
 
+#[inline]
+fn insert_result_if_accepted(
+    results: &mut BinaryHeap<MaxResult>,
+    ef: usize,
+    id: u32,
+    distance: f32,
+) -> bool {
+    if results.len() < ef {
+        results.push(MaxResult { id, distance });
+        return true;
+    }
+
+    let Some(mut worst) = results.peek_mut() else {
+        return false;
+    };
+    if distance >= worst.distance {
+        return false;
+    }
+
+    *worst = MaxResult { id, distance };
+    true
+}
+
 /// Process a batch of neighbor distance computations.
 /// Computes distances for all batch entries, then inserts qualifying results
 /// into the candidate and result heaps.
@@ -241,19 +264,11 @@ fn flush_batch(
 
     if ef < CACHED_WORST_MIN_EF {
         for i in 0..count {
-            let worst_dist = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
-            if results.len() < ef || dists[i] < worst_dist {
+            if insert_result_if_accepted(results, ef, batch_ids[i], dists[i]) {
                 candidates.push(MinCandidate {
                     id: batch_ids[i],
                     distance: dists[i],
                 });
-                results.push(MaxResult {
-                    id: batch_ids[i],
-                    distance: dists[i],
-                });
-                if results.len() > ef {
-                    results.pop();
-                }
             }
         }
         return;
@@ -269,16 +284,11 @@ fn flush_batch(
     };
     for i in 0..count {
         if results.len() < ef || dists[i] < worst_dist {
-            candidates.push(MinCandidate {
-                id: batch_ids[i],
-                distance: dists[i],
-            });
-            results.push(MaxResult {
-                id: batch_ids[i],
-                distance: dists[i],
-            });
-            if results.len() > ef {
-                results.pop();
+            if insert_result_if_accepted(results, ef, batch_ids[i], dists[i]) {
+                candidates.push(MinCandidate {
+                    id: batch_ids[i],
+                    distance: dists[i],
+                });
             }
             worst_dist = if results.len() < ef {
                 f32::INFINITY
@@ -306,19 +316,11 @@ fn flush_batch_custom<F: Fn(&[f32], u32) -> f32>(
     }
     if ef < CACHED_WORST_MIN_EF {
         for i in 0..count {
-            let worst_dist = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
-            if results.len() < ef || dists[i] < worst_dist {
+            if insert_result_if_accepted(results, ef, batch_ids[i], dists[i]) {
                 candidates.push(MinCandidate {
                     id: batch_ids[i],
                     distance: dists[i],
                 });
-                results.push(MaxResult {
-                    id: batch_ids[i],
-                    distance: dists[i],
-                });
-                if results.len() > ef {
-                    results.pop();
-                }
             }
         }
         return;
@@ -331,16 +333,11 @@ fn flush_batch_custom<F: Fn(&[f32], u32) -> f32>(
     };
     for i in 0..count {
         if results.len() < ef || dists[i] < worst_dist {
-            candidates.push(MinCandidate {
-                id: batch_ids[i],
-                distance: dists[i],
-            });
-            results.push(MaxResult {
-                id: batch_ids[i],
-                distance: dists[i],
-            });
-            if results.len() > ef {
-                results.pop();
+            if insert_result_if_accepted(results, ef, batch_ids[i], dists[i]) {
+                candidates.push(MinCandidate {
+                    id: batch_ids[i],
+                    distance: dists[i],
+                });
             }
             worst_dist = if results.len() < ef {
                 f32::INFINITY
