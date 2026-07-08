@@ -480,6 +480,25 @@ impl FilteredGraphIndex {
         self.num_vectors == 0
     }
 
+    /// Estimated heap memory used by this index.
+    pub fn memory_usage(&self) -> crate::memory::MemoryReport {
+        let vectors_bytes = self.vectors.capacity() * std::mem::size_of::<f32>();
+
+        let graph_bytes = crate::memory::smallvec_u32_bytes(&self.neighbors);
+
+        let metadata_bytes = self.doc_ids.capacity() * std::mem::size_of::<u32>()
+            + self.staging_attrs.capacity() * std::mem::size_of::<HashMap<String, AttrValue>>()
+            + attr_maps_payload_bytes(&self.staging_attrs)
+            + inverted_index_bytes(&self.inverted);
+
+        crate::memory::MemoryReport {
+            vectors_bytes,
+            graph_bytes,
+            quantized_bytes: 0,
+            metadata_bytes,
+        }
+    }
+
     // ── Filter evaluation ─────────────────────────────────────────────────────
 
     /// Evaluate `filter` against the inverted indexes and return the set of
@@ -850,6 +869,43 @@ fn normalize(v: &[f32]) -> Vec<f32> {
     } else {
         v.to_vec()
     }
+}
+
+fn attr_value_owned_bytes(value: &AttrValue) -> usize {
+    match value {
+        AttrValue::String(value) => value.capacity(),
+        AttrValue::Int(_) | AttrValue::Float(_) | AttrValue::Bool(_) => 0,
+    }
+}
+
+fn attr_maps_payload_bytes(maps: &[HashMap<String, AttrValue>]) -> usize {
+    maps.iter()
+        .map(|attrs| {
+            attrs.capacity() * std::mem::size_of::<(String, AttrValue)>()
+                + attrs
+                    .iter()
+                    .map(|(key, value)| key.capacity() + attr_value_owned_bytes(value))
+                    .sum::<usize>()
+        })
+        .sum::<usize>()
+}
+
+fn inverted_index_bytes(inverted: &HashMap<String, Vec<(AttrValue, Vec<u32>)>>) -> usize {
+    inverted.capacity() * std::mem::size_of::<(String, Vec<(AttrValue, Vec<u32>)>)>()
+        + inverted
+            .iter()
+            .map(|(attr, entries)| {
+                attr.capacity()
+                    + entries.capacity() * std::mem::size_of::<(AttrValue, Vec<u32>)>()
+                    + entries
+                        .iter()
+                        .map(|(value, ids)| {
+                            attr_value_owned_bytes(value)
+                                + ids.capacity() * std::mem::size_of::<u32>()
+                        })
+                        .sum::<usize>()
+            })
+            .sum::<usize>()
 }
 
 fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), RetrieveError> {

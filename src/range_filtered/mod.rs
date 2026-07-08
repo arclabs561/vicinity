@@ -382,6 +382,34 @@ impl RangeFilteredIndex {
         self.num_vectors == 0
     }
 
+    /// Estimated heap memory used by this index.
+    pub fn memory_usage(&self) -> crate::memory::MemoryReport {
+        let vectors_bytes = self.vectors.capacity() * std::mem::size_of::<f32>();
+        #[cfg(feature = "hnsw")]
+        let graph_bytes = self
+            .full_index
+            .as_ref()
+            .map(|index| index.memory_usage().total())
+            .unwrap_or(0);
+        #[cfg(not(feature = "hnsw"))]
+        let graph_bytes = 0;
+
+        let metadata_bytes = self.sorted_points.capacity() * std::mem::size_of::<AttributedPoint>()
+            + self.staging.capacity() * std::mem::size_of::<(u32, Vec<f32>, f64)>()
+            + self
+                .staging
+                .iter()
+                .map(|(_, vector, _)| vector.capacity() * std::mem::size_of::<f32>())
+                .sum::<usize>();
+
+        crate::memory::MemoryReport {
+            vectors_bytes,
+            graph_bytes,
+            quantized_bytes: 0,
+            metadata_bytes,
+        }
+    }
+
     #[inline]
     fn get_vector(&self, rank: usize) -> &[f32] {
         let start = rank * self.dimension;

@@ -184,14 +184,17 @@ fn snapshot_storage(load_time_s: f64, index_bytes: Option<u64>) -> ResultStorage
 #[cfg(any(
     feature = "emg",
     feature = "finger",
+    feature = "filtered_graph",
     feature = "fresh_graph",
     feature = "hnsw",
     feature = "balltree",
+    feature = "curator",
     feature = "kdtree",
     feature = "kmeans_tree",
     feature = "nsg",
     feature = "nsw",
     feature = "pipnn",
+    all(feature = "range_filtered", feature = "hnsw"),
     feature = "rptree",
     feature = "sng",
     feature = "vamana"
@@ -2068,6 +2071,7 @@ fn run_inplace(
     }
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
+    let index_bytes = Some(index.memory_usage().total() as u64);
 
     #[cfg(feature = "serde")]
     let snapshot_index = if cfg.snapshot_load {
@@ -2108,7 +2112,14 @@ fn run_inplace(
             );
             emit_result(
                 &cfg.results_path,
-                &json_line("inplace", &params_json, build_time_s, rss, &result),
+                &json_line_with_storage(
+                    "inplace",
+                    &params_json,
+                    build_time_s,
+                    rss,
+                    &result,
+                    &in_memory_storage(index_bytes),
+                ),
             );
             #[cfg(feature = "serde")]
             if let Some((_, loaded, load_time_s, index_bytes)) = &snapshot_index {
@@ -2459,6 +2470,7 @@ fn run_filtered_graph(
     index.build().unwrap();
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
+    let index_bytes = Some(index.memory_usage().total() as u64);
     let snapshot_index = if cfg.snapshot_load {
         let temp_dir =
             tempfile::tempdir().expect("create temp dir for FilteredGraph snapshot benchmark");
@@ -2495,7 +2507,14 @@ fn run_filtered_graph(
             );
             emit_result(
                 &cfg.results_path,
-                &json_line("filtered_graph", &params_json, build_time_s, rss, &result),
+                &json_line_with_storage(
+                    "filtered_graph",
+                    &params_json,
+                    build_time_s,
+                    rss,
+                    &result,
+                    &in_memory_storage(index_bytes),
+                ),
             );
             if let Some((_, loaded, load_time_s, index_bytes)) = &snapshot_index {
                 let loaded_result = evaluate(
@@ -2661,6 +2680,7 @@ fn run_curator(
     index.build().unwrap();
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
+    let index_bytes = Some(index.memory_usage().total() as u64);
     let snapshot_index = if cfg.snapshot_load {
         let temp_dir = tempfile::tempdir().expect("create temp dir for Curator snapshot benchmark");
         index.save_to_dir(temp_dir.path()).unwrap();
@@ -2687,7 +2707,14 @@ fn run_curator(
         let params_json = r#"{"branching_factor":16,"max_leaf_size":128,"filter_mode":"none"}"#;
         emit_result(
             &cfg.results_path,
-            &json_line("curator", params_json, build_time_s, rss, &result),
+            &json_line_with_storage(
+                "curator",
+                params_json,
+                build_time_s,
+                rss,
+                &result,
+                &in_memory_storage(index_bytes),
+            ),
         );
         if let Some((_, loaded, load_time_s, index_bytes)) = &snapshot_index {
             let loaded_result = evaluate(&|q, k| loaded.search(q, k).unwrap(), test, neighbors, 10);
@@ -2741,6 +2768,7 @@ fn run_range_filtered(
     index.build().unwrap();
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
+    let index_bytes = Some(index.memory_usage().total() as u64);
     let snapshot_index = if cfg.snapshot_load {
         let temp_dir =
             tempfile::tempdir().expect("create temp dir for RangeFiltered snapshot benchmark");
@@ -2768,7 +2796,14 @@ fn run_range_filtered(
         let params_json = r#"{"hnsw_m":16,"ef_search":100,"filter_mode":"none"}"#;
         emit_result(
             &cfg.results_path,
-            &json_line("range_filtered", params_json, build_time_s, rss, &result),
+            &json_line_with_storage(
+                "range_filtered",
+                params_json,
+                build_time_s,
+                rss,
+                &result,
+                &in_memory_storage(index_bytes),
+            ),
         );
         if let Some((_, loaded, load_time_s, index_bytes)) = &snapshot_index {
             let loaded_result = evaluate(&|q, k| loaded.search(q, k).unwrap(), test, neighbors, 10);

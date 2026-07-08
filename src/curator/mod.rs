@@ -147,6 +147,10 @@ impl BloomFilter {
         (self.bits[h1 / 64] & (1u64 << (h1 % 64))) != 0
             && (self.bits[h2 / 64] & (1u64 << (h2 % 64))) != 0
     }
+
+    fn owned_bytes(&self) -> usize {
+        self.bits.capacity() * std::mem::size_of::<u64>()
+    }
 }
 
 /// A node in the k-means tree.
@@ -163,6 +167,21 @@ struct TreeNode {
     /// Per-label sorted buffers: label_hash -> sorted vec of vector IDs.
     /// Non-empty only at "leaf" nodes of each label's sub-index.
     label_buffers: HashMap<u64, Vec<u32>>,
+}
+
+impl TreeNode {
+    fn owned_bytes(&self) -> usize {
+        self.centroid.capacity() * std::mem::size_of::<f32>()
+            + self.children.capacity() * std::mem::size_of::<usize>()
+            + self.vector_ids.capacity() * std::mem::size_of::<u32>()
+            + self.label_bloom.owned_bytes()
+            + self.label_buffers.capacity() * std::mem::size_of::<(u64, Vec<u32>)>()
+            + self
+                .label_buffers
+                .values()
+                .map(|ids| ids.capacity() * std::mem::size_of::<u32>())
+                .sum::<usize>()
+    }
 }
 
 /// Curator index.
@@ -407,6 +426,23 @@ impl CuratorIndex {
     /// Whether the index is empty.
     pub fn is_empty(&self) -> bool {
         self.num_vectors == 0
+    }
+
+    /// Estimated heap memory used by this index.
+    pub fn memory_usage(&self) -> crate::memory::MemoryReport {
+        let vectors_bytes = self.vectors.capacity() * std::mem::size_of::<f32>();
+        let graph_bytes = self.nodes.capacity() * std::mem::size_of::<TreeNode>()
+            + self.nodes.iter().map(TreeNode::owned_bytes).sum::<usize>();
+        let metadata_bytes = self.doc_ids.capacity() * std::mem::size_of::<u32>()
+            + self.staging_labels.capacity() * std::mem::size_of::<Vec<String>>()
+            + label_payload_bytes(&self.staging_labels);
+
+        crate::memory::MemoryReport {
+            vectors_bytes,
+            graph_bytes,
+            quantized_bytes: 0,
+            metadata_bytes,
+        }
     }
 
     // ── Internal: tree construction ────────────────────────────────────
@@ -752,6 +788,16 @@ fn hash_label(label: &str) -> u64 {
         hash = hash.wrapping_mul(0x100000001b3);
     }
     hash
+}
+
+fn label_payload_bytes(labels: &[Vec<String>]) -> usize {
+    labels
+        .iter()
+        .map(|row| {
+            row.capacity() * std::mem::size_of::<String>()
+                + row.iter().map(String::capacity).sum::<usize>()
+        })
+        .sum::<usize>()
 }
 
 fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), RetrieveError> {

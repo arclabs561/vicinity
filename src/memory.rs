@@ -23,6 +23,7 @@ impl MemoryReport {
 #[cfg(any(
     feature = "emg",
     feature = "finger",
+    feature = "filtered_graph",
     feature = "fresh_graph",
     feature = "hnsw",
     feature = "nsg",

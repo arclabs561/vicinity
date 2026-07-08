@@ -586,6 +586,24 @@ tree emitted positive heap-estimated `index_bytes` (`29,408`, `36,260`,
 `33,500`, `46,072`, and `38,688` bytes respectively). Treat these as schema
 coverage numbers only; the workload is intentionally tiny.
 
+The same in-memory `index_bytes` coverage now extends to the filtered and
+update-heavy rows that own heap-resident structures. A bounded schema smoke used
+200 GloVe-25 vectors and 5 queries:
+
+```bash
+cargo run --example ann_benchmark --no-default-features --features filtered_graph,curator,range_filtered,hnsw -- \
+  data/ann-benchmarks/glove-25-angular \
+  --algo filtered_graph --algo curator --algo range_filtered --algo inplace \
+  --max-train 200 --max-queries 5 --ef-search 10 --json --fresh \
+  --results /tmp/vicinity-filtered-index-bytes-smoke.jsonl
+```
+
+The in-memory rows emitted positive heap-estimated `index_bytes`
+(`FilteredGraph=39,488`, `Curator=40,804`, `RangeFiltered=105,640`, and
+`InPlace=68,768` bytes respectively). This only validates row shape and memory
+accounting. Filter selectivity curves and churn fixed-recall sweeps are still
+the publishable evaluation path.
+
 Full-train IVF-PQ storage sweep from the same day, using all 1,183,514
 GloVe-25 vectors and 500 queries:
 
@@ -1306,12 +1324,12 @@ families that accept dense `Vec<f32>` input:
 | Streaming / updates | FreshGraph churn, in-place graph, in-place churn, LSM churn | `ann_benchmark --algo fresh_graph_churn --algo inplace --algo inplace_churn --algo lsm_churn` |
 
 This table is runner capability, not proof that each row has a fresh
-current-schema measurement in this file. Current-schema coverage is still
-concentrated on HNSW, DiskANN, IVF-PQ/rerank, segmented store, and the
-classical tree baselines. Graph alternatives, quantized HNSW variants,
-non-PQ quantized indexes, filtered rows, and churn workloads still need fresh
-fixed-recall rows with `storage_mode`, `cache_state`, latency percentiles,
-and index-size fields before they should be compared as measured results.
+current-schema measurement in this file. Current-schema fixed-recall coverage is
+still concentrated on HNSW, DiskANN, IVF-PQ/rerank, and segmented store. Graph
+alternatives, quantized HNSW variants, non-PQ quantized indexes, filtered rows,
+classical tree baselines, and churn workloads still need fresh fixed-recall
+rows with `storage_mode`, `cache_state`, latency percentiles, and index-size
+fields before they should be compared as measured results.
 
 Not every implemented module should produce a dense ANN row:
 

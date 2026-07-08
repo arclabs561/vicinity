@@ -92,6 +92,14 @@ impl InPlaceNode {
     fn mark_deleted(&mut self) {
         self.deleted = true;
     }
+
+    fn vector_bytes(&self) -> usize {
+        self.vector.capacity() * std::mem::size_of::<f32>()
+    }
+
+    fn graph_bytes(&self) -> usize {
+        (self.out_neighbors.capacity() + self.in_neighbors.capacity()) * std::mem::size_of::<u32>()
+    }
 }
 
 /// Graph index with in-place update support.
@@ -452,6 +460,22 @@ impl InPlaceIndex {
         result_vec.truncate(k);
 
         Ok(result_vec)
+    }
+
+    /// Estimated heap memory used by this index.
+    pub fn memory_usage(&self) -> crate::memory::MemoryReport {
+        let live_nodes = self.nodes.iter().flatten();
+        let vectors_bytes = live_nodes.clone().map(InPlaceNode::vector_bytes).sum();
+        let graph_bytes = self.nodes.capacity() * std::mem::size_of::<Option<InPlaceNode>>()
+            + live_nodes.map(InPlaceNode::graph_bytes).sum::<usize>();
+        let metadata_bytes = self.free_slots.capacity() * std::mem::size_of::<u32>();
+
+        crate::memory::MemoryReport {
+            vectors_bytes,
+            graph_bytes,
+            quantized_bytes: 0,
+            metadata_bytes,
+        }
     }
 
     /// Search for candidate neighbors during insertion.
