@@ -92,7 +92,7 @@ fn main() {
         std::fs::remove_file(&cfg.results_path).ok();
     }
     let completed = if cfg.resume {
-        load_completed_results(&cfg.results_path)
+        load_completed_results(&cfg, &cfg.results_path)
     } else {
         Vec::new()
     };
@@ -354,11 +354,40 @@ fn emit_json_line(cfg: &Config, line: &str) {
     }
 }
 
-fn load_completed_results(path: &Path) -> Vec<String> {
+fn meta_matches_config(cfg: &Config, line: &str) -> bool {
+    line.contains("\"workload\":\"acorn_selectivity\"")
+        && line.contains("\"result_schema\":1")
+        && line.contains("\"index_bytes_required\":true")
+        && line.contains(&format!("\"n\":{}", cfg.n))
+        && line.contains(&format!("\"dim\":{}", cfg.dim))
+        && line.contains(&format!("\"queries\":{}", cfg.queries))
+        && line.contains(&format!("\"k\":{}", cfg.k))
+        && line.contains(&format!("\"neighbors\":{}", cfg.neighbors))
+        && line.contains(&format!("\"ef_search\":{}", cfg.ef_search))
+        && line.contains(&format!(
+            "\"acorn_max_two_hop_neighbors\":{}",
+            cfg.acorn_max_two_hop_neighbors()
+        ))
+        && line.contains(&format!(
+            "\"fallback_selectivity_threshold\":{:.4}",
+            cfg.fallback_selectivity_threshold
+        ))
+}
+
+fn load_completed_results(cfg: &Config, path: &Path) -> Vec<String> {
     let Ok(file) = File::open(path) else {
         return Vec::new();
     };
-    BufReader::new(file).lines().map_while(Result::ok).collect()
+    let mut rows = Vec::new();
+    let mut active_meta = false;
+    for line in BufReader::new(file).lines().map_while(Result::ok) {
+        if line.contains("\"_meta\":") {
+            active_meta = meta_matches_config(cfg, &line);
+        } else if active_meta {
+            rows.push(line);
+        }
+    }
+    rows
 }
 
 fn row_completed(cfg: &Config, lines: &[String], algorithm: &str, target_count: usize) -> bool {
@@ -454,6 +483,46 @@ fn parse_args() -> Config {
         i += 1;
     }
     cfg
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(algorithm: &str, target_count: usize) -> String {
+        format!(
+            "{{\"algorithm\":\"{algorithm}\",\"params\":{{\"selectivity\":0.5000,\"target_count\":{target_count},\"neighbors\":32,\"n\":1200,\"dim\":32,\"queries\":100,\"ef_search\":200,\"acorn_max_two_hop_neighbors\":32}},\"storage_mode\":\"in_memory\",\"cache_state\":\"warm_after_build\",\"recall_at_10\":0.9,\"qps\":42,\"index_bytes\":4096}}"
+        )
+    }
+
+    #[test]
+    fn resume_keeps_rows_under_matching_current_meta() {
+        let cfg = Config::default();
+        let file = tempfile::NamedTempFile::new().unwrap();
+        writeln!(file.as_file(), "{}", meta_line(&cfg, None)).unwrap();
+        writeln!(file.as_file(), "{}", row("acorn", 600)).unwrap();
+
+        let rows = load_completed_results(&cfg, file.path());
+
+        assert_eq!(rows.len(), 1);
+        assert!(row_completed(&cfg, &rows, "acorn", 600));
+    }
+
+    #[test]
+    fn resume_rejects_legacy_meta_without_footprint_contract() {
+        let cfg = Config::default();
+        let file = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            file.as_file(),
+            "{{\"_meta\":{{\"workload\":\"acorn_selectivity\",\"result_schema\":1,\"n\":1200,\"dim\":32,\"queries\":100,\"k\":10,\"neighbors\":32,\"ef_search\":200,\"acorn_max_two_hop_neighbors\":32,\"fallback_selectivity_threshold\":0.0200}}}}"
+        )
+        .unwrap();
+        writeln!(file.as_file(), "{}", row("acorn", 600)).unwrap();
+
+        let rows = load_completed_results(&cfg, file.path());
+
+        assert!(rows.is_empty());
+    }
 }
 
 fn run_selectivity(
