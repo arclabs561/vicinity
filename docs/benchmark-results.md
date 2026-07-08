@@ -1059,6 +1059,14 @@ families that accept dense `Vec<f32>` input:
 | Classical baselines | KD-tree, Ball tree, RP-tree, RP-forest, K-means tree, brute force | `ann_benchmark --algo ...`; tree rows can add `--snapshot-load` |
 | Streaming / updates | FreshGraph churn, in-place graph, in-place churn, LSM churn | `ann_benchmark --algo fresh_graph_churn --algo inplace --algo inplace_churn --algo lsm_churn` |
 
+This table is runner capability, not proof that each row has a fresh
+current-schema measurement in this file. Current-schema coverage is still
+concentrated on HNSW, DiskANN, IVF-PQ/rerank, segmented store, and the
+classical tree baselines. Graph alternatives, quantized HNSW variants,
+non-PQ quantized indexes, filtered rows, and churn workloads still need fresh
+fixed-recall rows with `storage_mode`, `cache_state`, latency percentiles,
+and index-size fields before they should be compared as measured results.
+
 Not every implemented module should produce a dense ANN row:
 
 | Module | Why it is separate | Honest eval direction |
