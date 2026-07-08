@@ -419,6 +419,25 @@ impl RpQuantIndex {
         self.num_vectors == 0
     }
 
+    /// Estimated heap memory used by this index.
+    #[must_use]
+    pub fn memory_usage(&self) -> crate::memory::MemoryReport {
+        let f32_bytes = std::mem::size_of::<f32>();
+        let vectors_bytes = self.vectors.capacity() * f32_bytes;
+        let quantized_bytes = self.quantized.capacity();
+        let metadata_bytes = self.doc_ids.capacity() * std::mem::size_of::<u32>()
+            + self.projection.capacity() * f32_bytes
+            + self.mins.capacity() * f32_bytes
+            + self.scales.capacity() * f32_bytes;
+
+        crate::memory::MemoryReport {
+            vectors_bytes,
+            graph_bytes: 0,
+            quantized_bytes,
+            metadata_bytes,
+        }
+    }
+
     // ── Internal ───────────────────────────────────────────────────────
 
     #[inline]
@@ -515,6 +534,41 @@ mod tests {
         let results = index.search(query, 5).unwrap();
         assert!(!results.is_empty());
         assert!(results.iter().any(|(id, _)| *id == 0));
+    }
+
+    #[test]
+    fn memory_usage_reports_owned_buffers_after_build() {
+        let dim = 16;
+        let projected_dim = 8;
+        let n = 32;
+        let data = make_vectors(n, dim, 42);
+        let mut index = RpQuantIndex::new(
+            dim,
+            RpQuantParams {
+                projected_dim,
+                rerank_factor: 5,
+                seed: 1,
+            },
+        )
+        .unwrap();
+
+        for i in 0..n {
+            let start = i * dim;
+            index
+                .add_slice(i as u32, &data[start..start + dim])
+                .unwrap();
+        }
+        index.build().unwrap();
+
+        let report = index.memory_usage();
+        assert!(report.vectors_bytes >= n * dim * std::mem::size_of::<f32>());
+        assert!(report.quantized_bytes >= n * projected_dim);
+        assert!(
+            report.metadata_bytes
+                >= n * std::mem::size_of::<u32>()
+                    + dim * projected_dim * std::mem::size_of::<f32>()
+        );
+        assert!(report.total() >= report.vectors_bytes + report.quantized_bytes);
     }
 
     #[test]

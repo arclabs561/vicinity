@@ -311,6 +311,25 @@ impl BinaryFlatIndex {
         self.num_vectors == 0
     }
 
+    /// Estimated heap memory used by this index.
+    #[must_use]
+    pub fn memory_usage(&self) -> crate::memory::MemoryReport {
+        let vectors_bytes = self.vectors.capacity() * std::mem::size_of::<f32>();
+        let rotation_bytes = self
+            .quantizer
+            .as_ref()
+            .map(|_| self.dimension * self.params.projected_dim * std::mem::size_of::<f32>())
+            .unwrap_or(0);
+        let metadata_bytes = self.doc_ids.capacity() * std::mem::size_of::<u32>() + rotation_bytes;
+
+        crate::memory::MemoryReport {
+            vectors_bytes,
+            graph_bytes: 0,
+            quantized_bytes: self.codes.capacity(),
+            metadata_bytes,
+        }
+    }
+
     // ── Internal ──────────────────────────────────────────────────────────────
 
     #[inline]
@@ -363,6 +382,38 @@ mod tests {
         assert!(!results.is_empty());
         // The query vector itself should appear in top-5.
         assert!(results.iter().any(|(id, _)| *id == 0));
+    }
+
+    #[test]
+    fn memory_usage_reports_owned_buffers_after_build() {
+        let dim = 16;
+        let n = 32;
+        let data = make_vectors(n, dim, 42);
+        let mut index = BinaryFlatIndex::new(
+            dim,
+            BinaryFlatParams {
+                projected_dim: 8,
+                rerank_factor: 5,
+                seed: 1,
+            },
+        )
+        .unwrap();
+
+        for i in 0..n {
+            index
+                .add_slice(i as u32, &data[i * dim..(i + 1) * dim])
+                .unwrap();
+        }
+        index.build().unwrap();
+
+        let report = index.memory_usage();
+        assert!(report.vectors_bytes >= n * dim * std::mem::size_of::<f32>());
+        assert!(report.quantized_bytes >= n * index.code_len);
+        assert!(
+            report.metadata_bytes
+                >= n * std::mem::size_of::<u32>() + dim * 8 * std::mem::size_of::<f32>()
+        );
+        assert!(report.total() >= report.vectors_bytes + report.quantized_bytes);
     }
 
     #[test]

@@ -102,9 +102,12 @@ benchmarking, persistence, Python bindings, and performance work.
   `--pq-rerank-pools`; on a 50K-vector, 500-query GloVe-25 cap, the first
   measured 95%+ row is `nprobe=64,num_reorder=500` at 99.22% recall and
   8,525.9 QPS. That result means the earlier AVQ recall gap was partly a
-  hard-coded rerank-pool gap, not only an AVQ kernel problem. In-memory AVQ
-  rows now also report heap-estimated `index_bytes`; file and mmap rows keep
-  reporting saved snapshot bytes.
+  hard-coded rerank-pool gap, not only an AVQ kernel problem. A full-train
+  follow-up with the same `num_reorder=500` did not clear the fixed-recall bar:
+  best recall was 89.24% at 424.5 QPS (`nprobe=64`), while the fastest row was
+  88.21% recall at 2,031.5 QPS (`nprobe=16`). In-memory AVQ rows now also
+  report heap-estimated `index_bytes`; file and mmap rows keep reporting saved
+  snapshot bytes.
 - The full-corpus DiskANN fixed-recall point moved the search-only profiling
   target to `ef=250`. Replacing the file/mmap searcher's per-query `HashSet`
   visited set with the dense generation-counter pattern already used by the
@@ -274,7 +277,7 @@ benchmarking, persistence, Python bindings, and performance work.
 | Priority | Area | Next review |
 | --- | --- | --- |
 | 1 | Storage-mode matrix | Main matrix reviewed against public APIs and `ann_benchmark` support, and the resume matcher now has a broad feature-set test/clippy gate covering graph, IVF, storage, filter, streaming, sparse, quantized, and classical families together. Next pass should add any new storage modes as algorithms graduate. Keep heap, snapshot-loaded heap, file, mmap, and segmented-store modes separate. |
-| 2 | Benchmark coverage | The standard storage matrix now covers every current benchmark family at the coarse algorithm/storage level. `ann_benchmark` records `--max-train`, `--max-queries`, `--warmup-queries`, and the compiled feature list in `_meta`, so bounded rows, cache warmup, and narrower binaries are auditable. Mixed historical result directories can now use observed-only storage expectations and `--current-schema-only`. HNSW, NSW, Vamana, NSG, SNG, EMG, PiPNN, FINGER, FreshGraph, KD-tree, ball tree, RP-tree, RP-forest, K-means tree, FilteredGraph, Curator, RangeFiltered, InPlace, DiskANN, IVF-PQ, IVF-AVQ, IVF-RaBitQ, SQ8U, SymphonyQG-VR, and HNSW-PRT in-memory rows now report heap-estimated `index_bytes`, and HNSW, IVF-PQ, and DiskANN have full-train fixed-recall storage sweeps. Use `scripts/summarize_ann_results.py --recall-gap-only` to identify the next scoped fixed-recall sweeps where `qps_at_recall_floor` is still empty; qualifying summary rows now include the winning params. |
+| 2 | Benchmark coverage | The standard storage matrix now covers every current benchmark family at the coarse algorithm/storage level. `ann_benchmark` records `--max-train`, `--max-queries`, `--warmup-queries`, and the compiled feature list in `_meta`, so bounded rows, cache warmup, and narrower binaries are auditable. Mixed historical result directories can now use observed-only storage expectations and `--current-schema-only`. HNSW, NSW, Vamana, NSG, SNG, EMG, PiPNN, FINGER, FreshGraph, KD-tree, ball tree, RP-tree, RP-forest, K-means tree, FilteredGraph, Curator, RangeFiltered, InPlace, DiskANN, IVF-PQ, IVF-AVQ, IVF-RaBitQ, RpQuant, BinaryFlat, SQ4, SQ8U, SymphonyQG-VR, and HNSW-PRT in-memory rows now report heap-estimated `index_bytes`, and HNSW, IVF-PQ, and DiskANN have full-train fixed-recall storage sweeps. Use `scripts/summarize_ann_results.py --recall-gap-only` to identify the next scoped fixed-recall sweeps where `qps_at_recall_floor` is still empty; qualifying summary rows now include the winning params. |
 | 3 | CI benchmark smoke breadth | CI now runs cheap smoke rows for DiskANN file/mmap, IVF-PQ file/mmap, IVF-AVQ file/mmap, Vamana, `store::UpdatableIndex`, filtered dense rows, FreshGraph, churn modes, and classical baselines. Keep adding rows when new implemented algorithms enter `ann_benchmark`. |
 | 4 | Dataset source pinning | All configured ann-benchmarks HDF5 sources now have direct SHA-256 pins. Next review should decide whether stable mirrors are needed beyond `ann-benchmarks.com`. |
 | 5 | Segmented-store benchmark row | Added `--algo store` with live `store` and reopened `store_snapshot` rows under `storage_mode=segmented_store`; capped 50K GloVe-25 live row reaches 99.97% recall at 5.9K QPS. Next review is dataset-scale comparison against HNSW, FreshGraph, in-place graph, and LSM churn. |

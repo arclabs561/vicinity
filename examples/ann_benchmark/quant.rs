@@ -9,11 +9,9 @@ use crate::support::{current_rss_kb, emit_result, evaluate, print_header, print_
 #[cfg(feature = "ivf_pq")]
 use crate::support::ivfpq_params_json;
 #[cfg(any(
-    feature = "rp_quant",
-    feature = "binary_index",
     feature = "lsh",
-    feature = "sq4",
-    all(feature = "hnsw", feature = "ivf_rabitq")
+    all(feature = "hnsw", feature = "ivf_rabitq"),
+    all(feature = "hnsw", feature = "sq4")
 ))]
 use crate::support::json_line;
 #[cfg(any(feature = "ivf_pq", feature = "ivf_avq", feature = "ivf_rabitq"))]
@@ -908,6 +906,7 @@ pub(crate) fn run_rp_quant(
     index.build().unwrap();
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
+    let index_bytes = Some(index.memory_usage().total() as u64);
     let snapshot_index = if cfg.snapshot_load {
         let temp_dir = tempfile::tempdir().expect("create temp dir for RpQuant snapshot benchmark");
         index.save_to_dir(temp_dir.path()).unwrap();
@@ -937,7 +936,17 @@ pub(crate) fn run_rp_quant(
     if cfg.json {
         emit_result(
             &cfg.results_path,
-            &json_line("rp_quant", &params_json, build_time_s, rss, &result),
+            &json_line_with_storage(
+                "rp_quant",
+                &params_json,
+                build_time_s,
+                rss,
+                &result,
+                &ResultStorage {
+                    index_bytes,
+                    ..ResultStorage::default()
+                },
+            ),
         );
     } else {
         print_row("--", &result);
@@ -989,6 +998,7 @@ pub(crate) fn run_sq4(
     index.build().unwrap();
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
+    let index_bytes = Some(index.memory_usage().total() as u64);
     let snapshot_index = if cfg.snapshot_load {
         let temp_dir = tempfile::tempdir().expect("create temp dir for SQ4 snapshot benchmark");
         index.save_to_dir(temp_dir.path()).unwrap();
@@ -1015,7 +1025,17 @@ pub(crate) fn run_sq4(
     if cfg.json {
         emit_result(
             &cfg.results_path,
-            &json_line("sq4", params_json, build_time_s, rss, &result),
+            &json_line_with_storage(
+                "sq4",
+                params_json,
+                build_time_s,
+                rss,
+                &result,
+                &ResultStorage {
+                    index_bytes,
+                    ..ResultStorage::default()
+                },
+            ),
         );
     } else {
         print_row("--", &result);
@@ -1173,6 +1193,7 @@ pub(crate) fn run_binary_index(
     index.build().unwrap();
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
+    let index_bytes = Some(index.memory_usage().total() as u64);
     let snapshot_index = if cfg.snapshot_load {
         let temp_dir =
             tempfile::tempdir().expect("create temp dir for BinaryFlat snapshot benchmark");
@@ -1200,7 +1221,17 @@ pub(crate) fn run_binary_index(
     if cfg.json {
         emit_result(
             &cfg.results_path,
-            &json_line("binary_index", params_json, build_time_s, rss, &result),
+            &json_line_with_storage(
+                "binary_index",
+                params_json,
+                build_time_s,
+                rss,
+                &result,
+                &ResultStorage {
+                    index_bytes,
+                    ..ResultStorage::default()
+                },
+            ),
         );
     } else {
         print_row("--", &result);
@@ -1479,7 +1510,7 @@ pub(crate) fn run_sq8u(
     }
 }
 
-#[cfg(feature = "sq4")]
+#[cfg(all(feature = "hnsw", feature = "sq4"))]
 pub(crate) fn run_sq4u(
     cfg: &Config,
     train: &[Vec<f32>],

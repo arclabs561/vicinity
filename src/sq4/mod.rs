@@ -325,6 +325,25 @@ impl SQ4Index {
     pub fn code_memory(&self) -> usize {
         self.codes.len()
     }
+
+    /// Estimated heap memory used by this index.
+    #[must_use]
+    pub fn memory_usage(&self) -> crate::memory::MemoryReport {
+        let f32_bytes = std::mem::size_of::<f32>();
+        let vectors_bytes = self.vectors.capacity() * f32_bytes;
+        let quantized_bytes = self.codes.capacity();
+        let metadata_bytes = self.doc_ids.capacity() * std::mem::size_of::<u32>()
+            + self.mins.capacity() * f32_bytes
+            + self.inv_scales.capacity() * f32_bytes
+            + self.steps.capacity() * f32_bytes;
+
+        crate::memory::MemoryReport {
+            vectors_bytes,
+            graph_bytes: 0,
+            quantized_bytes,
+            metadata_bytes,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -463,6 +482,25 @@ mod tests {
         assert_eq!(results.len(), 5);
         // Self should be the closest (doc_id = 0).
         assert_eq!(results[0].0, 0);
+    }
+
+    #[test]
+    fn memory_usage_reports_owned_buffers_after_build() {
+        let d = 16;
+        let n = 32;
+        let mut index = SQ4Index::new(d, SQ4Params::default()).unwrap();
+
+        for i in 0..n {
+            let v: Vec<f32> = (0..d).map(|j| ((i + j) as f32) * 0.01).collect();
+            index.add_slice(i as u32, &v).unwrap();
+        }
+        index.build().unwrap();
+
+        let report = index.memory_usage();
+        assert!(report.vectors_bytes >= n * d * std::mem::size_of::<f32>());
+        assert!(report.quantized_bytes >= n * d.div_ceil(2));
+        assert!(report.metadata_bytes >= n * std::mem::size_of::<u32>());
+        assert!(report.total() >= report.vectors_bytes + report.quantized_bytes);
     }
 
     #[test]

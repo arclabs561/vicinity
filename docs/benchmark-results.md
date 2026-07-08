@@ -824,6 +824,47 @@ The row included `storage_mode=in_memory`, `cache_state=warm_after_build`, and
 positive heap-estimated `index_bytes=129,684`. File and mmap AVQ rows continue
 to report saved snapshot bytes instead of heap residency.
 
+The full-train AVQ rerank-pool sweep did not reproduce the 50K capped recall.
+With all 1,183,514 GloVe-25 vectors, 1,000 queries, and `num_reorder=500`, the
+best recall row was still below the 95% target:
+
+```bash
+cargo run --release --no-default-features --features ivf_avq --example ann_benchmark -- \
+  data/ann-benchmarks/glove-25-angular --algo ivf_avq \
+  --max-queries 1000 --pq-nprobes 16,32,64,128 --pq-rerank-pools 500 \
+  --json --results /tmp/vicinity-avq-fulltrain-sweep-20260708.jsonl
+```
+
+| nprobe | num_reorder | Recall@10 | QPS | Index bytes |
+| ---: | ---: | ---: | ---: | ---: |
+| 16 | 500 | 88.21% | 2,031.5 | 230,751,106 |
+| 32 | 500 | 88.97% | 840.9 | 230,751,106 |
+| 64 | 500 | 89.24% | 424.5 | 230,751,106 |
+| 128 | 500 | 89.23% | 162.1 | 230,751,106 |
+
+Treat the earlier 50K `99.22%` row as capped evidence that `num_reorder`
+matters, not as a full-corpus fixed-recall result. AVQ still needs either a
+larger reorder pool, different codebook/subspace settings, or a deeper
+quantizer review before it belongs in the 95% recall comparison table.
+
+The flat quantized rows for RpQuant, BinaryFlat, and SQ4 now emit the same
+in-memory heap estimate. A bounded schema smoke used 200 GloVe-25 vectors and
+5 queries:
+
+```bash
+cargo run --no-default-features --features rp_quant,binary_index,sq4 --example ann_benchmark -- \
+  data/ann-benchmarks/glove-25-angular \
+  --algo rp_quant --algo binary_index --algo sq4 \
+  --max-train 200 --max-queries 5 --json --fresh \
+  --results /tmp/vicinity-flat-quant-memory-smoke.jsonl
+```
+
+The `rp_quant`, `binary_index`, and `sq4` in-memory rows included
+`storage_mode=in_memory`, `cache_state=warm_after_build`, and positive
+heap-estimated `index_bytes` (`34,328`, `29,924`, and `29,524` respectively).
+Treat these as schema coverage numbers only; the workload is intentionally
+tiny.
+
 The same row-coverage pass now includes the classical tree family. A bounded
 schema smoke used 200 GloVe-25 vectors and 5 queries:
 
