@@ -20,14 +20,18 @@ These files can be used directly with:
         data/ann-benchmarks/<name>
 """
 
+from __future__ import annotations
+
 import argparse
 import hashlib
 import json
 import struct
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-import numpy as np
+if TYPE_CHECKING:
+    import numpy as np
 
 # Standard ann-benchmarks datasets
 # Format: (name, url_suffix, distance_metric, normalize)
@@ -172,6 +176,30 @@ def verify_expected_sha256(path: Path, expected_sha256: str) -> None:
         )
 
 
+def require_numpy():
+    """Import NumPy only for conversion paths."""
+    try:
+        import numpy as np
+    except ModuleNotFoundError as exc:
+        raise SystemExit(
+            "Dataset conversion requires numpy. Run this script with "
+            "`uv run scripts/download_ann_benchmarks.py ...`."
+        ) from exc
+    return np
+
+
+def require_h5py():
+    """Import h5py only for conversion paths."""
+    try:
+        import h5py
+    except ModuleNotFoundError as exc:
+        raise SystemExit(
+            "Dataset conversion requires h5py. Run this script with "
+            "`uv run scripts/download_ann_benchmarks.py ...`."
+        ) from exc
+    return h5py
+
+
 def download_file(
     url: str,
     dest: Path,
@@ -221,6 +249,7 @@ def download_file(
 
 def write_vec1(path: Path, vectors: np.ndarray) -> None:
     """Write vectors in VEC1 binary format, atomically on success."""
+    np = require_numpy()
     n, d = vectors.shape
     tmp = path.with_suffix(path.suffix + ".tmp")
     with tmp.open("wb") as f:
@@ -233,6 +262,7 @@ def write_vec1(path: Path, vectors: np.ndarray) -> None:
 
 def write_nbr1(path: Path, neighbors: np.ndarray) -> None:
     """Write neighbors in NBR1 binary format, atomically on success."""
+    np = require_numpy()
     n, k = neighbors.shape
     tmp = path.with_suffix(path.suffix + ".tmp")
     with tmp.open("wb") as f:
@@ -245,6 +275,7 @@ def write_nbr1(path: Path, neighbors: np.ndarray) -> None:
 
 def normalize_vectors(vectors: np.ndarray) -> np.ndarray:
     """L2-normalize vectors (required for vicinity's HNSW cosine distance)."""
+    np = require_numpy()
     norms = np.linalg.norm(vectors, axis=1, keepdims=True)
     norms = np.maximum(norms, 1e-10)
     return vectors / norms
@@ -255,6 +286,7 @@ def recompute_ground_truth(train: np.ndarray, test: np.ndarray, k: int) -> np.nd
 
     Processes queries in batches to avoid O(n_test * n_train) memory spike.
     """
+    np = require_numpy()
     print(f"  Recomputing ground truth (cosine distance, k={k})...")
     n_test = test.shape[0]
     # Keep each similarity batch near 500MB.
@@ -453,6 +485,7 @@ def validate_hdf5_arrays(
     train: np.ndarray, test: np.ndarray, neighbors: np.ndarray
 ) -> None:
     """Validate basic ann-benchmarks shape and index invariants."""
+    np = require_numpy()
     if train.ndim != 2 or test.ndim != 2 or neighbors.ndim != 2:
         raise SystemExit("Expected train, test, and neighbors to be 2D arrays.")
     if train.shape[1] != test.shape[1]:
@@ -520,7 +553,8 @@ def convert_dataset(
     )
 
     try:
-        import h5py
+        h5py = require_h5py()
+        np = require_numpy()
 
         with h5py.File(hdf5_path, "r") as f:
             train = np.array(f["train"])
