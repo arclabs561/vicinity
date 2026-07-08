@@ -572,19 +572,11 @@ pub fn greedy_search_layer_multi_entry(
                     let neighbor_vector = get_vector(vectors, dimension, neighbor_id as usize);
                     let neighbor_distance = dist_fn(query, neighbor_vector);
 
-                    let worst_dist = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
-                    if results.len() < ef || neighbor_distance < worst_dist {
+                    if insert_result_if_accepted(&mut results, ef, neighbor_id, neighbor_distance) {
                         candidates.push(MinCandidate {
                             id: neighbor_id,
                             distance: neighbor_distance,
                         });
-                        results.push(MaxResult {
-                            id: neighbor_id,
-                            distance: neighbor_distance,
-                        });
-                        if results.len() > ef {
-                            results.pop();
-                        }
                     }
                 }
             }
@@ -741,19 +733,11 @@ pub fn greedy_search_layer_edge_aware<F: Fn(u32, u32, usize) -> f32>(
                     // is the caller's responsibility via the closure itself.
                     let neighbor_distance = dist_fn(candidate.id, neighbor_id, slot);
 
-                    let worst_dist = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
-                    if results.len() < ef || neighbor_distance < worst_dist {
+                    if insert_result_if_accepted(&mut results, ef, neighbor_id, neighbor_distance) {
                         candidates.push(MinCandidate {
                             id: neighbor_id,
                             distance: neighbor_distance,
                         });
-                        results.push(MaxResult {
-                            id: neighbor_id,
-                            distance: neighbor_distance,
-                        });
-                        if results.len() > ef {
-                            results.pop();
-                        }
                     }
                 }
             }
@@ -839,20 +823,11 @@ pub fn greedy_search_layer_adaptive(
                     let neighbor_distance = dist_fn(query, neighbor_vector);
                     oracle.observe(neighbor_distance);
 
-                    let worst_dist = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
-                    if results.len() < ef || neighbor_distance < worst_dist {
+                    if insert_result_if_accepted(&mut results, ef, neighbor_id, neighbor_distance) {
                         candidates.push(MinCandidate {
                             id: neighbor_id,
                             distance: neighbor_distance,
                         });
-                        results.push(MaxResult {
-                            id: neighbor_id,
-                            distance: neighbor_distance,
-                        });
-
-                        if results.len() > ef {
-                            results.pop();
-                        }
                     }
                 }
             }
@@ -954,19 +929,12 @@ pub fn greedy_search_layer_prt(
                 let neighbor_distance = dist_fn(query, neighbor_vector);
                 full_dist_count += 1;
 
-                if results.len() < ef || neighbor_distance < worst_dist {
+                if insert_result_if_accepted(&mut results, ef, neighbor_id, neighbor_distance) {
                     tfb.record_true_positive();
                     candidates.push(MinCandidate {
                         id: neighbor_id,
                         distance: neighbor_distance,
                     });
-                    results.push(MaxResult {
-                        id: neighbor_id,
-                        distance: neighbor_distance,
-                    });
-                    if results.len() > ef {
-                        results.pop();
-                    }
                 } else {
                     tfb.record_false_positive();
                 }
