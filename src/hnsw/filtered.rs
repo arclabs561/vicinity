@@ -21,10 +21,13 @@
 //!   Over Vector Embeddings and Structured Data"
 //! - Weaviate blog: "Speed Up Filtered Vector Search"
 
+use super::search::VisitedSet;
 use crate::RetrieveError;
 use std::collections::{BinaryHeap, HashSet, VecDeque};
 
 const MAX_VISITED_CAPACITY_HINT: usize = 1_000_000;
+const MAX_DENSE_VISITED_NODES: usize = 1_000_000;
+const DENSE_VISITED_NODE_FACTOR: usize = 64;
 
 /// Filter predicate for ACORN search.
 pub trait FilterPredicate: Sync {
@@ -128,17 +131,43 @@ impl Default for AcornConfig {
 
 /// Search state tracking for adaptive behavior.
 struct SearchState {
-    visited: HashSet<u32>,
+    visited: SearchVisited,
     filtered_count: usize,
     visited_count: usize,
+}
+
+enum SearchVisited {
+    Sparse(HashSet<u32>),
+    Dense(VisitedSet),
+}
+
+impl SearchVisited {
+    fn insert(&mut self, node_id: u32) -> bool {
+        match self {
+            SearchVisited::Sparse(visited) => visited.insert(node_id),
+            SearchVisited::Dense(visited) => visited.insert(node_id),
+        }
+    }
 }
 
 impl SearchState {
     fn new(capacity_hint: usize) -> Self {
         Self {
-            visited: HashSet::with_capacity(capacity_hint),
+            visited: SearchVisited::Sparse(HashSet::with_capacity(capacity_hint)),
             filtered_count: 0,
             visited_count: 0,
+        }
+    }
+
+    fn new_for_node_count(capacity_hint: usize, node_count: usize) -> Self {
+        if should_use_dense_visited(capacity_hint, node_count) {
+            Self {
+                visited: SearchVisited::Dense(VisitedSet::dense(node_count)),
+                filtered_count: 0,
+                visited_count: 0,
+            }
+        } else {
+            Self::new(capacity_hint)
         }
     }
 
@@ -171,6 +200,12 @@ fn visited_capacity_hint(config: &AcornConfig, k: usize) -> usize {
         .saturating_add(k)
         .saturating_add(1)
         .min(MAX_VISITED_CAPACITY_HINT)
+}
+
+fn should_use_dense_visited(capacity_hint: usize, node_count: usize) -> bool {
+    node_count > 0
+        && node_count <= MAX_DENSE_VISITED_NODES
+        && node_count <= capacity_hint.saturating_mul(DENSE_VISITED_NODE_FACTOR)
 }
 
 /// Candidate for search (ordered by distance, reversed for max-heap).
@@ -304,7 +339,68 @@ where
 {
     let mut stats = AcornStats::default();
     let mut state = SearchState::new(visited_capacity_hint(config, k));
+    acorn_search_with_state(
+        k,
+        config,
+        filter,
+        get_neighbors,
+        compute_distance,
+        entry_point,
+        &mut stats,
+        &mut state,
+    )
+}
 
+/// Same as [`acorn_search_with_stats`], but accepts the total node count for
+/// contiguous-ID graphs and may use a dense visited tracker instead of hashing.
+///
+/// Use this when node IDs are in `0..node_count` (as in [`HNSWIndex`](super::HNSWIndex)).
+/// Sparse or externally keyed graphs should use [`acorn_search_with_stats`].
+pub fn acorn_search_with_node_count_stats<F, N, D, G>(
+    node_count: usize,
+    k: usize,
+    config: &AcornConfig,
+    filter: &F,
+    get_neighbors: N,
+    compute_distance: D,
+    entry_point: u32,
+) -> Result<(Vec<(u32, f32)>, AcornStats), RetrieveError>
+where
+    F: FilterPredicate,
+    N: Fn(u32) -> G,
+    G: AsRef<[u32]>,
+    D: Fn(u32) -> f32,
+{
+    let mut stats = AcornStats::default();
+    let mut state = SearchState::new_for_node_count(visited_capacity_hint(config, k), node_count);
+    acorn_search_with_state(
+        k,
+        config,
+        filter,
+        get_neighbors,
+        compute_distance,
+        entry_point,
+        &mut stats,
+        &mut state,
+    )
+}
+
+fn acorn_search_with_state<F, N, D, G>(
+    k: usize,
+    config: &AcornConfig,
+    filter: &F,
+    get_neighbors: N,
+    compute_distance: D,
+    entry_point: u32,
+    stats: &mut AcornStats,
+    state: &mut SearchState,
+) -> Result<(Vec<(u32, f32)>, AcornStats), RetrieveError>
+where
+    F: FilterPredicate,
+    N: Fn(u32) -> G,
+    G: AsRef<[u32]>,
+    D: Fn(u32) -> f32,
+{
     // Result candidates (filtered nodes only)
     let mut results: BinaryHeap<Candidate> = BinaryHeap::new();
 
@@ -446,7 +542,7 @@ where
     result_vec.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
     result_vec.truncate(k);
 
-    Ok((result_vec, stats))
+    Ok((result_vec, *stats))
 }
 
 /// Selectivity regime for filtered search.
@@ -663,6 +759,13 @@ mod tests {
         let distances = vec![0.5, 0.3, 0.6, 0.4, 0.7, 0.2, 0.8, 0.1, 0.9, 0.35];
 
         (neighbors, distances)
+    }
+
+    #[test]
+    fn dense_visited_policy_is_bounded_by_expected_visits() {
+        assert!(should_use_dense_visited(2_500, 3_000));
+        assert!(!should_use_dense_visited(2_500, 1_000_001));
+        assert!(!should_use_dense_visited(2_500, 250_000));
     }
 
     #[test]

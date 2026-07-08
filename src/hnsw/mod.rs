@@ -158,8 +158,8 @@ pub use graph::{
 pub mod filtered;
 #[cfg(feature = "hnsw")]
 pub use filtered::{
-    acorn_search, acorn_search_with_stats, AcornConfig, AcornStats, FilterPredicate, FnFilter,
-    MetadataFilterAdapter, NoFilter,
+    acorn_search, acorn_search_with_node_count_stats, acorn_search_with_stats, AcornConfig,
+    AcornStats, FilterPredicate, FnFilter, MetadataFilterAdapter, NoFilter,
 };
 
 // Graph repair (MN-RU algorithm for deletions)

@@ -2,15 +2,15 @@
 //! Search-only ACORN filtered HNSW benchmark.
 //!
 //! This target isolates the ACORN traversal loop from the selectivity example's
-//! graph construction and exact-oracle work. It intentionally exercises the
-//! public `get_neighbors -> Vec<u32>` callback path so clone/copy cost remains
-//! visible in profiles.
+//! graph construction and exact-oracle work. It exercises the node-count path
+//! used by in-memory HNSW so the visited-tracker policy remains visible in
+//! profiles.
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use rand::prelude::*;
 use std::collections::HashSet;
 use vicinity::distance::{cosine_distance_normalized, normalize};
-use vicinity::hnsw::{acorn_search_with_stats, AcornConfig, FnFilter};
+use vicinity::hnsw::{acorn_search_with_node_count_stats, AcornConfig, FnFilter};
 
 const N_VECTORS: usize = 3_000;
 const DIM: usize = 32;
@@ -84,7 +84,8 @@ fn run_acorn_batch(
     let mut two_hop_nodes_examined = 0u64;
 
     for (query, &entry_point) in queries.iter().zip(entry_points.iter()) {
-        let (results, stats) = acorn_search_with_stats(
+        let (results, stats) = acorn_search_with_node_count_stats(
+            graph.len(),
             K,
             config,
             &filter,

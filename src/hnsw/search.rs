@@ -49,12 +49,17 @@ impl VisitedSet {
     /// Create a visited set sized for `num_nodes` total nodes.
     fn new(num_nodes: usize, capacity_hint: usize) -> Self {
         if num_nodes <= DENSE_VISITED_THRESHOLD {
-            VisitedSet::Dense {
-                marks: vec![0u8; num_nodes],
-                generation: 1,
-            }
+            Self::dense(num_nodes)
         } else {
             VisitedSet::Sparse(HashSet::with_capacity(capacity_hint))
+        }
+    }
+
+    /// Create a dense generation-counter tracker for contiguous node IDs.
+    pub(crate) fn dense(num_nodes: usize) -> Self {
+        VisitedSet::Dense {
+            marks: vec![0u8; num_nodes],
+            generation: 1,
         }
     }
 

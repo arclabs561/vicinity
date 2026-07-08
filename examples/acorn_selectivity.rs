@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use vicinity::distance::cosine_distance_normalized;
-use vicinity::hnsw::{acorn_search_with_stats, AcornConfig, FnFilter};
+use vicinity::hnsw::{acorn_search_with_node_count_stats, AcornConfig, FnFilter};
 
 const DEFAULT_N: usize = 1_200;
 const DEFAULT_DIM: usize = 32;
@@ -455,7 +455,8 @@ fn run_selectivity(
         let entry_point = nearest_entry_point(query, vectors);
 
         let start = Instant::now();
-        let (results, stats) = acorn_search_with_stats(
+        let (results, stats) = acorn_search_with_node_count_stats(
+            graph.len(),
             cfg.k,
             &config,
             &filter,

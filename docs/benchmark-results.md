@@ -888,6 +888,23 @@ benchmarks, but did not produce a statistically significant Criterion change:
 | `acorn_search_only/selectivity_0.10` | 27.101 ms / 128 queries | 25.572 ms / 128 queries | no significant change, p = 0.26 |
 | `acorn_search_only/selectivity_0.02` | 26.748 ms / 128 queries | 24.698 ms / 128 queries | no significant change, p = 0.78 |
 
+The next ACORN change reused HNSW's safe dense generation-counter visited
+tracker for contiguous node-ID graphs. The public default ACORN function stays
+sparse; `HNSWIndex::search_acorn_with_stats` and the benchmark use the
+node-count path, which opts into dense tracking only when `node_count <= 1M` and
+`node_count <= visited_capacity_hint * 64`. That keeps large in-memory or
+file-backed indexes from zeroing a full node-count array when the expected
+visited set is small.
+
+Compared with the same `acorn_borrow_before` baseline, the dense visited path
+improved the dedicated search-only rows:
+
+| Workload | Sparse visited | Dense visited | Criterion change |
+| --- | ---: | ---: | --- |
+| `acorn_search_only/selectivity_0.50` | 28.881 ms / 128 queries | 10.164 ms / 128 queries | 64.9% faster, p < 0.05 |
+| `acorn_search_only/selectivity_0.10` | 27.101 ms / 128 queries | 8.8395 ms / 128 queries | 67.1% faster, p < 0.05 |
+| `acorn_search_only/selectivity_0.02` | 26.748 ms / 128 queries | 8.5102 ms / 128 queries | 68.2% faster, p < 0.05 |
+
 Full-train IVF-PQ storage sweep from the same day, using all 1,183,514
 GloVe-25 vectors and 500 queries:
 

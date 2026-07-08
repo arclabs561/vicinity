@@ -2685,7 +2685,8 @@ impl HNSWIndex {
                 .is_some_and(|&doc_id| metadata.matches(doc_id, filter))
         });
 
-        let (internal_results, stats) = crate::hnsw::acorn_search_with_stats(
+        let (internal_results, stats) = crate::hnsw::acorn_search_with_node_count_stats(
+            self.num_vectors,
             k,
             config,
             &node_filter,
