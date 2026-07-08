@@ -240,9 +240,36 @@ class Summary:
 
 
 @dataclass(frozen=True)
+class DatasetProfile:
+    path: str
+    metric: str | None
+    train: int | None
+    dim: int | None
+    pair_distance_p50: float | None
+    nearest_distance_p50: float | None
+    top2_gap_p50: float | None
+    lid_p50: float | None
+    contrast_p50: float | None
+    hub_gini: float | None
+    coarse_gini: float | None
+    split_kinds: str | None
+
+
+@dataclass(frozen=True)
 class CoverageRow:
     dataset: str
     dataset_profile: str | None
+    profile_metric: str | None
+    profile_train: int | None
+    profile_dim: int | None
+    profile_pair_distance_p50: float | None
+    profile_nearest_distance_p50: float | None
+    profile_top2_gap_p50: float | None
+    profile_lid_p50: float | None
+    profile_contrast_p50: float | None
+    profile_hub_gini: float | None
+    profile_coarse_gini: float | None
+    profile_split_kinds: str | None
     algorithm: str
     storage_mode: str
     status: str
@@ -306,8 +333,69 @@ def profile_dataset_name(profile: dict[str, Any], path: Path) -> str:
     return path.stem
 
 
-def load_dataset_profiles(profile_dirs: list[Path]) -> dict[str, str]:
-    profiles: dict[str, str] = {}
+def nested(row: dict[str, Any], path: tuple[str, ...]) -> Any:
+    value: Any = row
+    for key in path:
+        if not isinstance(value, dict):
+            return None
+        value = value.get(key)
+    return value
+
+
+def optional_int(value: Any) -> int | None:
+    if isinstance(value, (int, float)):
+        return int(value)
+    return None
+
+
+def optional_float(value: Any) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
+def split_kinds(profile: dict[str, Any]) -> str | None:
+    splits = profile.get("query_splits")
+    if not isinstance(splits, list):
+        return None
+    kinds = [
+        str(split.get("kind"))
+        for split in splits
+        if isinstance(split, dict) and split.get("kind")
+    ]
+    return ",".join(kinds) if kinds else None
+
+
+def dataset_profile(path: Path, profile: dict[str, Any]) -> DatasetProfile:
+    metric = profile.get("metric")
+    return DatasetProfile(
+        path=str(path),
+        metric=metric if isinstance(metric, str) else None,
+        train=optional_int(nested(profile, ("shape", "train"))),
+        dim=optional_int(nested(profile, ("shape", "dim"))),
+        pair_distance_p50=optional_float(
+            nested(profile, ("pair_distance_sample", "p50"))
+        ),
+        nearest_distance_p50=optional_float(
+            nested(profile, ("query_neighbors", "nearest_distance", "p50"))
+        ),
+        top2_gap_p50=optional_float(
+            nested(profile, ("query_neighbors", "top2_gap", "p50"))
+        ),
+        lid_p50=optional_float(nested(profile, ("query_neighbors", "lid_mle", "p50"))),
+        contrast_p50=optional_float(
+            nested(profile, ("sampled_relative_contrast", "p50"))
+        ),
+        hub_gini=optional_float(nested(profile, ("hubness", "gini"))),
+        coarse_gini=optional_float(
+            nested(profile, ("coarse_partition_imbalance", "count_gini"))
+        ),
+        split_kinds=split_kinds(profile),
+    )
+
+
+def load_dataset_profiles(profile_dirs: list[Path]) -> dict[str, DatasetProfile]:
+    profiles: dict[str, DatasetProfile] = {}
     for profile_dir in profile_dirs:
         for path in sorted(profile_dir.glob("*.json")):
             try:
@@ -318,12 +406,12 @@ def load_dataset_profiles(profile_dirs: list[Path]) -> dict[str, str]:
                 raise SystemExit(f"{path} does not contain a JSON object")
             dataset = profile_dataset_name(profile, path)
             existing = profiles.get(dataset)
-            if existing is not None and existing != str(path):
+            if existing is not None and existing.path != str(path):
                 raise SystemExit(
                     f"multiple profiles found for dataset {dataset}: "
-                    f"{existing} and {path}"
+                    f"{existing.path} and {path}"
                 )
-            profiles[dataset] = str(path)
+            profiles[dataset] = dataset_profile(path, profile)
     return profiles
 
 
@@ -378,7 +466,7 @@ def coverage_rows(
     expected: list[tuple[str, str]] | None = None,
     expected_by_dataset: dict[str, list[tuple[str, str]]] | None = None,
     datasets: list[str] | None = None,
-    dataset_profiles: dict[str, str] | None = None,
+    dataset_profiles: dict[str, DatasetProfile] | None = None,
     recall_floor: float = 0.95,
     only_datasets: set[str] | None = None,
     missing_only: bool = False,
@@ -410,6 +498,7 @@ def coverage_rows(
         if only_datasets is not None and dataset not in only_datasets:
             continue
         summary = summaries.get((dataset, algorithm, storage_mode))
+        profile = dataset_profiles.get(dataset)
         if missing_only and summary:
             continue
         if recall_gap_only and (
@@ -421,7 +510,22 @@ def coverage_rows(
         rows.append(
             CoverageRow(
                 dataset=dataset,
-                dataset_profile=dataset_profiles.get(dataset),
+                dataset_profile=profile.path if profile else None,
+                profile_metric=profile.metric if profile else None,
+                profile_train=profile.train if profile else None,
+                profile_dim=profile.dim if profile else None,
+                profile_pair_distance_p50=(
+                    profile.pair_distance_p50 if profile else None
+                ),
+                profile_nearest_distance_p50=(
+                    profile.nearest_distance_p50 if profile else None
+                ),
+                profile_top2_gap_p50=profile.top2_gap_p50 if profile else None,
+                profile_lid_p50=profile.lid_p50 if profile else None,
+                profile_contrast_p50=profile.contrast_p50 if profile else None,
+                profile_hub_gini=profile.hub_gini if profile else None,
+                profile_coarse_gini=profile.coarse_gini if profile else None,
+                profile_split_kinds=profile.split_kinds if profile else None,
                 algorithm=algorithm,
                 storage_mode=storage_mode,
                 status="measured" if summary else "missing",
@@ -473,6 +577,14 @@ def format_params(params: dict[str, Any] | None) -> str:
     return f"`{json.dumps(params, sort_keys=True, separators=(',', ':'))}`"
 
 
+def format_optional_int(value: int | None) -> str:
+    return "-" if value is None else str(value)
+
+
+def format_optional_float(value: float | None) -> str:
+    return "-" if value is None else f"{value:.3g}"
+
+
 def rows_missing_index_bytes(
     rows: list[CoverageRow], *, declared_only: bool = False
 ) -> list[CoverageRow]:
@@ -512,7 +624,9 @@ def require_index_bytes(
 
 def markdown_table(rows: list[CoverageRow], recall_floor: float = 0.95) -> str:
     lines = [
-        "| Dataset | Profile | Algorithm | Storage | Status | Rows | "
+        "| Dataset | Profile | Metric | Train | Dim | Pair p50 | NN p50 | "
+        "Top-2 Gap p50 | LID p50 | Contrast p50 | Hub Gini | Coarse Gini | "
+        "Splits | Algorithm | Storage | Status | Rows | "
         "Best Recall@10 | Params @ Best Recall | Index Bytes @ Best Recall | "
         "Index Bytes Kind @ Best Recall | Best QPS | Best Params | "
         "Best Index Bytes | Best Index Bytes Kind | "
@@ -520,11 +634,14 @@ def markdown_table(rows: list[CoverageRow], recall_floor: float = 0.95) -> str:
         f"Params @ R>={recall_floor:.2f} | "
         f"Index Bytes @ R>={recall_floor:.2f} | "
         f"Index Bytes Kind @ R>={recall_floor:.2f} |",
-        "| --- | --- | --- | --- | --- | ---: | ---: | --- | ---: | --- | "
+        "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | "
+        "---: | ---: | --- | --- | --- | --- | ---: | ---: | --- | ---: | --- | "
         "---: | --- | ---: | --- | ---: | --- | ---: | --- |",
     ]
     for row in rows:
         profile = "-" if row.dataset_profile is None else row.dataset_profile
+        profile_metric = row.profile_metric or "-"
+        profile_split_kinds = row.profile_split_kinds or "-"
         recall = "-" if row.best_recall is None else f"{row.best_recall:.4f}"
         recall_params = format_params(row.best_recall_params)
         recall_index_bytes = (
@@ -548,7 +665,17 @@ def markdown_table(rows: list[CoverageRow], recall_floor: float = 0.95) -> str:
         )
         floor_index_bytes_kind = row.index_bytes_kind_at_recall_floor or "-"
         lines.append(
-            f"| {row.dataset} | {profile} | {row.algorithm} | {row.storage_mode} | "
+            f"| {row.dataset} | {profile} | {profile_metric} | "
+            f"{format_optional_int(row.profile_train)} | "
+            f"{format_optional_int(row.profile_dim)} | "
+            f"{format_optional_float(row.profile_pair_distance_p50)} | "
+            f"{format_optional_float(row.profile_nearest_distance_p50)} | "
+            f"{format_optional_float(row.profile_top2_gap_p50)} | "
+            f"{format_optional_float(row.profile_lid_p50)} | "
+            f"{format_optional_float(row.profile_contrast_p50)} | "
+            f"{format_optional_float(row.profile_hub_gini)} | "
+            f"{format_optional_float(row.profile_coarse_gini)} | "
+            f"{profile_split_kinds} | {row.algorithm} | {row.storage_mode} | "
             f"{row.status} | {row.rows} | {recall} | {recall_params} | "
             f"{recall_index_bytes} | {recall_index_bytes_kind} | {qps} | "
             f"{best_params} | {index_bytes} | {index_bytes_kind} | "
@@ -704,6 +831,19 @@ def main() -> None:
                     {
                         "dataset": row.dataset,
                         "dataset_profile": row.dataset_profile,
+                        "profile_metric": row.profile_metric,
+                        "profile_train": row.profile_train,
+                        "profile_dim": row.profile_dim,
+                        "profile_pair_distance_p50": row.profile_pair_distance_p50,
+                        "profile_nearest_distance_p50": (
+                            row.profile_nearest_distance_p50
+                        ),
+                        "profile_top2_gap_p50": row.profile_top2_gap_p50,
+                        "profile_lid_p50": row.profile_lid_p50,
+                        "profile_contrast_p50": row.profile_contrast_p50,
+                        "profile_hub_gini": row.profile_hub_gini,
+                        "profile_coarse_gini": row.profile_coarse_gini,
+                        "profile_split_kinds": row.profile_split_kinds,
                         "algorithm": row.algorithm,
                         "storage_mode": row.storage_mode,
                         "status": row.status,

@@ -236,10 +236,11 @@ def test_markdown_table_is_stable(tmp_path: Path) -> None:
     table = script.markdown_table(script.coverage_rows(script.load_summaries([path])))
     columns = [line.split("|")[1:-1] for line in table.splitlines()]
 
-    assert {len(line_columns) for line_columns in columns} == {18}
+    assert {len(line_columns) for line_columns in columns} == {29}
     assert (
-        "| rows | - | hnsw | in_memory | measured | 1 | 1.0000 | - | 4096 | "
-        "- | 42.0 | - | 4096 | - | 42.0 | - | 4096 | - |" in table
+        "| rows | - | - | - | - | - | - | - | - | - | - | - | - | hnsw | "
+        "in_memory | measured | 1 | 1.0000 | - | 4096 | - | 42.0 | - | "
+        "4096 | - | 42.0 | - | 4096 | - |" in table
     )
 
 
@@ -283,7 +284,26 @@ def test_json_output_can_include_dataset_profile_path(
     profile_dir.mkdir()
     profile = profile_dir / "glove-25-angular.json"
     profile.write_text(
-        json.dumps({"dataset": "data/ann-benchmarks/glove-25-angular"}),
+        json.dumps(
+            {
+                "dataset": "data/ann-benchmarks/glove-25-angular",
+                "metric": "cosine",
+                "shape": {"train": 100, "dim": 25},
+                "pair_distance_sample": {"p50": 0.4},
+                "query_neighbors": {
+                    "nearest_distance": {"p50": 0.1},
+                    "top2_gap": {"p50": 0.02},
+                    "lid_mle": {"p50": 7.5},
+                },
+                "sampled_relative_contrast": {"p50": 1.8},
+                "hubness": {"gini": 0.3},
+                "coarse_partition_imbalance": {"count_gini": 0.4},
+                "query_splits": [
+                    {"kind": "in_distribution"},
+                    {"kind": "filtered"},
+                ],
+            }
+        ),
         encoding="utf-8",
     )
     monkeypatch.setattr(
@@ -302,6 +322,17 @@ def test_json_output_can_include_dataset_profile_path(
 
     output = json.loads(capsys.readouterr().out)
     assert output[0]["dataset_profile"] == str(profile)
+    assert output[0]["profile_metric"] == "cosine"
+    assert output[0]["profile_train"] == 100
+    assert output[0]["profile_dim"] == 25
+    assert output[0]["profile_pair_distance_p50"] == 0.4
+    assert output[0]["profile_nearest_distance_p50"] == 0.1
+    assert output[0]["profile_top2_gap_p50"] == 0.02
+    assert output[0]["profile_lid_p50"] == 7.5
+    assert output[0]["profile_contrast_p50"] == 1.8
+    assert output[0]["profile_hub_gini"] == 0.3
+    assert output[0]["profile_coarse_gini"] == 0.4
+    assert output[0]["profile_split_kinds"] == "in_distribution,filtered"
 
 
 def test_dataset_profiles_require_exact_dataset_label_for_capped_rows(
