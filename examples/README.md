@@ -42,6 +42,7 @@ cargo run --example acorn_selectivity --release --features hnsw,filtered_graph,r
   --json --fresh
 cargo run --example acorn_selectivity --release --features hnsw,filtered_graph,range_filtered,curator -- \
   --json --resume --results data/ann-benchmarks/results/acorn-selectivity-n1200-d32-q100.jsonl
+uv run scripts/summarize_selectivity_results.py data/ann-benchmarks/results/acorn-selectivity-*.jsonl
 cargo run --example ivf_pq_demo --release --features ivf_pq
 cargo run --example lid_demo --release
 cargo run --example rabitq_demo --release --features "rabitq,hnsw,quantization"

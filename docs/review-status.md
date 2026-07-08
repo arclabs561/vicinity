@@ -144,6 +144,13 @@ benchmarking, persistence, Python bindings, and performance work.
   treating the GloVe-25 curve as representative. The profiler also reports
   generated query splits when `test_drift.bin`, `test_filter.bin`, topic labels,
   or difficulty labels are present.
+- Filtered-search selectivity sweeps now have a dedicated summarizer. Run
+  `uv run scripts/summarize_selectivity_results.py` against
+  `data/ann-benchmarks/results/acorn-selectivity-*.jsonl`. A small smoke run
+  verified ACORN, FilteredGraph, RangeFiltered, and Curator rows across the
+  selectivity curve and keeps target count, recall, QPS, latency tails, returned
+  count, and ACORN two-hop counters visible. The smoke is only a parser and
+  shape check, not a performance target.
 
 ## Remaining Review Queue
 
@@ -157,7 +164,7 @@ benchmarking, persistence, Python bindings, and performance work.
 | 6 | File-backed raw-vector locality | IVF-PQ approximate file/mmap search is now list-contiguous for PQ codes, and full-train fixed-recall rows show approximate direct-file search stays in the low-thousands QPS band at 95%+ recall. Positional reads cut targeted file-rerank rows by about 33-37%, but exact rerank still reads raw vectors by vector ID; full-train direct-file rerank at `nprobe=32` is 1,453 QPS versus 2,514 QPS in memory. Benchmark JSON now reports rerank raw-vector reads and bytes. Optional duplicate list-local raw-vector sidecars were measured and rejected because they grew snapshots without improving file rerank. Next review should profile read batching, page/cache behavior, or a replacement raw-vector layout instead. |
 | 7 | DiskANN storage layout | Callback-based neighbor reading was measured and rejected. Batching file-backed graph neighbor reads, positional direct-file reads, and dense visited tracking were measured and kept. Full-corpus ef=250 measures 95.72% recall at 4,134.1 QPS in memory, 658.7 QPS file, and 2,382.1 QPS mmap before the dense-visited patch, with 2,343.51 vector reads/query on file and mmap. Next review should focus on graph/vector page co-location, vector-read locality, mmap page behavior, and cold-cache reporting. |
 | 8 | Classical methods | Corrupt-snapshot rejection now covers KD-tree, ball tree, RP-tree, RP-forest, and K-means tree, and docs no longer call KD/Ball exact. Capped benchmark rows now cover all five classical methods with heap plus snapshot-loaded storage metadata at 5K and 50K indexed vectors, including a broader 50K sweep. Next review should decide whether any full GloVe-25 classical run is worth the time, or whether the capped evidence is enough to keep them as bounded baselines rather than optimization targets. |
-| 9 | Filtered search | Review ACORN, FilteredGraph, RangeFiltered, and Curator with selectivity sweeps, not single dense-search rows. |
+| 9 | Filtered search | The selectivity JSONL summarizer exists and has a smoke check. Next review should run larger synthetic settings and fixed-recall/selectivity curves before making ACORN, FilteredGraph, RangeFiltered, or Curator QPS claims. |
 | 10 | Streaming/update workloads | Review FreshGraph, in-place HNSW, LSM HNSW, tombstones, and `store::UpdatableIndex` against active-set recall, update throughput, query latency, compaction, and storage residency. |
 | 11 | Sparse and late-interaction harnesses | SparseMIPS needs a SPLADE/BM25-style sparse dataset harness. LEMUR needs training or reproducible model loading before storage or QPS rows matter. |
 | 12 | Python policy | Decide which Rust APIs become Python APIs. Keep the default policy narrow unless an algorithm has stable benchmarks, persistence behavior, and examples. Rust-only gaps today: DiskANN, `store`, FreshGraph, filtered search/update APIs, and HNSW binary segments. |

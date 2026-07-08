@@ -104,6 +104,8 @@ cargo run --example ann_benchmark --release --features hnsw -- \
 # Filtered-search selectivity sweep. This is synthetic and writes its own JSONL.
 cargo run --example acorn_selectivity --release \
   --features hnsw,filtered_graph,range_filtered,curator -- --json --fresh
+uv run scripts/summarize_selectivity_results.py \
+  data/ann-benchmarks/results/acorn-selectivity-*.jsonl
 
 # Broad dense-dataset coverage sweep. This emits recall/QPS/latency rows for
 # the implemented single-vector search families that can consume dense vectors.
