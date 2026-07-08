@@ -1234,6 +1234,7 @@ pub(crate) fn run_sq8u(
     index.build().unwrap();
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
+    let index_bytes = Some((index.inner().memory_usage().total() + index.code_memory()) as u64);
     let snapshot_index = if cfg.snapshot_load {
         let temp_dir = tempfile::tempdir().expect("create temp dir for SQ8U snapshot benchmark");
         index.save_to_dir(temp_dir.path()).unwrap();
@@ -1270,7 +1271,17 @@ pub(crate) fn run_sq8u(
             );
             emit_result(
                 &cfg.results_path,
-                &json_line("sq8u", &params_json, build_time_s, rss, &result),
+                &json_line_with_storage(
+                    "sq8u",
+                    &params_json,
+                    build_time_s,
+                    rss,
+                    &result,
+                    &ResultStorage {
+                        index_bytes,
+                        ..ResultStorage::default()
+                    },
+                ),
             );
         } else {
             print_row(&format!("ef={}", ef), &result);
@@ -1472,6 +1483,7 @@ pub(crate) fn run_symphony_qg_vr(
     index.build().unwrap();
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
+    let index_bytes = Some(index.memory_usage_bytes().total() as u64);
     #[cfg(feature = "serde")]
     let snapshot_index = if cfg.snapshot_load {
         let temp_dir =
@@ -1510,7 +1522,17 @@ pub(crate) fn run_symphony_qg_vr(
             );
             emit_result(
                 &cfg.results_path,
-                &json_line("symphony_qg_vr", &params_json, build_time_s, rss, &result),
+                &json_line_with_storage(
+                    "symphony_qg_vr",
+                    &params_json,
+                    build_time_s,
+                    rss,
+                    &result,
+                    &ResultStorage {
+                        index_bytes,
+                        ..ResultStorage::default()
+                    },
+                ),
             );
             #[cfg(feature = "serde")]
             if let Some((_, loaded, load_time_s, index_bytes)) = &snapshot_index {
