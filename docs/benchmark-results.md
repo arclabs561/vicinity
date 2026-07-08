@@ -811,6 +811,40 @@ the standard-search entrypoints does not help this workload. Further HNSW
 search work should prioritize heap-update structure, visited/result layout, and
 vector/neighbor locality before another dispatch rewrite.
 
+A still narrower safe-Rust variant specialized only the normalized-cosine
+base-layer search path and left the generic function-pointer path in place for
+all other metrics. It was also rejected. This adds evidence that local
+monomorphization of the common cosine row is not worth keeping for this
+workload unless a future profile changes the hotspot shape.
+
+```bash
+# Baseline, before applying the cosine-only candidate patch.
+CARGO_TARGET_DIR=/tmp/vicinity-hnsw-dispatch-target CARGO_INCREMENTAL=0 \
+  RUSTC_WRAPPER= cargo bench --bench hnsw_search --no-default-features \
+  --features hnsw -- hnsw_search_ --sample-size 20 --warm-up-time 1 \
+  --measurement-time 3 --save-baseline dispatch_baseline
+
+# Candidate, compared against the saved baseline.
+CARGO_TARGET_DIR=/tmp/vicinity-hnsw-dispatch-target CARGO_INCREMENTAL=0 \
+  RUSTC_WRAPPER= cargo bench --bench hnsw_search --no-default-features \
+  --features hnsw -- hnsw_search_ --sample-size 20 --warm-up-time 1 \
+  --measurement-time 3 --baseline dispatch_baseline
+```
+
+| Workload | Baseline mean | Candidate mean | Criterion change | Decision |
+| --- | ---: | ---: | ---: | --- |
+| `hnsw_search_only/ef/10` | 464.52 us | 518.83 us | +13.21% time | rejected |
+| `hnsw_search_only/ef/50` | 1.9015 ms | 1.9572 ms | +2.21% time | rejected |
+| `hnsw_search_only/ef/100` | 3.5769 ms | 3.6563 ms | +2.16% time | rejected |
+| `hnsw_search_only/ef/200` | 6.9958 ms | 7.0166 ms | no significant change | rejected |
+| `hnsw_search_mmax32/ef/10` | 826.72 us | 829.33 us | within noise threshold | rejected |
+| `hnsw_search_mmax32/ef/50` | 3.0185 ms | 2.9781 ms | no significant change | rejected |
+| `hnsw_search_mmax32/ef/100` | 5.5988 ms | 5.5184 ms | -1.61% time | rejected |
+| `hnsw_search_mmax32/ef/200` | 10.626 ms | 10.600 ms | within noise threshold | rejected |
+
+The code change was reverted. The next useful HNSW perf target is still
+candidate/frontier structure or data locality, not another dispatch rewrite.
+
 The next safe heap-update experiment replaced the result-heap push-then-pop
 sequence with top replacement through `BinaryHeap::peek_mut`. It targets the
 `BinaryHeap::pop` bucket from the symbolized profile without changing distance
