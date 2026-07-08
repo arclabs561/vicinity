@@ -1,4 +1,4 @@
-#![allow(clippy::expect_used, clippy::unwrap_used)]
+#![allow(clippy::expect_used, clippy::unwrap_used, unsafe_code)]
 //! Search-only HNSW benchmarks.
 //!
 //! Keep this target separate from `benches/hnsw.rs` so profiling filtered

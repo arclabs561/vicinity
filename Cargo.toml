@@ -358,7 +358,7 @@ unexpected_cfgs = "warn"
 # Documentation lints: temporarily relaxed, enable incrementally
 # missing_docs = "warn"
 # missing_doc_code_examples = "warn"
-# unsafe_code = "warn"  # SIMD and low-level ops require unsafe
+unsafe_code = "warn"
 unstable_features = "deny"
 unused_import_braces = "warn"
 # unused_qualifications = "warn"  # Relaxed: explicit paths often improve clarity

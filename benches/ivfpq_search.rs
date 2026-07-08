@@ -1,4 +1,4 @@
-#![allow(clippy::expect_used, clippy::unwrap_used)]
+#![allow(clippy::expect_used, clippy::unwrap_used, unsafe_code)]
 //! Search-only IVF-PQ benchmarks.
 //!
 //! Keep this target separate from the ANN dataset example so profiling search

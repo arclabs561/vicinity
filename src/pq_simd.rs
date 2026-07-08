@@ -284,6 +284,7 @@ impl PackedLUTData for PackedLUTRef<'_> {
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code)]
 mod x86_64 {
     //! AVX2/AVX-512 implementations of PQ distance.
 
@@ -474,6 +475,7 @@ mod x86_64 {
 }
 
 #[cfg(target_arch = "aarch64")]
+#[allow(unsafe_code)]
 mod aarch64 {
     //! NEON implementations of PQ distance.
 
@@ -1315,10 +1317,7 @@ mod tests {
         let (lut_q, _, _) = quantize_lut_flat(&lut, num_codebooks);
 
         let portable = fastscan_block_portable(packed.block_data(0), &lut_q, num_codebooks);
-        // SAFETY: aarch64 always has NEON and the packed block/LUT are sized
-        // from the same `num_codebooks` value.
-        let neon =
-            unsafe { aarch64::fastscan_block_neon(packed.block_data(0), &lut_q, num_codebooks) };
+        let neon = aarch64::fastscan_block(packed.block_data(0), &lut_q, num_codebooks);
 
         assert_eq!(neon, portable);
     }
