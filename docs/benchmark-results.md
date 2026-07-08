@@ -907,6 +907,29 @@ The footprint scaled with table count on this tiny probe: `62,784` bytes for
 Treat these as schema coverage numbers only; the workload is intentionally
 tiny.
 
+A current-schema capped row now covers LSH and the brute-force oracle on 50K
+GloVe-25 vectors:
+
+```bash
+cargo run --release --example ann_benchmark --no-default-features --features lsh -- \
+  data/ann-benchmarks/glove-25-angular --algo brute --algo lsh \
+  --max-train 50000 --max-queries 500 --snapshot-load --json --fresh \
+  --results /tmp/vicinity-lsh-brute-current.jsonl
+```
+
+| Algorithm | Storage | Params | Recall@10 | QPS | p95 latency | Index bytes | Kind |
+| --- | --- | --- | ---: | ---: | ---: | ---: | --- |
+| Brute | in-memory | exact scan | 100.00% | 757.7 | 1,370.1 us | 0 | none |
+| LSH | in-memory | 8 tables, 2 probes | 99.68% | 1,996.3 | 721.8 us | 7,308,512 | heap estimate |
+| LSH | snapshot-loaded | 8 tables, 2 probes | 99.68% | 1,929.0 | 796.4 us | 5,000,239 | snapshot bytes |
+| LSH | in-memory | 8 tables, 4 probes | 100.00% | 1,334.5 | 953.2 us | 7,308,512 | heap estimate |
+| LSH | snapshot-loaded | 8 tables, 4 probes | 100.00% | 1,311.9 | 964.4 us | 5,000,239 | snapshot bytes |
+
+On this capped run, LSH is a useful classical baseline and storage-schema
+check: the fastest row above 95% recall is about 2.6x brute-force QPS, while
+the exact 100% recall setting pays a clear probe-count cost. This is not a
+full-corpus target claim.
+
 The same row-coverage pass now includes the classical tree family. A bounded
 schema smoke used 200 GloVe-25 vectors and 5 queries:
 
