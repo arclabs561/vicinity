@@ -33,6 +33,7 @@ Synthetic workloads for algorithm behavior and parameter effects.
 | `ivf_pq_demo` | 306 | IVF-PQ | Compressed inverted-file search |
 | `lid_demo` | 344 | LID | Intrinsic dimensionality estimation |
 | `rabitq_demo` | 261 | RaBitQ | Randomized binary quantization |
+| `sparse_mips_benchmark` | 191 | SparseMIPS | Sparse MIPS smoke benchmark over SPV1 data |
 | `symphonyqg_demo` | 246 | HNSW + RaBitQ | Quantized graph traversal pattern |
 
 ```sh
@@ -46,6 +47,9 @@ uv run scripts/summarize_selectivity_results.py data/ann-benchmarks/results/acor
 cargo run --example ivf_pq_demo --release --features ivf_pq
 cargo run --example lid_demo --release
 cargo run --example rabitq_demo --release --features "rabitq,hnsw,quantization"
+uv run scripts/generate_sparse_mips_smoke_data.py data/sparse-mips/smoke
+cargo run --example sparse_mips_benchmark --release --features sparse_mips -- \
+  data/sparse-mips/smoke
 cargo run --example symphonyqg_demo --release --features "hnsw,rabitq,quantization"
 ```
 

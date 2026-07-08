@@ -284,6 +284,11 @@ name = "store_reopen_diagnostics"
 path = "examples/store_reopen_diagnostics.rs"
 required-features = ["store"]
 
+[[example]]
+name = "sparse_mips_benchmark"
+path = "examples/sparse_mips_benchmark.rs"
+required-features = ["sparse_mips"]
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

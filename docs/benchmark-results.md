@@ -1187,7 +1187,7 @@ Not every implemented module should produce a dense ANN row:
 
 | Module | Why it is separate | Honest eval direction |
 | --- | --- | --- |
-| SparseMIPS | Requires sparse vectors, not dense ann-benchmarks `f32` arrays | Add a SPLADE/BM25 sparse dataset harness before reporting QPS/recall |
+| SparseMIPS | Requires sparse vectors, not dense ann-benchmarks `f32` arrays | Use the SPV1 smoke harness for plumbing; add SPLADE/BM25 data before publishing QPS/recall |
 | EVoC | Clustering wrapper, not nearest-neighbor search | Report clustering metrics such as NMI/ARI on labeled clustering datasets |
 | LEMUR | Inference scaffold that requires externally trained encoder weights | Evaluate on multi-vector retrieval datasets with MaxSim ground truth |
 | SAQ / quantization helpers | Quantizers, not standalone indexes | Report quantization error, encoding throughput, and downstream recall when attached to an index |

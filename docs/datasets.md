@@ -14,6 +14,7 @@ Which datasets to use for benchmarking and evaluation.
 | **Quantization checks** | GloVe-200 | 918MB | Higher dimension, Angular |
 | **High-dimensional** | GIST-960 | 3.6GB | Stress test, near current embedding dims |
 | **Production embeddings** | Generate from fastembed | varies | Match your production dims |
+| **Sparse retrieval smoke** | Generated SparseMIPS data | config | Sparse MIPS plumbing, not a SPLADE substitute |
 
 ## Standard ANN Benchmark Datasets
 
@@ -77,6 +78,28 @@ source hash when pinned, and binary headers.
 Use `--all` to apply the same idempotent fetch or conversion flow to every
 configured dataset.
 
+## SparseMIPS Smoke Data
+
+SparseMIPS needs sparse inputs, so the dense `VEC1` ann-benchmarks harness
+skips it. For smoke testing the sparse ingestion and benchmark path, generate a
+small deterministic CSR-style dataset:
+
+```sh
+uv run scripts/generate_sparse_mips_smoke_data.py data/sparse-mips/smoke
+cargo run --example sparse_mips_benchmark --release --features sparse_mips -- \
+  data/sparse-mips/smoke
+```
+
+The script writes `train.spv1`, `test.spv1`, `neighbors.bin`, and
+`sparse_mips_dataset.json`. Re-running it is idempotent: cached outputs are
+reused only when the manifest and binary byte lengths match the requested
+settings. Use `--force` to regenerate. `SPV1` is a benchmark dataset format,
+not the `SparseMipsIndex` persistence format.
+
+Use this only as a smoke/eval scaffold. Publishable SparseMIPS results still
+need a real sparse retrieval dataset such as SPLADE or BM25 vectors with exact
+MIPS ground truth.
+
 ## Current Embedding Dimensions
 
 Standard benchmark datasets have lower dimensions than current embedding models:
@@ -128,6 +151,19 @@ VEC1 (4 bytes) + n (u32) + dim (u32) + data (n * dim * f32)
 ```
 
 Simple, fast to load, no dependencies.
+
+### Sparse Binary (SparseMIPS smoke format)
+
+```
+SPV1 (4 bytes) + n (u32) + nnz (u64)
++ offsets ((n + 1) * u64)
++ indices (nnz * u32)
++ values (nnz * f32)
+```
+
+Ground-truth neighbors use the same `NBR1` format as dense datasets. The
+SparseMIPS smoke generator writes sorted, duplicate-free rows by summing
+duplicate dimensions before serialization.
 
 ### HDF5 (ann-benchmarks)
 
