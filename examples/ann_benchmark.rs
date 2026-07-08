@@ -112,9 +112,9 @@ use support::rp_forest_params_json;
 #[cfg(any(feature = "balltree", feature = "kdtree", feature = "rptree"))]
 use support::tree_params_json;
 use support::{
-    algorithm_options_help, brute_force_search, current_rss_kb, emit_result, evaluate, json_line,
-    load_completed_results, parse_args, print_header, print_row, request_completed, rustc_version,
-    Config,
+    active_features_json, algorithm_options_help, brute_force_search, current_rss_kb, emit_result,
+    evaluate, json_line, load_completed_results, parse_args, print_header, print_row,
+    request_completed, rustc_version, Config,
 };
 #[cfg(any(
     feature = "balltree",
@@ -3490,12 +3490,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let meta = || {
         format!(
-            "{{\"_meta\":{{\"dataset\":\"{}\",\"metric\":\"{}\",\"result_schema\":2,\"rustc\":\"{}\",\"rust_msrv\":\"{}\",\"vicinity\":\"{}\",\"train_limit\":{},\"indexed_vectors\":{},\"query_limit\":{},\"queries\":{}}}}}",
+            "{{\"_meta\":{{\"dataset\":\"{}\",\"metric\":\"{}\",\"result_schema\":2,\"rustc\":\"{}\",\"rust_msrv\":\"{}\",\"vicinity\":\"{}\",\"features\":{},\"train_limit\":{},\"indexed_vectors\":{},\"query_limit\":{},\"queries\":{}}}}}",
             cfg.data_dir,
             if cfg.is_euclidean { "l2" } else { "cosine" },
             rustc_version(),
             env!("CARGO_PKG_RUST_VERSION"),
             env!("CARGO_PKG_VERSION"),
+            active_features_json(),
             cfg.max_train
                 .map(|limit| limit.to_string())
                 .unwrap_or_else(|| "null".to_string()),

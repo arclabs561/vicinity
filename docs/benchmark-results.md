@@ -9,11 +9,12 @@ context. Storage-aware coverage should be generated with the current harness
 commands below.
 
 Current benchmark runs should use `examples/ann_benchmark.rs`, which writes one
-`_meta` JSON line with the dataset, metric, actual `rustc --version`, MSRV, and
-crate version, query limit, and measured query count, followed by one JSON line
-per measurement with build time, RSS, storage mode, cache state, and
-p50/p95/p99 latency. Persisted, file, mmap, and segmented-store rows also
-report `load_time_s` and `index_bytes` when the runner can measure them. Use
+`_meta` JSON line with the dataset, metric, actual `rustc --version`, MSRV,
+crate version, compiled feature list, train/query limits, and measured query
+count, followed by one JSON line per measurement with build time, RSS, storage
+mode, cache state, and p50/p95/p99 latency. Persisted, file, mmap, and
+segmented-store rows also report `load_time_s` and `index_bytes` when the
+runner can measure them. Use
 `--resume` to skip completed rows and `--fresh` to recreate the result file.
 Resume checks require explicit `storage_mode` on current in-memory rows and on
 snapshot/file/mmap/segmented rows, so legacy rows without storage context do not

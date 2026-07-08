@@ -19,7 +19,7 @@ Benchmark results are stored as JSONL. `examples/ann_benchmark.rs` writes one
 mode:
 
 ```jsonl
-{"_meta":{"dataset":"data/ann-benchmarks/glove-25-angular","metric":"cosine","result_schema":2,"rustc":"rustc ...","train_limit":null,"indexed_vectors":1183514,"query_limit":10000,"queries":10000}}
+{"_meta":{"dataset":"data/ann-benchmarks/glove-25-angular","metric":"cosine","result_schema":2,"rustc":"rustc ...","rust_msrv":"1.89","vicinity":"0.10.5","features":["hnsw"],"train_limit":null,"indexed_vectors":1183514,"query_limit":10000,"queries":10000}}
 {"algorithm":"hnsw","params":{"m":16,"ef_search":50},"storage_mode":"in_memory","cache_state":"warm_after_build","recall_at_10":0.95,"qps":5000.0,"p50_us":180.0,"p95_us":260.0,"p99_us":320.0,"rss_kb":123456}
 ```
 

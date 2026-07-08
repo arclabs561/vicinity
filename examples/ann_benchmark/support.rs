@@ -54,6 +54,68 @@ pub(crate) fn algorithm_options_help() -> String {
     ALGORITHM_OPTIONS.join(", ")
 }
 
+pub(crate) fn active_features_json() -> String {
+    let mut active = Vec::new();
+    macro_rules! push_feature {
+        ($feature:literal) => {
+            if cfg!(feature = $feature) {
+                active.push($feature);
+            }
+        };
+    }
+
+    push_feature!("balltree");
+    push_feature!("benchmark");
+    push_feature!("binary_index");
+    push_feature!("cli");
+    push_feature!("curator");
+    push_feature!("diskann");
+    push_feature!("emg");
+    push_feature!("evoc");
+    push_feature!("experimental");
+    push_feature!("filtered_graph");
+    push_feature!("finger");
+    push_feature!("fresh_graph");
+    push_feature!("hnsw");
+    push_feature!("id-compression");
+    push_feature!("innr");
+    push_feature!("ivf_avq");
+    push_feature!("ivf_pq");
+    push_feature!("ivf_rabitq");
+    push_feature!("kdtree");
+    push_feature!("kmeans_tree");
+    push_feature!("lemur");
+    push_feature!("lsh");
+    push_feature!("nsg");
+    push_feature!("nsw");
+    push_feature!("parallel");
+    push_feature!("persistence");
+    push_feature!("pipnn");
+    push_feature!("python");
+    push_feature!("qntz");
+    push_feature!("quantization");
+    push_feature!("rabitq");
+    push_feature!("range_filtered");
+    push_feature!("rmt-spectral");
+    push_feature!("rp_quant");
+    push_feature!("rptree");
+    push_feature!("saq");
+    push_feature!("serde");
+    push_feature!("sng");
+    push_feature!("sparse_mips");
+    push_feature!("sq4");
+    push_feature!("sq8");
+    push_feature!("store");
+    push_feature!("vamana");
+
+    let quoted = active
+        .iter()
+        .map(|feature| format!("\"{feature}\""))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("[{quoted}]")
+}
+
 pub(crate) struct Config {
     pub(crate) data_dir: String,
     pub(crate) algos: Vec<String>,
@@ -1701,6 +1763,21 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn active_features_json_matches_representative_cfgs() {
+        let features = active_features_json();
+
+        assert!(features.starts_with('['));
+        assert!(features.ends_with(']'));
+        assert_eq!(features.contains("\"hnsw\""), cfg!(feature = "hnsw"));
+        assert_eq!(features.contains("\"ivf_pq\""), cfg!(feature = "ivf_pq"));
+        assert_eq!(features.contains("\"diskann\""), cfg!(feature = "diskann"));
+        assert_eq!(
+            features.contains("\"persistence\""),
+            cfg!(feature = "persistence")
+        );
     }
 
     #[test]
