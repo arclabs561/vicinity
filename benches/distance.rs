@@ -146,6 +146,41 @@ fn bench_batch_distances(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_distance_dispatch(c: &mut Criterion) {
+    let mut group = c.benchmark_group("distance_dispatch");
+
+    for dim in [25, 128, 960] {
+        group.throughput(Throughput::Elements((dim * 8) as u64));
+
+        let vectors = normalized_vectors(9, dim);
+        let query = vectors[0].as_slice();
+        let candidates: Vec<&[f32]> = vectors[1..].iter().map(|v| v.as_slice()).collect();
+        let dist_fn = black_box(cosine_distance_normalized as fn(&[f32], &[f32]) -> f32);
+
+        group.bench_with_input(BenchmarkId::new("direct", dim), &dim, |bench, _| {
+            bench.iter(|| {
+                let mut sum = 0.0;
+                for &candidate in &candidates {
+                    sum += cosine_distance_normalized(black_box(query), black_box(candidate));
+                }
+                black_box(sum)
+            });
+        });
+
+        group.bench_with_input(BenchmarkId::new("fn_ptr", dim), &dim, |bench, _| {
+            bench.iter(|| {
+                let mut sum = 0.0;
+                for &candidate in &candidates {
+                    sum += dist_fn(black_box(query), black_box(candidate));
+                }
+                black_box(sum)
+            });
+        });
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_l2_dimensions,
@@ -154,5 +189,6 @@ criterion_group!(
     bench_cosine_dimensions,
     bench_cosine_normalized_dimensions,
     bench_batch_distances,
+    bench_distance_dispatch,
 );
 criterion_main!(benches);

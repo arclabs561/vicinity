@@ -946,6 +946,39 @@ CARGO_TARGET_DIR=/tmp/vicinity-hnsw-dispatch-target CARGO_INCREMENTAL=0 \
 The code change was reverted. The next useful HNSW perf target is still
 candidate/frontier structure or data locality, not another dispatch rewrite.
 
+A measurement-only `distance_dispatch` Criterion group was added next to keep
+future dispatch work grounded before touching HNSW again. The benchmark compares
+eight normalized candidate distances through a direct
+`cosine_distance_normalized` call versus a black-boxed
+`fn(&[f32], &[f32]) -> f32` call at 25, 128, and 960 dimensions.
+
+```bash
+CARGO_TARGET_DIR=/tmp/vicinity-distance-dispatch-target CARGO_INCREMENTAL=0 \
+  RUSTC_WRAPPER= cargo bench --bench distance --no-default-features -- \
+  distance_dispatch --sample-size 30 --warm-up-time 1 --measurement-time 3
+
+CARGO_TARGET_DIR=/tmp/vicinity-distance-dispatch-innr-target \
+  CARGO_INCREMENTAL=0 RUSTC_WRAPPER= cargo bench --bench distance \
+  --no-default-features --features innr -- distance_dispatch \
+  --sample-size 30 --warm-up-time 1 --measurement-time 3
+```
+
+| Feature set | Dim | Direct mean | Function-pointer mean | Delta |
+| --- | ---: | ---: | ---: | ---: |
+| scalar fallback | 25 | 65.665 ns | 66.840 ns | +1.8% |
+| scalar fallback | 128 | 459.86 ns | 514.47 ns | +11.9% |
+| scalar fallback | 960 | 6.7344 us | 6.9067 us | +2.6% |
+| `innr` | 25 | 35.014 ns | 44.305 ns | +26.5% |
+| `innr` | 128 | 101.15 ns | 110.35 ns | +9.1% |
+| `innr` | 960 | 666.73 ns | 656.26 ns | -1.6% |
+
+This confirms that function-pointer dispatch can matter in the low-dimensional
+kernel loop, especially with the `innr` path HNSW normally uses. It does not
+reverse the production-search result above: every HNSW dispatch rewrite tried so
+far lost or failed to clear the 5% keep threshold on the real search rows.
+Future dispatch work should start from this bench plus the `hnsw_search_`
+ef=10/50/100/200 and `m_max=32` controls, not from a broad hot-path rewrite.
+
 The next safe heap-update experiment replaced the result-heap push-then-pop
 sequence with top replacement through `BinaryHeap::peek_mut`. It targets the
 `BinaryHeap::pop` bucket from the symbolized profile without changing distance
