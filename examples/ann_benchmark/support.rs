@@ -219,7 +219,7 @@ impl ExpectedResult {
             algorithm: algorithm.into(),
             params_json: None,
             param_fragments: Vec::new(),
-            storage_mode: None,
+            storage_mode: Some("in_memory".to_string()),
         }
     }
 
@@ -228,7 +228,7 @@ impl ExpectedResult {
             algorithm: algorithm.into(),
             params_json: Some(params_json.to_string()),
             param_fragments: Vec::new(),
-            storage_mode: None,
+            storage_mode: Some("in_memory".to_string()),
         }
     }
 
@@ -253,7 +253,7 @@ impl ExpectedResult {
             algorithm: algorithm.into(),
             params_json: None,
             param_fragments: fragments.into_iter().collect(),
-            storage_mode: None,
+            storage_mode: Some("in_memory".to_string()),
         }
     }
 
@@ -1584,6 +1584,13 @@ mod tests {
 
     fn single_line(algorithm: &str, params: &str) -> String {
         format!(
+            "{{\"algorithm\":\"{}\",\"params\":{},\"storage_mode\":\"in_memory\",\"recall_at_10\":1.0,\"qps\":1.0}}",
+            algorithm, params
+        )
+    }
+
+    fn legacy_single_line_without_storage_mode(algorithm: &str, params: &str) -> String {
+        format!(
             "{{\"algorithm\":\"{}\",\"params\":{},\"recall_at_10\":1.0,\"qps\":1.0}}",
             algorithm, params
         )
@@ -1854,6 +1861,22 @@ mod tests {
         };
 
         assert!(request_completed(
+            &completed, "kdtree", &cfg, 25, 1_000, 100
+        ));
+    }
+
+    #[test]
+    fn classic_tree_resume_rejects_legacy_single_row_without_storage_mode() {
+        let cfg = Config::default();
+        let completed = CompletedResults {
+            lines: vec![legacy_single_line_without_storage_mode(
+                "kdtree",
+                "{\"max_leaf_size\":10,\"max_depth\":32}",
+            )],
+            ..CompletedResults::default()
+        };
+
+        assert!(!request_completed(
             &completed, "kdtree", &cfg, 25, 1_000, 100
         ));
     }
