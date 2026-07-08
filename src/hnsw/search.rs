@@ -53,7 +53,7 @@ impl VisitedSet {
     }
 
     /// Reset the visited set for a new search. O(1) amortized for the dense
-    /// variant (increments generation; memsets only on u16 overflow).
+    /// variant (increments generation; memsets only on u8 overflow).
     /// For the sparse variant, clears the HashSet.
     fn clear(&mut self) {
         match self {
