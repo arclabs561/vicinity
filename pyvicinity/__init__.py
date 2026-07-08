@@ -2,8 +2,9 @@
 
 Python bindings for the ``vicinity`` Rust crate (crates.io). The PyPI
 distribution is named ``pyvicinity`` because the bare ``vicinity`` name
-is held on PyPI by an unrelated project. The current Python API exposes HNSW
-and IVF-PQ.
+is held on PyPI by an unrelated project. The Python API exposes stable HNSW
+and IVF-PQ workflows; experimental Rust modules stay Rust-only until their
+benchmark and persistence contracts settle.
 
 Quick start::
 

@@ -133,6 +133,9 @@ Python exposes the common HNSW constructor subset, HNSW JSON save/load, IVF-PQ
 directory save/load, and IVF-PQ file search. Mmap-backed IVF-PQ search is
 available in normal Python builds because the `python` feature includes
 `persistence`; Rust builds need the `persistence` feature for `mmap=True`.
+New Python APIs should first have stable Rust benchmarks, persistence behavior,
+and examples; the bindings are not intended to mirror every experimental Rust
+module.
 Rust-only surfaces include DiskANN, `store::UpdatableIndex`, FreshGraph,
 filtered search/update APIs, and HNSW binary segments.
 
