@@ -210,7 +210,7 @@ struct ExpectedResult {
     algorithm: String,
     params_json: Option<String>,
     param_fragments: Vec<String>,
-    storage_mode: String,
+    storage_mode: &'static str,
 }
 
 impl ExpectedResult {
@@ -219,7 +219,7 @@ impl ExpectedResult {
             algorithm: algorithm.into(),
             params_json: None,
             param_fragments: Vec::new(),
-            storage_mode: "in_memory".to_string(),
+            storage_mode: "in_memory",
         }
     }
 
@@ -228,21 +228,16 @@ impl ExpectedResult {
             algorithm: algorithm.into(),
             params_json: Some(params_json.to_string()),
             param_fragments: Vec::new(),
-            storage_mode: "in_memory".to_string(),
+            storage_mode: "in_memory",
         }
     }
 
     fn with_params_and_storage(
         algorithm: impl Into<String>,
         params_json: &str,
-        storage_mode: impl Into<String>,
+        storage_mode: &'static str,
     ) -> Self {
-        Self {
-            algorithm: algorithm.into(),
-            params_json: Some(params_json.to_string()),
-            param_fragments: Vec::new(),
-            storage_mode: storage_mode.into(),
-        }
+        Self::with_params(algorithm, params_json).with_storage(storage_mode)
     }
 
     fn with_param_fragments(
@@ -253,8 +248,13 @@ impl ExpectedResult {
             algorithm: algorithm.into(),
             params_json: None,
             param_fragments: fragments.into_iter().collect(),
-            storage_mode: "in_memory".to_string(),
+            storage_mode: "in_memory",
         }
+    }
+
+    fn with_storage(mut self, storage_mode: &'static str) -> Self {
+        self.storage_mode = storage_mode;
+        self
     }
 
     fn matches(&self, line: &str) -> bool {
@@ -273,15 +273,11 @@ impl ExpectedResult {
         {
             return false;
         }
-        if json_string_field(line, "storage_mode").as_deref() != Some(self.storage_mode.as_str()) {
+        if json_string_field(line, "storage_mode").as_deref() != Some(self.storage_mode) {
             return false;
         }
         true
     }
-}
-
-fn single_result_check(algorithm: &str, params_json: &str) -> Vec<ExpectedResult> {
-    vec![ExpectedResult::with_params(algorithm, params_json)]
 }
 
 fn params_containing_check(
@@ -366,15 +362,12 @@ fn storage_expectation_checks(
     cfg: &Config,
     expectation: StorageExpectation,
 ) -> Vec<ExpectedResult> {
-    let mut checks = single_result_check(algorithm, params_json);
-    for storage_mode in expectation.required_modes(cfg) {
-        checks.push(ExpectedResult::with_params_and_storage(
-            algorithm,
-            params_json,
-            *storage_mode,
-        ));
-    }
-    checks
+    std::iter::once("in_memory")
+        .chain(expectation.required_modes(cfg).iter().copied())
+        .map(|storage_mode| {
+            ExpectedResult::with_params(algorithm, params_json).with_storage(storage_mode)
+        })
+        .collect()
 }
 
 fn snapshot_check(algorithm: &str, params_json: &str, cfg: &Config) -> Vec<ExpectedResult> {
@@ -399,7 +392,7 @@ fn serde_snapshot_check(algorithm: &str, params_json: &str, cfg: &Config) -> Vec
     #[cfg(not(feature = "serde"))]
     {
         let _ = cfg;
-        single_result_check(algorithm, params_json)
+        vec![ExpectedResult::with_params(algorithm, params_json)]
     }
 
     #[cfg(feature = "serde")]
