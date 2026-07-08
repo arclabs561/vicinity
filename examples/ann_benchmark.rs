@@ -2763,6 +2763,10 @@ fn run_hnsw_prt(
 
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
+    let projection_bytes = (prt.num_projections() * dim
+        + prt.num_vectors() * prt.num_projections())
+        * std::mem::size_of::<f32>();
+    let index_bytes = Some((index.memory_usage().total() + projection_bytes) as u64);
 
     if !cfg.json {
         println!(
@@ -2793,7 +2797,14 @@ fn run_hnsw_prt(
             );
             emit_result(
                 &cfg.results_path,
-                &json_line("hnsw_prt", &params_json, build_time_s, rss, &result),
+                &json_line_with_storage(
+                    "hnsw_prt",
+                    &params_json,
+                    build_time_s,
+                    rss,
+                    &result,
+                    &in_memory_storage(index_bytes),
+                ),
             );
         } else {
             print_row(&format!("ef={}", ef), &result);
