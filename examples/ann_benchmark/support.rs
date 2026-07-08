@@ -1291,6 +1291,19 @@ pub(crate) fn json_line(
     json_line_with_storage(algorithm, params, build_time_s, rss_kb, result, &storage)
 }
 
+pub(crate) fn json_line_with_extra_fields(
+    algorithm: &str,
+    params: &str,
+    build_time_s: f64,
+    rss_kb: Option<u64>,
+    result: &BenchResult,
+    extra_fields: &str,
+) -> String {
+    let mut line = json_line(algorithm, params, build_time_s, rss_kb, result);
+    append_extra_fields(&mut line, extra_fields);
+    line
+}
+
 pub(crate) fn json_line_with_storage(
     algorithm: &str,
     params: &str,
@@ -1335,6 +1348,17 @@ pub(crate) fn json_line_with_storage(
     }
     s.push('}');
     s
+}
+
+fn append_extra_fields(line: &mut String, extra_fields: &str) {
+    let fields = extra_fields.trim().trim_start_matches(',');
+    if fields.is_empty() || !line.ends_with('}') {
+        return;
+    }
+    line.pop();
+    line.push(',');
+    line.push_str(fields);
+    line.push('}');
 }
 
 const WARMUP_QUERIES: usize = 50;
@@ -1627,6 +1651,23 @@ mod tests {
         assert!(line.contains("\"storage_mode\":\"in_memory\""));
         assert!(line.contains("\"cache_state\":\"warm_after_build\""));
         assert!(line.contains("\"rss_kb\":123"));
+    }
+
+    #[test]
+    fn json_line_with_extra_fields_appends_top_level_metrics() {
+        let line = json_line_with_extra_fields(
+            "inplace_churn",
+            "{\"cycles\":8}",
+            1.0,
+            None,
+            &sample_result(),
+            "\"update_qps\":12.5,\"active_count\":64",
+        );
+
+        assert!(line.contains("\"params\":{\"cycles\":8}"));
+        assert!(line.contains("\"update_qps\":12.5"));
+        assert!(line.contains("\"active_count\":64"));
+        assert!(line.ends_with('}'));
     }
 
     #[test]

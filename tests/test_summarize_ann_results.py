@@ -234,6 +234,29 @@ def test_json_output_preserves_best_row_diagnostics(
     }
 
 
+def test_json_output_preserves_churn_diagnostics(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = load_script()
+    path = tmp_path / "rows.jsonl"
+    path.write_text(
+        '{"algorithm":"inplace_churn","storage_mode":"in_memory","recall_at_10":0.95,"qps":100,'
+        '"active_count":64,"update_time_s":0.5,"update_qps":16,"free_slot_ratio":0.125}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sys, "argv", ["summarize_ann_results.py", str(path), "--json"])
+
+    script.main()
+
+    output = json.loads(capsys.readouterr().out)
+    assert output[0]["best_row_diagnostics"] == {
+        "active_count": 64.0,
+        "free_slot_ratio": 0.125,
+        "update_qps": 16.0,
+        "update_time_s": 0.5,
+    }
+
+
 def test_cli_can_emit_standard_storage_missing_rows(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:

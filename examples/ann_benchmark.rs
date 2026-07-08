@@ -110,8 +110,9 @@ use support::rp_forest_params_json;
 #[cfg(any(feature = "balltree", feature = "kdtree", feature = "rptree"))]
 use support::tree_params_json;
 use support::{
-    brute_force_search, current_rss_kb, emit_result, evaluate, json_line, load_completed_results,
-    parse_args, print_header, print_row, request_completed, rustc_version, Config,
+    brute_force_search, current_rss_kb, emit_result, evaluate, json_line,
+    json_line_with_extra_fields, load_completed_results, parse_args, print_header, print_row,
+    request_completed, rustc_version, Config,
 };
 #[cfg(any(
     feature = "balltree",
@@ -1882,14 +1883,22 @@ fn run_fresh_graph_churn(cfg: &Config, train: &[Vec<f32>], test: &[Vec<f32>], di
                 "{{\"max_degree\":32,\"ef_search\":{},\"base_size\":{},\"cycles\":{},\"queries\":{},\"update_time_s\":{:.4},\"update_qps\":{:.1},\"tombstone_ratio\":{:.4}}}",
                 ef, base_n, cycles, query_count, update_time_s, update_qps, tombstone_ratio
             );
+            let extra_json = format!(
+                "\"active_count\":{},\"update_time_s\":{:.4},\"update_qps\":{:.1},\"tombstone_ratio\":{:.4}",
+                active.len(),
+                update_time_s,
+                update_qps,
+                tombstone_ratio
+            );
             emit_result(
                 &cfg.results_path,
-                &json_line(
+                &json_line_with_extra_fields(
                     "fresh_graph_churn",
                     &params_json,
                     build_time_s,
                     rss,
                     &result,
+                    &extra_json,
                 ),
             );
         } else {
@@ -2131,9 +2140,23 @@ fn run_inplace_churn(cfg: &Config, train: &[Vec<f32>], test: &[Vec<f32>], dim: u
                 update_qps,
                 free_slot_ratio
             );
+            let extra_json = format!(
+                "\"active_count\":{},\"update_time_s\":{:.4},\"update_qps\":{:.1},\"free_slot_ratio\":{:.4}",
+                active.len(),
+                update_time_s,
+                update_qps,
+                free_slot_ratio
+            );
             emit_result(
                 &cfg.results_path,
-                &json_line("inplace_churn", &params_json, build_time_s, rss, &result),
+                &json_line_with_extra_fields(
+                    "inplace_churn",
+                    &params_json,
+                    build_time_s,
+                    rss,
+                    &result,
+                    &extra_json,
+                ),
             );
         } else {
             print_row(&format!("beam={}", beam_width), &result);
@@ -2251,9 +2274,25 @@ fn run_lsm_churn(cfg: &Config, train: &[Vec<f32>], test: &[Vec<f32>], dim: usize
                 stats.level_sizes,
                 stats.tombstone_count
             );
+            let extra_json = format!(
+                "\"active_count\":{},\"update_time_s\":{:.4},\"update_qps\":{:.1},\"compactions\":{},\"levels\":{},\"tombstones\":{}",
+                active.len(),
+                update_time_s,
+                update_qps,
+                stats.total_compactions,
+                stats.num_levels,
+                stats.tombstone_count
+            );
             emit_result(
                 &cfg.results_path,
-                &json_line("lsm_churn", &params_json, build_time_s, rss, &result),
+                &json_line_with_extra_fields(
+                    "lsm_churn",
+                    &params_json,
+                    build_time_s,
+                    rss,
+                    &result,
+                    &extra_json,
+                ),
             );
         } else {
             print_row(&format!("ef={}", ef), &result);

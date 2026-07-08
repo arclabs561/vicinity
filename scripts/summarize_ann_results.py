@@ -106,6 +106,14 @@ DIAGNOSTIC_KEYS = (
     "avg_graph_bytes",
     "avg_vector_bytes",
     "avg_retained_candidates",
+    "active_count",
+    "update_time_s",
+    "update_qps",
+    "tombstone_ratio",
+    "free_slot_ratio",
+    "compactions",
+    "levels",
+    "tombstones",
 )
 
 
