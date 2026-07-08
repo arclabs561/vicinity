@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -402,6 +403,32 @@ def format_params(params: dict[str, Any] | None) -> str:
     return f"`{json.dumps(params, sort_keys=True, separators=(',', ':'))}`"
 
 
+def rows_missing_index_bytes(rows: list[CoverageRow]) -> list[CoverageRow]:
+    return [
+        row for row in rows if row.status == "measured" and row.best_index_bytes is None
+    ]
+
+
+def format_row_key(row: CoverageRow) -> str:
+    return f"{row.dataset}:{row.algorithm}:{row.storage_mode}"
+
+
+def require_index_bytes(rows: list[CoverageRow]) -> None:
+    missing = rows_missing_index_bytes(rows)
+    if not missing:
+        return
+
+    limit = 20
+    shown = ", ".join(format_row_key(row) for row in missing[:limit])
+    hidden = len(missing) - limit
+    suffix = "" if hidden <= 0 else f", ... ({hidden} more)"
+    print(
+        f"measured rows missing index_bytes: {shown}{suffix}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
+
 def markdown_table(rows: list[CoverageRow], recall_floor: float = 0.95) -> str:
     lines = [
         "| Dataset | Profile | Algorithm | Storage | Status | Rows | "
@@ -535,6 +562,11 @@ def parse_args() -> argparse.Namespace:
         default=0.95,
         help="Recall@10 floor used for thresholded QPS reporting",
     )
+    parser.add_argument(
+        "--require-index-bytes",
+        action="store_true",
+        help="Exit non-zero if any measured summary row lacks index_bytes",
+    )
     return parser.parse_args()
 
 
@@ -565,6 +597,8 @@ def main() -> None:
         missing_only=args.missing_only,
         recall_gap_only=args.recall_gap_only,
     )
+    if args.require_index_bytes:
+        require_index_bytes(rows)
     if args.json:
         print(
             json.dumps(

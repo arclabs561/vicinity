@@ -267,15 +267,15 @@ jobs:
       - name: Build extension (editable)
         run: maturin develop --release --features hnsw,python,parallel
       - name: Ruff
-        run: python -m ruff check pyvicinity tests/test_python.py tests/test_download_ann_benchmarks.py tests/test_generate_sparse_mips_smoke_data.py examples/python scripts/generate_ann_smoke_data.py scripts/generate_sparse_mips_smoke_data.py scripts/download_ann_benchmarks.py
+        run: python -m ruff check pyvicinity tests/test_python.py tests/test_download_ann_benchmarks.py tests/test_generate_sparse_mips_smoke_data.py tests/test_summarize_ann_results.py examples/python scripts/generate_ann_smoke_data.py scripts/generate_sparse_mips_smoke_data.py scripts/download_ann_benchmarks.py scripts/summarize_ann_results.py
       - name: Ruff format
-        run: python -m ruff format --check pyvicinity tests/test_python.py tests/test_download_ann_benchmarks.py tests/test_generate_sparse_mips_smoke_data.py examples/python scripts/generate_ann_smoke_data.py scripts/generate_sparse_mips_smoke_data.py scripts/download_ann_benchmarks.py
+        run: python -m ruff format --check pyvicinity tests/test_python.py tests/test_download_ann_benchmarks.py tests/test_generate_sparse_mips_smoke_data.py tests/test_summarize_ann_results.py examples/python scripts/generate_ann_smoke_data.py scripts/generate_sparse_mips_smoke_data.py scripts/download_ann_benchmarks.py scripts/summarize_ann_results.py
       - name: mypy --strict
         run: python -m mypy --strict pyvicinity
       - name: Stubtest (.pyi vs compiled module)
         run: python -m mypy.stubtest pyvicinity._core
       - name: Pytest
-        run: python -m pytest tests/test_python.py tests/test_download_ann_benchmarks.py tests/test_generate_sparse_mips_smoke_data.py -v
+        run: python -m pytest tests/test_python.py tests/test_download_ann_benchmarks.py tests/test_generate_sparse_mips_smoke_data.py tests/test_summarize_ann_results.py -v
       - name: Python harness example
         run: python examples/python/03_ann_benchmarks_harness.py
   # Documentation build

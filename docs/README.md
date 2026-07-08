@@ -49,9 +49,10 @@ review matrix, for example `--expect hnsw:in_memory --expect store:segmented_sto
 The summary reports both fastest row overall and fastest row meeting
 `--recall-floor` (default `0.95`); use the thresholded QPS for fixed-recall
 claims. It also reports `index_bytes` when present, so storage footprint stays
-visible next to QPS. Add `--only-dataset NAME --missing-only` when reviewing one
-dataset's remaining storage rows, or use `--expect-standard-storage` for the
-standard storage coverage matrix. For historical result directories that mix
+visible next to QPS. Use `--require-index-bytes` on current coverage sweeps to
+fail measured rows that would hide footprint. Add `--only-dataset NAME --missing-only`
+when reviewing one dataset's remaining storage rows, or use `--expect-standard-storage`
+for the standard storage coverage matrix. For historical result directories that mix
 partial runs, use `--expect-observed-standard-storage`; it only expands storage
 expectations for algorithm families already present in benchmark scopes that
 record train/query cardinality metadata. Pass `--profile-dir PATH` to attach
