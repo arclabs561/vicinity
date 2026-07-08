@@ -153,7 +153,7 @@ def test_markdown_table_is_stable(tmp_path: Path) -> None:
     table = script.markdown_table(script.coverage_rows(script.load_summaries([path])))
 
     assert (
-        "| rows | hnsw | in_memory | measured | 1 | 1.0000 | 42.0 | "
+        "| rows | - | hnsw | in_memory | measured | 1 | 1.0000 | 42.0 | "
         "4096 | 42.0 | 4096 |" in table
     )
 
@@ -176,6 +176,76 @@ def test_json_output_preserves_recall_at_10_key(
     assert output[0]["best_index_bytes"] == 4096
     assert output[0]["qps_at_recall_floor"] == 42.0
     assert output[0]["index_bytes_at_recall_floor"] == 4096
+
+
+def test_json_output_can_include_dataset_profile_path(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = load_script()
+    results = tmp_path / "rows.jsonl"
+    results.write_text(
+        '{"_meta":{"dataset":"data/ann-benchmarks/glove-25-angular"}}\n'
+        '{"algorithm":"hnsw","storage_mode":"in_memory","recall_at_10":1.0,"qps":42}\n',
+        encoding="utf-8",
+    )
+    profile_dir = tmp_path / "profiles"
+    profile_dir.mkdir()
+    profile = profile_dir / "glove-25-angular.json"
+    profile.write_text(
+        json.dumps({"dataset": "data/ann-benchmarks/glove-25-angular"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "summarize_ann_results.py",
+            str(results),
+            "--profile-dir",
+            str(profile_dir),
+            "--json",
+        ],
+    )
+
+    script.main()
+
+    output = json.loads(capsys.readouterr().out)
+    assert output[0]["dataset_profile"] == str(profile)
+
+
+def test_dataset_profiles_require_exact_dataset_label_for_capped_rows(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = load_script()
+    results = tmp_path / "rows.jsonl"
+    results.write_text(
+        '{"_meta":{"dataset":"data/ann-benchmarks/glove-25-angular","train_limit":50000}}\n'
+        '{"algorithm":"hnsw","storage_mode":"in_memory","recall_at_10":1.0,"qps":42}\n',
+        encoding="utf-8",
+    )
+    profile_dir = tmp_path / "profiles"
+    profile_dir.mkdir()
+    (profile_dir / "glove-25-angular.json").write_text(
+        json.dumps({"dataset": "data/ann-benchmarks/glove-25-angular"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "summarize_ann_results.py",
+            str(results),
+            "--profile-dir",
+            str(profile_dir),
+            "--json",
+        ],
+    )
+
+    script.main()
+
+    output = json.loads(capsys.readouterr().out)
+    assert output[0]["dataset"] == "glove-25-angular[train=50000]"
+    assert output[0]["dataset_profile"] is None
 
 
 def test_json_output_uses_recall_floor_for_thresholded_qps(

@@ -191,6 +191,7 @@ class Summary:
 @dataclass(frozen=True)
 class CoverageRow:
     dataset: str
+    dataset_profile: str | None
     algorithm: str
     storage_mode: str
     status: str
@@ -231,6 +232,34 @@ def row_dataset(row: dict[str, Any], current_dataset: str | None, path: Path) ->
     if isinstance(dataset, str) and dataset:
         return Path(dataset).name
     return path.stem
+
+
+def profile_dataset_name(profile: dict[str, Any], path: Path) -> str:
+    dataset = profile.get("dataset")
+    if isinstance(dataset, str) and dataset:
+        return Path(dataset).name
+    return path.stem
+
+
+def load_dataset_profiles(profile_dirs: list[Path]) -> dict[str, str]:
+    profiles: dict[str, str] = {}
+    for profile_dir in profile_dirs:
+        for path in sorted(profile_dir.glob("*.json")):
+            try:
+                profile = json.loads(path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as exc:
+                raise SystemExit(f"{path} is not valid JSON") from exc
+            if not isinstance(profile, dict):
+                raise SystemExit(f"{path} does not contain a JSON object")
+            dataset = profile_dataset_name(profile, path)
+            existing = profiles.get(dataset)
+            if existing is not None and existing != str(path):
+                raise SystemExit(
+                    f"multiple profiles found for dataset {dataset}: "
+                    f"{existing} and {path}"
+                )
+            profiles[dataset] = str(path)
+    return profiles
 
 
 def load_summaries(
@@ -275,12 +304,14 @@ def coverage_rows(
     expected: list[tuple[str, str]] | None = None,
     expected_by_dataset: dict[str, list[tuple[str, str]]] | None = None,
     datasets: list[str] | None = None,
+    dataset_profiles: dict[str, str] | None = None,
     recall_floor: float = 0.95,
     only_datasets: set[str] | None = None,
     missing_only: bool = False,
 ) -> list[CoverageRow]:
     expected = expected or []
     expected_by_dataset = expected_by_dataset or {}
+    dataset_profiles = dataset_profiles or {}
     dataset_names = sorted(
         datasets
         or ({dataset for dataset, _, _ in summaries} | set(expected_by_dataset))
@@ -309,6 +340,7 @@ def coverage_rows(
         rows.append(
             CoverageRow(
                 dataset=dataset,
+                dataset_profile=dataset_profiles.get(dataset),
                 algorithm=algorithm,
                 storage_mode=storage_mode,
                 status="measured" if summary else "missing",
@@ -330,12 +362,14 @@ def coverage_rows(
 
 def markdown_table(rows: list[CoverageRow], recall_floor: float = 0.95) -> str:
     lines = [
-        "| Dataset | Algorithm | Storage | Status | Rows | Best Recall@10 | Best QPS | "
-        f"Best Index Bytes | Best QPS @ R>={recall_floor:.2f} | "
+        "| Dataset | Profile | Algorithm | Storage | Status | Rows | "
+        "Best Recall@10 | Best QPS | Best Index Bytes | "
+        f"Best QPS @ R>={recall_floor:.2f} | "
         f"Index Bytes @ R>={recall_floor:.2f} |",
-        "| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for row in rows:
+        profile = "-" if row.dataset_profile is None else row.dataset_profile
         recall = "-" if row.best_recall is None else f"{row.best_recall:.4f}"
         qps = "-" if row.best_qps is None else f"{row.best_qps:.1f}"
         index_bytes = "-" if row.best_index_bytes is None else str(row.best_index_bytes)
@@ -348,7 +382,7 @@ def markdown_table(rows: list[CoverageRow], recall_floor: float = 0.95) -> str:
             else str(row.index_bytes_at_recall_floor)
         )
         lines.append(
-            f"| {row.dataset} | {row.algorithm} | {row.storage_mode} | "
+            f"| {row.dataset} | {profile} | {row.algorithm} | {row.storage_mode} | "
             f"{row.status} | {row.rows} | {recall} | {qps} | {index_bytes} | "
             f"{floor_qps} | {floor_index_bytes} |"
         )
@@ -424,6 +458,16 @@ def parse_args() -> argparse.Namespace:
         help="Emit only expected rows that are missing",
     )
     parser.add_argument(
+        "--profile-dir",
+        action="append",
+        default=[],
+        type=Path,
+        help=(
+            "Directory containing profile_ann_dataset JSON outputs. Rows whose "
+            "dataset label exactly matches a profile dataset include its path."
+        ),
+    )
+    parser.add_argument(
         "--recall-floor",
         type=float,
         default=0.95,
@@ -446,12 +490,14 @@ def main() -> None:
         if args.expect_observed_standard_storage
         else None
     )
+    dataset_profiles = load_dataset_profiles(args.profile_dir)
     only_datasets = set(args.only_dataset) if args.only_dataset else None
     rows = coverage_rows(
         summaries,
         expected,
         expected_by_dataset,
         args.dataset,
+        dataset_profiles,
         args.recall_floor,
         only_datasets=only_datasets,
         missing_only=args.missing_only,
@@ -462,6 +508,7 @@ def main() -> None:
                 [
                     {
                         "dataset": row.dataset,
+                        "dataset_profile": row.dataset_profile,
                         "algorithm": row.algorithm,
                         "storage_mode": row.storage_mode,
                         "status": row.status,
