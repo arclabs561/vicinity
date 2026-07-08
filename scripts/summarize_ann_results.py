@@ -259,6 +259,10 @@ def scoped_dataset_name(meta: dict[str, Any]) -> str | None:
     return name
 
 
+def is_current_ann_result_meta(meta: dict[str, Any]) -> bool:
+    return isinstance(meta.get("dataset"), str) and meta.get("result_schema") == 2
+
+
 def has_storage_expectation_scope(meta: dict[str, Any]) -> bool:
     storage_scope_keys = ("indexed_vectors", "queries", "train_limit", "query_limit")
     return any(key in meta for key in storage_scope_keys)
@@ -307,7 +311,7 @@ def load_summaries(
         current_dataset: str | None = None
         storage_expectation_scope = False
         index_bytes_required = False
-        seen_meta = False
+        active_current_schema = not current_schema_only
         with path.open(encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
@@ -317,12 +321,18 @@ def load_summaries(
                 if "_meta" in row:
                     meta = row["_meta"]
                     if isinstance(meta, dict):
+                        if current_schema_only and not is_current_ann_result_meta(meta):
+                            current_dataset = None
+                            storage_expectation_scope = False
+                            index_bytes_required = False
+                            active_current_schema = False
+                            continue
                         current_dataset = scoped_dataset_name(meta)
                         storage_expectation_scope = has_storage_expectation_scope(meta)
                         index_bytes_required = meta.get("index_bytes_required") is True
-                        seen_meta = True
+                        active_current_schema = True
                     continue
-                if current_schema_only and not seen_meta:
+                if current_schema_only and not active_current_schema:
                     continue
                 algorithm = row.get("algorithm")
                 if not isinstance(algorithm, str):

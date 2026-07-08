@@ -294,6 +294,11 @@ fn meta_warmup_field_matches(line: &str, expected: usize) -> bool {
     }
 }
 
+fn meta_has_current_result_contract(line: &str) -> bool {
+    json_value_field(line, "result_schema").map(str::trim) == Some("2")
+        && json_value_field(line, "index_bytes_required").map(str::trim) == Some("true")
+}
+
 #[cfg(test)]
 pub(crate) fn load_completed_results(
     path: &Path,
@@ -332,6 +337,7 @@ pub(crate) fn load_completed_results_with_warmup(
             if let Some(dataset) = json_string_field(&line, "dataset") {
                 seen_meta = true;
                 if dataset != expected_dataset
+                    || !meta_has_current_result_contract(&line)
                     || !meta_usize_field_matches(&line, "train_limit", expected_train_limit)
                     || !meta_usize_field_matches(&line, "query_limit", expected_query_limit)
                     || !meta_warmup_field_matches(&line, expected_warmup_queries)
@@ -2138,7 +2144,7 @@ mod tests {
         let file = tempfile::NamedTempFile::new().unwrap();
         writeln!(
             file.as_file(),
-            "{{\"_meta\":{{\"dataset\":\"data/a\",\"train_limit\":1000,\"query_limit\":100}}}}"
+            "{{\"_meta\":{{\"dataset\":\"data/a\",\"result_schema\":2,\"index_bytes_required\":true,\"train_limit\":1000,\"query_limit\":100}}}}"
         )
         .unwrap();
         writeln!(
@@ -2173,7 +2179,7 @@ mod tests {
         let file = tempfile::NamedTempFile::new().unwrap();
         writeln!(
             file.as_file(),
-            "{{\"_meta\":{{\"dataset\":\"data/a\",\"train_limit\":1000,\"query_limit\":100,\"warmup_queries\":0}}}}"
+            "{{\"_meta\":{{\"dataset\":\"data/a\",\"result_schema\":2,\"index_bytes_required\":true,\"train_limit\":1000,\"query_limit\":100,\"warmup_queries\":0}}}}"
         )
         .unwrap();
         writeln!(
@@ -2195,11 +2201,11 @@ mod tests {
     }
 
     #[test]
-    fn load_completed_results_keeps_legacy_uncapped_metadata() {
+    fn load_completed_results_keeps_current_uncapped_metadata() {
         let file = tempfile::NamedTempFile::new().unwrap();
         writeln!(
             file.as_file(),
-            "{{\"_meta\":{{\"dataset\":\"data/a\",\"query_limit\":100}}}}"
+            "{{\"_meta\":{{\"dataset\":\"data/a\",\"result_schema\":2,\"index_bytes_required\":true,\"query_limit\":100}}}}"
         )
         .unwrap();
         writeln!(
@@ -2225,7 +2231,7 @@ mod tests {
     }
 
     #[test]
-    fn load_completed_results_ignores_rows_under_mismatched_meta() {
+    fn load_completed_results_rejects_legacy_metadata_contract() {
         let file = tempfile::NamedTempFile::new().unwrap();
         writeln!(
             file.as_file(),
@@ -2237,9 +2243,29 @@ mod tests {
             "{{\"algorithm\":\"hnsw\",\"params\":{{\"m\":16,\"ef_construction\":200,\"ef_search\":10}},\"storage_mode\":\"in_memory\",\"recall_at_10\":1.0,\"qps\":1.0}}"
         )
         .unwrap();
+
+        let completed = load_completed_results(file.path(), "data/a", None, Some(100));
+        assert!(!completed.has_matching_meta);
+        assert!(completed.has_mismatched_meta);
+        assert!(completed.counts.is_empty());
+    }
+
+    #[test]
+    fn load_completed_results_ignores_rows_under_mismatched_meta() {
+        let file = tempfile::NamedTempFile::new().unwrap();
         writeln!(
             file.as_file(),
-            "{{\"_meta\":{{\"dataset\":\"data/a\",\"query_limit\":null}}}}"
+            "{{\"_meta\":{{\"dataset\":\"data/a\",\"result_schema\":2,\"index_bytes_required\":true,\"query_limit\":100}}}}"
+        )
+        .unwrap();
+        writeln!(
+            file.as_file(),
+            "{{\"algorithm\":\"hnsw\",\"params\":{{\"m\":16,\"ef_construction\":200,\"ef_search\":10}},\"storage_mode\":\"in_memory\",\"recall_at_10\":1.0,\"qps\":1.0}}"
+        )
+        .unwrap();
+        writeln!(
+            file.as_file(),
+            "{{\"_meta\":{{\"dataset\":\"data/a\",\"result_schema\":2,\"index_bytes_required\":true,\"query_limit\":null}}}}"
         )
         .unwrap();
         writeln!(

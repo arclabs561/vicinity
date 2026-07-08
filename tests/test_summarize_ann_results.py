@@ -84,7 +84,7 @@ def test_load_summaries_can_ignore_legacy_rows_without_meta(tmp_path: Path) -> N
     )
     current = tmp_path / "current.jsonl"
     current.write_text(
-        '{"_meta":{"dataset":"data/ann-benchmarks/glove-25-angular"}}\n'
+        '{"_meta":{"dataset":"data/ann-benchmarks/glove-25-angular","result_schema":2}}\n'
         '{"algorithm":"hnsw","storage_mode":"snapshot_loaded","recall_at_10":0.97,"qps":20}\n',
         encoding="utf-8",
     )
@@ -100,6 +100,20 @@ def test_load_summaries_can_ignore_legacy_rows_without_meta(tmp_path: Path) -> N
     assert (
         current_only[("glove-25-angular", "hnsw", "snapshot_loaded")].best_qps == 20.0
     )
+
+
+def test_current_schema_only_ignores_non_ann_workload_meta(tmp_path: Path) -> None:
+    script = load_script()
+    path = tmp_path / "acorn.jsonl"
+    path.write_text(
+        '{"_meta":{"workload":"acorn_selectivity","result_schema":1,"index_bytes_required":true}}\n'
+        '{"algorithm":"acorn","storage_mode":"in_memory","recall_at_10":0.9,"qps":42,"index_bytes":4096}\n',
+        encoding="utf-8",
+    )
+
+    summaries = script.load_summaries([path], current_schema_only=True)
+
+    assert summaries == {}
 
 
 def test_coverage_rows_marks_expected_missing(tmp_path: Path) -> None:
@@ -187,7 +201,7 @@ def test_cli_recall_floor_gaps_ignore_unscoped_current_rows(
     path.write_text(
         '{"_meta":{"dataset":"data/ann-benchmarks/glove-25-angular","result_schema":2}}\n'
         '{"algorithm":"hnsw","storage_mode":"in_memory","recall_at_10":0.94,"qps":42}\n'
-        '{"_meta":{"dataset":"data/ann-benchmarks/glove-25-angular","query_limit":1000}}\n'
+        '{"_meta":{"dataset":"data/ann-benchmarks/glove-25-angular","result_schema":2,"query_limit":1000}}\n'
         '{"algorithm":"ivfpq","storage_mode":"in_memory","recall_at_10":0.94,"qps":24}\n',
         encoding="utf-8",
     )
@@ -621,7 +635,7 @@ def test_observed_storage_expectations_ignore_unscoped_current_rows(
     )
     scoped = tmp_path / "scoped.jsonl"
     scoped.write_text(
-        '{"_meta":{"dataset":"data/ann-benchmarks/glove-25-angular","query_limit":1000}}\n'
+        '{"_meta":{"dataset":"data/ann-benchmarks/glove-25-angular","result_schema":2,"query_limit":1000}}\n'
         '{"algorithm":"ivfpq","storage_mode":"in_memory","recall_at_10":0.96,"qps":24}\n',
         encoding="utf-8",
     )
