@@ -1,10 +1,9 @@
 //! HNSW graph construction algorithm.
 
 use crate::distance;
-use crate::hnsw::graph::{HNSWIndex, Layer};
+use crate::hnsw::graph::{HNSWIndex, Layer, NeighborList};
 use crate::hnsw::search::greedy_search_layer;
 use crate::RetrieveError;
-use smallvec::SmallVec;
 
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
@@ -292,7 +291,7 @@ pub fn construct_graph(index: &mut HNSWIndex) -> Result<(), RetrieveError> {
 
     // Initialize layers with uncompressed storage
     index.layers = (0..=max_layer)
-        .map(|_| Layer::new_uncompressed(vec![SmallVec::new(); index.num_vectors]))
+        .map(|_| Layer::new_uncompressed(vec![NeighborList::new(); index.num_vectors]))
         .collect();
 
     // Capture the distance function once so later mutable borrows of `index` don't conflict.
@@ -589,7 +588,7 @@ pub fn construct_graph_parallel(
 
     let max_layer = index.layer_assignments.iter().max().copied().unwrap_or(0) as usize;
     index.layers = (0..=max_layer)
-        .map(|_| Layer::new_uncompressed(vec![SmallVec::new(); index.num_vectors]))
+        .map(|_| Layer::new_uncompressed(vec![NeighborList::new(); index.num_vectors]))
         .collect();
 
     let dist_fn = dist_fn_for(index);
@@ -904,7 +903,7 @@ fn prune_overweight_nodes(index: &mut HNSWIndex, dist_fn: fn(&[f32], &[f32]) -> 
         }
 
         // Compute pruned neighbor lists in parallel.
-        let pruned_lists: Vec<(usize, SmallVec<[u32; 16]>)> = overweight
+        let pruned_lists: Vec<(usize, NeighborList)> = overweight
             .par_iter()
             .map(|&node_id| {
                 let node_vec = get_vector(&index.vectors, dimension, node_id);
@@ -924,7 +923,7 @@ fn prune_overweight_nodes(index: &mut HNSWIndex, dist_fn: fn(&[f32], &[f32]) -> 
                     &diversification,
                     dist_fn,
                 );
-                (node_id, pruned.into_iter().collect::<SmallVec<_>>())
+                (node_id, pruned.into_iter().collect::<NeighborList>())
             })
             .collect();
 

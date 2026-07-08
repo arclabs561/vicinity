@@ -8,6 +8,13 @@ fn test_create_index() {
 }
 
 #[test]
+fn neighbor_list_holds_default_base_degree_inline() {
+    let neighbors: NeighborList = (0..32).collect();
+    assert_eq!(neighbors.len(), 32);
+    assert!(!neighbors.spilled());
+}
+
+#[test]
 fn test_add_vectors() {
     let mut index = HNSWIndex::new(3, 16, 16).unwrap();
 

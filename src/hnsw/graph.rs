@@ -11,6 +11,8 @@ use rand::SeedableRng;
 use std::collections::HashMap;
 use std::sync::Mutex;
 
+pub(crate) type NeighborList = SmallVec<[u32; 32]>;
+
 /// HNSW index for approximate nearest neighbor search.
 ///
 /// Implements the Hierarchical Navigable Small World algorithm (Malkov & Yashunin, 2016)
@@ -310,7 +312,7 @@ impl HNSWBuilder {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 enum NeighborStorage {
     /// Uncompressed neighbors (current implementation).
-    Uncompressed(Vec<SmallVec<[u32; 16]>>),
+    Uncompressed(Vec<NeighborList>),
 
     /// Compressed neighbors.
     #[cfg(feature = "id-compression")]
@@ -338,18 +340,18 @@ pub(crate) struct Layer {
     /// Skipped during serialization -- rebuilt as empty on load.
     #[cfg(feature = "id-compression")]
     #[cfg_attr(feature = "serde", serde(skip, default = "Layer::empty_cache"))]
-    decompressed_cache: std::sync::Mutex<std::collections::HashMap<u32, SmallVec<[u32; 16]>>>,
+    decompressed_cache: std::sync::Mutex<std::collections::HashMap<u32, NeighborList>>,
 }
 
 impl Layer {
     /// Default empty decompression cache (used by serde skip default).
     #[cfg(feature = "id-compression")]
-    fn empty_cache() -> std::sync::Mutex<std::collections::HashMap<u32, SmallVec<[u32; 16]>>> {
+    fn empty_cache() -> std::sync::Mutex<std::collections::HashMap<u32, NeighborList>> {
         std::sync::Mutex::new(std::collections::HashMap::new())
     }
 
     /// Create uncompressed layer.
-    pub(crate) fn new_uncompressed(neighbors: Vec<SmallVec<[u32; 16]>>) -> Self {
+    pub(crate) fn new_uncompressed(neighbors: Vec<NeighborList>) -> Self {
         Self {
             storage: NeighborStorage::Uncompressed(neighbors),
             #[cfg(feature = "id-compression")]
@@ -359,7 +361,7 @@ impl Layer {
 
     /// Get mutable access to uncompressed neighbors (for construction only).
     /// Panics if layer is compressed.
-    pub(crate) fn get_neighbors_mut(&mut self) -> &mut Vec<SmallVec<[u32; 16]>> {
+    pub(crate) fn get_neighbors_mut(&mut self) -> &mut Vec<NeighborList> {
         match &mut self.storage {
             NeighborStorage::Uncompressed(neighbors) => neighbors,
             #[cfg(feature = "id-compression")]
@@ -397,7 +399,7 @@ impl Layer {
     /// Create compressed layer.
     #[cfg(feature = "id-compression")]
     fn new_compressed(
-        neighbors: Vec<SmallVec<[u32; 16]>>,
+        neighbors: Vec<NeighborList>,
         _compressor: &crate::compression::DeltaVarintCompressor,
         universe_size: u32,
         threshold: usize,
@@ -481,7 +483,7 @@ impl Layer {
                     })
                     .unwrap_or_else(|_| Vec::new());
 
-                let neighbors: SmallVec<[u32; 16]> = decompressed.into();
+                let neighbors: NeighborList = decompressed.into();
 
                 // Cache for future lookups
                 let result = neighbors.to_vec();
@@ -531,13 +533,13 @@ impl Layer {
         match &mut self.storage {
             NeighborStorage::Uncompressed(neighbors) => {
                 // Permute the neighbor lists themselves (position i → new position)
-                let mut permuted = vec![SmallVec::<[u32; 16]>::new(); new_size];
+                let mut permuted = vec![NeighborList::new(); new_size];
                 for (old_idx, nbs) in neighbors.iter().enumerate() {
                     if old_idx < old_to_new.len() {
                         let new_idx = old_to_new[old_idx] as usize;
                         if new_idx < new_size {
                             // Remap each neighbor reference
-                            let remapped: SmallVec<[u32; 16]> = nbs
+                            let remapped: NeighborList = nbs
                                 .iter()
                                 .filter_map(|&nb| {
                                     let nb_usize = nb as usize;
@@ -565,7 +567,7 @@ impl Layer {
     /// Get all neighbor lists (for persistence).
     /// Returns None if layer is compressed.
     #[allow(dead_code)]
-    pub(crate) fn get_all_neighbors(&self) -> Option<&Vec<SmallVec<[u32; 16]>>> {
+    pub(crate) fn get_all_neighbors(&self) -> Option<&Vec<NeighborList>> {
         match &self.storage {
             NeighborStorage::Uncompressed(neighbors) => Some(neighbors),
             #[cfg(feature = "id-compression")]

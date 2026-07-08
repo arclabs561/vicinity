@@ -82,6 +82,10 @@ benchmarking, persistence, Python bindings, and performance work.
   allocation in the normal `HNSWIndex::search` path. Thread-local heap reuse
   reduced the `ef=50` search-only row from 7.0 to 5.0 allocation calls/query
   and measured about 3.9% faster in Criterion.
+- HNSW's internal neighbor-list alias now holds 32 neighbors inline, matching
+  the default base-layer `m_max=32`. The capacity guard passes, but existing
+  `hnsw_search_only` timings use `m_max=16`, so this still needs a dedicated
+  `m_max=32` before/after timing row.
 - HNSW `samply` profiling on `hnsw_search_only/ef/200` shifted the next search
   target away from allocator-only work. Leaf samples were concentrated in
   `flush_batch` (~40%), `innr::dense::dot` (~30%), and

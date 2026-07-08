@@ -12,11 +12,9 @@ use crate::persistence::format::{FORMAT_VERSION, HNSW_SEGMENT_MAGIC};
 use std::io::{Read, Write};
 
 #[cfg(feature = "hnsw")]
-use crate::hnsw::graph::Layer;
+use crate::hnsw::graph::{Layer, NeighborList};
 #[cfg(feature = "hnsw")]
 use crate::hnsw::{HNSWIndex, HNSWParams, NeighborhoodDiversification, SeedSelectionStrategy};
-#[cfg(feature = "hnsw")]
-use smallvec::SmallVec;
 
 /// HNSW segment writer for graph persistence.
 #[cfg(feature = "hnsw")]
@@ -423,7 +421,7 @@ impl HNSWSegmentReader {
                     ));
                 }
 
-                let mut neighbors: SmallVec<[u32; 16]> = SmallVec::new();
+                let mut neighbors = NeighborList::new();
                 for _ in 0..num_neighbors {
                     let mut neighbor_bytes = [0u8; 4];
                     layers_file.read_exact(&mut neighbor_bytes)?;

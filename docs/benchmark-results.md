@@ -835,6 +835,14 @@ Criterion reported the `ef=50` row about 3.9% faster. This is useful but not a
 substitute for the bigger GloVe-25 fixed-recall work: HNSW still needs
 full-corpus lower-recall sweeps and cache-layout profiling.
 
+A follow-up changed HNSW's internal neighbor list alias from
+`SmallVec<[u32; 16]>` to `SmallVec<[u32; 32]>`, matching the default
+base-layer `m_max=32`. The guard
+`neighbor_list_holds_default_base_degree_inline` verifies 32 neighbors stay
+inline. Existing `hnsw_search_only` timing rows still build with `m_max=16`, so
+they do not measure this change; the next HNSW benchmark pass should add an
+explicit `m_max=32` search/build row before claiming a QPS delta.
+
 ### IVF-PQ Search Loop
 
 The `ivfpq_search` benchmark's profiled counters show the remaining hot path is
