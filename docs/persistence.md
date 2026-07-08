@@ -142,10 +142,12 @@ Persistence work is not complete until the benchmark harness can distinguish:
 - `storage_mode=segmented_store`
 
 Rows must include recall, QPS, build time, p50/p95/p99 latency, cache state, and
-RSS. File and mmap rows should also include `load_time_s` and `index_bytes`
-when the runner opens a saved index. For a method with both memory and
-file-backed search, the harness should emit both rows from the same built index
-when possible.
+RSS. In-memory rows may include `index_bytes` as the index's heap-owned size
+estimate. Snapshot, file, and mmap rows should also include `load_time_s` and
+`index_bytes` when the runner opens a saved index, where `index_bytes` is the
+persisted or mapped artifact size. For a method with both memory and file-backed
+search, the harness should emit both rows from the same built index when
+possible.
 
 For storage rows, also record enough context to avoid false comparisons:
 

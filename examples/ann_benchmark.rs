@@ -180,6 +180,14 @@ fn snapshot_storage(load_time_s: f64, index_bytes: Option<u64>) -> ResultStorage
     }
 }
 
+#[cfg(feature = "hnsw")]
+fn in_memory_storage(index_bytes: Option<u64>) -> ResultStorage<'static> {
+    ResultStorage {
+        index_bytes,
+        ..ResultStorage::default()
+    }
+}
+
 // ─── Algorithm runners ───────────────────────────────────────────────────────
 
 fn dataset_metric(cfg: &Config) -> vicinity::DistanceMetric {
@@ -257,6 +265,7 @@ fn run_hnsw(
     index.build().unwrap();
     let build_time_s = build_start.elapsed().as_secs_f64();
     let rss = current_rss_kb();
+    let index_bytes = Some(index.memory_usage().total() as u64);
     #[cfg(feature = "serde")]
     let snapshot_index = if cfg.snapshot_load {
         let temp_dir = tempfile::tempdir().expect("create temp dir for HNSW snapshot benchmark");
@@ -296,7 +305,14 @@ fn run_hnsw(
             );
             emit_result(
                 &cfg.results_path,
-                &json_line("hnsw", &params_json, build_time_s, rss, &result),
+                &json_line_with_storage(
+                    "hnsw",
+                    &params_json,
+                    build_time_s,
+                    rss,
+                    &result,
+                    &in_memory_storage(index_bytes),
+                ),
             );
         } else {
             print_row(&format!("ef={}", ef), &result);
@@ -344,7 +360,14 @@ fn run_hnsw(
                 );
                 emit_result(
                     &cfg.results_path,
-                    &json_line("hnsw_parallel", &params_json, build_time_s, rss, &result),
+                    &json_line_with_storage(
+                        "hnsw_parallel",
+                        &params_json,
+                        build_time_s,
+                        rss,
+                        &result,
+                        &in_memory_storage(index_bytes),
+                    ),
                 );
             } else {
                 print_row(&format!("ef={} par", ef), &result);
