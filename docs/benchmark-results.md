@@ -420,12 +420,11 @@ therefore be high while 95%+ recall remains sensitive to graph traversal,
 reranking, and locality.
 
 A lighter cross-dataset pass used `--sample-train 2048 --sample-queries 500
---pair-samples 5000` on every locally converted dataset. `deep-image-96-angular`
-was downloaded-only in this workspace at the time of the run, so it was not
-included.
+--pair-samples 5000` on every locally converted standard dataset.
 
 | Dataset | Metric | Train | Dim | Pair p50 | NN p50 | Top-2 gap p50 | LID p50 | Contrast p50 | Hub Gini |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| deep-image-96-angular | cosine | 9,990,000 | 96 | 0.950 | 0.155 | 0.00767 | 13.2 | 5.93 | 0.990 |
 | fashion-mnist-784-euclidean | l2 | 60,000 | 784 | 2.98e3 | 887 | 39.8 | 15.7 | 3.25 | 0.631 |
 | gist-960-euclidean | l2 | 1,000,000 | 960 | 1.87 | 1.07 | 0.0131 | 52.2 | 1.70 | 0.991 |
 | glove-100-angular | cosine | 1,183,514 | 100 | 0.871 | 0.326 | 0.0149 | 16.2 | 2.66 | 0.929 |
