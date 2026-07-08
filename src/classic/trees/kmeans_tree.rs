@@ -22,8 +22,11 @@
 //! - Ponomarenko et al. (2021): "K-means tree: an optimal clustering tree for unsupervised learning"
 
 use crate::classic::trees::persistence::{read_json, validate_vector_shape, write_json_atomic};
+use crate::distance::FloatOrd;
 use crate::RetrieveError;
 use serde::{Deserialize, Serialize};
+use std::cmp::{Ordering, Reverse};
+use std::collections::BinaryHeap;
 use std::path::Path;
 
 const KMEANS_TREE_FORMAT_VERSION: u32 = 1;
@@ -85,6 +88,34 @@ enum KMeansNode {
         #[allow(dead_code)]
         center: Vec<f32>, // Cluster center (reserved for re-clustering)
     },
+}
+
+struct KMeansQueueEntry<'a> {
+    distance: FloatOrd,
+    sequence: usize,
+    node: &'a KMeansNode,
+}
+
+impl Eq for KMeansQueueEntry<'_> {}
+
+impl PartialEq for KMeansQueueEntry<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.distance == other.distance && self.sequence == other.sequence
+    }
+}
+
+impl Ord for KMeansQueueEntry<'_> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.distance
+            .cmp(&other.distance)
+            .then_with(|| self.sequence.cmp(&other.sequence))
+    }
+}
+
+impl PartialOrd for KMeansQueueEntry<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 #[derive(Deserialize, Serialize)]
@@ -450,7 +481,42 @@ impl KMeansTreeIndex {
             self.search_node_with_branch_budget(root, query, branch_budget, &mut candidates);
         }
 
-        // Compute exact distances and sort
+        Ok(self.rank_candidates(query, k, &candidates))
+    }
+
+    /// Search for k nearest neighbors while visiting a global best-first budget of leaf clusters.
+    pub fn search_with_leaf_budget(
+        &self,
+        query: &[f32],
+        k: usize,
+        leaf_budget: usize,
+    ) -> Result<Vec<(u32, f32)>, RetrieveError> {
+        if !self.built {
+            return Err(RetrieveError::InvalidParameter(
+                "Index must be built before search".to_string(),
+            ));
+        }
+        if leaf_budget == 0 {
+            return Err(RetrieveError::InvalidParameter(
+                "leaf_budget must be greater than 0".to_string(),
+            ));
+        }
+
+        if query.len() != self.dimension {
+            return Err(RetrieveError::InvalidParameter(format!(
+                "Query dimension {} != {}",
+                query.len(),
+                self.dimension
+            )));
+        }
+
+        let root = self.root.as_ref().ok_or(RetrieveError::EmptyIndex)?;
+        let mut candidates = Vec::new();
+        self.search_node_with_leaf_budget(root, query, leaf_budget, &mut candidates);
+        Ok(self.rank_candidates(query, k, &candidates))
+    }
+
+    fn rank_candidates(&self, query: &[f32], k: usize, candidates: &[u32]) -> Vec<(u32, f32)> {
         let mut results: Vec<(u32, f32)> = candidates
             .iter()
             .map(|&idx| {
@@ -462,8 +528,7 @@ impl KMeansTreeIndex {
 
         results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
         results.truncate(k);
-
-        Ok(results)
+        results
     }
 
     /// Search node recursively.
@@ -528,6 +593,48 @@ impl KMeansTreeIndex {
             }
         }
     }
+
+    fn search_node_with_leaf_budget(
+        &self,
+        root: &KMeansNode,
+        query: &[f32],
+        leaf_budget: usize,
+        candidates: &mut Vec<u32>,
+    ) {
+        let mut frontier = BinaryHeap::new();
+        frontier.push(Reverse(KMeansQueueEntry {
+            distance: FloatOrd(0.0),
+            sequence: 0,
+            node: root,
+        }));
+
+        let mut sequence = 1;
+        let mut leaves_visited = 0;
+        while leaves_visited < leaf_budget {
+            let Some(Reverse(entry)) = frontier.pop() else {
+                break;
+            };
+
+            match entry.node {
+                KMeansNode::Leaf { indices, .. } => {
+                    candidates.extend_from_slice(indices);
+                    leaves_visited += 1;
+                }
+                KMeansNode::Internal {
+                    centers, children, ..
+                } => {
+                    for (center, child) in centers.iter().zip(children.iter()) {
+                        frontier.push(Reverse(KMeansQueueEntry {
+                            distance: FloatOrd(euclidean_distance(query, center)),
+                            sequence,
+                            node: child,
+                        }));
+                        sequence += 1;
+                    }
+                }
+            }
+        }
+    }
 }
 
 impl KMeansNode {
@@ -577,6 +684,18 @@ mod tests {
         }
         tree.build().unwrap();
         tree
+    }
+
+    fn brute_force(tree: &KMeansTreeIndex, query: &[f32], k: usize) -> Vec<(u32, f32)> {
+        let mut results: Vec<_> = (0..tree.num_vectors)
+            .map(|idx| {
+                let vector = get_vector(&tree.vectors, tree.dimension, idx);
+                (tree.doc_ids[idx], euclidean_distance(query, vector))
+            })
+            .collect();
+        results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+        results.truncate(k);
+        results
     }
 
     #[test]
@@ -655,5 +774,24 @@ mod tests {
             .search_with_branch_budget(&[50.0, 100.0, 150.0], 8, 0)
             .unwrap_err();
         assert!(matches!(err, RetrieveError::InvalidParameter(_)));
+    }
+
+    #[test]
+    fn leaf_budget_must_be_positive() {
+        let tree = build_index();
+        let err = tree
+            .search_with_leaf_budget(&[50.0, 100.0, 150.0], 8, 0)
+            .unwrap_err();
+        assert!(matches!(err, RetrieveError::InvalidParameter(_)));
+    }
+
+    #[test]
+    fn large_leaf_budget_matches_brute_force() {
+        let tree = build_index();
+        let query = vec![50.0, 100.0, 150.0];
+        assert_eq!(
+            tree.search_with_leaf_budget(&query, 8, 128).unwrap(),
+            brute_force(&tree, &query, 8)
+        );
     }
 }

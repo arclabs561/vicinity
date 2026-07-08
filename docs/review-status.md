@@ -214,8 +214,12 @@ benchmarking, persistence, Python bindings, and performance work.
   200, so the earlier sub-95% result was mostly an undersized candidate budget.
   K-means tree now has an explicit per-node branch-budget search path:
   branch budget 4 reaches 92.10% recall at 1,245 QPS, while branch budget 8
-  reaches 100% recall at 295-367 QPS on the same cap. Treat K-means tree as a
-  controllable baseline, not a competitive high-recall target yet.
+  reaches 100% recall at 295-590 QPS on the same cap. A newer global
+  leaf-budget path is a better fixed-recall point: leaf size 500 with
+  `leaf_budget=48` reaches 95.92% recall at 5,622 QPS in memory and preserves
+  95.92% recall at 5,216 QPS after snapshot load. Treat K-means tree as a
+  controllable classical baseline; it now has a usable 95%+ row, but graph
+  methods still lead the same cap.
 - Dataset-level benchmark summaries now have a first sampled profiler:
   `scripts/profile_ann_dataset.py` reports shape, norm distribution, sampled
   pair-distance dispersion, exact duplicate rate on the sample, query

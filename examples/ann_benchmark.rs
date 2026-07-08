@@ -105,8 +105,6 @@ use support::dir_size_bytes;
 use support::evaluate_parallel;
 #[cfg(any(feature = "fresh_graph", feature = "hnsw"))]
 use support::json_line_with_extra_fields;
-#[cfg(feature = "kmeans_tree")]
-use support::kmeans_tree_params_json;
 #[cfg(feature = "rptree")]
 use support::rp_forest_params_json;
 #[cfg(any(feature = "balltree", feature = "kdtree", feature = "rptree"))]
@@ -137,6 +135,8 @@ use support::{
     feature = "vamana"
 ))]
 use support::{json_line_with_storage, ResultStorage};
+#[cfg(feature = "kmeans_tree")]
+use support::{kmeans_tree_leaf_budget_params_json, kmeans_tree_params_json};
 #[cfg(feature = "store")]
 use support::{store_flush_threshold, store_params_json};
 #[cfg(feature = "diskann")]
@@ -3430,6 +3430,76 @@ fn run_kmeans_tree(
                                         .search_with_branch_budget(q, k, search_branches)
                                         .unwrap()
                                 },
+                                test,
+                                neighbors,
+                                10,
+                            );
+                            if cfg.json {
+                                emit_result(
+                                    &cfg.results_path,
+                                    &json_line_with_storage(
+                                        "kmeans_tree",
+                                        &params_json,
+                                        build_time_s,
+                                        rss,
+                                        &loaded_result,
+                                        &snapshot_storage(load_time_s, index_bytes),
+                                    ),
+                                );
+                            } else {
+                                print_row(&format!("{label} snapshot_loaded"), &loaded_result);
+                            }
+                        }
+                    }
+
+                    for &leaf_budget in &cfg.kmeans_leaf_budgets {
+                        let result = evaluate(
+                            &|q, k| index.search_with_leaf_budget(q, k, leaf_budget).unwrap(),
+                            test,
+                            neighbors,
+                            10,
+                        );
+                        let params_json = kmeans_tree_leaf_budget_params_json(
+                            params.num_clusters,
+                            params.max_leaf_size,
+                            params.max_depth,
+                            params.max_iterations,
+                            leaf_budget,
+                        );
+                        let label = format!(
+                            "clusters={} leaf={} depth={} iters={} leaf_budget={}",
+                            params.num_clusters,
+                            params.max_leaf_size,
+                            params.max_depth,
+                            params.max_iterations,
+                            leaf_budget
+                        );
+                        if cfg.json {
+                            emit_result(
+                                &cfg.results_path,
+                                &json_line_with_storage(
+                                    "kmeans_tree",
+                                    &params_json,
+                                    build_time_s,
+                                    rss,
+                                    &result,
+                                    &in_memory_storage(index_bytes),
+                                ),
+                            );
+                        } else {
+                            print_row(&label, &result);
+                        }
+
+                        if cfg.snapshot_load {
+                            let temp_dir = tempfile::tempdir()
+                                .expect("create temp dir for K-means tree snapshot benchmark");
+                            index.save_to_dir(temp_dir.path()).unwrap();
+                            let index_bytes = dir_size_bytes(temp_dir.path()).ok();
+                            let load_start = Instant::now();
+                            let loaded = KMeansTreeIndex::load_from_dir(temp_dir.path()).unwrap();
+                            let load_time_s = load_start.elapsed().as_secs_f64();
+                            let loaded_result = evaluate(
+                                &|q, k| loaded.search_with_leaf_budget(q, k, leaf_budget).unwrap(),
                                 test,
                                 neighbors,
                                 10,

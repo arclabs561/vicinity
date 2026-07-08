@@ -709,10 +709,43 @@ cargo run --release --example ann_benchmark --no-default-features --features kme
 | K-means tree | in_memory | 100.00% | 440.6 | n/a | 8,469,516 |
 | K-means tree | snapshot_loaded | 100.00% | 445.3 | 0.1552 | 30,286,231 |
 
+A later K-means tree pass added a separate global best-first leaf-budget search
+path instead of changing the older per-node branch-budget rows. The leaf budget
+counts leaf clusters popped from a center-distance frontier, then reranks the
+vectors in those leaves exactly.
+
+```bash
+CARGO_TARGET_DIR=/tmp/vicinity-kmeans-leaf-sweep CARGO_INCREMENTAL=0 RUSTC_WRAPPER= \
+cargo run --release --example ann_benchmark --no-default-features --features kmeans_tree -- \
+  data/ann-benchmarks/glove-25-angular --algo kmeans_tree \
+  --max-train 50000 --max-queries 500 --kmeans-clusters 8 \
+  --kmeans-leaf-sizes 500,1000 --kmeans-depths 10 \
+  --kmeans-iters 10 --kmeans-search-branches 8 \
+  --kmeans-leaf-budgets 48,64,96,128 \
+  --json --results /tmp/vicinity-kmeans-leaf-sweep-high.jsonl
+
+CARGO_TARGET_DIR=/tmp/vicinity-kmeans-leaf-snapshot CARGO_INCREMENTAL=0 RUSTC_WRAPPER= \
+cargo run --release --example ann_benchmark --no-default-features --features kmeans_tree,serde -- \
+  data/ann-benchmarks/glove-25-angular --algo kmeans_tree \
+  --max-train 50000 --max-queries 500 --kmeans-clusters 8 \
+  --kmeans-leaf-sizes 500 --kmeans-depths 10 --kmeans-iters 10 \
+  --kmeans-search-branches 8 --kmeans-leaf-budgets 48 \
+  --snapshot-load --json --results /tmp/vicinity-kmeans-leaf-snapshot.jsonl
+```
+
+| Algorithm | Search policy | Storage mode | Recall@10 | QPS | p95 us | Load s | Index bytes |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
+| K-means tree | leaf_budget=48, leaf 500 | in_memory | 95.92% | 5,622.1 | 213.8 | n/a | 8,303,640 |
+| K-means tree | leaf_budget=48, leaf 500 | snapshot_loaded | 95.92% | 5,215.6 | 228.8 | 0.1075 | 29,268,469 |
+| K-means tree | branch_budget=8, leaf 500 | in_memory | 100.00% | 590.5 | 2,036.3 | n/a | 8,303,640 |
+| K-means tree | branch_budget=8, leaf 500 | snapshot_loaded | 100.00% | 536.5 | 2,433.5 | 0.1201 | 29,268,469 |
+
 This changes the classical read slightly: RP-forest is not capped below 95%
 recall, but reaching that band costs enough tree and leaf budget that it sits
 well below graph methods at the same 50K cap. K-means tree is controllable via
-branch budget, but its 95%+ behavior is a baseline, not a competitive target.
+search budget. The global leaf-budget path is the useful high-recall baseline:
+it clears 95% at roughly 5K QPS on this 50K cap, while the older branch-budget
+row reaches exact recall by walking too much of the tree.
 
 On 2026-07-08, the in-memory benchmark rows for NSW, Vamana, NSG, SNG, EMG,
 PiPNN, FINGER, and FreshGraph were wired to heap `index_bytes` from explicit
