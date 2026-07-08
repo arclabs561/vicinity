@@ -1084,7 +1084,7 @@ mod tests {
     }
 
     #[test]
-    fn test_borrowed_lut_dispatch_matches_owned_lut() {
+    fn test_borrowed_lut_dispatch_matches_owned_lut_and_scalar_oracle() {
         let nested_lut = create_test_lut(5, 256);
         let flat_lut: Vec<f32> = nested_lut.iter().flatten().copied().collect();
         let owned_lut = PackedLUT::from_flat(&flat_lut, 5, 256);
@@ -1099,6 +1099,17 @@ mod tests {
         let borrowed = adc_batch_dispatch(&codes_batch, num_codebooks, &borrowed_lut);
 
         assert_eq!(borrowed, owned);
+        for i in 0..n_candidates {
+            let codes = &codes_batch[i * num_codebooks..(i + 1) * num_codebooks];
+            let scalar = adc_distance(codes, &nested_lut);
+            assert!(
+                (borrowed[i] - scalar).abs() < 1e-4,
+                "candidate {}: borrowed={}, scalar={}",
+                i,
+                borrowed[i],
+                scalar,
+            );
+        }
     }
 
     #[test]
