@@ -196,6 +196,16 @@ impl RPTreeIndex {
         }
     }
 
+    /// Estimated heap memory used by this index.
+    pub fn memory_usage(&self) -> crate::memory::MemoryReport {
+        crate::memory::MemoryReport {
+            vectors_bytes: self.vectors.capacity() * std::mem::size_of::<f32>(),
+            graph_bytes: self.root.as_ref().map(RPNode::owned_bytes).unwrap_or(0),
+            quantized_bytes: 0,
+            metadata_bytes: self.doc_ids.capacity() * std::mem::size_of::<u32>(),
+        }
+    }
+
     /// Build tree recursively.
     fn build_tree(
         &self,
@@ -364,6 +374,28 @@ impl RPTreeIndex {
         let end = start + self.dimension;
         &self.vectors[start..end]
     }
+}
+
+impl RPNode {
+    fn owned_bytes(&self) -> usize {
+        match self {
+            RPNode::Internal {
+                hyperplane,
+                left,
+                right,
+                ..
+            } => {
+                hyperplane.capacity() * std::mem::size_of::<f32>()
+                    + boxed_node_bytes(left)
+                    + boxed_node_bytes(right)
+            }
+            RPNode::Leaf { indices } => indices.capacity() * std::mem::size_of::<u32>(),
+        }
+    }
+}
+
+fn boxed_node_bytes(node: &RPNode) -> usize {
+    std::mem::size_of::<RPNode>() + node.owned_bytes()
 }
 
 fn child_seed(seed: u64, branch: u64) -> u64 {

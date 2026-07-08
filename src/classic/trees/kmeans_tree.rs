@@ -213,6 +213,16 @@ impl KMeansTreeIndex {
         }
     }
 
+    /// Estimated heap memory used by this index.
+    pub fn memory_usage(&self) -> crate::memory::MemoryReport {
+        crate::memory::MemoryReport {
+            vectors_bytes: self.vectors.capacity() * std::mem::size_of::<f32>(),
+            graph_bytes: self.root.as_ref().map(KMeansNode::owned_bytes).unwrap_or(0),
+            quantized_bytes: 0,
+            metadata_bytes: self.doc_ids.capacity() * std::mem::size_of::<u32>(),
+        }
+    }
+
     /// Build tree recursively using k-means clustering.
     fn build_tree(&self, indices: &[u32], depth: usize) -> Result<KMeansNode, RetrieveError> {
         // Base case: create leaf if small enough or max depth reached
@@ -461,6 +471,31 @@ impl KMeansTreeIndex {
                 if best_cluster < children.len() {
                     self.search_node(&children[best_cluster], query, candidates);
                 }
+            }
+        }
+    }
+}
+
+impl KMeansNode {
+    fn owned_bytes(&self) -> usize {
+        match self {
+            KMeansNode::Internal {
+                centers,
+                children,
+                cluster_assignments,
+            } => {
+                centers.capacity() * std::mem::size_of::<Vec<f32>>()
+                    + centers
+                        .iter()
+                        .map(|center| center.capacity() * std::mem::size_of::<f32>())
+                        .sum::<usize>()
+                    + children.capacity() * std::mem::size_of::<KMeansNode>()
+                    + children.iter().map(KMeansNode::owned_bytes).sum::<usize>()
+                    + cluster_assignments.capacity() * std::mem::size_of::<usize>()
+            }
+            KMeansNode::Leaf { indices, center } => {
+                indices.capacity() * std::mem::size_of::<u32>()
+                    + center.capacity() * std::mem::size_of::<f32>()
             }
         }
     }

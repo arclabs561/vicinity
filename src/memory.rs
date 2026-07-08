@@ -20,6 +20,17 @@ impl MemoryReport {
     }
 }
 
+#[cfg(any(
+    feature = "emg",
+    feature = "finger",
+    feature = "fresh_graph",
+    feature = "hnsw",
+    feature = "nsg",
+    feature = "nsw",
+    feature = "pipnn",
+    feature = "sng",
+    feature = "vamana"
+))]
 pub(crate) fn smallvec_u32_bytes<A>(lists: &[smallvec::SmallVec<A>]) -> usize
 where
     A: smallvec::Array<Item = u32>,

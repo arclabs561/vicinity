@@ -205,6 +205,16 @@ impl KDTreeIndex {
         }
     }
 
+    /// Estimated heap memory used by this index.
+    pub fn memory_usage(&self) -> crate::memory::MemoryReport {
+        crate::memory::MemoryReport {
+            vectors_bytes: self.vectors.capacity() * std::mem::size_of::<f32>(),
+            graph_bytes: self.root.as_ref().map(KDNode::owned_bytes).unwrap_or(0),
+            quantized_bytes: 0,
+            metadata_bytes: self.doc_ids.capacity() * std::mem::size_of::<u32>(),
+        }
+    }
+
     /// Build tree recursively.
     fn build_tree(
         &self,
@@ -378,6 +388,21 @@ impl KDTreeIndex {
         let end = start + self.dimension;
         &self.vectors[start..end]
     }
+}
+
+impl KDNode {
+    fn owned_bytes(&self) -> usize {
+        match self {
+            KDNode::Internal { left, right, .. } => {
+                boxed_node_bytes(left) + boxed_node_bytes(right)
+            }
+            KDNode::Leaf { indices } => indices.capacity() * std::mem::size_of::<u32>(),
+        }
+    }
+}
+
+fn boxed_node_bytes(node: &KDNode) -> usize {
+    std::mem::size_of::<KDNode>() + node.owned_bytes()
 }
 
 #[cfg(test)]

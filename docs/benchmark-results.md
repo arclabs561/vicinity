@@ -568,6 +568,24 @@ Smoke rows included `storage_mode=in_memory`, `cache_state=warm_after_build`,
 and positive `index_bytes` (`nsw=33,600`, `vamana=72,000`). Treat this as row
 coverage evidence, not performance evidence.
 
+The same row-coverage pass now includes the classical tree family. A bounded
+schema smoke used 200 GloVe-25 vectors and 5 queries:
+
+```bash
+cargo run --example ann_benchmark --no-default-features --features kdtree,balltree,rptree,kmeans_tree -- \
+  data/ann-benchmarks/glove-25-angular \
+  --algo kdtree --algo balltree --algo rptree --algo rp_forest --algo kmeans_tree \
+  --max-train 200 --max-queries 5 --tree-leaf-sizes 10 --tree-depths 8 \
+  --rp-num-trees 3 --kmeans-clusters 4 --kmeans-leaf-sizes 20 \
+  --kmeans-depths 4 --kmeans-iters 2 --json --fresh \
+  --results /tmp/vicinity-classic-index-bytes-smoke.jsonl
+```
+
+The in-memory rows for KD-tree, ball tree, RP-tree, RP-forest, and K-means
+tree emitted positive heap-estimated `index_bytes` (`29,408`, `36,260`,
+`33,500`, `46,072`, and `38,688` bytes respectively). Treat these as schema
+coverage numbers only; the workload is intentionally tiny.
+
 Full-train IVF-PQ storage sweep from the same day, using all 1,183,514
 GloVe-25 vectors and 500 queries:
 

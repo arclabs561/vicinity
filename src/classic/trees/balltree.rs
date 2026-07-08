@@ -199,6 +199,16 @@ impl BallTreeIndex {
         }
     }
 
+    /// Estimated heap memory used by this index.
+    pub fn memory_usage(&self) -> crate::memory::MemoryReport {
+        crate::memory::MemoryReport {
+            vectors_bytes: self.vectors.capacity() * std::mem::size_of::<f32>(),
+            graph_bytes: self.root.as_ref().map(BallNode::owned_bytes).unwrap_or(0),
+            quantized_bytes: 0,
+            metadata_bytes: self.doc_ids.capacity() * std::mem::size_of::<u32>(),
+        }
+    }
+
     /// Build tree recursively.
     fn build_tree(&self, indices: &[u32], depth: usize) -> Result<BallNode, RetrieveError> {
         if indices.is_empty() {
@@ -469,6 +479,33 @@ impl BallTreeIndex {
         let end = start + self.dimension;
         &self.vectors[start..end]
     }
+}
+
+impl BallNode {
+    fn owned_bytes(&self) -> usize {
+        match self {
+            BallNode::Internal {
+                center,
+                left,
+                right,
+                ..
+            } => {
+                center.capacity() * std::mem::size_of::<f32>()
+                    + boxed_node_bytes(left)
+                    + boxed_node_bytes(right)
+            }
+            BallNode::Leaf {
+                indices, center, ..
+            } => {
+                indices.capacity() * std::mem::size_of::<u32>()
+                    + center.capacity() * std::mem::size_of::<f32>()
+            }
+        }
+    }
+}
+
+fn boxed_node_bytes(node: &BallNode) -> usize {
+    std::mem::size_of::<BallNode>() + node.owned_bytes()
 }
 
 #[cfg(test)]

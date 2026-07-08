@@ -230,6 +230,18 @@ impl RpForestIndex {
         }
     }
 
+    /// Estimated heap memory used by this index.
+    pub fn memory_usage(&self) -> crate::memory::MemoryReport {
+        let tree_storage = self.trees.capacity() * std::mem::size_of::<RPTree>();
+        let node_storage: usize = self.trees.iter().map(RPTree::owned_bytes).sum();
+        crate::memory::MemoryReport {
+            vectors_bytes: self.vectors.capacity() * std::mem::size_of::<f32>(),
+            graph_bytes: tree_storage + node_storage,
+            quantized_bytes: 0,
+            metadata_bytes: self.doc_ids.capacity() * std::mem::size_of::<u32>(),
+        }
+    }
+
     /// Build a single random projection tree.
     fn build_tree(&self, seed: u64) -> Result<RPTree, RetrieveError> {
         let indices: Vec<u32> = (0..self.num_vectors as u32).collect();
@@ -380,6 +392,34 @@ impl RpForestIndex {
         let end = start + self.dimension;
         &self.vectors[start..end]
     }
+}
+
+impl RPTree {
+    fn owned_bytes(&self) -> usize {
+        self.root.as_ref().map(TreeNode::owned_bytes).unwrap_or(0)
+    }
+}
+
+impl TreeNode {
+    fn owned_bytes(&self) -> usize {
+        match self {
+            TreeNode::Leaf { indices } => indices.capacity() * std::mem::size_of::<u32>(),
+            TreeNode::Internal {
+                hyperplane,
+                left,
+                right,
+                ..
+            } => {
+                hyperplane.capacity() * std::mem::size_of::<f32>()
+                    + boxed_node_bytes(left)
+                    + boxed_node_bytes(right)
+            }
+        }
+    }
+}
+
+fn boxed_node_bytes(node: &TreeNode) -> usize {
+    std::mem::size_of::<TreeNode>() + node.owned_bytes()
 }
 
 fn tree_seed(tree_idx: usize) -> u64 {

@@ -186,9 +186,13 @@ fn snapshot_storage(load_time_s: f64, index_bytes: Option<u64>) -> ResultStorage
     feature = "finger",
     feature = "fresh_graph",
     feature = "hnsw",
+    feature = "balltree",
+    feature = "kdtree",
+    feature = "kmeans_tree",
     feature = "nsg",
     feature = "nsw",
     feature = "pipnn",
+    feature = "rptree",
     feature = "sng",
     feature = "vamana"
 ))]
@@ -2965,6 +2969,7 @@ fn run_kdtree(
             index.build().unwrap();
             let build_time_s = build_start.elapsed().as_secs_f64();
             let rss = current_rss_kb();
+            let index_bytes = Some(index.memory_usage().total() as u64);
 
             let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
             let params_json = tree_params_json(params.max_leaf_size, params.max_depth);
@@ -2972,7 +2977,14 @@ fn run_kdtree(
             if cfg.json {
                 emit_result(
                     &cfg.results_path,
-                    &json_line("kdtree", &params_json, build_time_s, rss, &result),
+                    &json_line_with_storage(
+                        "kdtree",
+                        &params_json,
+                        build_time_s,
+                        rss,
+                        &result,
+                        &in_memory_storage(index_bytes),
+                    ),
                 );
             } else {
                 print_row(&label, &result);
@@ -3046,6 +3058,7 @@ fn run_balltree(
             index.build().unwrap();
             let build_time_s = build_start.elapsed().as_secs_f64();
             let rss = current_rss_kb();
+            let index_bytes = Some(index.memory_usage().total() as u64);
 
             let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
             let params_json = tree_params_json(params.max_leaf_size, params.max_depth);
@@ -3053,7 +3066,14 @@ fn run_balltree(
             if cfg.json {
                 emit_result(
                     &cfg.results_path,
-                    &json_line("balltree", &params_json, build_time_s, rss, &result),
+                    &json_line_with_storage(
+                        "balltree",
+                        &params_json,
+                        build_time_s,
+                        rss,
+                        &result,
+                        &in_memory_storage(index_bytes),
+                    ),
                 );
             } else {
                 print_row(&label, &result);
@@ -3130,6 +3150,7 @@ fn run_rptree(
             index.build().unwrap();
             let build_time_s = build_start.elapsed().as_secs_f64();
             let rss = current_rss_kb();
+            let index_bytes = Some(index.memory_usage().total() as u64);
 
             let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
             let params_json = tree_params_json(params.max_leaf_size, params.max_depth);
@@ -3137,7 +3158,14 @@ fn run_rptree(
             if cfg.json {
                 emit_result(
                     &cfg.results_path,
-                    &json_line("rptree", &params_json, build_time_s, rss, &result),
+                    &json_line_with_storage(
+                        "rptree",
+                        &params_json,
+                        build_time_s,
+                        rss,
+                        &result,
+                        &in_memory_storage(index_bytes),
+                    ),
                 );
             } else {
                 print_row(&label, &result);
@@ -3214,6 +3242,7 @@ fn run_rp_forest(
             index.build().unwrap();
             let build_time_s = build_start.elapsed().as_secs_f64();
             let rss = current_rss_kb();
+            let index_bytes = Some(index.memory_usage().total() as u64);
 
             let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
             let params_json =
@@ -3225,7 +3254,14 @@ fn run_rp_forest(
             if cfg.json {
                 emit_result(
                     &cfg.results_path,
-                    &json_line("rp_forest", &params_json, build_time_s, rss, &result),
+                    &json_line_with_storage(
+                        "rp_forest",
+                        &params_json,
+                        build_time_s,
+                        rss,
+                        &result,
+                        &in_memory_storage(index_bytes),
+                    ),
                 );
             } else {
                 print_row(&label, &result);
@@ -3301,6 +3337,7 @@ fn run_kmeans_tree(
                     index.build().unwrap();
                     let build_time_s = build_start.elapsed().as_secs_f64();
                     let rss = current_rss_kb();
+                    let index_bytes = Some(index.memory_usage().total() as u64);
 
                     let result = evaluate(&|q, k| index.search(q, k).unwrap(), test, neighbors, 10);
                     let params_json = kmeans_tree_params_json(
@@ -3319,7 +3356,14 @@ fn run_kmeans_tree(
                     if cfg.json {
                         emit_result(
                             &cfg.results_path,
-                            &json_line("kmeans_tree", &params_json, build_time_s, rss, &result),
+                            &json_line_with_storage(
+                                "kmeans_tree",
+                                &params_json,
+                                build_time_s,
+                                rss,
+                                &result,
+                                &in_memory_storage(index_bytes),
+                            ),
                         );
                     } else {
                         print_row(&label, &result);
