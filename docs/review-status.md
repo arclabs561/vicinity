@@ -8,6 +8,7 @@ benchmarking, persistence, Python bindings, and performance work.
 | Area | Status | Evidence |
 | --- | --- | --- |
 | Dataset fetch/generation repeatability | Passing | `uv run pytest tests/test_download_ann_benchmarks.py tests/test_generate_ann_smoke_data.py tests/test_generate_sample_data.py tests/test_generate_multiscale_data.py` |
+| Dataset difficulty profiling | First pass | `uv run pytest tests/test_profile_ann_dataset.py`; `uv run scripts/profile_ann_dataset.py data/ann-benchmarks/glove-25-angular --sample-train 4096 --sample-queries 1000 --pair-samples 20000 --output /tmp/vicinity-glove25-profile.json` |
 | Benchmark resume/storage expectations | Passing | `cargo test --example ann_benchmark --no-default-features --features hnsw,ivf_pq,persistence,diskann,serde -- support::tests` (25 tests, including dense SparseMIPS skip) |
 | Python exposed API | Passing | `uv run maturin develop --release --features hnsw,python,parallel`; `uv run pytest tests/test_python.py`; `uv run python -m mypy.stubtest pyvicinity._core` |
 | Algorithm recommendation docs | Updated | README and `docs/algorithms.md` distinguish brute force, in-memory, file-backed graph, and file-backed compressed search |
@@ -128,12 +129,14 @@ benchmarking, persistence, Python bindings, and performance work.
   RP-forest improves to 85.22% recall with 50 trees, and K-means tree remains
   below 25% recall, so neither has a measured 95% point under the current
   sweep.
-- Dataset-level benchmark summaries still need shape and difficulty metadata.
-  Useful candidate fields are local intrinsic dimensionality distribution for
-  queries, relative contrast or nearest-neighbor margin, norm distribution,
-  duplicate rate, hubness, cluster/list imbalance, and OOD split labels. These
-  explain why a recall/QPS curve shifts across datasets or query subsets instead
-  of treating every dataset as interchangeable.
+- Dataset-level benchmark summaries now have a first sampled profiler:
+  `scripts/profile_ann_dataset.py` reports shape, norm distribution, sampled
+  pair-distance dispersion, exact duplicate rate on the sample, query
+  nearest-neighbor margins, LID estimates, sampled relative contrast, and
+  ground-truth hubness. Local GloVe-25 showed unit norms, zero sampled exact
+  duplicates, median sampled pair distance 0.806, median top-2 gap 0.0089,
+  median LID 8.28, median sampled relative contrast 8.11, and top-10 hubness
+  Gini 0.925. Next profiler work is list/cluster imbalance and OOD split labels.
 
 ## Remaining Review Queue
 
@@ -153,7 +156,7 @@ benchmarking, persistence, Python bindings, and performance work.
 | 12 | Python policy | Decide which Rust APIs become Python APIs. Keep the default policy narrow unless an algorithm has stable benchmarks, persistence behavior, and examples. Rust-only gaps today: DiskANN, `store`, FreshGraph, filtered search/update APIs, and HNSW binary segments. |
 | 13 | LSH/sketch boundary | The `lsh` feature uses `sketchir` for cross-polytope hashing primitives. Keep `sketchir` focused on MinHash/SimHash/LSH sketches and durable sketch sidecars; keep vicinity focused on ANN storage, exact reranking, persistence modes, and fixed-recall benchmark rows. Benchmark sharing is useful, but PRT, RP-tree/RP-forest, SparseMIPS, and LEMUR should stay in vicinity unless their role becomes pure sketch generation. |
 | 14 | External research claims | Verify newer roadmap claims before implementation: Extended RaBitQ, VSAG layout tricks, IP-DiskANN, ACORN production behavior, PAG, SAQ, and ARM/SVE2 kernels. |
-| 15 | Dataset difficulty metadata | Add a dataset-profile script that reports intrinsic dimensionality or LID, relative contrast, neighbor-distance margins, norm distribution, duplicate rate, hubness, and partition/list imbalance. Start with cheap sampled metrics for GloVe/SIFT/Deep before adding expensive full-corpus reports. |
+| 15 | Dataset difficulty metadata | First sampled profile script exists for VEC1/NBR1 datasets. Next review should run it across SIFT, GloVe-100/200, Deep, NYTimes, Fashion-MNIST, and GIST; then add partition/list imbalance for IVF-style indexes and explicit OOD split labels where datasets provide them. |
 | 16 | Profiling depth | Add profile artifacts for the next actual performance change. Record baseline, profiler target, negative controls, before/after, and rejected hypotheses in `docs/benchmark-results.md`. |
 
 ## Guardrails

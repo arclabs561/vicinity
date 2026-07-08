@@ -29,8 +29,10 @@ dimensionality (LID) for query difficulty
 contrast or nearest-neighbor margin for separability
 ([He, Kumar, and Chang, 2012](https://arxiv.org/abs/1206.6411)), norm
 distribution, duplicate rate, hubness, cluster or posting-list imbalance, and
-whether the query set is in-distribution or OOD. This is not yet emitted by the
-harness. It is a benchmark-methodology gap, not an algorithm result.
+whether the query set is in-distribution or OOD. Use
+`scripts/profile_ann_dataset.py` for the first sampled profile pass over
+converted `VEC1`/`NBR1` datasets. These fields are dataset metadata, not
+algorithm result rows.
 
 Recommended current commands:
 
@@ -117,6 +119,11 @@ cargo run --example ann_benchmark --release \
   --algo symphony_qg --algo symphony_qg_vr --algo adsampling --algo lsh --algo hnsw_prt \
   --algo brute --algo kdtree --algo balltree --algo rptree --algo rp_forest --algo kmeans_tree \
   --pq-training-sample-size 100000 --pq-kmeans-max-iter 20 --json --fresh
+
+# Dataset shape and difficulty profile. This uses memmaps and sampled exact
+# distances, so it is cheap enough to run before comparing benchmark curves.
+uv run scripts/profile_ann_dataset.py data/ann-benchmarks/glove-25-angular \
+  --sample-train 4096 --sample-queries 1000 --pair-samples 20000
 ```
 
 These commands intentionally separate low-recall, high-throughput operating
@@ -385,6 +392,32 @@ families. It does not prove that every algorithm family has been run, it does
 not promote capped rows to full-dataset results, and it does not turn below-95%
 rows into fixed-recall evidence. Use `--expect-standard-storage` when auditing
 an intended full algorithm/storage matrix.
+
+A sampled dataset profile of local GloVe-25-angular on 2026-07-07 used:
+
+```bash
+uv run scripts/profile_ann_dataset.py data/ann-benchmarks/glove-25-angular \
+  --sample-train 4096 --sample-queries 1000 --pair-samples 20000 \
+  --output /tmp/vicinity-glove25-profile.json
+```
+
+| Field | Value |
+| --- | ---: |
+| Shape | 1,183,514 train x 25 dims; 10,000 queries; ground-truth k=100 |
+| Train/query median norm | 1.0 / 1.0 |
+| Exact duplicate fraction, sampled train | 0.0 |
+| Pair-distance median, sampled train | 0.806 |
+| Nearest-neighbor distance median | 0.098 |
+| Top-2 gap median | 0.0089 |
+| LID MLE median | 8.28 |
+| Sampled relative contrast median | 8.11 |
+| Ground-truth top-10 hubness | Gini 0.925; nonzero fraction 0.079 |
+
+This supports the current reading of GloVe-25: the vectors are normalized and
+pair distances are broadly dispersed, but many queries have close first/second
+neighbors and the ground-truth top-10 set is hub-concentrated. Low-recall QPS can
+therefore be high while 95%+ recall remains sensitive to graph traversal,
+reranking, and locality.
 
 Additional capped storage rows from 2026-07-07:
 
