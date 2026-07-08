@@ -1,5 +1,6 @@
 //! IVF-PQ search implementation.
 
+use super::manifest::{IVFPQManifest, PersistedFilterMetadata, PersistedIVFPQParams};
 use super::opq::OptimizedProductQuantizer;
 use super::pq::ProductQuantizer;
 use crate::pq_simd::{adc_batch_dispatch_into, PackedCodes4bit, PackedLUTRef};
@@ -286,67 +287,6 @@ pub struct IVFPQParams {
     /// Minimum cluster size to compress (smaller clusters use uncompressed storage)
     #[cfg(feature = "id-compression")]
     pub compression_threshold: usize,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct PersistedIVFPQParams {
-    num_clusters: usize,
-    nprobe: usize,
-    num_codebooks: usize,
-    codebook_size: usize,
-    use_opq: bool,
-    seed: u64,
-}
-
-impl From<&IVFPQParams> for PersistedIVFPQParams {
-    fn from(params: &IVFPQParams) -> Self {
-        Self {
-            num_clusters: params.num_clusters,
-            nprobe: params.nprobe,
-            num_codebooks: params.num_codebooks,
-            codebook_size: params.codebook_size,
-            use_opq: params.use_opq,
-            seed: params.seed,
-        }
-    }
-}
-
-impl PersistedIVFPQParams {
-    fn into_params(self) -> IVFPQParams {
-        IVFPQParams {
-            num_clusters: self.num_clusters,
-            nprobe: self.nprobe,
-            num_codebooks: self.num_codebooks,
-            codebook_size: self.codebook_size,
-            use_opq: self.use_opq,
-            seed: self.seed,
-            #[cfg(feature = "id-compression")]
-            id_compression: None,
-            #[cfg(feature = "id-compression")]
-            compression_threshold: IVFPQParams::default().compression_threshold,
-        }
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct IVFPQManifest {
-    version: u32,
-    dimension: usize,
-    num_vectors: usize,
-    num_centroids: usize,
-    raw_vectors_present: bool,
-    params: PersistedIVFPQParams,
-    quantizer: Quantizer,
-    #[serde(default)]
-    filter_field: Option<String>,
-    #[serde(default)]
-    filter_metadata: Vec<PersistedFilterMetadata>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct PersistedFilterMetadata {
-    doc_id: u32,
-    metadata: crate::filtering::DocumentMetadata,
 }
 
 impl Default for IVFPQParams {
