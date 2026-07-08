@@ -402,6 +402,8 @@ pub struct LSHStats {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use serde_json::Value;
+    use std::path::Path;
 
     /// Helper: create clustered test data.
     fn clustered_data(n_clusters: usize, points_per_cluster: usize, dim: usize) -> Vec<f32> {
@@ -434,6 +436,42 @@ mod tests {
         dists.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
         dists.truncate(k);
         dists
+    }
+
+    fn lsh_snapshot_dir() -> tempfile::TempDir {
+        let dim = 8;
+        let data = clustered_data(3, 8, dim);
+        let params = LSHParams {
+            num_tables: 4,
+            num_probes: 2,
+            seed: Some(42),
+        };
+
+        let mut index = CrossPolytopeLSHIndex::new(dim, params).unwrap();
+        index.add_vectors(&data).unwrap();
+        index.build().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        index.save_to_dir(dir.path()).unwrap();
+        dir
+    }
+
+    fn mutate_lsh_manifest(dir: &Path, mutator: impl FnOnce(&mut Value)) {
+        let path = dir.join("manifest.json");
+        let mut value: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        mutator(&mut value);
+        std::fs::write(&path, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+    }
+
+    fn assert_lsh_snapshot_load_fails(mutator: impl FnOnce(&Path)) {
+        let dir = lsh_snapshot_dir();
+        mutator(dir.path());
+        let error = CrossPolytopeLSHIndex::load_from_dir(dir.path())
+            .expect_err("corrupt LSH snapshot loaded successfully");
+        assert!(
+            matches!(error, RetrieveError::FormatError(_)),
+            "expected LSH corrupt snapshot to fail as a format error, got {error:?}"
+        );
     }
 
     #[test]
@@ -639,6 +677,37 @@ mod tests {
                 .any(|(id, _)| *id == inserted_id),
             "online insert should survive snapshot"
         );
+    }
+
+    #[test]
+    fn load_rejects_bad_snapshot_magic() {
+        assert_lsh_snapshot_load_fails(|dir| {
+            mutate_lsh_manifest(dir, |value| value["magic"][0] = 0u32.into());
+        });
+    }
+
+    #[test]
+    fn load_rejects_future_snapshot_version() {
+        assert_lsh_snapshot_load_fails(|dir| {
+            mutate_lsh_manifest(dir, |value| value["version"] = 999u32.into());
+        });
+    }
+
+    #[test]
+    fn load_rejects_zero_snapshot_dimension() {
+        assert_lsh_snapshot_load_fails(|dir| {
+            mutate_lsh_manifest(dir, |value| value["dimension"] = 0u32.into());
+        });
+    }
+
+    #[test]
+    fn load_rejects_truncated_vector_payload() {
+        assert_lsh_snapshot_load_fails(|dir| {
+            let path = dir.join("vectors.bin");
+            let mut bytes = std::fs::read(&path).unwrap();
+            bytes.pop().unwrap();
+            std::fs::write(path, bytes).unwrap();
+        });
     }
 
     #[test]
