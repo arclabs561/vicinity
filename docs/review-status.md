@@ -101,10 +101,13 @@ benchmarking, persistence, Python bindings, and performance work.
 - HNSW `samply` profiling on `hnsw_search_only/ef/200` shifted the next search
   target away from allocator-only work. Leaf samples were concentrated in
   `flush_batch` (~40%), `innr::dense::dot` (~30%), and
-  `greedy_search_layer` (~23%). The profile exported address labels, so future
-  source-line claims need a richer debuginfo/dSYM profile, but the current
-  evidence points at batch/heap update structure, distance kernel
-  dispatch/inlining, and graph/vector locality.
+  `greedy_search_layer` (~23%). A repeat profile with frame pointers and
+  debuginfo still exported address labels, but manual `nm` symbolication mapped
+  13,424 benchmark-thread leaf samples to `innr::dense::dot` (36.3%),
+  `flush_batch` (22.1%), `greedy_search_layer` (21.0%), and `BinaryHeap::pop`
+  (13.3%). The current evidence points at heap/frontier structure,
+  candidate-processing layout, and graph/vector locality, not allocator-only
+  work or a broad dispatch rewrite.
 - Unsafe remains a last resort for the current perf queue. Dense vector math
   should keep using innr's safe API. New unsafe belongs only in small, local,
   layout-specific kernels with parity tests and before/after profiles, as with

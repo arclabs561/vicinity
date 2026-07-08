@@ -258,6 +258,39 @@ kernel dispatch/inlining, and graph/vector layout locality. Future `samply`
 runs should rebuild the bench with richer debuginfo or a sidecar dSYM before
 claiming source-line percentages.
 
+A repeat profile on 2026-07-08 rebuilt the same benchmark with frame pointers
+and debug info in an isolated target directory:
+
+```bash
+RUSTFLAGS="-C force-frame-pointers=yes -C debuginfo=2" \
+  CARGO_TARGET_DIR=/tmp/vicinity-hnsw-symbol-profile \
+  CARGO_INCREMENTAL=0 RUSTC_WRAPPER= \
+  samply record --save-only \
+  -o /tmp/vicinity-hnsw-ef200-symbols-20260708.json.gz -- \
+  cargo bench --bench hnsw_search --features hnsw -- \
+  hnsw_search_only/ef/200 --profile-time 10
+```
+
+The exported profile still used address labels for the benchmark thread, but
+manual `nm` range symbolication against the benchmark binary mapped 13,424
+main-thread leaf samples to these function buckets:
+
+| Bucket | Leaf samples | Share |
+| --- | ---: | ---: |
+| `innr::dense::dot` | 4,876 | 36.3% |
+| `vicinity::hnsw::search::flush_batch` | 2,963 | 22.1% |
+| `vicinity::hnsw::search::greedy_search_layer` | 2,818 | 21.0% |
+| `BinaryHeap::pop` | 1,788 | 13.3% |
+| other | 472 | 3.5% |
+| fixture/build work | 295 | 2.2% |
+| `vicinity::distance::cosine_distance_normalized` | 201 | 1.5% |
+
+This improves confidence in the earlier profile without giving source-line
+precision. The next HNSW perf attempt should be a heap/frontier-structure or
+candidate-processing experiment with the same ef=10/50/100/200 controls. Do
+not widen unsafe for this path; the dense kernel is already inside innr's safe
+API boundary.
+
 The first `flush_batch` follow-up cached the current worst result distance for
 every beam width. It improved high-ef rows but regressed `ef=10`, so the kept
 change uses the cached-worst loop only for `ef >= 64`. The thresholded
