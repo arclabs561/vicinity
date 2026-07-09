@@ -6,7 +6,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use durability::{Directory, MemoryDirectory};
+use durability::{Directory, FsDirectory};
 use vicinity::store::{SnapshotIndex, UpdatableIndex};
 
 const N: usize = 1_000;
@@ -18,13 +18,14 @@ const M_MAX: usize = 32;
 type DynError = Box<dyn std::error::Error>;
 type StoreDir = Arc<dyn Directory>;
 type SearchHits = Vec<(u32, f32)>;
+type BuiltStore = (tempfile::TempDir, StoreDir, Vec<f32>);
 
 fn main() -> Result<(), DynError> {
-    let (load_dir, query) = build_checkpointed_dir()?;
+    let (_load_root, load_dir, query) = build_checkpointed_dir()?;
     let load_sidecars = sidecar_count(&load_dir)?;
     let (load_elapsed, load_hits) = first_search(load_dir.clone(), &query)?;
 
-    let (rebuild_dir, rebuild_query) = build_checkpointed_dir()?;
+    let (_rebuild_root, rebuild_dir, rebuild_query) = build_checkpointed_dir()?;
     let sidecars_before_delete = sidecar_count(&rebuild_dir)?;
     delete_sidecars(&rebuild_dir)?;
     let sidecars_after_delete = sidecar_count(&rebuild_dir)?;
@@ -50,15 +51,16 @@ fn main() -> Result<(), DynError> {
     Ok(())
 }
 
-fn build_checkpointed_dir() -> Result<(StoreDir, Vec<f32>), DynError> {
-    let dir: StoreDir = MemoryDirectory::arc();
+fn build_checkpointed_dir() -> Result<BuiltStore, DynError> {
+    let root = tempfile::tempdir()?;
+    let dir: StoreDir = FsDirectory::arc(root.path())?;
     let mut state = 0x1234_5678_9abc_def0u64;
     let mut index = UpdatableIndex::open(dir.clone(), FLUSH, DIM, M, M_MAX)?;
     for id in 0..N {
         index.add(id as u32, &vector(&mut state))?;
     }
     index.checkpoint()?;
-    Ok((dir, vector(&mut state)))
+    Ok((root, dir, vector(&mut state)))
 }
 
 fn first_search(dir: StoreDir, query: &[f32]) -> Result<(Duration, SearchHits), DynError> {
