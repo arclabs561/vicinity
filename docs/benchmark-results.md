@@ -1415,6 +1415,33 @@ CARGO_TARGET_DIR=/tmp/vicinity-hnsw-dispatch-target CARGO_INCREMENTAL=0 \
 The code change was reverted. The next useful HNSW perf target is still
 candidate/frontier structure or data locality, not another dispatch rewrite.
 
+The same dispatch shape was re-tested after the later HNSW heap/frontier
+changes, using a short diagnostic run of only the `ef=200` row. The candidate
+again matched `DistanceMetric` once at the public wrapper and routed the inner
+search loop through monomorphic distance marker types.
+
+```bash
+CARGO_TARGET_DIR=/tmp/vicinity-hnsw-dispatch-baseline CARGO_INCREMENTAL=0 \
+  RUSTC_WRAPPER= cargo bench --bench hnsw_search \
+  hnsw_search_only/ef/200 -- --sample-size 20 --warm-up-time 0.2 \
+  --measurement-time 0.5
+
+CARGO_TARGET_DIR=/tmp/vicinity-hnsw-dispatch-after CARGO_INCREMENTAL=0 \
+  RUSTC_WRAPPER= cargo bench --bench hnsw_search \
+  hnsw_search_only/ef/200 -- --sample-size 20 --warm-up-time 0.2 \
+  --measurement-time 0.5
+```
+
+| Workload | Baseline estimate | Candidate estimate | Decision |
+| --- | ---: | ---: | --- |
+| `hnsw_search_only/ef/200` | 7.1482 ms | 8.1564 ms | rejected |
+
+The candidate patch was reverted and saved as
+`/tmp/vicinity-hnsw-dispatch-reject.patch` for local inspection. This
+reinforces the current rule: do not spend another pass on HNSW metric
+dispatch until a new profile or binary-inspection result points to a narrower
+machine-code change than wrapper-level monomorphization.
+
 A measurement-only `distance_dispatch` Criterion group was added next to keep
 future dispatch work grounded before touching HNSW again. The benchmark compares
 eight normalized candidate distances through a direct
