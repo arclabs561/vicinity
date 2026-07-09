@@ -840,15 +840,47 @@ cargo run --release --example ann_benchmark --no-default-features --features rpt
 | RP-forest | 50 trees, leaf 500 | in_memory | 92.90% | 923.3 | 1,327.0 | 18.50 | 500,098,420 |
 | RP-forest | 50 trees, leaf 1000 | in_memory | 96.85% | 474.6 | 2,514.4 | 17.03 | 477,024,320 |
 
+A second exact-tree follow-up filled in full-corpus KD-tree and RP-tree
+coverage. These rows cap queries at 200 and are intended as classical
+completeness rows, not optimization targets.
+
+```bash
+CARGO_TARGET_DIR=/tmp/vicinity-kdtree-fulltrain CARGO_INCREMENTAL=0 RUSTC_WRAPPER= \
+cargo run --release --example ann_benchmark --no-default-features --features kdtree,serde -- \
+  data/ann-benchmarks/glove-25-angular --algo kdtree \
+  --max-queries 200 --tree-leaf-sizes 10 --json --fresh \
+  --results data/ann-benchmarks/results/vicinity-kdtree-fulltrain-20260709.jsonl
+
+CARGO_TARGET_DIR=/tmp/vicinity-rptree-fulltrain CARGO_INCREMENTAL=0 RUSTC_WRAPPER= \
+cargo run --release --example ann_benchmark --no-default-features --features rptree,serde -- \
+  data/ann-benchmarks/glove-25-angular --algo rptree \
+  --max-queries 200 --tree-leaf-sizes 10 --json --fresh \
+  --results data/ann-benchmarks/results/vicinity-rptree-fulltrain-20260709.jsonl
+```
+
+| Algorithm | Search policy | Storage mode | Recall@10 | QPS | p95 us | Build s | Index bytes |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
+| KD-tree | leaf 10, depth 32 | in_memory | 100.00% | 29.7 | 51,145.5 | 0.37 | 231,226,408 |
+| RP-tree | leaf 10, depth 32 | in_memory | 100.00% | 13.5 | 77,629.2 | 0.67 | 248,527,780 |
+
 This changes the classical read slightly: RP-forest and K-means tree can both
-clear 95% recall on full GloVe-25 when given enough candidate budget.
-RP-forest is faster at the first measured 95%+ full-corpus point, 474.6 QPS
-versus K-means tree's 310.8-316.7 QPS, but it uses a larger heap estimate and
-does not yet have a full-corpus snapshot row. K-means tree has lower
-in-memory footprint in the measured high-recall row and already preserves its
-recall after snapshot load, but the snapshot is much larger than its heap
-estimate. Treat both as completeness rows for classical coverage, not graph
-competitors.
+clear 95% recall on full GloVe-25 when given enough candidate budget, while
+KD-tree and RP-tree can only serve as exact classical references. RP-forest is
+faster at the first measured 95%+ full-corpus point, 474.6 QPS versus K-means
+tree's 310.8-316.7 QPS, but it uses a larger heap estimate and does not yet
+have a full-corpus snapshot row. K-means tree has lower in-memory footprint in
+the measured high-recall row and already preserves its recall after snapshot
+load, but the snapshot is much larger than its heap estimate. Treat all of
+these as completeness rows for classical coverage, not graph competitors.
+
+After suppressing dominated stale rows from earlier low-budget classical
+sweeps, the current-schema local result corpus has no open recall-gap rows:
+
+```bash
+uv run scripts/summarize_ann_results.py --current-schema-only \
+  --recall-gap-only --suppress-dominated-recall-gaps \
+  data/ann-benchmarks/results/*.jsonl
+```
 
 On 2026-07-08, the in-memory benchmark rows for NSW, Vamana, NSG, SNG, EMG,
 PiPNN, FINGER, and FreshGraph were wired to heap `index_bytes` from explicit
