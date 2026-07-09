@@ -31,8 +31,8 @@ series is unstable: minor bumps may break the public API.
   entries when compaction/reclaim changes the segment set.
 - Store writer searches now build the temporary writer-buffer HNSW from the
   buffer slice instead of cloning buffered vectors first.
-- The `store` feature now requires `segstore = "0.4.1"` for manifest-only
-  snapshot reads.
+- The `store` feature now requires `segstore = "0.5"` and `durability = "0.7.1"`
+  for manifest-only snapshot reads and checked sidecar envelopes.
 
 ### Fixed
 

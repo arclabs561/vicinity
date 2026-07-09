@@ -30,44 +30,14 @@ use std::io::Read;
 use std::sync::Arc;
 
 use durability::{Directory, PersistenceError, PersistenceResult};
-use segstore::{SegmentCatalog, SegmentedStore, Store};
+use segstore::{DefaultStore, SegmentCatalog, SegmentedStore, SidecarEnvelope};
 
 use crate::distance;
 use crate::hnsw::{HNSWIndex, HNSWParams};
 
 /// segstore payload: items are dense vectors, a segment is a batch of source
 /// vectors (a per-segment HNSW is built + cached from the live ones).
-struct VectorBacking;
-
-impl Store for VectorBacking {
-    type Id = u32;
-    type Item = Vec<f32>;
-    type Segment = Vec<(u32, Vec<f32>)>;
-
-    fn build_segment(&self, batch: &[(u32, Vec<f32>)]) -> Vec<(u32, Vec<f32>)> {
-        batch.to_vec()
-    }
-
-    fn merge_segments(
-        &self,
-        segs: &[&Vec<(u32, Vec<f32>)>],
-        live: &dyn Fn(&u32) -> bool,
-    ) -> Vec<(u32, Vec<f32>)> {
-        segs.iter()
-            .flat_map(|s| s.iter())
-            .filter(|(id, _)| live(id))
-            .cloned()
-            .collect()
-    }
-
-    fn segment_len(&self, seg: &Vec<(u32, Vec<f32>)>) -> usize {
-        seg.len()
-    }
-
-    fn live_len(&self, seg: &Vec<(u32, Vec<f32>)>, live: &dyn Fn(&u32) -> bool) -> Option<usize> {
-        Some(seg.iter().filter(|(id, _)| live(id)).count())
-    }
-}
+type VectorBacking = DefaultStore<u32, Vec<f32>>;
 
 /// Per-segment HNSW indexes keyed by segstore's stable segment id. A sealed add
 /// creates one new segment id, so cached HNSW indexes for existing segments are
@@ -124,7 +94,7 @@ impl UpdatableIndex {
         m: usize,
         m_max: usize,
     ) -> PersistenceResult<Self> {
-        let inner = SegmentedStore::open(dir, VectorBacking, flush_threshold)?;
+        let inner = SegmentedStore::open(dir, VectorBacking::new(), flush_threshold)?;
         Ok(Self {
             inner,
             dim,
@@ -425,16 +395,14 @@ impl UpdatableIndex {
         seg_id: u64,
         graph: &[u8],
     ) -> Option<Vec<u8>> {
-        let recipe = sidecar_recipe.as_bytes();
-        let recipe_len = u32::try_from(recipe.len()).ok()?;
-        let mut bytes = Vec::with_capacity(24 + recipe.len() + graph.len());
-        bytes.extend_from_slice(SIDECAR_MAGIC);
-        bytes.extend_from_slice(&SIDECAR_VERSION.to_le_bytes());
-        bytes.extend_from_slice(&seg_id.to_le_bytes());
-        bytes.extend_from_slice(&recipe_len.to_le_bytes());
-        bytes.extend_from_slice(recipe);
-        bytes.extend_from_slice(graph);
-        Some(bytes)
+        SidecarEnvelope::encode(
+            SIDECAR_MAGIC,
+            SIDECAR_VERSION,
+            seg_id,
+            sidecar_recipe.as_bytes(),
+            graph,
+        )
+        .ok()
     }
 
     fn decode_sidecar<'a>(&self, bytes: &'a [u8], seg_id: u64) -> Option<&'a [u8]> {
@@ -446,30 +414,14 @@ impl UpdatableIndex {
         seg_id: u64,
         bytes: &'a [u8],
     ) -> Option<&'a [u8]> {
-        if bytes.len() < 24 {
-            return None;
-        }
-        if &bytes[..8] != SIDECAR_MAGIC {
-            return None;
-        }
-        let version = u32::from_le_bytes(bytes[8..12].try_into().ok()?);
-        if version != SIDECAR_VERSION {
-            return None;
-        }
-        let encoded_seg_id = u64::from_le_bytes(bytes[12..20].try_into().ok()?);
-        if encoded_seg_id != seg_id {
-            return None;
-        }
-        let recipe_len = u32::from_le_bytes(bytes[20..24].try_into().ok()?) as usize;
-        let recipe_start = 24usize;
-        let recipe_end = recipe_start.checked_add(recipe_len)?;
-        if bytes.len() < recipe_end {
-            return None;
-        }
-        if &bytes[recipe_start..recipe_end] != sidecar_recipe.as_bytes() {
-            return None;
-        }
-        Some(&bytes[recipe_end..])
+        SidecarEnvelope::decode(
+            SIDECAR_MAGIC,
+            SIDECAR_VERSION,
+            seg_id,
+            sidecar_recipe.as_bytes(),
+            bytes,
+        )
+        .ok()
     }
 
     /// Build + persist a sidecar for every sealed segment without a current one,
