@@ -1545,6 +1545,34 @@ The patch was reverted and saved locally as
 `/tmp/vicinity-hnsw-stopcheck-reject.patch`. The low-ef regression means
 candidate-pop branch reordering is not a useful next path on its own.
 
+A result-fill fast path in `flush_batch` was also measured and rejected. The
+candidate directly pushed a full batch into the result and candidate heaps when
+`results.len() + count <= ef`, avoiding the general `insert_result_if_accepted`
+path until the result heap crossed the beam width.
+
+```bash
+CARGO_TARGET_DIR=/tmp/vicinity-hnsw-stopcheck-target CARGO_INCREMENTAL=0 \
+  RUSTC_WRAPPER= cargo bench --bench hnsw_search --no-default-features \
+  --features hnsw -- hnsw_search_ --sample-size 20 --warm-up-time 1 \
+  --measurement-time 3 --baseline stopcheck_before
+```
+
+| Workload | Criterion mean change | Decision |
+| --- | ---: | --- |
+| `hnsw_search_only/ef/10` | +2.30% time | rejected |
+| `hnsw_search_only/ef/50` | no change | rejected |
+| `hnsw_search_only/ef/100` | no change | rejected |
+| `hnsw_search_only/ef/200` | within noise threshold | rejected |
+| `hnsw_search_mmax32/ef/10` | +5.74% time | rejected |
+| `hnsw_search_mmax32/ef/50` | no change | rejected |
+| `hnsw_search_mmax32/ef/100` | within noise threshold | rejected |
+| `hnsw_search_mmax32/ef/200` | within noise threshold | rejected |
+
+The patch was reverted and saved locally as
+`/tmp/vicinity-hnsw-result-fill-reject.patch`. The extra fast-path branch costs
+more than it saves on low-ef search, so further heap work should be driven by
+frontier-size counters or a profile, not by more unmeasured branch splitting.
+
 A follow-up finalization experiment tried to remove the intermediate top-k
 `Vec` allocation in `HNSWIndex::search` by chaining `take(k)` directly into
 the tombstone/doc-id conversion. The intended invariant was unchanged
