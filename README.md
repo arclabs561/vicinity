@@ -15,15 +15,15 @@ indexes are feature-gated and documented in
 
 ```toml
 [dependencies]
-vicinity = { version = "0.10.5", features = ["hnsw"] }
+vicinity = { version = "0.11.0", features = ["hnsw"] }
 ```
 
 Optional features enable additional indexes:
 
 ```toml
-vicinity = { version = "0.10.5", features = ["ivf_pq"] }
-vicinity = { version = "0.10.5", features = ["diskann"] }
-vicinity = { version = "0.10.5", features = ["hnsw", "serde"] }
+vicinity = { version = "0.11.0", features = ["ivf_pq"] }
+vicinity = { version = "0.11.0", features = ["diskann"] }
+vicinity = { version = "0.11.0", features = ["hnsw", "serde"] }
 ```
 
 ## HNSW

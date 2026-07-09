@@ -7,6 +7,8 @@ series is unstable: minor bumps may break the public API.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-07-09
+
 ### Added
 
 - Added an `updatable_store` example covering add, checkpoint, delete, reopen,
