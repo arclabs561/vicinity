@@ -813,13 +813,42 @@ cargo run --release --example ann_benchmark --no-default-features --features kme
 | K-means tree | leaf_budget=256, leaf 1000 | in_memory | 97.58% | 239.3 | 5,465.4 | n/a | 261,948,416 |
 | K-means tree | leaf_budget=256, leaf 1000 | snapshot_loaded | 97.58% | 241.1 | 5,368.2 | 1.7999 | 731,578,843 |
 
-This changes the classical read slightly: RP-forest is not capped below 95%
-recall, but reaching that band costs enough tree and leaf budget that it sits
-well below graph methods at the same 50K cap. K-means tree is controllable via
-search budget. The global leaf-budget path is the useful high-recall baseline
-on the 50K cap, where it clears 95% at roughly 5K QPS. On full GloVe-25 it
-also clears 95%, but only at `leaf_budget=192` and roughly 311-317 QPS. Treat
-that as a completeness row for classical coverage, not a graph competitor.
+A full-corpus RP-forest follow-up then checked whether the 50K-corpus
+high-recall finding scaled to all 1.18M GloVe-25 vectors. This run capped only
+queries at 200 and did not snapshot-load the forest, because the 50K snapshot
+already showed that full-corpus RP-forest snapshots would be multi-GB.
+
+```bash
+CARGO_TARGET_DIR=/tmp/vicinity-rpforest-fulltrain CARGO_INCREMENTAL=0 RUSTC_WRAPPER= \
+cargo run --release --example ann_benchmark --no-default-features --features rptree,serde -- \
+  data/ann-benchmarks/glove-25-angular --algo rp_forest \
+  --max-queries 200 --tree-leaf-sizes 200 --rp-num-trees 50 \
+  --json --fresh \
+  --results data/ann-benchmarks/results/vicinity-rp-forest-fulltrain-20260709.jsonl
+
+CARGO_TARGET_DIR=/tmp/vicinity-rpforest-fulltrain-leaf CARGO_INCREMENTAL=0 RUSTC_WRAPPER= \
+cargo run --release --example ann_benchmark --no-default-features --features rptree,serde -- \
+  data/ann-benchmarks/glove-25-angular --algo rp_forest \
+  --max-queries 200 --tree-leaf-sizes 500,1000 --rp-num-trees 50 \
+  --json --fresh \
+  --results data/ann-benchmarks/results/vicinity-rp-forest-fulltrain-leaf-20260709.jsonl
+```
+
+| Algorithm | Search policy | Storage mode | Recall@10 | QPS | p95 us | Build s | Index bytes |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
+| RP-forest | 50 trees, leaf 200 | in_memory | 85.35% | 2,105.2 | 620.4 | 20.44 | 568,909,512 |
+| RP-forest | 50 trees, leaf 500 | in_memory | 92.90% | 923.3 | 1,327.0 | 18.50 | 500,098,420 |
+| RP-forest | 50 trees, leaf 1000 | in_memory | 96.85% | 474.6 | 2,514.4 | 17.03 | 477,024,320 |
+
+This changes the classical read slightly: RP-forest and K-means tree can both
+clear 95% recall on full GloVe-25 when given enough candidate budget.
+RP-forest is faster at the first measured 95%+ full-corpus point, 474.6 QPS
+versus K-means tree's 310.8-316.7 QPS, but it uses a larger heap estimate and
+does not yet have a full-corpus snapshot row. K-means tree has lower
+in-memory footprint in the measured high-recall row and already preserves its
+recall after snapshot load, but the snapshot is much larger than its heap
+estimate. Treat both as completeness rows for classical coverage, not graph
+competitors.
 
 On 2026-07-08, the in-memory benchmark rows for NSW, Vamana, NSG, SNG, EMG,
 PiPNN, FINGER, and FreshGraph were wired to heap `index_bytes` from explicit
