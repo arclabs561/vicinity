@@ -1574,11 +1574,12 @@ more than it saves on low-ef search, so further heap work should be driven by
 frontier-size counters or a profile, not by more unmeasured branch splitting.
 
 Benchmark-only HNSW frontier counters were then added behind the `benchmark`
-feature. They report candidate heap pushes, pops, frontier-retain calls,
-stale candidates removed by retain, and maximum frontier length during the
-existing allocation-summary prepass. The counters are diagnostic only; the
-timed Criterion rows from this short run should not be used as throughput
-evidence.
+feature. They report full vector distance evaluations, result-heap inserts,
+result-heap replacements, result-heap rejections, candidate heap pushes, pops,
+frontier-retain calls, stale candidates removed by retain, and maximum
+frontier length during the existing allocation-summary prepass. The counters
+are diagnostic only; the timed Criterion rows from these short runs should not
+be used as throughput evidence.
 
 ```bash
 CARGO_TARGET_DIR=/tmp/vicinity-hnsw-counters-bench CARGO_INCREMENTAL=0 \
@@ -1587,23 +1588,34 @@ CARGO_TARGET_DIR=/tmp/vicinity-hnsw-counters-bench CARGO_INCREMENTAL=0 \
   --warm-up-time 0.1 --measurement-time 0.1
 ```
 
-| Workload | Candidate pushes/query | Candidate pops/query | Retain calls/query | Pruned/query | Max frontier |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| `hnsw_search_only/ef/10` | 36.7 | 14.5 | 0.0 | 0.0 | 35 |
-| `hnsw_search_only/ef/50` | 185.2 | 59.7 | 0.0 | 0.0 | 164 |
-| `hnsw_search_only/ef/100` | 351.2 | 108.3 | 1.0 | 212.0 | 291 |
-| `hnsw_search_only/ef/200` | 656.6 | 203.6 | 1.0 | 299.9 | 464 |
-| `hnsw_search_mmax32/ef/10` | 44.6 | 15.2 | 0.0 | 0.0 | 46 |
-| `hnsw_search_mmax32/ef/50` | 208.4 | 55.2 | 0.0 | 0.0 | 189 |
-| `hnsw_search_mmax32/ef/100` | 392.4 | 103.5 | 1.0 | 265.8 | 347 |
-| `hnsw_search_mmax32/ef/200` | 711.4 | 201.9 | 1.0 | 405.0 | 587 |
+An expanded follow-up run added distance and result-heap outcome counters:
+
+```bash
+CARGO_TARGET_DIR=/tmp/vicinity-hnsw-counter-outcomes-bench CARGO_INCREMENTAL=0 \
+  RUSTC_WRAPPER= cargo bench --bench hnsw_search --no-default-features \
+  --features hnsw,benchmark -- hnsw_search_ --sample-size 10 \
+  --warm-up-time 0.1 --measurement-time 0.1
+```
+
+| Workload | Distance evals/query | Inserts/query | Replacements/query | Rejections/query | Candidate pushes/query | Candidate pops/query | Retain calls/query | Pruned/query | Max frontier |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `hnsw_search_only/ef/10` | 212.8 | 10.0 | 27.4 | 175.4 | 37.4 | 15.2 | 0.0 | 0.0 | 39 |
+| `hnsw_search_only/ef/50` | 841.7 | 50.0 | 136.0 | 655.7 | 186.0 | 59.9 | 0.0 | 0.0 | 162 |
+| `hnsw_search_only/ef/100` | 1,454.4 | 100.0 | 251.4 | 1,103.0 | 351.4 | 107.2 | 1.0 | 214.0 | 282 |
+| `hnsw_search_only/ef/200` | 2,554.9 | 200.0 | 456.9 | 1,898.1 | 656.9 | 204.2 | 1.1 | 304.6 | 477 |
+| `hnsw_search_mmax32/ef/10` | 426.0 | 10.0 | 33.8 | 382.2 | 43.8 | 15.0 | 0.0 | 0.0 | 47 |
+| `hnsw_search_mmax32/ef/50` | 1,526.2 | 50.0 | 159.8 | 1,316.3 | 209.8 | 55.8 | 0.0 | 0.0 | 205 |
+| `hnsw_search_mmax32/ef/100` | 2,612.4 | 100.0 | 292.0 | 2,220.4 | 392.0 | 103.3 | 1.0 | 266.2 | 363 |
+| `hnsw_search_mmax32/ef/200` | 4,352.6 | 200.0 | 513.2 | 3,639.4 | 713.2 | 201.8 | 1.0 | 407.8 | 595 |
 
 The next HNSW frontier experiment should use these counters as a guard. The
-current prune path already fires only once per high-ef query on this fixture
-and removes many stale candidates, while low-ef rows never call retain. That
-makes another low-ef branch split unlikely to pay off. A custom frontier or a
-different prune trigger needs counters showing fewer pops or a smaller maximum
-frontier without hurting the `ef=10` rows.
+current prune path already fires about once per high-ef query on this fixture
+and removes many stale candidates, while low-ef rows never call retain. The
+new outcome counters show the high-ef rows are dominated by distance-scored
+candidates that do not enter the result heap, especially on the denser
+`m_max=32` fixture. A custom frontier, distance-gated batch strategy, or a
+different prune trigger needs counters showing fewer distance evaluations,
+fewer pops, or a smaller maximum frontier without hurting the `ef=10` rows.
 
 A follow-up finalization experiment tried to remove the intermediate top-k
 `Vec` allocation in `HNSWIndex::search` by chaining `take(k)` directly into

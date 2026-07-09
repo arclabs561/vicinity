@@ -16,6 +16,14 @@ thread_local! {
 #[cfg(feature = "benchmark")]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct HnswSearchCounters {
+    /// Number of full vector distance evaluations.
+    pub distance_evals: u64,
+    /// Number of result-heap inserts while the heap is still filling.
+    pub result_insertions: u64,
+    /// Number of result-heap top replacements after the heap is full.
+    pub result_replacements: u64,
+    /// Number of distance-scored candidates rejected by the result heap.
+    pub result_rejections: u64,
     /// Number of candidate-frontier heap pushes.
     pub candidate_pushes: u64,
     /// Number of candidate-frontier heap pops.
@@ -32,6 +40,10 @@ pub struct HnswSearchCounters {
 impl HnswSearchCounters {
     const fn new() -> Self {
         Self {
+            distance_evals: 0,
+            result_insertions: 0,
+            result_replacements: 0,
+            result_rejections: 0,
             candidate_pushes: 0,
             candidate_pops: 0,
             frontier_retain_calls: 0,
@@ -58,6 +70,38 @@ pub fn take_search_counters() -> HnswSearchCounters {
         *counters = HnswSearchCounters::new();
         out
     })
+}
+
+#[cfg(feature = "benchmark")]
+#[inline]
+fn record_distance_evals(count: usize) {
+    SEARCH_COUNTERS.with(|cell| {
+        cell.borrow_mut().distance_evals += count as u64;
+    });
+}
+
+#[cfg(feature = "benchmark")]
+#[inline]
+fn record_result_insertion() {
+    SEARCH_COUNTERS.with(|cell| {
+        cell.borrow_mut().result_insertions += 1;
+    });
+}
+
+#[cfg(feature = "benchmark")]
+#[inline]
+fn record_result_replacement() {
+    SEARCH_COUNTERS.with(|cell| {
+        cell.borrow_mut().result_replacements += 1;
+    });
+}
+
+#[cfg(feature = "benchmark")]
+#[inline]
+fn record_result_rejection() {
+    SEARCH_COUNTERS.with(|cell| {
+        cell.borrow_mut().result_rejections += 1;
+    });
 }
 
 #[cfg(feature = "benchmark")]
@@ -320,17 +364,25 @@ fn insert_result_if_accepted(
 ) -> bool {
     if results.len() < ef {
         results.push(MaxResult { id, distance });
+        #[cfg(feature = "benchmark")]
+        record_result_insertion();
         return true;
     }
 
     let Some(mut worst) = results.peek_mut() else {
+        #[cfg(feature = "benchmark")]
+        record_result_rejection();
         return false;
     };
     if distance >= worst.distance {
+        #[cfg(feature = "benchmark")]
+        record_result_rejection();
         return false;
     }
 
     *worst = MaxResult { id, distance };
+    #[cfg(feature = "benchmark")]
+    record_result_replacement();
     true
 }
 
@@ -355,6 +407,8 @@ fn flush_batch(
         let vec = get_vector(vectors, dimension, batch_ids[i] as usize);
         dists[i] = dist_fn(query, vec);
     }
+    #[cfg(feature = "benchmark")]
+    record_distance_evals(count);
 
     if ef < CACHED_WORST_MIN_EF {
         for i in 0..count {
@@ -393,6 +447,9 @@ fn flush_batch(
             } else {
                 results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY)
             };
+        } else {
+            #[cfg(feature = "benchmark")]
+            record_result_rejection();
         }
     }
 }
@@ -412,6 +469,8 @@ fn flush_batch_custom<F: Fn(&[f32], u32) -> f32>(
     for i in 0..count {
         dists[i] = dist_fn(query, batch_ids[i]);
     }
+    #[cfg(feature = "benchmark")]
+    record_distance_evals(count);
     if ef < CACHED_WORST_MIN_EF {
         for i in 0..count {
             if insert_result_if_accepted(results, ef, batch_ids[i], dists[i]) {
@@ -419,6 +478,8 @@ fn flush_batch_custom<F: Fn(&[f32], u32) -> f32>(
                     id: batch_ids[i],
                     distance: dists[i],
                 });
+                #[cfg(feature = "benchmark")]
+                record_candidate_push(candidates.len());
             }
         }
         return;
@@ -436,12 +497,17 @@ fn flush_batch_custom<F: Fn(&[f32], u32) -> f32>(
                     id: batch_ids[i],
                     distance: dists[i],
                 });
+                #[cfg(feature = "benchmark")]
+                record_candidate_push(candidates.len());
             }
             worst_dist = if results.len() < ef {
                 f32::INFINITY
             } else {
                 results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY)
             };
+        } else {
+            #[cfg(feature = "benchmark")]
+            record_result_rejection();
         }
     }
 }
@@ -500,6 +566,8 @@ pub fn greedy_search_layer(
             // Start from entry point
             let entry_vector = get_vector(vectors, dimension, entry_point as usize);
             let entry_distance = dist_fn(query, entry_vector);
+            #[cfg(feature = "benchmark")]
+            record_distance_evals(1);
             candidates.push(MinCandidate {
                 id: entry_point,
                 distance: entry_distance,
@@ -510,6 +578,8 @@ pub fn greedy_search_layer(
                 id: entry_point,
                 distance: entry_distance,
             });
+            #[cfg(feature = "benchmark")]
+            record_result_insertion();
             visited.insert(entry_point);
 
             // Standard HNSW beam search:

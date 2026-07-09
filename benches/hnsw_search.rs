@@ -114,6 +114,10 @@ fn print_allocation_summary(
         #[cfg(feature = "benchmark")]
         {
             let counters = take_search_counters();
+            search_total.distance_evals += counters.distance_evals;
+            search_total.result_insertions += counters.result_insertions;
+            search_total.result_replacements += counters.result_replacements;
+            search_total.result_rejections += counters.result_rejections;
             search_total.candidate_pushes += counters.candidate_pushes;
             search_total.candidate_pops += counters.candidate_pops;
             search_total.frontier_retain_calls += counters.frontier_retain_calls;
@@ -133,7 +137,11 @@ fn print_allocation_summary(
     );
     #[cfg(feature = "benchmark")]
     eprintln!(
-        "hnsw frontier {label}: ef={ef} candidate_pushes={:.1}/query candidate_pops={:.1}/query retain_calls={:.1}/query pruned={:.1}/query max_frontier={}",
+        "hnsw frontier {label}: ef={ef} distance_evals={:.1}/query result_insertions={:.1}/query result_replacements={:.1}/query result_rejections={:.1}/query candidate_pushes={:.1}/query candidate_pops={:.1}/query retain_calls={:.1}/query pruned={:.1}/query max_frontier={}",
+        search_total.distance_evals as f64 / queries_len,
+        search_total.result_insertions as f64 / queries_len,
+        search_total.result_replacements as f64 / queries_len,
+        search_total.result_rejections as f64 / queries_len,
         search_total.candidate_pushes as f64 / queries_len,
         search_total.candidate_pops as f64 / queries_len,
         search_total.frontier_retain_calls as f64 / queries_len,
