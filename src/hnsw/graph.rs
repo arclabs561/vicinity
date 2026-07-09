@@ -1868,7 +1868,7 @@ impl HNSWIndex {
         // when we only keep max_intra_edges (typically m/4 = 4).
         const MAX_CANDIDATES: usize = 64;
 
-        for (_category, vector_ids) in category_vectors.iter() {
+        for vector_ids in category_vectors.values() {
             if vector_ids.len() < 2 {
                 continue;
             }
