@@ -5,6 +5,89 @@ use std::collections::{BinaryHeap, HashSet};
 
 pub(crate) use crate::prefetch::prefetch_read_data;
 
+#[cfg(feature = "benchmark")]
+thread_local! {
+    static SEARCH_COUNTERS: RefCell<HnswSearchCounters> = const {
+        RefCell::new(HnswSearchCounters::new())
+    };
+}
+
+/// Diagnostic counters for HNSW search benchmarks.
+#[cfg(feature = "benchmark")]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct HnswSearchCounters {
+    /// Number of candidate-frontier heap pushes.
+    pub candidate_pushes: u64,
+    /// Number of candidate-frontier heap pops.
+    pub candidate_pops: u64,
+    /// Number of frontier-pruning retain calls.
+    pub frontier_retain_calls: u64,
+    /// Number of candidate entries removed by frontier pruning.
+    pub frontier_pruned_candidates: u64,
+    /// Maximum candidate-frontier heap length observed.
+    pub max_frontier_len: usize,
+}
+
+#[cfg(feature = "benchmark")]
+impl HnswSearchCounters {
+    const fn new() -> Self {
+        Self {
+            candidate_pushes: 0,
+            candidate_pops: 0,
+            frontier_retain_calls: 0,
+            frontier_pruned_candidates: 0,
+            max_frontier_len: 0,
+        }
+    }
+}
+
+/// Reset the current thread's HNSW search benchmark counters.
+#[cfg(feature = "benchmark")]
+pub fn reset_search_counters() {
+    SEARCH_COUNTERS.with(|cell| {
+        *cell.borrow_mut() = HnswSearchCounters::new();
+    });
+}
+
+/// Return and reset the current thread's HNSW search benchmark counters.
+#[cfg(feature = "benchmark")]
+pub fn take_search_counters() -> HnswSearchCounters {
+    SEARCH_COUNTERS.with(|cell| {
+        let mut counters = cell.borrow_mut();
+        let out = *counters;
+        *counters = HnswSearchCounters::new();
+        out
+    })
+}
+
+#[cfg(feature = "benchmark")]
+#[inline]
+fn record_candidate_push(candidates_len: usize) {
+    SEARCH_COUNTERS.with(|cell| {
+        let mut counters = cell.borrow_mut();
+        counters.candidate_pushes += 1;
+        counters.max_frontier_len = counters.max_frontier_len.max(candidates_len);
+    });
+}
+
+#[cfg(feature = "benchmark")]
+#[inline]
+fn record_candidate_pop() {
+    SEARCH_COUNTERS.with(|cell| {
+        cell.borrow_mut().candidate_pops += 1;
+    });
+}
+
+#[cfg(feature = "benchmark")]
+#[inline]
+fn record_frontier_retain(before: usize, after: usize) {
+    SEARCH_COUNTERS.with(|cell| {
+        let mut counters = cell.borrow_mut();
+        counters.frontier_retain_calls += 1;
+        counters.frontier_pruned_candidates += before.saturating_sub(after) as u64;
+    });
+}
+
 // ─── Visited set ─────────────────────────────────────────────────────────────
 
 /// Threshold below which we use a dense generation-counter array instead of HashSet.
@@ -280,6 +363,8 @@ fn flush_batch(
                     id: batch_ids[i],
                     distance: dists[i],
                 });
+                #[cfg(feature = "benchmark")]
+                record_candidate_push(candidates.len());
             }
         }
         return;
@@ -300,6 +385,8 @@ fn flush_batch(
                     id: batch_ids[i],
                     distance: dists[i],
                 });
+                #[cfg(feature = "benchmark")]
+                record_candidate_push(candidates.len());
             }
             worst_dist = if results.len() < ef {
                 f32::INFINITY
@@ -372,7 +459,11 @@ fn prune_unpromising_candidates(
         return;
     };
     let worst_dist = worst.distance;
+    #[cfg(feature = "benchmark")]
+    let before = candidates.len();
     candidates.retain(|candidate| candidate.distance <= worst_dist);
+    #[cfg(feature = "benchmark")]
+    record_frontier_retain(before, candidates.len());
 }
 
 // ─── Search functions ────────────────────────────────────────────────────────
@@ -413,6 +504,8 @@ pub fn greedy_search_layer(
                 id: entry_point,
                 distance: entry_distance,
             });
+            #[cfg(feature = "benchmark")]
+            record_candidate_push(candidates.len());
             results.push(MaxResult {
                 id: entry_point,
                 distance: entry_distance,
@@ -424,6 +517,9 @@ pub fn greedy_search_layer(
             let should_prune_frontier = ef >= FRONTIER_PRUNE_MIN_EF;
             let mut pops_since_prune = 0usize;
             while let Some(candidate) = candidates.pop() {
+                #[cfg(feature = "benchmark")]
+                record_candidate_pop();
+
                 // Stopping condition: if best candidate is worse than worst result
                 // and we have enough results, we're done
                 let worst_dist = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);

@@ -152,6 +152,8 @@ mod search;
 pub use graph::{
     HNSWBuilder, HNSWIndex, HNSWParams, NeighborhoodDiversification, SeedSelectionStrategy,
 };
+#[cfg(all(feature = "hnsw", feature = "benchmark"))]
+pub use search::{reset_search_counters, take_search_counters, HnswSearchCounters};
 
 // Filtered search (ACORN-style)
 #[cfg(feature = "hnsw")]

@@ -1573,6 +1573,38 @@ The patch was reverted and saved locally as
 more than it saves on low-ef search, so further heap work should be driven by
 frontier-size counters or a profile, not by more unmeasured branch splitting.
 
+Benchmark-only HNSW frontier counters were then added behind the `benchmark`
+feature. They report candidate heap pushes, pops, frontier-retain calls,
+stale candidates removed by retain, and maximum frontier length during the
+existing allocation-summary prepass. The counters are diagnostic only; the
+timed Criterion rows from this short run should not be used as throughput
+evidence.
+
+```bash
+CARGO_TARGET_DIR=/tmp/vicinity-hnsw-counters-bench CARGO_INCREMENTAL=0 \
+  RUSTC_WRAPPER= cargo bench --bench hnsw_search --no-default-features \
+  --features hnsw,benchmark -- hnsw_search_ --sample-size 10 \
+  --warm-up-time 0.1 --measurement-time 0.1
+```
+
+| Workload | Candidate pushes/query | Candidate pops/query | Retain calls/query | Pruned/query | Max frontier |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `hnsw_search_only/ef/10` | 36.7 | 14.5 | 0.0 | 0.0 | 35 |
+| `hnsw_search_only/ef/50` | 185.2 | 59.7 | 0.0 | 0.0 | 164 |
+| `hnsw_search_only/ef/100` | 351.2 | 108.3 | 1.0 | 212.0 | 291 |
+| `hnsw_search_only/ef/200` | 656.6 | 203.6 | 1.0 | 299.9 | 464 |
+| `hnsw_search_mmax32/ef/10` | 44.6 | 15.2 | 0.0 | 0.0 | 46 |
+| `hnsw_search_mmax32/ef/50` | 208.4 | 55.2 | 0.0 | 0.0 | 189 |
+| `hnsw_search_mmax32/ef/100` | 392.4 | 103.5 | 1.0 | 265.8 | 347 |
+| `hnsw_search_mmax32/ef/200` | 711.4 | 201.9 | 1.0 | 405.0 | 587 |
+
+The next HNSW frontier experiment should use these counters as a guard. The
+current prune path already fires only once per high-ef query on this fixture
+and removes many stale candidates, while low-ef rows never call retain. That
+makes another low-ef branch split unlikely to pay off. A custom frontier or a
+different prune trigger needs counters showing fewer pops or a smaller maximum
+frontier without hurting the `ef=10` rows.
+
 A follow-up finalization experiment tried to remove the intermediate top-k
 `Vec` allocation in `HNSWIndex::search` by chaining `take(k)` directly into
 the tombstone/doc-id conversion. The intended invariant was unchanged

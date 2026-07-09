@@ -9,6 +9,8 @@ use rand::prelude::*;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use vicinity::hnsw::HNSWIndex;
+#[cfg(feature = "benchmark")]
+use vicinity::hnsw::{reset_search_counters, take_search_counters, HnswSearchCounters};
 
 static ALLOC_CALLS: AtomicUsize = AtomicUsize::new(0);
 static ALLOC_BYTES: AtomicUsize = AtomicUsize::new(0);
@@ -100,11 +102,25 @@ fn print_allocation_summary(
     ef: usize,
 ) {
     let mut alloc_total = AllocationProfile::default();
+    #[cfg(feature = "benchmark")]
+    let mut search_total = HnswSearchCounters::default();
     let mut result_count = 0usize;
 
     for query in queries {
+        #[cfg(feature = "benchmark")]
+        reset_search_counters();
         let (results, alloc_profile) =
             AllocationProfile::record_search(|| index.search(query, k, ef).unwrap());
+        #[cfg(feature = "benchmark")]
+        {
+            let counters = take_search_counters();
+            search_total.candidate_pushes += counters.candidate_pushes;
+            search_total.candidate_pops += counters.candidate_pops;
+            search_total.frontier_retain_calls += counters.frontier_retain_calls;
+            search_total.frontier_pruned_candidates += counters.frontier_pruned_candidates;
+            search_total.max_frontier_len =
+                search_total.max_frontier_len.max(counters.max_frontier_len);
+        }
         alloc_total.add_assign(alloc_profile);
         result_count += results.len();
     }
@@ -114,6 +130,15 @@ fn print_allocation_summary(
         "hnsw alloc {label}: ef={ef} alloc_calls={:.1}/query alloc_bytes={:.1}/query results={result_count}",
         alloc_total.calls as f64 / queries_len,
         alloc_total.bytes as f64 / queries_len,
+    );
+    #[cfg(feature = "benchmark")]
+    eprintln!(
+        "hnsw frontier {label}: ef={ef} candidate_pushes={:.1}/query candidate_pops={:.1}/query retain_calls={:.1}/query pruned={:.1}/query max_frontier={}",
+        search_total.candidate_pushes as f64 / queries_len,
+        search_total.candidate_pops as f64 / queries_len,
+        search_total.frontier_retain_calls as f64 / queries_len,
+        search_total.frontier_pruned_candidates as f64 / queries_len,
+        search_total.max_frontier_len,
     );
     black_box(result_count);
 }
