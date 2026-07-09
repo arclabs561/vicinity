@@ -164,7 +164,7 @@ mod ivf_pq_tests {
         let query = rng.next_normalized(32);
         let results = index.search(&query, 10).unwrap();
         for w in results.windows(2) {
-            assert!(w[0].1 <= w[1].1 + 1e-6, "results not sorted: {:?}", &w);
+            assert!(w[0].1 <= w[1].1 + 1e-6, "results not sorted: {:?}", w);
         }
     }
 
