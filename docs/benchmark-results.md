@@ -1514,6 +1514,37 @@ Both passed. `cross_algorithm_consistency` was also compiled with only `hnsw`,
 but that integration test is gated on `hnsw,nsw,diskann,sng`, so it emitted
 zero tests in that feature set.
 
+A smaller stop-condition ordering experiment checked `results.len() >= ef`
+before peeking at the result heap. The hypothesis was that early result-fill
+iterations could avoid an unnecessary `peek()` on every candidate pop.
+
+```bash
+CARGO_TARGET_DIR=/tmp/vicinity-hnsw-stopcheck-target CARGO_INCREMENTAL=0 \
+  RUSTC_WRAPPER= cargo bench --bench hnsw_search --no-default-features \
+  --features hnsw -- hnsw_search_ --sample-size 20 --warm-up-time 1 \
+  --measurement-time 3 --save-baseline stopcheck_before
+
+CARGO_TARGET_DIR=/tmp/vicinity-hnsw-stopcheck-target CARGO_INCREMENTAL=0 \
+  RUSTC_WRAPPER= cargo bench --bench hnsw_search --no-default-features \
+  --features hnsw -- hnsw_search_ --sample-size 20 --warm-up-time 1 \
+  --measurement-time 3 --baseline stopcheck_before
+```
+
+| Workload | Criterion mean change | Decision |
+| --- | ---: | --- |
+| `hnsw_search_only/ef/10` | +1.97% time | rejected |
+| `hnsw_search_only/ef/50` | no change | rejected |
+| `hnsw_search_only/ef/100` | no change | rejected |
+| `hnsw_search_only/ef/200` | no change | rejected |
+| `hnsw_search_mmax32/ef/10` | +5.37% time | rejected |
+| `hnsw_search_mmax32/ef/50` | no change | rejected |
+| `hnsw_search_mmax32/ef/100` | within noise threshold | rejected |
+| `hnsw_search_mmax32/ef/200` | within noise threshold | rejected |
+
+The patch was reverted and saved locally as
+`/tmp/vicinity-hnsw-stopcheck-reject.patch`. The low-ef regression means
+candidate-pop branch reordering is not a useful next path on its own.
+
 A follow-up finalization experiment tried to remove the intermediate top-k
 `Vec` allocation in `HNSWIndex::search` by chaining `take(k)` directly into
 the tombstone/doc-id conversion. The intended invariant was unchanged
