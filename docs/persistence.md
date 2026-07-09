@@ -15,6 +15,13 @@ layouts.
 - checkpoints and recovery
 - read-only mmap with access-pattern hints
 
+`vicinity::persistence` is an adapter surface, not a second lower layer. Its
+`Directory` and `PersistenceError` types exist for feature-gated HNSW binary
+segments and for translating persistence failures into vicinity's public error
+types. New WAL, checkpoint, or segmented-update code should use `durability` or
+`segstore` directly unless the API specifically belongs to the HNSW binary
+segment format.
+
 `segstore` is narrower. Use it when the natural unit is an immutable segment
 plus tombstones, compaction, and optional per-segment sidecar indexes. It is a
 good fit for `store::UpdatableIndex` because that type is explicitly a
