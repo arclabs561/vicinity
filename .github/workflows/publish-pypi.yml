@@ -18,10 +18,12 @@ jobs:
     steps:
       - name: Confirm input
         run: |
-          if [ "${{ inputs.confirm }}" != "publish" ]; then
+          if [ "${INPUTS_CONFIRM}" != "publish" ]; then
             echo "Refusing to publish: set workflow input confirm=publish"
             exit 1
           fi
+        env:
+          INPUTS_CONFIRM: ${{ inputs.confirm }}
       - name: Verify CI passed for this SHA
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -85,6 +87,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6.0.2
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v6.2.0
         with:
           python-version: "3.11"
@@ -106,6 +110,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6.0.2
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v6.2.0
         with:
           python-version: "3.11"
