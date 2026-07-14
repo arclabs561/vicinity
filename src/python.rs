@@ -19,7 +19,13 @@ use crate::ivf_pq::{
 };
 
 /// Distance metric for vector comparison.
-#[pyclass(name = "DistanceMetric", module = "pyvicinity", eq, eq_int)]
+#[pyclass(
+    name = "DistanceMetric",
+    module = "pyvicinity",
+    eq,
+    eq_int,
+    from_py_object
+)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PyDistanceMetric {
     /// Euclidean (L2) distance.
