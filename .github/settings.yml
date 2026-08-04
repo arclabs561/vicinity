@@ -16,9 +16,10 @@ repository:
 
   topics:
     - ann
-    - hnsw
     - diskann
-    - vamana
+    - hnsw
     - rust
     - similarity-search
+    - vamana
     - vector-search
+    - vicinity
