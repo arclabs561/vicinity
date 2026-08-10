@@ -63,7 +63,7 @@ need `quantization` plus `rabitq` or `saq`. PQ is part of `ivf_pq`.
 | --- | --- | --- |
 | Small corpus (<10K vectors) | Brute force | HNSW when scale or latency requires |
 | Dense vectors that fit in memory | HNSW | NSW or Vamana |
-| Raw vectors dominate RAM | HNSW, then IVF-PQ | IVF-PQ with reranking |
+| Raw vectors dominate RAM | IVF-PQ or IVF-RaBitQ | Compare recall and probe cost on the target metric |
 | Frequent writes/deletes | Evaluate `store::UpdatableIndex` | Compare FreshGraph, in-place HNSW, and LSM HNSW on churn rows |
 | Metadata filters | HNSW with post-filtering | ACORN, Curator, and FilteredGraph need selectivity sweeps |
 | Sparse learned retrieval | SparseMIPS | Workload-specific sparse baseline |

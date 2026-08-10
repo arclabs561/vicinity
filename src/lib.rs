@@ -20,7 +20,7 @@
 //! # Install
 //!
 //! ```toml
-//! vicinity = { version = "0.10.5", features = ["hnsw"] }
+//! vicinity = { version = "0.11.1", features = ["hnsw"] }
 //! ```
 //!
 //! # Start With HNSW

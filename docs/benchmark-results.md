@@ -2668,6 +2668,53 @@ later duplicate list-raw sidecar experiment was also rejected on full-train
 rows, so the next file-rerank attempt needs a different storage design or read
 plan.
 
+## Current full-corpus compressed-search comparison
+
+The current comparison uses all 1,183,514 GloVe-100 vectors or all 1,000,000
+SIFT-128 vectors, the first 1,000 fixed queries, 100 warmup queries, seed 42,
+Rust 1.97.1, and an Apple M3 Max. Reported bytes are the benchmark runner's
+in-memory heap estimate. Repeated rows report the median of three isolated
+runs; rows marked `screen` are single runs used only to decide whether more
+repeats were warranted.
+
+### GloVe-100 cosine
+
+| Path | Parameters | Recall@10 | QPS | Index bytes | Evidence |
+| --- | --- | ---: | ---: | ---: | --- |
+| HNSW | `ef_search=1600` | 91.51% | 742.3 | 1,501,879,266 | 3-run median |
+| SQ8U | `ef_search=400`, rerank 800 | 95.63% | 470.9 | 1,620,230,666 | 3-run median |
+| SQ4 flat | rerank factor 10 | 99.99% | 25.2 | 906,426,308 | 3-run median |
+| SQ4U | `ef_search=400`, rerank 800 | 95.29% | 294.7 | 1,589,460,502 | screen |
+| IVF-PQ | `nprobe=64`, rerank 1,000 | 84.95% | 754.1 | 879,407,112 | screen |
+| SymphonyQG | `ef_search=400`, rerank 800 | 88.35% | 446.9 | 1,761,109,232 | screen |
+
+SQ8U is the only graph-compressed row in this sweep above 95% recall, but it
+uses more estimated heap than HNSW and trades throughput for recall. SQ4 flat
+is the smaller high-recall point, with much lower throughput. The IVF-PQ and
+SymphonyQG screens did not reach the recall range needed for further repeats.
+
+### SIFT-128 L2
+
+| Path | Parameters | Recall@10 | QPS | Index bytes | Evidence |
+| --- | --- | ---: | ---: | ---: | --- |
+| HNSW | `ef_search=200` | 98.20% | 3,835.5 | 1,381,000,000 | 3-run median |
+| SymphonyQG-VR | `ef_search=100`, rerank 200 | 99.31% | 3,148.2 | 3,332,000,004 | 3-run median |
+| SQ8U | `ef_search=100`, rerank 200 | 99.69% | 1,788.8 | 1,509,000,000 | screen |
+| SQ4U | `ef_search=100`, rerank 200 | 99.69% | 1,249.5 | 1,469,001,536 | screen |
+| IVF-RaBitQ | `nprobe=32` | 96.92% | 128.6 | 840,131,072 | 3-run median |
+| IVF-RaBitQ | `nprobe=64` | 98.47% | 66.1 | 840,131,072 | 3-run median |
+| SQ4 flat | rerank factor 10 | 99.22% | 19.6 | 605,066,752 | 3-run median |
+
+SymphonyQG-VR is a high-memory speed point at this recall: all three runs have
+99.31% recall@10, median throughput is 3,148.2 QPS, and population QPS CV is
+3.23%, but its estimated heap is 2.4 times HNSW's. IVF-RaBitQ is a stable
+memory-first point: its three-run QPS ranges are
+127.8–128.8 at `nprobe=32` and 66.0–66.5 at `nprobe=64`; recall@10 ranges are
+96.86–97.01% and 98.42–98.53%, respectively. At similar recall, HNSW remains
+far faster while using more estimated heap. SQ4 flat is smaller again and
+slower again. The current evidence supports documenting these choices rather
+than adding another quantizer or changing the default index.
+
 ## Legacy GloVe-25 (1.18M vectors, 25-d, angular distance)
 
 Ground truth: brute-force k-NN on L2-normalized vectors (angular ≡ cosine for unit vectors).
@@ -2828,5 +2875,5 @@ on the candidate pool) dominates, negating the savings from quantized graph trav
   (both equally affected; ratios are valid, absolute QPS are ~50% lower than
   solo runs would produce).
 - IVF-PQ with 5 codebooks on 25-d is a known misconfiguration (too coarse).
-- Some algorithms from prior runs (EMG, PiPNN, NSG, IVF-RaBitQ, etc.) are not
+- Some algorithms from prior runs (EMG, PiPNN, NSG, etc.) are not
   yet re-benchmarked with the current optimized codebase.

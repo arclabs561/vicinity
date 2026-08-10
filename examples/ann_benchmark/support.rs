@@ -1394,6 +1394,38 @@ fn parse_usize_list(value: &str, fallback: &[usize]) -> Vec<usize> {
     }
 }
 
+pub(crate) const HELP: &str = "\
+ANN Benchmark
+
+Usage:
+  ann_benchmark [DATASET] [OPTIONS]
+
+Common options:
+  --algo NAME                 Algorithm to benchmark (repeatable)
+  --m N                       Graph degree
+  --ef-construction N         Graph construction depth
+  --ef-search N[,N...]        Search depths
+  --max-train N               Cap indexed vectors
+  --max-queries N             Cap evaluated queries
+  --warmup-queries N          Warmup query count
+  --seed N                    Builder seed
+  --repeat N                  Repeat identity
+  --results PATH              JSONL output path
+  --json                      Emit JSONL rows
+  --resume                    Skip completed rows for this run identity
+  --fresh                     Remove the selected results file first
+  -h, --help                  Print this help and exit
+";
+
+pub(crate) fn help_requested<I, S>(args: I) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    args.into_iter()
+        .any(|arg| matches!(arg.as_ref(), "-h" | "--help"))
+}
+
 pub(crate) fn parse_args() -> Config {
     let args: Vec<String> = std::env::args().collect();
     let mut cfg = Config::default();
@@ -2099,6 +2131,22 @@ pub(crate) fn print_row(param_label: &str, result: &BenchResult) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn help_flags_are_detected_in_any_position() {
+        assert!(help_requested(["--help"]));
+        assert!(help_requested(["dataset", "-h"]));
+        assert!(help_requested(["--algo", "hnsw", "--help"]));
+        assert!(!help_requested(["dataset", "--algo", "hnsw"]));
+    }
+
+    #[test]
+    fn help_text_names_usage_and_non_destructive_output_flags() {
+        assert!(HELP.contains("Usage:"));
+        assert!(HELP.contains("--results PATH"));
+        assert!(HELP.contains("--fresh"));
+        assert!(HELP.contains("--help"));
+    }
 
     fn diskann_line(algorithm: &str, storage: &str) -> String {
         let storage_mode = if storage == "memory" {

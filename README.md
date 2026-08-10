@@ -15,15 +15,15 @@ indexes are feature-gated and documented in
 
 ```toml
 [dependencies]
-vicinity = { version = "0.11.0", features = ["hnsw"] }
+vicinity = { version = "0.11.1", features = ["hnsw"] }
 ```
 
 Optional features enable additional indexes:
 
 ```toml
-vicinity = { version = "0.11.0", features = ["ivf_pq"] }
-vicinity = { version = "0.11.0", features = ["diskann"] }
-vicinity = { version = "0.11.0", features = ["hnsw", "serde"] }
+vicinity = { version = "0.11.1", features = ["ivf_pq"] }
+vicinity = { version = "0.11.1", features = ["diskann"] }
+vicinity = { version = "0.11.1", features = ["hnsw", "serde"] }
 ```
 
 ## HNSW
@@ -164,18 +164,21 @@ cargo run --example ann_benchmark --release --features hnsw,ivf_pq,ivf_avq -- \
   --algo hnsw --algo ivfpq --algo ivf_avq --json --fresh
 ```
 
-Selected GloVe-25 rows. Current validation rows are full-corpus builds with a
-500-query cap recorded in JSONL metadata; historical rows predate the current
-schema.
+Selected current full-corpus rows use 1,000 fixed queries and report the median
+of three isolated runs on an Apple M3 Max with Rust 1.97.1. Index bytes are
+in-memory heap estimates.
 
-| Algorithm | Recall@10 | QPS |
-| --- | ---: | ---: |
-| HNSW (M=16, high-recall historical row) | 100.0% | 2,857 |
-| IVF-PQ `nprobe=32` (current validation) | 95.42% | 2,941 |
-| IVF-PQ, rerank 500 (current validation) | 96.58% | 2,806 |
-| RP-Forest (historical row) | 58.5% | 4,221 |
+| Dataset | Algorithm | Recall@10 | QPS | Index bytes |
+| --- | --- | ---: | ---: | ---: |
+| GloVe-100 cosine | HNSW, `ef_search=1600` | 91.51% | 742.3 | 1,501,879,266 |
+| GloVe-100 cosine | SQ8U, `ef_search=400` | 95.63% | 470.9 | 1,620,230,666 |
+| GloVe-100 cosine | SQ4 flat | 99.99% | 25.2 | 906,426,308 |
+| SIFT-128 L2 | HNSW, `ef_search=200` | 98.20% | 3,835.5 | 1,381,000,000 |
+| SIFT-128 L2 | SymphonyQG-VR, `ef_search=100` | 99.31% | 3,148.2 | 3,332,000,004 |
+| SIFT-128 L2 | IVF-RaBitQ, `nprobe=64` | 98.47% | 66.1 | 840,131,072 |
+| SIFT-128 L2 | SQ4 flat | 99.22% | 19.6 | 605,066,752 |
 
-Current run commands and result interpretation are in
+Commands, repeat spread, single-run screens, and historical results are in
 [`docs/benchmark-results.md`](docs/benchmark-results.md).
 
 ## Choosing an Index
@@ -184,7 +187,7 @@ Current run commands and result interpretation are in
 | --- | --- | --- |
 | Small corpus (<10K vectors) | Brute force | HNSW when scale or latency requires |
 | Dense vectors that fit in memory | HNSW | NSW or Vamana |
-| Raw vectors dominate RAM | HNSW, then IVF-PQ | IVF-PQ with reranking |
+| Raw vectors dominate RAM | IVF-PQ or IVF-RaBitQ | Compare recall and probe cost on the target metric |
 | Frequent writes/deletes | Evaluate `store::UpdatableIndex` | Compare FreshGraph, in-place HNSW, and LSM HNSW on churn rows |
 | Metadata filters | HNSW with post-filtering | ACORN, Curator, and FilteredGraph need selectivity sweeps |
 | Sparse learned retrieval | SparseMIPS | Workload-specific sparse baseline |

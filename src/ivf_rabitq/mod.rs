@@ -1079,6 +1079,43 @@ mod tests {
     }
 
     #[test]
+    fn load_rejects_truncated_raw_vectors() {
+        let dim = 32;
+        let n = 256;
+        let data = make_vectors(n, dim, 105);
+        let doc_ids: Vec<u32> = (0..n as u32).collect();
+
+        let params = IVFRaBitQParams {
+            num_clusters: 256,
+            nprobe: 4,
+            total_bits: 4,
+            seed: 105,
+        };
+        let mut index = IVFRaBitQIndex::new(dim, params).unwrap();
+        index.add_batch(&doc_ids, &data).unwrap();
+        index.build().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        index.save_to_dir(dir.path()).unwrap();
+        let raw_vectors_path = dir.path().join("raw_vectors.bin");
+        let raw_vectors = std::fs::read(&raw_vectors_path).unwrap();
+        std::fs::write(&raw_vectors_path, &raw_vectors[..raw_vectors.len() - 1]).unwrap();
+
+        let err = match IVFRaBitQIndex::load_from_dir(dir.path()) {
+            Ok(_) => panic!("truncated raw vectors should fail"),
+            Err(err) => err,
+        };
+        assert!(
+            matches!(err, RetrieveError::FormatError(_)),
+            "unexpected error: {err}"
+        );
+        assert!(
+            err.to_string().contains("raw_vectors.bin size mismatch"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn save_rejects_compacted_index() {
         let dim = 32;
         let n = 100;

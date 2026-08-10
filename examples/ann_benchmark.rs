@@ -112,9 +112,9 @@ use support::rp_forest_params_json;
 use support::tree_params_json;
 use support::{
     active_features_json, algorithm_options_help, brute_force_search, cpu_model, current_rss_kb,
-    emit_result, evaluate, json_line_with_storage, load_completed_results_for_run, parse_args,
-    print_header, print_row, request_completed, rustc_version, seed_fingerprint, set_run_identity,
-    set_warmup_queries, should_emit_run_meta, Config, ResultStorage,
+    emit_result, evaluate, help_requested, json_line_with_storage, load_completed_results_for_run,
+    parse_args, print_header, print_row, request_completed, rustc_version, seed_fingerprint,
+    set_run_identity, set_warmup_queries, should_emit_run_meta, Config, ResultStorage, HELP,
 };
 #[cfg(feature = "kmeans_tree")]
 use support::{kmeans_tree_leaf_budget_params_json, kmeans_tree_params_json};
@@ -3787,6 +3787,11 @@ fn run_kmeans_tree(
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if help_requested(std::env::args().skip(1)) {
+        print!("{HELP}");
+        return Ok(());
+    }
+
     let cfg = parse_args();
     set_warmup_queries(cfg.warmup_queries);
     set_run_identity(cfg.seed, cfg.repeat);
