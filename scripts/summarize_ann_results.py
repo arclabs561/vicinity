@@ -267,8 +267,7 @@ class Summary:
             for rows_by_run in (self.repeat_groups or {}).values()
             if len(rows_by_run) >= min_repeats
             and statistics.median(
-                float(row.get("recall_at_10", 0.0))
-                for row in rows_by_run.values()
+                float(row.get("recall_at_10", 0.0)) for row in rows_by_run.values()
             )
             >= recall_floor
         ]
@@ -281,12 +280,28 @@ class Summary:
         result: dict[str, Any] = {
             "repeats": len(group),
             "run_ids": sorted(
-                str(row["run_id"]) for row in group if isinstance(row.get("run_id"), str)
+                str(row["run_id"])
+                for row in group
+                if isinstance(row.get("run_id"), str)
             ),
-            "params": group[0].get("params") if isinstance(group[0].get("params"), dict) else None,
+            "params": group[0].get("params")
+            if isinstance(group[0].get("params"), dict)
+            else None,
         }
-        for key in ("qps", "latency_us", "p95_us", "p99_us", "recall_at_1", "recall_at_10", "recall_at_100"):
-            values = [float(row[key]) for row in group if isinstance(row.get(key), (int, float))]
+        for key in (
+            "qps",
+            "latency_us",
+            "p95_us",
+            "p99_us",
+            "recall_at_1",
+            "recall_at_10",
+            "recall_at_100",
+        ):
+            values = [
+                float(row[key])
+                for row in group
+                if isinstance(row.get(key), (int, float))
+            ]
             if values:
                 result[f"{key}_median"] = statistics.median(values)
                 result[f"{key}_min"] = min(values)

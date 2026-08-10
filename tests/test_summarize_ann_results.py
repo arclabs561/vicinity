@@ -27,9 +27,42 @@ def test_repeat_aggregation_reports_median_and_full_spread(tmp_path: Path) -> No
     path = tmp_path / "repeats.jsonl"
     rows = [
         {"_meta": {"dataset": "data/glove", "result_schema": 3}},
-        {"algorithm": "hnsw", "storage_mode": "in_memory", "params": {"ef": 50}, "run_id": "r0", "repeat": 0, "recall_at_1": 0.8, "recall_at_10": 0.9, "recall_at_100": 0.95, "qps": 100.0, "latency_us": 10.0},
-        {"algorithm": "hnsw", "storage_mode": "in_memory", "params": {"ef": 50}, "run_id": "r1", "repeat": 1, "recall_at_1": 1.0, "recall_at_10": 1.0, "recall_at_100": 0.99, "qps": 80.0, "latency_us": 12.0},
-        {"algorithm": "hnsw", "storage_mode": "in_memory", "params": {"ef": 50}, "run_id": "r2", "repeat": 2, "recall_at_1": 0.9, "recall_at_10": 0.95, "recall_at_100": 0.97, "qps": 90.0, "latency_us": 11.0},
+        {
+            "algorithm": "hnsw",
+            "storage_mode": "in_memory",
+            "params": {"ef": 50},
+            "run_id": "r0",
+            "repeat": 0,
+            "recall_at_1": 0.8,
+            "recall_at_10": 0.9,
+            "recall_at_100": 0.95,
+            "qps": 100.0,
+            "latency_us": 10.0,
+        },
+        {
+            "algorithm": "hnsw",
+            "storage_mode": "in_memory",
+            "params": {"ef": 50},
+            "run_id": "r1",
+            "repeat": 1,
+            "recall_at_1": 1.0,
+            "recall_at_10": 1.0,
+            "recall_at_100": 0.99,
+            "qps": 80.0,
+            "latency_us": 12.0,
+        },
+        {
+            "algorithm": "hnsw",
+            "storage_mode": "in_memory",
+            "params": {"ef": 50},
+            "run_id": "r2",
+            "repeat": 2,
+            "recall_at_1": 0.9,
+            "recall_at_10": 0.95,
+            "recall_at_100": 0.97,
+            "qps": 90.0,
+            "latency_us": 11.0,
+        },
     ]
     path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
 
@@ -63,14 +96,36 @@ def test_repeat_aggregation_dedupes_ids_and_ignores_fast_unqualified_group(
     )
     rows.extend(
         [
-            {"algorithm": "hnsw", "storage_mode": "in_memory", "params": {"ef": 5}, "run_id": "fast", "recall_at_10": 0.5, "qps": 1000.0},
-            {"algorithm": "hnsw", "storage_mode": "in_memory", "params": {"ef": 5}, "run_id": "fast", "recall_at_10": 0.5, "qps": 2000.0},
-            {"algorithm": "hnsw", "storage_mode": "in_memory", "params": {"ef": 50}, "recall_at_10": 1.0, "qps": 9999.0},
+            {
+                "algorithm": "hnsw",
+                "storage_mode": "in_memory",
+                "params": {"ef": 5},
+                "run_id": "fast",
+                "recall_at_10": 0.5,
+                "qps": 1000.0,
+            },
+            {
+                "algorithm": "hnsw",
+                "storage_mode": "in_memory",
+                "params": {"ef": 5},
+                "run_id": "fast",
+                "recall_at_10": 0.5,
+                "qps": 2000.0,
+            },
+            {
+                "algorithm": "hnsw",
+                "storage_mode": "in_memory",
+                "params": {"ef": 50},
+                "recall_at_10": 1.0,
+                "qps": 9999.0,
+            },
         ]
     )
     path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
 
-    aggregate = script.load_summaries([path])[("glove", "hnsw", "in_memory")].aggregate()
+    aggregate = script.load_summaries([path])[
+        ("glove", "hnsw", "in_memory")
+    ].aggregate()
     assert aggregate is not None
     assert aggregate["params"] == {"ef": 50}
     assert aggregate["repeats"] == 3
