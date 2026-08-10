@@ -70,6 +70,7 @@ fn opened_storage_with_diagnostics(
     }
 }
 
+#[cfg(any(feature = "ivf_pq", feature = "ivf_avq"))]
 fn add_multi_recall(totals: &mut [f64; 3], truth: &[i32], results: &[(u32, f32)]) {
     use std::collections::HashSet;
     for (slot, depth) in [1, 10, 100].into_iter().enumerate() {
