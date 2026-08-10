@@ -5,11 +5,13 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Instant;
 
 pub(crate) const DEFAULT_WARMUP_QUERIES: usize = 50;
 static WARMUP_QUERIES: AtomicUsize = AtomicUsize::new(DEFAULT_WARMUP_QUERIES);
+static RUN_SEED: AtomicU64 = AtomicU64::new(42);
+static RUN_REPEAT: AtomicUsize = AtomicUsize::new(0);
 
 pub(crate) const ALGORITHM_OPTIONS: &[&str] = &[
     "hnsw",
@@ -128,6 +130,54 @@ pub(crate) fn warmup_queries() -> usize {
     WARMUP_QUERIES.load(Ordering::Relaxed)
 }
 
+pub(crate) fn set_run_identity(seed: u64, repeat: usize) {
+    RUN_SEED.store(seed, Ordering::Relaxed);
+    RUN_REPEAT.store(repeat, Ordering::Relaxed);
+}
+
+pub(crate) fn should_emit_run_meta(json: bool, resume: bool, results_exist: bool) -> bool {
+    json && (!resume || !results_exist)
+}
+
+fn run_identity() -> (u64, usize, String) {
+    let seed = RUN_SEED.load(Ordering::Relaxed);
+    let repeat = RUN_REPEAT.load(Ordering::Relaxed);
+    (seed, repeat, format!("seed-{seed}-repeat-{repeat}"))
+}
+
+pub(crate) fn seed_fingerprint(seed: u64) -> String {
+    let mut value = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    value = (value ^ (value >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    format!("{:016x}", value ^ (value >> 31))
+}
+
+pub(crate) fn cpu_model() -> String {
+    let value = if cfg!(target_os = "macos") {
+        Command::new("sysctl")
+            .args(["-n", "machdep.cpu.brand_string"])
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    } else {
+        std::fs::read_to_string("/proc/cpuinfo")
+            .ok()
+            .and_then(|contents| {
+                contents.lines().find_map(|line| {
+                    line.strip_prefix("model name")
+                        .and_then(|value| value.split_once(':'))
+                        .map(|(_, value)| value.trim().to_owned())
+                })
+            })
+    };
+    value
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "unknown".to_owned())
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+}
+
 pub(crate) struct Config {
     pub(crate) data_dir: String,
     pub(crate) algos: Vec<String>,
@@ -159,6 +209,8 @@ pub(crate) struct Config {
     pub(crate) max_train: Option<usize>,
     pub(crate) max_queries: Option<usize>,
     pub(crate) warmup_queries: usize,
+    pub(crate) seed: u64,
+    pub(crate) repeat: usize,
     pub(crate) churn_base_size: usize,
     pub(crate) churn_cycles: usize,
     pub(crate) churn_queries: usize,
@@ -197,6 +249,8 @@ impl Default for Config {
             max_train: None,
             max_queries: None,
             warmup_queries: DEFAULT_WARMUP_QUERIES,
+            seed: 42,
+            repeat: 0,
             churn_base_size: 50_000,
             churn_cycles: 5_000,
             churn_queries: 1_000,
@@ -295,8 +349,10 @@ fn meta_warmup_field_matches(line: &str, expected: usize) -> bool {
 }
 
 fn meta_has_current_result_contract(line: &str) -> bool {
-    json_value_field(line, "result_schema").map(str::trim) == Some("2")
-        && json_value_field(line, "index_bytes_required").map(str::trim) == Some("true")
+    matches!(
+        json_value_field(line, "result_schema").map(str::trim),
+        Some("2" | "3")
+    ) && json_value_field(line, "index_bytes_required").map(str::trim) == Some("true")
 }
 
 #[cfg(test)]
@@ -315,12 +371,56 @@ pub(crate) fn load_completed_results(
     )
 }
 
+#[cfg(test)]
 pub(crate) fn load_completed_results_with_warmup(
     path: &Path,
     expected_dataset: &str,
     expected_train_limit: Option<usize>,
     expected_query_limit: Option<usize>,
     expected_warmup_queries: usize,
+) -> CompletedResults {
+    load_completed_results_impl(
+        path,
+        expected_dataset,
+        expected_train_limit,
+        expected_query_limit,
+        expected_warmup_queries,
+        42,
+        0,
+        false,
+    )
+}
+
+pub(crate) fn load_completed_results_for_run(
+    path: &Path,
+    expected_dataset: &str,
+    expected_train_limit: Option<usize>,
+    expected_query_limit: Option<usize>,
+    expected_warmup_queries: usize,
+    expected_seed: u64,
+    expected_repeat: usize,
+) -> CompletedResults {
+    load_completed_results_impl(
+        path,
+        expected_dataset,
+        expected_train_limit,
+        expected_query_limit,
+        expected_warmup_queries,
+        expected_seed,
+        expected_repeat,
+        true,
+    )
+}
+
+fn load_completed_results_impl(
+    path: &Path,
+    expected_dataset: &str,
+    expected_train_limit: Option<usize>,
+    expected_query_limit: Option<usize>,
+    expected_warmup_queries: usize,
+    expected_seed: u64,
+    expected_repeat: usize,
+    require_run_identity: bool,
 ) -> CompletedResults {
     let mut counts = HashMap::new();
     let mut lines = Vec::new();
@@ -341,6 +441,13 @@ pub(crate) fn load_completed_results_with_warmup(
                     || !meta_usize_field_matches(&line, "train_limit", expected_train_limit)
                     || !meta_usize_field_matches(&line, "query_limit", expected_query_limit)
                     || !meta_warmup_field_matches(&line, expected_warmup_queries)
+                    || (require_run_identity
+                        && (json_value_field(&line, "result_schema").map(str::trim) != Some("3")
+                            || json_value_field(&line, "seed").and_then(|v| v.trim().parse().ok())
+                                != Some(expected_seed)
+                            || json_value_field(&line, "repeat")
+                                .and_then(|v| v.trim().parse().ok())
+                                != Some(expected_repeat)))
                 {
                     has_mismatched_meta = true;
                     active_dataset_matches = false;
@@ -1451,6 +1558,18 @@ pub(crate) fn parse_args() -> Config {
                     cfg.warmup_queries = args[i].parse().unwrap_or(DEFAULT_WARMUP_QUERIES);
                 }
             }
+            "--seed" => {
+                i += 1;
+                if i < args.len() {
+                    cfg.seed = args[i].parse().unwrap_or(42);
+                }
+            }
+            "--repeat" => {
+                i += 1;
+                if i < args.len() {
+                    cfg.repeat = args[i].parse().unwrap_or(0);
+                }
+            }
             "--churn-base-size" => {
                 i += 1;
                 if i < args.len() {
@@ -1528,6 +1647,9 @@ pub(crate) fn ivfpq_params_json(
 
 pub(crate) struct BenchResult {
     pub(crate) recall_at_k: f64,
+    pub(crate) recall_at_1: f64,
+    pub(crate) recall_at_100: f64,
+    pub(crate) search_k: usize,
     pub(crate) qps: f64,
     pub(crate) latency_us: f64,
     pub(crate) p50_us: f64,
@@ -1663,13 +1785,21 @@ pub(crate) fn json_line_with_storage(
     result: &BenchResult,
     storage: &ResultStorage<'_>,
 ) -> String {
+    let (seed, repeat, run_id) = run_identity();
     let mut s = format!(
-        "{{\"algorithm\":\"{}\",\"params\":{},\"storage_mode\":\"{}\",\"cache_state\":\"{}\",\"recall_at_10\":{:.4},\"qps\":{:.1},\"build_time_s\":{:.2},\"latency_us\":{:.1},\"p50_us\":{:.1},\"p95_us\":{:.1},\"p99_us\":{:.1}",
+        "{{\"algorithm\":\"{}\",\"params\":{},\"storage_mode\":\"{}\",\"cache_state\":\"{}\",\"seed\":{},\"repeat\":{},\"run_id\":\"{}\",\"seed_fingerprint\":\"{}\",\"recall_at_1\":{:.4},\"recall_at_10\":{:.4},\"recall_at_100\":{:.4},\"search_k\":{},\"qps\":{:.1},\"build_time_s\":{:.2},\"latency_us\":{:.1},\"p50_us\":{:.1},\"p95_us\":{:.1},\"p99_us\":{:.1}",
         algorithm,
         params,
         storage.storage_mode,
         storage.cache_state,
+        seed,
+        repeat,
+        run_id,
+        seed_fingerprint(seed),
+        result.recall_at_1,
         result.recall_at_k,
+        result.recall_at_100,
+        result.search_k,
         result.qps,
         build_time_s,
         result.latency_us,
@@ -1728,25 +1858,29 @@ pub(crate) fn evaluate(
     search_fn: &dyn Fn(&[f32], usize) -> Vec<(u32, f32)>,
     test: &[Vec<f32>],
     neighbors: &[Vec<i32>],
-    k: usize,
+    _k: usize,
 ) -> BenchResult {
+    let search_k = neighbors.first().map_or(1, |row| row.len().min(100));
     let warmup_count = warmup_queries().min(test.len());
     for query in test.iter().take(warmup_count) {
-        let _ = search_fn(query, k);
+        let _ = search_fn(query, search_k);
     }
 
-    let mut total_recall = 0.0;
+    let mut recalls = [0.0; 3];
     let mut latencies_us: Vec<f64> = Vec::with_capacity(test.len());
 
     for (i, query) in test.iter().enumerate() {
         let q_start = Instant::now();
-        let results = search_fn(query, k);
+        let results = search_fn(query, search_k);
         let q_elapsed = q_start.elapsed();
         latencies_us.push(q_elapsed.as_nanos() as f64 / 1000.0);
 
-        let gt_set: HashSet<u32> = neighbors[i].iter().take(k).map(|&n| n as u32).collect();
-        let found: HashSet<u32> = results.iter().map(|r| r.0).collect();
-        total_recall += gt_set.intersection(&found).count() as f64 / k as f64;
+        for (slot, depth) in [1, 10, 100].into_iter().enumerate() {
+            let depth = depth.min(search_k);
+            let gt_set: HashSet<u32> = neighbors[i].iter().take(depth).map(|&n| n as u32).collect();
+            let found: HashSet<u32> = results.iter().take(depth).map(|r| r.0).collect();
+            recalls[slot] += gt_set.intersection(&found).count() as f64 / depth as f64;
+        }
     }
 
     latencies_us.sort_unstable_by(|a, b| a.total_cmp(b));
@@ -1754,7 +1888,10 @@ pub(crate) fn evaluate(
     let total_us: f64 = latencies_us.iter().sum();
 
     BenchResult {
-        recall_at_k: total_recall / n as f64,
+        recall_at_k: recalls[1] / n as f64,
+        recall_at_1: recalls[0] / n as f64,
+        recall_at_100: recalls[2] / n as f64,
+        search_k,
         qps: n as f64 / (total_us / 1_000_000.0),
         latency_us: total_us / n as f64,
         p50_us: latencies_us[n / 2],
@@ -1768,31 +1905,37 @@ pub(crate) fn evaluate_parallel<F>(
     search_fn: F,
     test: &[Vec<f32>],
     neighbors: &[Vec<i32>],
-    k: usize,
+    _k: usize,
 ) -> BenchResult
 where
     F: Fn(&[f32], usize) -> Vec<(u32, f32)> + Sync,
 {
     use rayon::prelude::*;
+    let search_k = neighbors.first().map_or(1, |row| row.len().min(100));
 
     let warmup_count = warmup_queries().min(test.len());
     for query in test.iter().take(warmup_count) {
-        let _ = search_fn(query, k);
+        let _ = search_fn(query, search_k);
     }
 
     let batch_start = Instant::now();
-    let mut per_query: Vec<(f64, f64)> = test
+    let mut per_query: Vec<(f64, [f64; 3])> = test
         .par_iter()
         .enumerate()
         .map(|(i, query)| {
             let q_start = Instant::now();
-            let results = search_fn(query, k);
+            let results = search_fn(query, search_k);
             let latency_us = q_start.elapsed().as_nanos() as f64 / 1000.0;
 
-            let gt_set: HashSet<u32> = neighbors[i].iter().take(k).map(|&n| n as u32).collect();
-            let found: HashSet<u32> = results.iter().map(|r| r.0).collect();
-            let recall = gt_set.intersection(&found).count() as f64 / k as f64;
-            (latency_us, recall)
+            let mut recalls = [0.0; 3];
+            for (slot, depth) in [1, 10, 100].into_iter().enumerate() {
+                let depth = depth.min(search_k);
+                let gt_set: HashSet<u32> =
+                    neighbors[i].iter().take(depth).map(|&n| n as u32).collect();
+                let found: HashSet<u32> = results.iter().take(depth).map(|r| r.0).collect();
+                recalls[slot] = gt_set.intersection(&found).count() as f64 / depth as f64;
+            }
+            (latency_us, recalls)
         })
         .collect();
     let elapsed_s = batch_start.elapsed().as_secs_f64();
@@ -1800,10 +1943,18 @@ where
     per_query.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
     let n = per_query.len();
     let total_latency_us: f64 = per_query.iter().map(|(latency, _)| *latency).sum();
-    let total_recall: f64 = per_query.iter().map(|(_, recall)| *recall).sum();
+    let totals = per_query.iter().fold([0.0; 3], |mut totals, (_, recalls)| {
+        for i in 0..3 {
+            totals[i] += recalls[i];
+        }
+        totals
+    });
 
     BenchResult {
-        recall_at_k: total_recall / n as f64,
+        recall_at_k: totals[1] / n as f64,
+        recall_at_1: totals[0] / n as f64,
+        recall_at_100: totals[2] / n as f64,
+        search_k,
         qps: n as f64 / elapsed_s,
         latency_us: total_latency_us / n as f64,
         p50_us: per_query[n / 2].0,
@@ -2081,6 +2232,9 @@ mod tests {
     fn sample_result() -> BenchResult {
         BenchResult {
             recall_at_k: 1.0,
+            recall_at_1: 1.0,
+            recall_at_100: 1.0,
+            search_k: 100,
             qps: 10.0,
             latency_us: 100.0,
             p50_us: 90.0,
@@ -3357,5 +3511,72 @@ mod tests {
         assert!(!request_completed(
             &completed, "kdtree", &cfg, 25, 1_000, 100
         ));
+    }
+
+    #[test]
+    fn seed_identity_is_stable_and_seed_sensitive() {
+        assert_eq!(seed_fingerprint(7), seed_fingerprint(7));
+        assert_ne!(seed_fingerprint(7), seed_fingerprint(8));
+    }
+
+    #[test]
+    fn evaluator_reports_recall_at_all_contract_depths() {
+        let test = vec![vec![0.0]];
+        let neighbors = vec![(0..100).collect::<Vec<i32>>()];
+        let result = evaluate(
+            &|_, k| (0..k).map(|id| (id as u32, id as f32)).collect(),
+            &test,
+            &neighbors,
+            10,
+        );
+        assert_eq!(result.recall_at_1, 1.0);
+        assert_eq!(result.recall_at_k, 1.0);
+        assert_eq!(result.recall_at_100, 1.0);
+    }
+
+    #[test]
+    fn recall_denominator_is_requested_depth_not_returned_length() {
+        let test = vec![vec![0.0]];
+        let neighbors = vec![(0..100).collect::<Vec<i32>>()];
+        let result = evaluate(&|_, _| vec![(0, 0.0)], &test, &neighbors, 10);
+        assert_eq!(result.recall_at_1, 1.0);
+        assert_eq!(result.recall_at_k, 0.1);
+        assert_eq!(result.recall_at_100, 0.01);
+        assert_eq!(result.search_k, 100);
+
+        let short_truth = vec![vec![0, 1, 2]];
+        let short = evaluate(
+            &|_, k| (0..k).map(|id| (id as u32, id as f32)).collect(),
+            &test,
+            &short_truth,
+            10,
+        );
+        assert_eq!(short.search_k, 3);
+        assert_eq!(short.recall_at_100, 1.0);
+    }
+
+    #[test]
+    fn non_resume_json_append_starts_fresh_metadata_scope() {
+        assert!(should_emit_run_meta(true, false, true));
+        assert!(should_emit_run_meta(true, true, false));
+        assert!(!should_emit_run_meta(true, true, true));
+        assert!(!should_emit_run_meta(false, false, false));
+    }
+
+    #[test]
+    fn resume_scope_distinguishes_repeat_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("results.jsonl");
+        std::fs::write(
+            &path,
+            "{\"_meta\":{\"dataset\":\"data/a\",\"result_schema\":3,\"index_bytes_required\":true,\"seed\":7,\"repeat\":0,\"train_limit\":null,\"query_limit\":null,\"warmup_queries\":50}}\n{\"algorithm\":\"hnsw\",\"params\":{},\"recall_at_10\":1.0}\n",
+        )
+        .unwrap();
+
+        let first = load_completed_results_for_run(&path, "data/a", None, None, 50, 7, 0);
+        let second = load_completed_results_for_run(&path, "data/a", None, None, 50, 7, 1);
+        assert_eq!(first.counts.get("hnsw"), Some(&1));
+        assert!(second.counts.is_empty());
+        assert!(second.has_mismatched_meta);
     }
 }

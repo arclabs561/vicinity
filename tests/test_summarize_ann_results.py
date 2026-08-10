@@ -22,6 +22,92 @@ def load_script() -> ModuleType:
     return module
 
 
+def test_repeat_aggregation_reports_median_and_full_spread(tmp_path: Path) -> None:
+    script = load_script()
+    path = tmp_path / "repeats.jsonl"
+    rows = [
+        {"_meta": {"dataset": "data/glove", "result_schema": 3}},
+        {"algorithm": "hnsw", "storage_mode": "in_memory", "params": {"ef": 50}, "run_id": "r0", "repeat": 0, "recall_at_1": 0.8, "recall_at_10": 0.9, "recall_at_100": 0.95, "qps": 100.0, "latency_us": 10.0},
+        {"algorithm": "hnsw", "storage_mode": "in_memory", "params": {"ef": 50}, "run_id": "r1", "repeat": 1, "recall_at_1": 1.0, "recall_at_10": 1.0, "recall_at_100": 0.99, "qps": 80.0, "latency_us": 12.0},
+        {"algorithm": "hnsw", "storage_mode": "in_memory", "params": {"ef": 50}, "run_id": "r2", "repeat": 2, "recall_at_1": 0.9, "recall_at_10": 0.95, "recall_at_100": 0.97, "qps": 90.0, "latency_us": 11.0},
+    ]
+    path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+
+    summary = script.load_summaries([path])[("glove", "hnsw", "in_memory")]
+    aggregate = summary.aggregate()
+    assert aggregate is not None
+    assert aggregate["repeats"] == 3
+    assert aggregate["run_ids"] == ["r0", "r1", "r2"]
+    assert aggregate["qps_median"] == 90.0
+    assert aggregate["qps_spread"] == 20.0
+    assert aggregate["recall_at_10_median"] == 0.95
+    assert aggregate["recall_at_10_spread"] == pytest.approx(0.1)
+
+
+def test_repeat_aggregation_dedupes_ids_and_ignores_fast_unqualified_group(
+    tmp_path: Path,
+) -> None:
+    script = load_script()
+    path = tmp_path / "selection.jsonl"
+    rows = [{"_meta": {"dataset": "data/glove", "result_schema": 3}}]
+    rows.extend(
+        {
+            "algorithm": "hnsw",
+            "storage_mode": "in_memory",
+            "params": {"ef": 50},
+            "run_id": f"qualified-{repeat}",
+            "recall_at_10": 0.96,
+            "qps": qps,
+        }
+        for repeat, qps in enumerate((80.0, 90.0, 100.0))
+    )
+    rows.extend(
+        [
+            {"algorithm": "hnsw", "storage_mode": "in_memory", "params": {"ef": 5}, "run_id": "fast", "recall_at_10": 0.5, "qps": 1000.0},
+            {"algorithm": "hnsw", "storage_mode": "in_memory", "params": {"ef": 5}, "run_id": "fast", "recall_at_10": 0.5, "qps": 2000.0},
+            {"algorithm": "hnsw", "storage_mode": "in_memory", "params": {"ef": 50}, "recall_at_10": 1.0, "qps": 9999.0},
+        ]
+    )
+    path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+
+    aggregate = script.load_summaries([path])[("glove", "hnsw", "in_memory")].aggregate()
+    assert aggregate is not None
+    assert aggregate["params"] == {"ef": 50}
+    assert aggregate["repeats"] == 3
+    assert aggregate["qps_median"] == 90.0
+
+
+def test_repeat_aggregation_keeps_cache_states_separate(tmp_path: Path) -> None:
+    script = load_script()
+    path = tmp_path / "cache-states.jsonl"
+    rows = [{"_meta": {"dataset": "data/glove", "result_schema": 3}}]
+    for cache_state, qps_values in (
+        ("warm", (100.0, 110.0, 120.0)),
+        ("reopened", (10.0, 11.0, 12.0)),
+    ):
+        rows.extend(
+            {
+                "algorithm": "hnsw",
+                "storage_mode": "snapshot_loaded",
+                "cache_state": cache_state,
+                "params": {"ef": 50},
+                "search_k": 100,
+                "run_id": f"{cache_state}-{repeat}",
+                "recall_at_10": 0.96,
+                "qps": qps,
+            }
+            for repeat, qps in enumerate(qps_values)
+        )
+    path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+
+    aggregate = script.load_summaries([path])[
+        ("glove", "hnsw", "snapshot_loaded")
+    ].aggregate()
+    assert aggregate is not None
+    assert aggregate["qps_median"] == 110.0
+    assert aggregate["run_ids"] == ["warm-0", "warm-1", "warm-2"]
+
+
 def test_load_summaries_groups_by_dataset_algorithm_and_storage(tmp_path: Path) -> None:
     script = load_script()
     path = tmp_path / "rows.jsonl"

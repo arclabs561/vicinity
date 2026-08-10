@@ -111,9 +111,10 @@ use support::rp_forest_params_json;
 #[cfg(any(feature = "balltree", feature = "kdtree", feature = "rptree"))]
 use support::tree_params_json;
 use support::{
-    active_features_json, algorithm_options_help, brute_force_search, current_rss_kb, emit_result,
-    evaluate, json_line_with_storage, load_completed_results_with_warmup, parse_args, print_header,
-    print_row, request_completed, rustc_version, set_warmup_queries, Config, ResultStorage,
+    active_features_json, algorithm_options_help, brute_force_search, cpu_model, current_rss_kb,
+    emit_result, evaluate, json_line_with_storage, load_completed_results_for_run, parse_args,
+    print_header, print_row, request_completed, rustc_version, seed_fingerprint, set_run_identity,
+    set_warmup_queries, should_emit_run_meta, Config, ResultStorage,
 };
 #[cfg(feature = "kmeans_tree")]
 use support::{kmeans_tree_leaf_budget_params_json, kmeans_tree_params_json};
@@ -248,6 +249,7 @@ fn run_hnsw(
         ef_construction: cfg.ef_construction,
         metric,
         auto_normalize: !cfg.is_euclidean,
+        seed: Some(cfg.seed),
         ..Default::default()
     };
 
@@ -401,7 +403,7 @@ fn run_dual_branch(
         m_high_lid: (cfg.m + cfg.m / 2).max(cfg.m + 1),
         ef_construction: cfg.ef_construction,
         ef_search: 50,
-        seed: Some(42),
+        seed: Some(cfg.seed),
         ..Default::default()
     };
 
@@ -1213,7 +1215,10 @@ fn run_vamana(
         println!("--- Vamana ---");
     }
 
-    let params = VamanaParams::default();
+    let params = VamanaParams {
+        seed: Some(cfg.seed),
+        ..VamanaParams::default()
+    };
 
     let build_start = Instant::now();
     let mut index = VamanaIndex::new(dim, params).unwrap();
@@ -1343,22 +1348,33 @@ impl DiskAnnDiagnosticsTotals {
 }
 
 #[cfg(feature = "diskann")]
+fn add_diskann_multi_recall(totals: &mut [f64; 3], truth: &[i32], results: &[(u32, f32)]) {
+    use std::collections::HashSet;
+    for (slot, depth) in [1, 10, 100].into_iter().enumerate() {
+        let depth = depth.min(truth.len()).max(1);
+        let expected: HashSet<u32> = truth.iter().take(depth).map(|&id| id as u32).collect();
+        let found: HashSet<u32> = results.iter().take(depth).map(|row| row.0).collect();
+        totals[slot] += expected.intersection(&found).count() as f64 / depth as f64;
+    }
+}
+
+#[cfg(feature = "diskann")]
 fn evaluate_diskann_searcher(
     searcher: &std::cell::RefCell<vicinity::diskann::DiskANNSearcher>,
     test: &[Vec<f32>],
     neighbors: &[Vec<i32>],
-    k: usize,
+    _k: usize,
     ef_search: usize,
 ) -> (BenchResult, StorageDiagnostics) {
-    use std::collections::HashSet;
     use std::time::Instant;
 
+    let k = neighbors.first().map_or(1, |row| row.len().min(100));
     let warmup_count = support::warmup_queries().min(test.len());
     for query in test.iter().take(warmup_count) {
         let _ = searcher.borrow_mut().search(query, k, ef_search);
     }
 
-    let mut total_recall = 0.0;
+    let mut recalls = [0.0; 3];
     let mut latencies_us: Vec<f64> = Vec::with_capacity(test.len());
     let mut diagnostics = DiskAnnDiagnosticsTotals::default();
 
@@ -1372,9 +1388,7 @@ fn evaluate_diskann_searcher(
         latencies_us.push(q_elapsed.as_nanos() as f64 / 1000.0);
         diagnostics.record(query_diagnostics);
 
-        let gt_set: HashSet<u32> = neighbors[i].iter().take(k).map(|&n| n as u32).collect();
-        let found: HashSet<u32> = results.iter().map(|r| r.0).collect();
-        total_recall += gt_set.intersection(&found).count() as f64 / k as f64;
+        add_diskann_multi_recall(&mut recalls, &neighbors[i], &results);
     }
 
     latencies_us.sort_unstable_by(|a, b| a.total_cmp(b));
@@ -1383,7 +1397,10 @@ fn evaluate_diskann_searcher(
 
     (
         BenchResult {
-            recall_at_k: total_recall / n as f64,
+            recall_at_k: recalls[1] / n as f64,
+            recall_at_1: recalls[0] / n as f64,
+            recall_at_100: recalls[2] / n as f64,
+            search_k: k,
             qps: n as f64 / (total_us / 1_000_000.0),
             latency_us: total_us / n as f64,
             p50_us: latencies_us[n / 2],
@@ -1399,18 +1416,18 @@ fn evaluate_diskann_page_searcher(
     searcher: &std::cell::RefCell<vicinity::diskann::DiskANNPageSearcher>,
     test: &[Vec<f32>],
     neighbors: &[Vec<i32>],
-    k: usize,
+    _k: usize,
     ef_search: usize,
 ) -> (BenchResult, StorageDiagnostics) {
-    use std::collections::HashSet;
     use std::time::Instant;
 
+    let k = neighbors.first().map_or(1, |row| row.len().min(100));
     let warmup_count = support::warmup_queries().min(test.len());
     for query in test.iter().take(warmup_count) {
         let _ = searcher.borrow_mut().search(query, k, ef_search);
     }
 
-    let mut total_recall = 0.0;
+    let mut recalls = [0.0; 3];
     let mut latencies_us: Vec<f64> = Vec::with_capacity(test.len());
     let mut diagnostics = DiskAnnDiagnosticsTotals::default();
 
@@ -1424,9 +1441,7 @@ fn evaluate_diskann_page_searcher(
         latencies_us.push(q_elapsed.as_nanos() as f64 / 1000.0);
         diagnostics.record(query_diagnostics);
 
-        let gt_set: HashSet<u32> = neighbors[i].iter().take(k).map(|&n| n as u32).collect();
-        let found: HashSet<u32> = results.iter().map(|r| r.0).collect();
-        total_recall += gt_set.intersection(&found).count() as f64 / k as f64;
+        add_diskann_multi_recall(&mut recalls, &neighbors[i], &results);
     }
 
     latencies_us.sort_unstable_by(|a, b| a.total_cmp(b));
@@ -1435,7 +1450,10 @@ fn evaluate_diskann_page_searcher(
 
     (
         BenchResult {
-            recall_at_k: total_recall / n as f64,
+            recall_at_k: recalls[1] / n as f64,
+            recall_at_1: recalls[0] / n as f64,
+            recall_at_100: recalls[2] / n as f64,
+            search_k: k,
             qps: n as f64 / (total_us / 1_000_000.0),
             latency_us: total_us / n as f64,
             p50_us: latencies_us[n / 2],
@@ -1465,7 +1483,7 @@ fn run_diskann(
         ef_construction: cfg.ef_construction,
         alpha: 1.2,
         ef_search: 100,
-        seed: Some(42),
+        seed: Some(cfg.seed),
     };
 
     if !cfg.json {
@@ -2118,7 +2136,7 @@ fn run_fresh_graph_churn(cfg: &Config, train: &[Vec<f32>], test: &[Vec<f32>], di
     let build_time_s = build_start.elapsed().as_secs_f64();
 
     let mut active: Vec<u32> = (0..base_n as u32).collect();
-    let mut rng_state = 0x9E37_79B9_7F4A_7C15_u64;
+    let mut rng_state = cfg.seed ^ 0x9E37_79B9_7F4A_7C15_u64;
     let update_start = Instant::now();
     for offset in 0..cycles {
         let new_id = (base_n + offset) as u32;
@@ -2376,7 +2394,7 @@ fn run_inplace_churn(cfg: &Config, train: &[Vec<f32>], test: &[Vec<f32>], dim: u
     let build_time_s = build_start.elapsed().as_secs_f64();
 
     let mut active: Vec<u32> = (0..base_n as u32).collect();
-    let mut rng_state = 0x9E37_79B9_7F4A_7C15_u64;
+    let mut rng_state = cfg.seed ^ 0x9E37_79B9_7F4A_7C15_u64;
     let update_start = Instant::now();
     for offset in 0..cycles {
         let new_id = (base_n + offset) as u32;
@@ -2509,7 +2527,7 @@ fn run_lsm_churn(cfg: &Config, train: &[Vec<f32>], test: &[Vec<f32>], dim: usize
     let build_time_s = build_start.elapsed().as_secs_f64();
 
     let mut active: Vec<u32> = (0..base_n as u32).collect();
-    let mut rng_state = 0x517c_c1b7_2722_0a95_u64;
+    let mut rng_state = cfg.seed ^ 0x517c_c1b7_2722_0a95_u64;
     let update_start = Instant::now();
     for offset in 0..cycles {
         let new_id = (base_n + offset) as u32;
@@ -2822,7 +2840,7 @@ fn run_adsampling(
         ef_construction,
         metric,
         auto_normalize: !cfg.is_euclidean,
-        seed: Some(42),
+        seed: Some(cfg.seed),
         ..Default::default()
     };
     let mut index = HNSWIndex::with_params(dim, params).unwrap();
@@ -3090,6 +3108,7 @@ fn run_hnsw_prt(
         ef_construction,
         metric,
         auto_normalize: !cfg.is_euclidean,
+        seed: Some(cfg.seed),
         ..Default::default()
     };
     let mut index = HNSWIndex::with_params(dim, params).unwrap();
@@ -3100,7 +3119,7 @@ fn run_hnsw_prt(
 
     // Build PRT state: project all database vectors.
     let num_proj = (dim / 4).clamp(8, 64); // heuristic: d/4, clamped [8, 64]
-    let mut prt = ProbabilisticRoutingTest::new(dim, num_proj, Some(42));
+    let mut prt = ProbabilisticRoutingTest::new(dim, num_proj, Some(cfg.seed));
     prt.project_database(index.raw_vectors());
 
     let build_time_s = build_start.elapsed().as_secs_f64();
@@ -3770,6 +3789,7 @@ fn run_kmeans_tree(
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cfg = parse_args();
     set_warmup_queries(cfg.warmup_queries);
+    set_run_identity(cfg.seed, cfg.repeat);
 
     if !Path::new(&cfg.data_dir).join("train.bin").exists() {
         eprintln!("Dataset not found at: {}/train.bin", cfg.data_dir);
@@ -3815,9 +3835,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let meta = || {
         format!(
-            "{{\"_meta\":{{\"dataset\":\"{}\",\"metric\":\"{}\",\"result_schema\":2,\"index_bytes_required\":true,\"rustc\":\"{}\",\"rust_msrv\":\"{}\",\"vicinity\":\"{}\",\"features\":{},\"train_limit\":{},\"indexed_vectors\":{},\"query_limit\":{},\"queries\":{},\"warmup_queries\":{}}}}}",
+            "{{\"_meta\":{{\"dataset\":\"{}\",\"metric\":\"{}\",\"result_schema\":3,\"index_bytes_required\":true,\"seed\":{},\"repeat\":{},\"run_id\":\"seed-{}-repeat-{}\",\"seed_fingerprint\":\"{}\",\"cpu\":\"{}\",\"architecture\":\"{}\",\"threads\":{},\"train_full\":{},\"query_full\":{},\"rustc\":\"{}\",\"rust_msrv\":\"{}\",\"vicinity\":\"{}\",\"features\":{},\"train_limit\":{},\"indexed_vectors\":{},\"query_limit\":{},\"queries\":{},\"warmup_queries\":{}}}}}",
             cfg.data_dir,
             if cfg.is_euclidean { "l2" } else { "cosine" },
+            cfg.seed,
+            cfg.repeat,
+            cfg.seed,
+            cfg.repeat,
+            seed_fingerprint(cfg.seed),
+            cpu_model(),
+            std::env::consts::ARCH,
+            std::thread::available_parallelism().map_or(1, usize::from),
+            cfg.max_train.is_none(),
+            cfg.max_queries.is_none(),
             rustc_version(),
             env!("CARGO_PKG_RUST_VERSION"),
             env!("CARGO_PKG_VERSION"),
@@ -3834,8 +3864,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
     };
 
-    // Emit run metadata as first line of new result files.
-    if cfg.json && !cfg.results_path.exists() {
+    // Every invocation starts a fresh metadata scope before appending raw rows.
+    if should_emit_run_meta(cfg.json, cfg.resume, cfg.results_path.exists()) {
         emit_result(&cfg.results_path, &meta());
     }
 
@@ -3846,12 +3876,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let completed = if cfg.resume {
-        load_completed_results_with_warmup(
+        load_completed_results_for_run(
             &cfg.results_path,
             &cfg.data_dir,
             cfg.max_train,
             cfg.max_queries,
             cfg.warmup_queries,
+            cfg.seed,
+            cfg.repeat,
         )
     } else {
         Default::default()

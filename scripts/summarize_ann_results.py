@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import statistics
 import sys
 from collections import defaultdict
 from dataclasses import dataclass
@@ -165,6 +166,18 @@ class Summary:
     index_bytes_required: bool = False
     missing_index_bytes_rows: int = 0
     required_missing_index_bytes_rows: int = 0
+    repeat_groups: dict[str, dict[str, dict[str, Any]]] | None = None
+
+    def _group_key(self, row: dict[str, Any]) -> str:
+        return json.dumps(
+            {
+                "params": row.get("params", {}),
+                "search_k": row.get("search_k", 10),
+                "cache_state": row.get("cache_state", "unspecified"),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
 
     def add(
         self,
@@ -174,6 +187,11 @@ class Summary:
         index_bytes_required: bool = False,
     ) -> None:
         self.rows += 1
+        run_id = row.get("run_id")
+        if isinstance(run_id, str) and run_id:
+            if self.repeat_groups is None:
+                self.repeat_groups = defaultdict(dict)
+            self.repeat_groups[self._group_key(row)][run_id] = row
         self.storage_scope_observed |= storage_scope_observed
         self.index_bytes_required |= index_bytes_required
         recall = float(row.get("recall_at_10", 0.0))
@@ -240,6 +258,42 @@ class Summary:
         best = self.best_at_recall(recall_floor)
         return None if best is None else best[3]
 
+    def aggregate(
+        self, recall_floor: float = 0.95, min_repeats: int = 3
+    ) -> dict[str, Any] | None:
+        """Aggregate a recall-qualified config with distinct run identities."""
+        groups = [
+            list(rows_by_run.values())
+            for rows_by_run in (self.repeat_groups or {}).values()
+            if len(rows_by_run) >= min_repeats
+            and statistics.median(
+                float(row.get("recall_at_10", 0.0))
+                for row in rows_by_run.values()
+            )
+            >= recall_floor
+        ]
+        if not groups:
+            return None
+        group = max(
+            groups,
+            key=lambda rows: statistics.median(float(r.get("qps", 0.0)) for r in rows),
+        )
+        result: dict[str, Any] = {
+            "repeats": len(group),
+            "run_ids": sorted(
+                str(row["run_id"]) for row in group if isinstance(row.get("run_id"), str)
+            ),
+            "params": group[0].get("params") if isinstance(group[0].get("params"), dict) else None,
+        }
+        for key in ("qps", "latency_us", "p95_us", "p99_us", "recall_at_1", "recall_at_10", "recall_at_100"):
+            values = [float(row[key]) for row in group if isinstance(row.get(key), (int, float))]
+            if values:
+                result[f"{key}_median"] = statistics.median(values)
+                result[f"{key}_min"] = min(values)
+                result[f"{key}_max"] = max(values)
+                result[f"{key}_spread"] = max(values) - min(values)
+        return result
+
 
 @dataclass(frozen=True)
 class DatasetProfile:
@@ -293,6 +347,7 @@ class CoverageRow:
     index_bytes_required: bool
     missing_index_bytes_rows: int
     required_missing_index_bytes_rows: int
+    repeat_aggregate: dict[str, Any] | None
 
 
 def scoped_dataset_name(meta: dict[str, Any]) -> str | None:
@@ -314,7 +369,7 @@ def scoped_dataset_name(meta: dict[str, Any]) -> str | None:
 
 
 def is_current_ann_result_meta(meta: dict[str, Any]) -> bool:
-    return isinstance(meta.get("dataset"), str) and meta.get("result_schema") == 2
+    return isinstance(meta.get("dataset"), str) and meta.get("result_schema") in (2, 3)
 
 
 def has_storage_expectation_scope(meta: dict[str, Any]) -> bool:
@@ -582,6 +637,7 @@ def coverage_rows(
                 required_missing_index_bytes_rows=(
                     summary.required_missing_index_bytes_rows if summary else 0
                 ),
+                repeat_aggregate=(summary.aggregate(recall_floor) if summary else None),
             )
         )
     return rows
@@ -965,6 +1021,7 @@ def main() -> None:
                         "required_missing_index_bytes_rows": (
                             row.required_missing_index_bytes_rows
                         ),
+                        "repeat_aggregate": row.repeat_aggregate,
                     }
                     for row in rows
                 ],

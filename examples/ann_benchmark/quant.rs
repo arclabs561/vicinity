@@ -70,16 +70,25 @@ fn opened_storage_with_diagnostics(
     }
 }
 
+fn add_multi_recall(totals: &mut [f64; 3], truth: &[i32], results: &[(u32, f32)]) {
+    use std::collections::HashSet;
+    for (slot, depth) in [1, 10, 100].into_iter().enumerate() {
+        let depth = depth.min(truth.len()).max(1);
+        let expected: HashSet<u32> = truth.iter().take(depth).map(|&id| id as u32).collect();
+        let found: HashSet<u32> = results.iter().take(depth).map(|row| row.0).collect();
+        totals[slot] += expected.intersection(&found).count() as f64 / depth as f64;
+    }
+}
+
 #[cfg(feature = "ivf_pq")]
 fn evaluate_ivfpq_file_reranked(
     searcher: &RefCell<vicinity::ivf_pq::IVFPQFileSearcher>,
     test: &[Vec<f32>],
     neighbors: &[Vec<i32>],
-    k: usize,
+    _k: usize,
     candidate_pool: usize,
 ) -> (BenchResult, StorageDiagnostics) {
-    use std::collections::HashSet;
-
+    let k = neighbors.first().map_or(1, |row| row.len().min(100));
     let warmup_count = warmup_queries().min(test.len());
     for query in test.iter().take(warmup_count) {
         let _ = searcher
@@ -87,7 +96,7 @@ fn evaluate_ivfpq_file_reranked(
             .search_reranked(query, k, candidate_pool);
     }
 
-    let mut total_recall = 0.0;
+    let mut recalls = [0.0; 3];
     let mut latencies_us: Vec<f64> = Vec::with_capacity(test.len());
     let mut raw_vector_reads = 0usize;
     let mut raw_vector_bytes = 0usize;
@@ -106,9 +115,7 @@ fn evaluate_ivfpq_file_reranked(
         raw_vector_bytes += diagnostics.raw_vector_bytes;
         reranked_candidates += diagnostics.reranked_candidates;
 
-        let gt_set: HashSet<u32> = neighbors[i].iter().take(k).map(|&n| n as u32).collect();
-        let found: HashSet<u32> = results.iter().map(|r| r.0).collect();
-        total_recall += gt_set.intersection(&found).count() as f64 / k as f64;
+        add_multi_recall(&mut recalls, &neighbors[i], &results);
     }
 
     latencies_us.sort_unstable_by(|a, b| a.total_cmp(b));
@@ -118,7 +125,10 @@ fn evaluate_ivfpq_file_reranked(
 
     (
         BenchResult {
-            recall_at_k: total_recall / queries,
+            recall_at_k: recalls[1] / queries,
+            recall_at_1: recalls[0] / queries,
+            recall_at_100: recalls[2] / queries,
+            search_k: k,
             qps: queries / (total_us / 1_000_000.0),
             latency_us: total_us / queries,
             p50_us: latencies_us[n / 2],
@@ -139,16 +149,15 @@ fn evaluate_ivfavq_file(
     searcher: &RefCell<vicinity::ivf_avq::IVFAVQFileSearcher>,
     test: &[Vec<f32>],
     neighbors: &[Vec<i32>],
-    k: usize,
+    _k: usize,
 ) -> (BenchResult, StorageDiagnostics) {
-    use std::collections::HashSet;
-
+    let k = neighbors.first().map_or(1, |row| row.len().min(100));
     let warmup_count = warmup_queries().min(test.len());
     for query in test.iter().take(warmup_count) {
         let _ = searcher.borrow_mut().search(query, k);
     }
 
-    let mut total_recall = 0.0;
+    let mut recalls = [0.0; 3];
     let mut latencies_us: Vec<f64> = Vec::with_capacity(test.len());
     let mut probed_lists = 0usize;
     let mut scanned_vectors = 0usize;
@@ -179,9 +188,7 @@ fn evaluate_ivfavq_file(
         vector_bytes += diagnostics.raw_vector_bytes;
         retained_candidates += diagnostics.retained_candidates;
 
-        let gt_set: HashSet<u32> = neighbors[i].iter().take(k).map(|&n| n as u32).collect();
-        let found: HashSet<u32> = results.iter().map(|r| r.0).collect();
-        total_recall += gt_set.intersection(&found).count() as f64 / k as f64;
+        add_multi_recall(&mut recalls, &neighbors[i], &results);
     }
 
     latencies_us.sort_unstable_by(|a, b| a.total_cmp(b));
@@ -191,7 +198,10 @@ fn evaluate_ivfavq_file(
 
     (
         BenchResult {
-            recall_at_k: total_recall / queries,
+            recall_at_k: recalls[1] / queries,
+            recall_at_1: recalls[0] / queries,
+            recall_at_100: recalls[2] / queries,
+            search_k: k,
             qps: queries / (total_us / 1_000_000.0),
             latency_us: total_us / queries,
             p50_us: latencies_us[n / 2],
@@ -218,16 +228,15 @@ fn evaluate_ivfpq_file_approx(
     searcher: &RefCell<vicinity::ivf_pq::IVFPQFileSearcher>,
     test: &[Vec<f32>],
     neighbors: &[Vec<i32>],
-    k: usize,
+    _k: usize,
 ) -> (BenchResult, StorageDiagnostics) {
-    use std::collections::HashSet;
-
+    let k = neighbors.first().map_or(1, |row| row.len().min(100));
     let warmup_count = warmup_queries().min(test.len());
     for query in test.iter().take(warmup_count) {
         let _ = searcher.borrow_mut().search(query, k);
     }
 
-    let mut total_recall = 0.0;
+    let mut recalls = [0.0; 3];
     let mut latencies_us: Vec<f64> = Vec::with_capacity(test.len());
     let mut probed_lists = 0usize;
     let mut scanned_vectors = 0usize;
@@ -250,9 +259,7 @@ fn evaluate_ivfpq_file_approx(
         code_bytes += diagnostics.code_bytes;
         retained_candidates += diagnostics.retained_candidates;
 
-        let gt_set: HashSet<u32> = neighbors[i].iter().take(k).map(|&n| n as u32).collect();
-        let found: HashSet<u32> = results.iter().map(|r| r.0).collect();
-        total_recall += gt_set.intersection(&found).count() as f64 / k as f64;
+        add_multi_recall(&mut recalls, &neighbors[i], &results);
     }
 
     latencies_us.sort_unstable_by(|a, b| a.total_cmp(b));
@@ -262,7 +269,10 @@ fn evaluate_ivfpq_file_approx(
 
     (
         BenchResult {
-            recall_at_k: total_recall / queries,
+            recall_at_k: recalls[1] / queries,
+            recall_at_1: recalls[0] / queries,
+            recall_at_100: recalls[2] / queries,
+            search_k: k,
             qps: queries / (total_us / 1_000_000.0),
             latency_us: total_us / queries,
             p50_us: latencies_us[n / 2],
@@ -344,7 +354,7 @@ pub(crate) fn run_ivfpq(
         num_codebooks,
         codebook_size,
         nprobe: 1, // will be swept
-        seed: 42,
+        seed: cfg.seed,
         ..Default::default()
     };
 
@@ -697,7 +707,7 @@ pub(crate) fn run_ivf_avq(
         num_reorder: initial_num_reorder,
         num_codebooks,
         codebook_size,
-        seed: 42,
+        seed: cfg.seed,
     };
 
     let build_start = Instant::now();
@@ -906,7 +916,7 @@ pub(crate) fn run_ivf_rabitq(
         num_clusters,
         nprobe: 10,
         total_bits: 4,
-        seed: 42,
+        seed: cfg.seed,
     };
 
     let build_start = Instant::now();
@@ -1018,7 +1028,7 @@ pub(crate) fn run_rp_quant(
     let params = RpQuantParams {
         projected_dim,
         rerank_factor: 10,
-        seed: 42,
+        seed: cfg.seed,
     };
 
     let build_start = Instant::now();
@@ -1311,7 +1321,7 @@ pub(crate) fn run_binary_index(
 
     let params = BinaryFlatParams {
         rerank_factor: 10,
-        seed: 42,
+        seed: cfg.seed,
         ..Default::default()
     };
 
@@ -1411,7 +1421,7 @@ pub(crate) fn run_lsh(
         let params = LSHParams {
             num_tables,
             num_probes: 1, // build once per table count
-            seed: Some(42),
+            seed: Some(cfg.seed),
         };
 
         if !cfg.json {
@@ -1446,7 +1456,7 @@ pub(crate) fn run_lsh(
             let search_params = LSHParams {
                 num_tables,
                 num_probes,
-                seed: Some(42),
+                seed: Some(cfg.seed),
             };
             let mut search_index = CrossPolytopeLSHIndex::new(dim, search_params).unwrap();
             search_index.add_vectors(&flat).unwrap();
@@ -1558,7 +1568,7 @@ pub(crate) fn run_sq8u(
         ef_construction,
         metric,
         auto_normalize: !cfg.is_euclidean,
-        seed: Some(42),
+        seed: Some(cfg.seed),
         ..Default::default()
     };
     let mut index = HNSWSq8Index::with_params(dim, params).unwrap();
@@ -1686,7 +1696,7 @@ pub(crate) fn run_sq4u(
         ef_construction,
         metric,
         auto_normalize: !cfg.is_euclidean,
-        seed: Some(42),
+        seed: Some(cfg.seed),
         ..Default::default()
     };
     let mut index = HNSWSq4Index::with_params(dim, params).unwrap();
@@ -1818,10 +1828,10 @@ pub(crate) fn run_symphony_qg_vr(
         ef_construction,
         metric,
         auto_normalize: !cfg.is_euclidean,
-        seed: Some(42),
+        seed: Some(cfg.seed),
         ..Default::default()
     };
-    let mut index = SymphonyQGVRIndex::new(dim, params, RaBitQConfig::bits4(), 42).unwrap();
+    let mut index = SymphonyQGVRIndex::new(dim, params, RaBitQConfig::bits4(), cfg.seed).unwrap();
     for (i, vec) in train.iter().enumerate() {
         index.add_slice(i as u32, vec).unwrap();
     }
