@@ -2687,11 +2687,14 @@ repeats were warranted.
 | SQ4U | `ef_search=400`, rerank 800 | 95.29% | 294.7 | 1,589,460,502 | screen |
 | IVF-PQ | `nprobe=64`, rerank 1,000 | 84.95% | 754.1 | 879,407,112 | screen |
 | SymphonyQG | `ef_search=400`, rerank 800 | 88.35% | 446.9 | 1,761,109,232 | screen |
+| SymphonyQG-VR | `ef_search=400`, rerank 800 | 94.69% | 807.0 | 3,280,700,812 | screen |
 
 SQ8U is the only graph-compressed row in this sweep above 95% recall, but it
 uses more estimated heap than HNSW and trades throughput for recall. SQ4 flat
 is the smaller high-recall point, with much lower throughput. The IVF-PQ and
 SymphonyQG screens did not reach the recall range needed for further repeats.
+The vertex-reconstruction variant came closer, but remained below 95% recall
+while using about twice SQ8U's estimated heap.
 
 ### SIFT-128 L2
 
