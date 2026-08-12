@@ -995,3 +995,253 @@ def test_standard_storage_expectations_cover_current_storage_classes() -> None:
     assert ("ivf_avq", "mmap") in rows
     assert set(script.DISKANN_EXPECTATION_ROWS) <= rows
     assert rows == family_rows
+
+
+def test_dominance_profiles_keep_memory_categories_separate(tmp_path: Path) -> None:
+    script = load_script()
+    path = tmp_path / "dominance.jsonl"
+    rows = [
+        {"_meta": {"dataset": "data/glove", "result_schema": 3}},
+        {
+            "algorithm": "baseline",
+            "storage_mode": "in_memory",
+            "recall_at_10": 0.96,
+            "qps": 100.0,
+            "index_bytes": 1000,
+            "index_bytes_kind": "heap_estimate",
+        },
+        {
+            "algorithm": "faster",
+            "storage_mode": "in_memory",
+            "recall_at_10": 0.97,
+            "qps": 120.0,
+            "index_bytes": 900,
+            "index_bytes_kind": "heap_estimate",
+        },
+        {
+            "algorithm": "serialized",
+            "storage_mode": "in_memory",
+            "recall_at_10": 0.97,
+            "qps": 120.0,
+            "index_bytes": 800,
+            "index_bytes_kind": "serialized",
+        },
+        {
+            "algorithm": "mapped",
+            "storage_mode": "in_memory",
+            "recall_at_10": 0.97,
+            "qps": 120.0,
+            "index_bytes": 700,
+            "index_bytes_kind": "mapped",
+        },
+        {
+            "algorithm": "unqualified",
+            "storage_mode": "in_memory",
+            "recall_at_10": 0.90,
+            "qps": 1000.0,
+            "index_bytes": 500,
+            "index_bytes_kind": "heap_estimate",
+        },
+    ]
+    repeated_rows = [rows[0]]
+    for row in rows[1:]:
+        repeated_rows.extend(
+            {**row, "run_id": f"{row['algorithm']}-{repeat}"} for repeat in range(3)
+        )
+    path.write_text("\n".join(json.dumps(row) for row in repeated_rows) + "\n")
+
+    coverage = script.coverage_rows(script.load_summaries([path]))
+    profiles = script.dominance_profiles(coverage, "baseline")
+    by_algorithm = {profile.algorithm: profile for profile in profiles}
+
+    assert set(by_algorithm) == {"baseline", "faster", "mapped", "serialized"}
+    assert by_algorithm["baseline"].memory_category == "heap_estimate"
+    assert by_algorithm["baseline"].verdict == "tie"
+    assert by_algorithm["faster"].verdict == "win"
+    assert by_algorithm["serialized"].memory_category == "serialized"
+    assert by_algorithm["serialized"].verdict == "incomparable"
+    assert by_algorithm["mapped"].memory_category == "mapped"
+    assert by_algorithm["mapped"].verdict == "incomparable"
+    assert script.memory_category("storage_bytes", "mmap") == "mapped"
+
+
+def test_dominance_verdict_distinguishes_losses_ties_and_tradeoffs(
+    tmp_path: Path,
+) -> None:
+    script = load_script()
+    path = tmp_path / "verdicts.jsonl"
+    rows = [{"_meta": {"dataset": "data/sift", "result_schema": 3}}]
+    for algorithm, qps, index_bytes in (
+        ("baseline", 100.0, 1000),
+        ("loss", 90.0, 1100),
+        ("tie", 100.0, 1000),
+        ("throughput_tradeoff", 120.0, 1200),
+        ("memory_tradeoff", 80.0, 800),
+    ):
+        rows.extend(
+            {
+                "algorithm": algorithm,
+                "storage_mode": "in_memory",
+                "run_id": f"{algorithm}-{repeat}",
+                "recall_at_10": 0.96,
+                "qps": qps,
+                "index_bytes": index_bytes,
+                "index_bytes_kind": "heap_estimate",
+            }
+            for repeat in range(3)
+        )
+    path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+
+    profiles = script.dominance_profiles(
+        script.coverage_rows(script.load_summaries([path])), "baseline"
+    )
+    verdicts = {profile.algorithm: profile.verdict for profile in profiles}
+
+    assert verdicts == {
+        "baseline": "tie",
+        "loss": "loss",
+        "memory_tradeoff": "incomparable",
+        "throughput_tradeoff": "incomparable",
+        "tie": "tie",
+    }
+
+
+def test_cli_emits_recall_qualified_dominance_profiles(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = load_script()
+    path = tmp_path / "profiles.jsonl"
+    rows = [{"_meta": {"dataset": "data/glove", "result_schema": 3}}]
+    for algorithm, qps_values, index_bytes in (
+        ("baseline", (90, 100, 110), 1000),
+        ("candidate", (110, 120, 10000), 900),
+    ):
+        rows.extend(
+            {
+                "algorithm": algorithm,
+                "storage_mode": "in_memory",
+                "run_id": f"{algorithm}-{repeat}",
+                "recall_at_10": 0.96,
+                "qps": qps,
+                "index_bytes": index_bytes,
+                "index_bytes_kind": "heap_estimate",
+            }
+            for repeat, qps in enumerate(qps_values)
+        )
+    path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "summarize_ann_results.py",
+            str(path),
+            "--dominance-baseline",
+            "baseline",
+            "--json",
+        ],
+    )
+
+    script.main()
+
+    output = json.loads(capsys.readouterr().out)
+    candidate = next(row for row in output if row["algorithm"] == "candidate")
+    assert candidate == {
+        "dataset": "glove",
+        "algorithm": "candidate",
+        "storage_mode": "in_memory",
+        "recall_floor": 0.95,
+        "qps": 120.0,
+        "index_bytes": 900,
+        "index_bytes_kind": "heap_estimate",
+        "memory_category": "heap_estimate",
+        "baseline_algorithm": "baseline",
+        "baseline_qps": 100.0,
+        "baseline_index_bytes": 1000,
+        "baseline_index_bytes_kind": "heap_estimate",
+        "baseline_memory_category": "heap_estimate",
+        "verdict": "win",
+    }
+
+
+def test_dominance_requires_three_distinct_repeats(tmp_path: Path) -> None:
+    script = load_script()
+    path = tmp_path / "repeat-gate.jsonl"
+    rows = [{"_meta": {"dataset": "data/glove", "result_schema": 3}}]
+    rows.extend(
+        {
+            "algorithm": "baseline",
+            "storage_mode": "in_memory",
+            "run_id": f"baseline-{repeat}",
+            "recall_at_10": 0.96,
+            "qps": 100,
+            "index_bytes": 1000,
+            "index_bytes_kind": "heap_estimate",
+        }
+        for repeat in range(3)
+    )
+    rows.append(
+        {
+            "algorithm": "single_fast",
+            "storage_mode": "in_memory",
+            "run_id": "only-run",
+            "recall_at_10": 0.99,
+            "qps": 1000,
+            "index_bytes": 100,
+            "index_bytes_kind": "heap_estimate",
+        }
+    )
+    rows.extend(
+        {
+            "algorithm": "duplicate_ids",
+            "storage_mode": "in_memory",
+            "run_id": "same-run",
+            "recall_at_10": 0.99,
+            "qps": qps,
+            "index_bytes": 100,
+            "index_bytes_kind": "heap_estimate",
+        }
+        for qps in (800, 900, 1000)
+    )
+    path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+
+    profiles = script.dominance_profiles(
+        script.coverage_rows(script.load_summaries([path])), "baseline"
+    )
+    by_algorithm = {profile.algorithm: profile for profile in profiles}
+
+    assert by_algorithm["single_fast"].qps is None
+    assert by_algorithm["single_fast"].verdict == "incomparable"
+    assert by_algorithm["duplicate_ids"].qps is None
+    assert by_algorithm["duplicate_ids"].verdict == "incomparable"
+
+
+def test_dominance_requires_stable_footprint_across_repeats(tmp_path: Path) -> None:
+    script = load_script()
+    path = tmp_path / "footprint-gate.jsonl"
+    rows = [{"_meta": {"dataset": "data/glove", "result_schema": 3}}]
+    for algorithm, byte_values in (
+        ("baseline", (1000, 1000, 1000)),
+        ("unstable", (800, 801, 800)),
+    ):
+        rows.extend(
+            {
+                "algorithm": algorithm,
+                "storage_mode": "in_memory",
+                "run_id": f"{algorithm}-{repeat}",
+                "recall_at_10": 0.96,
+                "qps": 120 if algorithm == "unstable" else 100,
+                "index_bytes": index_bytes,
+                "index_bytes_kind": "heap_estimate",
+            }
+            for repeat, index_bytes in enumerate(byte_values)
+        )
+    path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+
+    profiles = script.dominance_profiles(
+        script.coverage_rows(script.load_summaries([path])), "baseline"
+    )
+    unstable = next(profile for profile in profiles if profile.algorithm == "unstable")
+
+    assert unstable.qps == 120.0
+    assert unstable.index_bytes is None
+    assert unstable.verdict == "incomparable"

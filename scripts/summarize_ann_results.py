@@ -307,6 +307,20 @@ class Summary:
                 result[f"{key}_min"] = min(values)
                 result[f"{key}_max"] = max(values)
                 result[f"{key}_spread"] = max(values) - min(values)
+        footprints = [
+            (row.get("index_bytes"), row.get("index_bytes_kind")) for row in group
+        ]
+        stable_footprint = (
+            all(
+                isinstance(index_bytes, int) and isinstance(index_bytes_kind, str)
+                for index_bytes, index_bytes_kind in footprints
+            )
+            and len(set(footprints)) == 1
+        )
+        result["footprint_stable"] = stable_footprint
+        if stable_footprint:
+            result["index_bytes"] = footprints[0][0]
+            result["index_bytes_kind"] = footprints[0][1]
         return result
 
 
@@ -363,6 +377,24 @@ class CoverageRow:
     missing_index_bytes_rows: int
     required_missing_index_bytes_rows: int
     repeat_aggregate: dict[str, Any] | None
+
+
+@dataclass(frozen=True)
+class DominanceProfile:
+    dataset: str
+    algorithm: str
+    storage_mode: str
+    recall_floor: float
+    qps: float | None
+    index_bytes: int | None
+    index_bytes_kind: str | None
+    memory_category: str | None
+    baseline_algorithm: str
+    baseline_qps: float | None
+    baseline_index_bytes: int | None
+    baseline_index_bytes_kind: str | None
+    baseline_memory_category: str | None
+    verdict: str
 
 
 def scoped_dataset_name(meta: dict[str, Any]) -> str | None:
@@ -658,6 +690,117 @@ def coverage_rows(
     return rows
 
 
+def memory_category(
+    index_bytes_kind: str | None, storage_mode: str | None = None
+) -> str | None:
+    """Return a coarse footprint category; different categories are incomparable."""
+    if index_bytes_kind is None:
+        return None
+    kind = index_bytes_kind.lower()
+    if storage_mode == "mmap":
+        return "mapped"
+    if "heap" in kind:
+        return "heap_estimate"
+    if kind in {"serialized", "serialized_bytes", "snapshot_bytes", "storage_bytes"}:
+        return "serialized"
+    if "mapped" in kind or "mmap" in kind:
+        return "mapped"
+    return f"other:{kind}"
+
+
+def dominance_verdict(
+    qps: float | None,
+    index_bytes: int | None,
+    category: str | None,
+    baseline_qps: float | None,
+    baseline_index_bytes: int | None,
+    baseline_category: str | None,
+) -> str:
+    if (
+        qps is None
+        or index_bytes is None
+        or category is None
+        or baseline_qps is None
+        or baseline_index_bytes is None
+        or baseline_category is None
+        or category != baseline_category
+    ):
+        return "incomparable"
+    no_slower = qps >= baseline_qps
+    no_larger = index_bytes <= baseline_index_bytes
+    if no_slower and no_larger:
+        if qps == baseline_qps and index_bytes == baseline_index_bytes:
+            return "tie"
+        return "win"
+    no_faster = qps <= baseline_qps
+    no_smaller = index_bytes >= baseline_index_bytes
+    if no_faster and no_smaller:
+        return "loss"
+    return "incomparable"
+
+
+def dominance_profiles(
+    rows: list[CoverageRow],
+    baseline_algorithm: str,
+    recall_floor: float = 0.95,
+) -> list[DominanceProfile]:
+    """Compare recall-qualified rows within dataset, storage, and memory category."""
+    baselines = {
+        (row.dataset, row.storage_mode): row
+        for row in rows
+        if row.algorithm == baseline_algorithm
+        and row.status == "measured"
+        and row.qps_at_recall_floor is not None
+    }
+    profiles = []
+    for row in rows:
+        if row.status != "measured" or row.qps_at_recall_floor is None:
+            continue
+        baseline = baselines.get((row.dataset, row.storage_mode))
+        aggregate = row.repeat_aggregate
+        qps = optional_float((aggregate or {}).get("qps_median"))
+        index_bytes = optional_int((aggregate or {}).get("index_bytes"))
+        index_bytes_kind = (aggregate or {}).get("index_bytes_kind")
+        index_bytes_kind = (
+            index_bytes_kind if isinstance(index_bytes_kind, str) else None
+        )
+        category = memory_category(index_bytes_kind, row.storage_mode)
+        baseline_aggregate = baseline.repeat_aggregate if baseline else None
+        baseline_qps = optional_float((baseline_aggregate or {}).get("qps_median"))
+        baseline_index_bytes = optional_int(
+            (baseline_aggregate or {}).get("index_bytes")
+        )
+        baseline_kind = (baseline_aggregate or {}).get("index_bytes_kind")
+        baseline_kind = baseline_kind if isinstance(baseline_kind, str) else None
+        baseline_category = memory_category(baseline_kind, row.storage_mode)
+        profiles.append(
+            DominanceProfile(
+                dataset=row.dataset,
+                algorithm=row.algorithm,
+                storage_mode=row.storage_mode,
+                recall_floor=recall_floor,
+                qps=qps,
+                index_bytes=index_bytes,
+                index_bytes_kind=index_bytes_kind,
+                memory_category=category,
+                baseline_algorithm=baseline_algorithm,
+                baseline_qps=baseline_qps,
+                baseline_index_bytes=baseline_index_bytes,
+                baseline_index_bytes_kind=baseline_kind,
+                baseline_memory_category=baseline_category,
+                verdict=dominance_verdict(
+                    qps,
+                    index_bytes,
+                    category,
+                    baseline_qps,
+                    baseline_index_bytes,
+                    baseline_category,
+                ),
+            )
+        )
+    return profiles
+
+
 def format_params(params: dict[str, Any] | None) -> str:
     if params is None:
         return "-"
@@ -937,6 +1080,14 @@ def parse_args() -> argparse.Namespace:
         help="Recall@10 floor used for thresholded QPS reporting",
     )
     parser.add_argument(
+        "--dominance-baseline",
+        metavar="ALGORITHM",
+        help=(
+            "With --json, emit recall-qualified profiles compared with this "
+            "algorithm. Footprints are compared only within the same category."
+        ),
+    )
+    parser.add_argument(
         "--require-index-bytes",
         action="store_true",
         help="Exit non-zero if any measured summary row lacks index_bytes",
@@ -990,6 +1141,38 @@ def main() -> None:
         require_index_bytes(rows)
     if args.require_declared_index_bytes:
         require_index_bytes(rows, declared_only=True)
+    if args.dominance_baseline:
+        if not args.json:
+            raise SystemExit("--dominance-baseline requires --json")
+        print(
+            json.dumps(
+                [
+                    {
+                        "dataset": profile.dataset,
+                        "algorithm": profile.algorithm,
+                        "storage_mode": profile.storage_mode,
+                        "recall_floor": profile.recall_floor,
+                        "qps": profile.qps,
+                        "index_bytes": profile.index_bytes,
+                        "index_bytes_kind": profile.index_bytes_kind,
+                        "memory_category": profile.memory_category,
+                        "baseline_algorithm": profile.baseline_algorithm,
+                        "baseline_qps": profile.baseline_qps,
+                        "baseline_index_bytes": profile.baseline_index_bytes,
+                        "baseline_index_bytes_kind": (
+                            profile.baseline_index_bytes_kind
+                        ),
+                        "baseline_memory_category": (profile.baseline_memory_category),
+                        "verdict": profile.verdict,
+                    }
+                    for profile in dominance_profiles(
+                        rows, args.dominance_baseline, args.recall_floor
+                    )
+                ],
+                indent=2,
+            )
+        )
+        return
     if args.json:
         print(
             json.dumps(
