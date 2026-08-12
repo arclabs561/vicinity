@@ -1144,25 +1144,54 @@ impl HNSWIndex {
     }
 
     /// Memory usage breakdown for this index.
+    ///
+    /// Counts owned heap allocations using their runtime capacities. Hash-table
+    /// control bytes, allocator bookkeeping, and the optional filtering metadata
+    /// store are not included.
     pub fn memory_usage(&self) -> crate::memory::MemoryReport {
-        let vectors_bytes = self.vectors.len() * std::mem::size_of::<f32>();
+        let vectors_bytes = self.vectors.capacity() * std::mem::size_of::<f32>();
 
-        let graph_bytes: usize = self
+        let layer_storage_bytes: usize = self
             .layers
             .iter()
             .map(|layer| match &layer.storage {
                 NeighborStorage::Uncompressed(neighbors) => {
-                    crate::memory::smallvec_u32_bytes(neighbors)
+                    neighbors.capacity() * std::mem::size_of::<NeighborList>()
+                        + neighbors
+                            .iter()
+                            .filter(|list| list.spilled())
+                            .map(|list| list.capacity() * std::mem::size_of::<u32>())
+                            .sum::<usize>()
                 }
                 #[cfg(feature = "id-compression")]
                 NeighborStorage::Compressed { data, .. } => {
-                    data.iter().map(|cl| cl.data.len()).sum::<usize>()
+                    data.capacity() * std::mem::size_of::<CompressedNeighborList>()
+                        + data.iter().map(|list| list.data.capacity()).sum::<usize>()
                 }
             })
             .sum();
+        let graph_bytes =
+            self.layers.capacity() * std::mem::size_of::<Layer>() + layer_storage_bytes;
 
-        let metadata_bytes = self.doc_ids.len() * std::mem::size_of::<u32>()
-            + self.layer_assignments.len() * std::mem::size_of::<u8>();
+        let reverse_map_bytes = self.doc_id_to_internal.capacity()
+            * (std::mem::size_of::<u32>() + std::mem::size_of::<u32>());
+        let category_value_bytes = self
+            .category_assignments
+            .iter()
+            .filter_map(Option::as_ref)
+            .map(|value| match value {
+                crate::filtering::MetadataValue::Str(value) => value.capacity(),
+                _ => 0,
+            })
+            .sum::<usize>();
+        let metadata_bytes = self.doc_ids.capacity() * std::mem::size_of::<u32>()
+            + self.layer_assignments.capacity() * std::mem::size_of::<u8>()
+            + reverse_map_bytes
+            + self.tombstones.owned_key_bytes()
+            + self.filter_field.as_ref().map_or(0, String::capacity)
+            + self.category_assignments.capacity()
+                * std::mem::size_of::<Option<crate::filtering::MetadataValue>>()
+            + category_value_bytes;
 
         crate::memory::MemoryReport {
             vectors_bytes,

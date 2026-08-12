@@ -104,6 +104,16 @@ impl TombstoneSet {
         self.deleted.len()
     }
 
+    /// Heap bytes reserved for tombstone keys.
+    ///
+    /// This uses the set's runtime capacity and intentionally excludes hash-table
+    /// control bytes and allocator bookkeeping, which are implementation details.
+    pub(crate) fn owned_key_bytes(&self) -> usize {
+        self.deleted
+            .capacity()
+            .saturating_mul(std::mem::size_of::<usize>())
+    }
+
     /// Check if there are no tombstones.
     pub fn is_empty(&self) -> bool {
         self.deleted.is_empty()
@@ -209,6 +219,10 @@ mod tests {
         assert!(ts.is_deleted(5));
         assert!(!ts.is_deleted(10));
         assert_eq!(ts.len(), 1);
+        assert_eq!(
+            ts.owned_key_bytes(),
+            ts.deleted.capacity() * std::mem::size_of::<usize>()
+        );
     }
 
     #[test]

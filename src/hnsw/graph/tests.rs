@@ -15,6 +15,60 @@ fn neighbor_list_holds_default_base_degree_inline() {
 }
 
 #[test]
+fn memory_usage_counts_reserved_hnsw_allocations_by_component() {
+    let mut index = HNSWIndex::new(3, 16, 16).unwrap();
+
+    index.vectors.reserve_exact(17);
+    index.doc_ids.reserve_exact(11);
+    index.doc_id_to_internal.reserve(11);
+    index.layer_assignments.reserve_exact(13);
+    index.layers.reserve_exact(3);
+    index.category_assignments.reserve_exact(7);
+
+    let mut filter_field = String::with_capacity(19);
+    filter_field.push_str("kind");
+    index.filter_field = Some(filter_field);
+    let mut category = String::with_capacity(23);
+    category.push_str("article");
+    index
+        .category_assignments
+        .push(Some(crate::filtering::MetadataValue::Str(category)));
+    index.tombstones.delete(5);
+
+    let mut spilled: NeighborList = NeighborList::new();
+    spilled.extend(0..33);
+    assert!(spilled.spilled());
+    let spilled_capacity = spilled.capacity();
+    let mut neighbors = Vec::with_capacity(5);
+    neighbors.push(spilled);
+    index.layers.push(Layer::new_uncompressed(neighbors));
+
+    let report = index.memory_usage();
+    assert_eq!(
+        report.vectors_bytes,
+        index.vectors.capacity() * std::mem::size_of::<f32>()
+    );
+    assert_eq!(
+        report.graph_bytes,
+        index.layers.capacity() * std::mem::size_of::<Layer>()
+            + 5 * std::mem::size_of::<NeighborList>()
+            + spilled_capacity * std::mem::size_of::<u32>()
+    );
+    assert_eq!(
+        report.metadata_bytes,
+        index.doc_ids.capacity() * std::mem::size_of::<u32>()
+            + index.layer_assignments.capacity() * std::mem::size_of::<u8>()
+            + index.doc_id_to_internal.capacity()
+                * (std::mem::size_of::<u32>() + std::mem::size_of::<u32>())
+            + index.tombstones.owned_key_bytes()
+            + index.filter_field.as_ref().unwrap().capacity()
+            + index.category_assignments.capacity()
+                * std::mem::size_of::<Option<crate::filtering::MetadataValue>>()
+            + 23
+    );
+}
+
+#[test]
 fn test_add_vectors() {
     let mut index = HNSWIndex::new(3, 16, 16).unwrap();
 
