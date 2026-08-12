@@ -53,6 +53,14 @@ page lists the other public indexes and the feature flags that expose them.
 | EVoC | `evoc` | Clustering wrapper, not nearest-neighbor search |
 | Brute force | benchmark runner | Exact ground-truth baseline, not an index type |
 
+The benchmark runner also has development-only adapters for published
+`hnsw_rs` 0.3.4 and USearch 2.26.0. They are external controls, not vicinity
+APIs or runtime dependencies. `external_hnsw_rs` uses sequential insertion and
+reports its unavailable caller seed; `external_usearch` fixes storage to f32,
+reserves capacity before insertion, and reports that its Rust API does not
+expose a construction seed. Compare them through repeated fixed-recall rows,
+not a single default configuration.
+
 Quantization feature names are split by use. Public IVF-RaBitQ and
 `hnsw::SymphonyQGIndex` types use `ivf_rabitq`; standalone quantizer re-exports
 need `quantization` plus `rabitq` or `saq`. PQ is part of `ivf_pq`.
@@ -130,5 +138,11 @@ These APIs are reachable but are not recommended defaults yet.
 - **Brute force**: exact oracle for correctness and recall measurement. It is
   not an ANN target, but it should stay in benchmark output as the ground-truth
   floor.
+- **External baselines**: use `external_hnsw_rs` as the pure-Rust HNSW control
+  and `external_usearch` as the native/SIMD comparison ceiling. Neither exposes
+  a caller-controlled construction seed in the pinned release, so keep
+  insertion order and thread settings fixed and require independent repeats.
+  Arroy belongs in a separate disk-backed protocol with cold/warm and I/O
+  measurements; it is not directly comparable by process RSS alone.
 
 Detailed benchmark rows are in [`benchmark-results.md`](benchmark-results.md).

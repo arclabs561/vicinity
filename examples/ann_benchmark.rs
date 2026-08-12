@@ -39,6 +39,8 @@
 
 #[path = "common/mod.rs"]
 mod common;
+#[path = "ann_benchmark/external_hnsw_rs.rs"]
+mod external_hnsw_rs;
 #[cfg(any(
     feature = "ivf_pq",
     feature = "ivf_avq",
@@ -53,6 +55,8 @@ mod common;
 mod quant;
 #[path = "ann_benchmark/support.rs"]
 mod support;
+#[path = "ann_benchmark/usearch.rs"]
+mod usearch_baseline;
 
 use std::path::Path;
 
@@ -3923,6 +3927,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             continue;
         }
         match algo.as_str() {
+            "external_hnsw_rs" => {
+                external_hnsw_rs::run_hnsw_rs(&cfg, &train, &test, &neighbors);
+            }
+
+            "external_usearch" => {
+                usearch_baseline::run_usearch(&cfg, &train, &test, &neighbors, dim);
+            }
+
             #[cfg(feature = "hnsw")]
             "hnsw" => run_hnsw(&cfg, &train, &test, &neighbors, dim),
 

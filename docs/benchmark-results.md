@@ -2869,6 +2869,36 @@ on the candidate pool) dominates, negating the savings from quantized graph trav
 | 200 | 90.4% | 317 |
 | 400 | 95.9% | 175 |
 
+## External baseline adapter validation
+
+Two benchmark-only external controls are available through the same evaluator
+and JSONL schema:
+
+```sh
+cargo run --release --example ann_benchmark --no-default-features -- \
+  data/ann-benchmarks/glove-25-angular \
+  --algo external_hnsw_rs --algo external_usearch \
+  --max-train 2000 --max-queries 100 --warmup-queries 10 \
+  --ef-search 20,50 --json --fresh --results /tmp/external-smoke.jsonl
+```
+
+The release-mode path validation completed on both GloVe-25 cosine and
+SIFT-128 L2 with preserved external IDs, recall at 1/10/100, latency
+percentiles, build time, RSS, and index-size metadata. These capped, single-run
+rows validate metric and harness integration only; they are not comparative
+performance evidence. Both pinned external releases lack a caller-controlled
+construction seed. Full-corpus comparisons therefore require at least three
+independent builds with fixed insertion order and thread settings, plus the
+same fixed-recall selection used by internal rows.
+
+`hnsw_rs` reports the combined serialized graph and vector files because it has
+no complete heap-size API. USearch reports both its heap estimate and serialized
+length; its f32 storage is explicit because the library default is quantized.
+USearch also adds a native C++/NumKong build, so compiler, ISA, and feature
+settings are part of the benchmark environment. Arroy remains deferred to a
+separate LMDB protocol that distinguishes database bytes, RSS, page cache,
+I/O, and cold/warm search.
+
 ## Caveats
 
 - GloVe-25 rankings differ from high-dimensional data. SQ4U and SymphonyQG

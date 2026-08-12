@@ -14,6 +14,8 @@ static RUN_SEED: AtomicU64 = AtomicU64::new(42);
 static RUN_REPEAT: AtomicUsize = AtomicUsize::new(0);
 
 pub(crate) const ALGORITHM_OPTIONS: &[&str] = &[
+    "external_hnsw_rs",
+    "external_usearch",
     "hnsw",
     "nsw",
     "ivfpq",
@@ -1061,6 +1063,31 @@ fn required_result_checks(
     test_len: usize,
 ) -> Vec<ExpectedResult> {
     match algo {
+        "external_hnsw_rs" => ef_checks("external_hnsw_rs", cfg, |_ef| {
+            vec![
+                "\"crate_version\":\"0.3.4\"".to_owned(),
+                format!("\"m\":{}", cfg.m),
+                format!("\"ef_construction\":{}", cfg.ef_construction),
+                "\"build_mode\":\"sequential\"".to_owned(),
+                "\"seed_control\":\"unavailable\"".to_owned(),
+            ]
+        }),
+        "external_usearch" => cfg
+            .ef_search_values
+            .iter()
+            .map(|ef| {
+                params_containing_check(
+                    "external_usearch",
+                    vec![
+                        format!("\"connectivity\":{}", cfg.m),
+                        format!("\"expansion_add\":{}", cfg.ef_construction),
+                        format!("\"expansion_search\":{}", ef),
+                        "\"scalar\":\"f32\"".to_owned(),
+                        "\"construction_seed_control\":\"unavailable\"".to_owned(),
+                    ],
+                )
+            })
+            .collect(),
         "hnsw" => hnsw_result_checks(cfg),
         "nsw" => ef_snapshot_checks("nsw", cfg, |ef| {
             format!("{{\"m\":{},\"ef_search\":{}}}", cfg.m, ef)
