@@ -9,8 +9,8 @@ use std::time::Instant;
 use hnsw_rs::prelude::{AnnT, DistCosine, DistL2, Hnsw, Neighbour};
 
 use crate::support::{
-    current_rss_kb, emit_result, evaluate, json_line_with_storage, print_header, print_row, Config,
-    ResultStorage,
+    current_rss_kb, effective_search_values, emit_result, evaluate, evaluation_search_k,
+    json_line_with_storage_and_extra_fields, print_header, print_row, Config, ResultStorage,
 };
 
 const CRATE_VERSION: &str = "0.3.4";
@@ -76,7 +76,8 @@ fn emit_search_results<D>(
 ) where
     D: hnsw_rs::prelude::Distance<f32> + Send + Sync,
 {
-    for &ef_search in &cfg.ef_search_values {
+    let search_k = evaluation_search_k(neighbors);
+    for ef_search in effective_search_values(&cfg.ef_search_values, search_k) {
         let result = evaluate(
             &|query, k| results(index.search(query, k, ef_search)),
             test,
@@ -86,13 +87,14 @@ fn emit_search_results<D>(
         if cfg.json {
             emit_result(
                 &cfg.results_path,
-                &json_line_with_storage(
+                &json_line_with_storage_and_extra_fields(
                     "external_hnsw_rs",
                     &params_json(cfg, ef_search),
                     build_time_s,
                     rss_kb,
                     &result,
                     &storage(index_bytes),
+                    "\"construction_seed\":null,\"construction_seed_control\":\"unavailable\"",
                 ),
             );
         } else {

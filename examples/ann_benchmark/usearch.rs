@@ -3,8 +3,8 @@
 use std::time::Instant;
 
 use crate::support::{
-    current_rss_kb, emit_result, evaluate, json_line_with_storage, print_header, print_row, Config,
-    ResultStorage,
+    current_rss_kb, effective_search_values, emit_result, evaluate, evaluation_search_k,
+    json_line_with_storage_and_extra_fields, print_header, print_row, Config, ResultStorage,
 };
 use usearch::{Index, IndexOptions, MetricKind, ScalarKind};
 
@@ -98,7 +98,8 @@ pub(crate) fn run_usearch(
         print_header();
     }
 
-    for &expansion_search in &cfg.ef_search_values {
+    let search_k = evaluation_search_k(neighbors);
+    for expansion_search in effective_search_values(&cfg.ef_search_values, search_k) {
         index.change_expansion_search(expansion_search);
         let result = evaluate(
             &|query, count| search(&index, query, count),
@@ -121,13 +122,14 @@ pub(crate) fn run_usearch(
                 index_bytes_kind: Some("heap_estimate"),
                 ..ResultStorage::default()
             };
-            let line = json_line_with_storage(
+            let line = json_line_with_storage_and_extra_fields(
                 "external_usearch",
                 &params,
                 build_time_s,
                 rss_kb,
                 &result,
                 &storage,
+                "\"construction_seed\":null,\"construction_seed_control\":\"unavailable\"",
             );
             emit_result(
                 &cfg.results_path,
@@ -176,5 +178,31 @@ mod tests {
             line,
             "{\"algorithm\":\"external_usearch\",\"serialized_bytes\":1234}"
         );
+    }
+
+    #[test]
+    fn external_rows_disclose_uncontrolled_construction_seed() {
+        let result = crate::support::BenchResult {
+            recall_at_k: 1.0,
+            recall_at_1: 1.0,
+            recall_at_100: 1.0,
+            search_k: 100,
+            qps: 10.0,
+            latency_us: 100.0,
+            p50_us: 90.0,
+            p95_us: 150.0,
+            p99_us: 200.0,
+        };
+        let line = json_line_with_storage_and_extra_fields(
+            "external_usearch",
+            "{}",
+            1.0,
+            None,
+            &result,
+            &ResultStorage::default(),
+            "\"construction_seed\":null,\"construction_seed_control\":\"unavailable\"",
+        );
+        assert!(line.contains("\"construction_seed\":null"));
+        assert!(line.contains("\"construction_seed_control\":\"unavailable\""));
     }
 }

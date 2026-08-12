@@ -1821,7 +1821,6 @@ pub(crate) fn json_line_with_extra_fields(
     )
 }
 
-#[cfg(any(feature = "fresh_graph", feature = "hnsw"))]
 pub(crate) fn json_line_with_storage_and_extra_fields(
     algorithm: &str,
     params: &str,
@@ -1901,7 +1900,6 @@ pub(crate) fn json_line_with_storage(
     s
 }
 
-#[cfg(any(feature = "fresh_graph", feature = "hnsw"))]
 fn append_extra_fields(line: &mut String, extra_fields: &str) {
     let fields = extra_fields.trim().trim_start_matches(',');
     if fields.is_empty() || !line.ends_with('}') {
@@ -1913,13 +1911,28 @@ fn append_extra_fields(line: &mut String, extra_fields: &str) {
     line.push('}');
 }
 
+pub(crate) fn evaluation_search_k(neighbors: &[Vec<i32>]) -> usize {
+    neighbors.first().map_or(1, |row| row.len().min(100))
+}
+
+pub(crate) fn effective_search_values(configured: &[usize], search_k: usize) -> Vec<usize> {
+    let mut values = Vec::with_capacity(configured.len());
+    for &value in configured {
+        let effective = value.max(search_k);
+        if !values.contains(&effective) {
+            values.push(effective);
+        }
+    }
+    values
+}
+
 pub(crate) fn evaluate(
     search_fn: &dyn Fn(&[f32], usize) -> Vec<(u32, f32)>,
     test: &[Vec<f32>],
     neighbors: &[Vec<i32>],
     _k: usize,
 ) -> BenchResult {
-    let search_k = neighbors.first().map_or(1, |row| row.len().min(100));
+    let search_k = evaluation_search_k(neighbors);
     let warmup_count = warmup_queries().min(test.len());
     for query in test.iter().take(warmup_count) {
         let _ = search_fn(query, search_k);
@@ -2370,7 +2383,6 @@ mod tests {
         assert!(line.ends_with('}'));
     }
 
-    #[cfg(any(feature = "fresh_graph", feature = "hnsw"))]
     #[test]
     fn json_line_with_storage_and_extra_fields_keeps_index_bytes() {
         let storage = ResultStorage {
@@ -2391,6 +2403,15 @@ mod tests {
         assert!(line.contains("\"index_bytes_kind\":\"heap_estimate\""));
         assert!(line.contains("\"update_qps\":12.5"));
         assert!(line.ends_with('}'));
+    }
+
+    #[test]
+    fn effective_search_values_clamp_and_deduplicate() {
+        assert_eq!(
+            effective_search_values(&[20, 50, 100, 200, 400], 100),
+            vec![100, 200, 400]
+        );
+        assert_eq!(effective_search_values(&[10, 20], 5), vec![10, 20]);
     }
 
     #[test]
