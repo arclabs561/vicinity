@@ -2530,6 +2530,12 @@ impl HNSWIndex {
     /// Returns one result vector per query, in input order.
     ///
     /// Requires the `parallel` feature.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RetrieveError::InvalidParameter`] if the requested flat shape
+    /// overflows `usize`, or [`RetrieveError::DimensionMismatch`] if the buffer
+    /// length does not exactly match that shape. Search errors are propagated.
     #[cfg(feature = "parallel")]
     pub fn search_batch_flat(
         &self,
@@ -2539,6 +2545,17 @@ impl HNSWIndex {
         ef_search: usize,
     ) -> Result<Vec<Vec<(u32, f32)>>, RetrieveError> {
         use rayon::prelude::*;
+
+        let expected_len = num_queries.checked_mul(self.dimension).ok_or_else(|| {
+            RetrieveError::InvalidParameter("num_queries * index dimension overflows usize".into())
+        })?;
+        if queries_flat.len() != expected_len {
+            return Err(RetrieveError::DimensionMismatch {
+                query_dim: queries_flat.len(),
+                doc_dim: expected_len,
+            });
+        }
+
         (0..num_queries)
             .into_par_iter()
             .map(|i| {

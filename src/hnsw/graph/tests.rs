@@ -1147,6 +1147,44 @@ fn test_search_batch_matches_sequential() {
     }
 }
 
+#[cfg(feature = "parallel")]
+#[test]
+fn search_batch_flat_rejects_malformed_buffer_lengths_without_panicking() {
+    let (index, _) = build_test_index();
+    let expected_len = 2 * index.dimension;
+
+    for malformed_len in [expected_len - 1, expected_len + 1] {
+        let queries = vec![0.0; malformed_len];
+        let result = std::panic::catch_unwind(|| index.search_batch_flat(&queries, 2, 1, 8));
+
+        let error = result
+            .expect("malformed flat batch must return an error, not panic")
+            .expect_err("malformed flat batch must be rejected");
+        assert!(matches!(
+            error,
+            RetrieveError::DimensionMismatch {
+                query_dim,
+                doc_dim,
+            } if query_dim == malformed_len && doc_dim == expected_len
+        ));
+    }
+}
+
+#[cfg(feature = "parallel")]
+#[test]
+fn search_batch_flat_rejects_shape_overflow_without_panicking() {
+    let (index, _) = build_test_index();
+    let overflowing_count = usize::MAX / index.dimension + 1;
+
+    let result = std::panic::catch_unwind(|| index.search_batch_flat(&[], overflowing_count, 1, 8));
+
+    let error = result
+        .expect("overflowing flat batch shape must return an error, not panic")
+        .expect_err("overflowing flat batch shape must be rejected");
+    assert!(matches!(error, RetrieveError::InvalidParameter(_)));
+    assert!(error.to_string().contains("overflows usize"));
+}
+
 /// Build a small index for structural invariant tests.
 fn build_structural_test_index(n: usize, dim: usize, m: usize) -> HNSWIndex {
     let params = HNSWParams {
