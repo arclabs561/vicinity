@@ -78,6 +78,217 @@ fn test_add_vectors() {
     assert_eq!(index.num_vectors, 2);
 }
 
+#[cfg(feature = "compact-hnsw")]
+fn compact_fixture(compact: bool, count: usize) -> HNSWIndex {
+    let params = HNSWParams {
+        m: 8,
+        m_max: 16,
+        ef_construction: 64,
+        ef_search: 64,
+        metric: DistanceMetric::L2,
+        seed: Some(42),
+        compact_upper_layers: compact,
+        ..Default::default()
+    };
+    let mut index = HNSWIndex::with_params(16, params).unwrap();
+    let mut state = 7_u64;
+    for id in 0..count as u32 {
+        let vector: Vec<f32> = (0..16)
+            .map(|_| {
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                ((state >> 32) as u32) as f32 / u32::MAX as f32
+            })
+            .collect();
+        index.add(id, vector).unwrap();
+    }
+    index.build().unwrap();
+    index
+}
+
+#[cfg(feature = "compact-hnsw")]
+#[test]
+fn compact_upper_layers_preserve_search_occupancy_and_tombstones() {
+    let dense = compact_fixture(false, 512);
+    let mut compact = compact_fixture(true, 512);
+
+    assert_eq!(dense.layer_occupancy(), compact.layer_occupancy());
+    assert_eq!(dense.max_node_degree(), compact.max_node_degree());
+    for query_id in [0, 1, 17, 255, 511] {
+        let query = dense.get_vector(query_id).to_vec();
+        assert_eq!(
+            dense.search(&query, 20, 64).unwrap(),
+            compact.search(&query, 20, 64).unwrap()
+        );
+    }
+
+    let deleted_doc = compact.doc_ids[17];
+    compact.delete(deleted_doc).unwrap();
+    let query = dense.get_vector(17).to_vec();
+    assert!(compact
+        .search(&query, 20, 64)
+        .unwrap()
+        .iter()
+        .all(|&(doc_id, _)| doc_id != deleted_doc));
+    assert!(compact.delete_with_repair(deleted_doc).is_err());
+    assert!(compact
+        .delete_batch_with_repair(&[compact.doc_ids[18]])
+        .is_err());
+}
+
+#[cfg(feature = "compact-hnsw")]
+#[test]
+fn compact_upper_layers_clear_small_memory_gate() {
+    let dense = compact_fixture(false, 2_048);
+    let compact = compact_fixture(true, 2_048);
+    let dense_bytes = dense.memory_usage().total();
+    let compact_bytes = compact.memory_usage().total();
+    assert!(
+        compact_bytes * 100 <= dense_bytes * 85,
+        "compact={compact_bytes}, dense={dense_bytes}"
+    );
+}
+
+#[cfg(feature = "compact-hnsw")]
+#[test]
+fn compact_upper_layers_reject_mismatched_layer_membership() {
+    let mut compact = compact_fixture(true, 512);
+    let wrong_node = compact
+        .layer_assignments
+        .iter()
+        .position(|&assignment| assignment == 0)
+        .expect("fixture has a base-only node") as u32;
+    let layer = compact.layers.get_mut(1).expect("fixture has upper layer");
+    let NeighborStorage::FrozenCsr { node_ids, .. } = &mut layer.storage else {
+        panic!("upper layer is not frozen CSR");
+    };
+    node_ids[0] = wrong_node;
+    node_ids.sort_unstable();
+    assert!(matches!(
+        compact.validate_structure(),
+        Err(RetrieveError::FormatError(message))
+            if message.contains("do not match layer assignments")
+    ));
+}
+
+#[cfg(all(feature = "compact-hnsw", feature = "serde"))]
+#[test]
+fn compact_upper_layers_json_roundtrip_preserves_search() {
+    let compact = compact_fixture(true, 512);
+    let json = serde_json::to_vec(&compact).unwrap();
+    let loaded = HNSWIndex::load_from_reader(json.as_slice()).unwrap();
+    assert_eq!(compact.layer_occupancy(), loaded.layer_occupancy());
+    for query_id in [0, 31, 255, 511] {
+        let query = compact.get_vector(query_id).to_vec();
+        assert_eq!(
+            compact.search(&query, 20, 64).unwrap(),
+            loaded.search(&query, 20, 64).unwrap()
+        );
+    }
+}
+
+#[cfg(feature = "compact-hnsw")]
+#[test]
+#[ignore = "bounded performance probe; run in release mode with --nocapture"]
+fn compact_upper_layers_profile() {
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    let count = 10_000;
+    let mut dense_builds = Vec::new();
+    let mut compact_builds = Vec::new();
+    let mut dense = None;
+    let mut compact = None;
+    for sample in 0..5 {
+        let build = |compact_layout| {
+            let started = Instant::now();
+            let index = compact_fixture(compact_layout, count);
+            (index, started.elapsed())
+        };
+        if sample % 2 == 0 {
+            let (index, elapsed) = build(false);
+            dense = Some(index);
+            dense_builds.push(elapsed);
+            let (index, elapsed) = build(true);
+            compact = Some(index);
+            compact_builds.push(elapsed);
+        } else {
+            let (index, elapsed) = build(true);
+            compact = Some(index);
+            compact_builds.push(elapsed);
+            let (index, elapsed) = build(false);
+            dense = Some(index);
+            dense_builds.push(elapsed);
+        }
+    }
+    dense_builds.sort_unstable();
+    compact_builds.sort_unstable();
+    let dense_build = dense_builds[dense_builds.len() / 2];
+    let compact_build = compact_builds[compact_builds.len() / 2];
+    let dense = dense.unwrap();
+    let compact = compact.unwrap();
+
+    let queries: Vec<Vec<f32>> = (0..200)
+        .map(|query| dense.get_vector(query * 37 % count).to_vec())
+        .collect();
+    let time_search = |index: &HNSWIndex| {
+        let started = Instant::now();
+        let mut checksum = 0.0_f32;
+        for query in &queries {
+            checksum += index.search(query, 10, 64).unwrap()[0].1;
+        }
+        black_box(checksum);
+        started.elapsed()
+    };
+    // Warm both layouts before alternating samples.
+    black_box(time_search(&dense));
+    black_box(time_search(&compact));
+    let mut dense_search = Vec::new();
+    let mut compact_search = Vec::new();
+    for sample in 0..7 {
+        if sample % 2 == 0 {
+            dense_search.push(time_search(&dense));
+            compact_search.push(time_search(&compact));
+        } else {
+            compact_search.push(time_search(&compact));
+            dense_search.push(time_search(&dense));
+        }
+    }
+    dense_search.sort_unstable();
+    compact_search.sort_unstable();
+    let dense_median = dense_search[dense_search.len() / 2];
+    let compact_median = compact_search[compact_search.len() / 2];
+    let dense_bytes = dense.memory_usage().total();
+    let compact_bytes = compact.memory_usage().total();
+
+    eprintln!(
+        "dense_bytes={dense_bytes} compact_bytes={compact_bytes} memory_ratio={:.4} \
+         dense_build_ms={:.3} compact_build_ms={:.3} build_ratio={:.4} \
+         dense_search_ms={:.3} compact_search_ms={:.3} search_ratio={:.4} occupancy={:?}",
+        compact_bytes as f64 / dense_bytes as f64,
+        dense_build.as_secs_f64() * 1_000.0,
+        compact_build.as_secs_f64() * 1_000.0,
+        compact_build.as_secs_f64() / dense_build.as_secs_f64(),
+        dense_median.as_secs_f64() * 1_000.0,
+        compact_median.as_secs_f64() * 1_000.0,
+        compact_median.as_secs_f64() / dense_median.as_secs_f64(),
+        compact.layer_occupancy(),
+    );
+    assert!(
+        compact_bytes * 100 <= dense_bytes * 85,
+        "compact={compact_bytes}, dense={dense_bytes}"
+    );
+    assert!(
+        compact_build.as_secs_f64() <= dense_build.as_secs_f64() * 1.05,
+        "compact build {compact_build:?} exceeds dense build {dense_build:?} by more than 5%"
+    );
+    assert!(
+        compact_median.as_secs_f64() <= dense_median.as_secs_f64() * 1.05,
+        "compact search {compact_median:?} exceeds dense search {dense_median:?} by more than 5%"
+    );
+}
+
 #[test]
 fn test_dimension_mismatch() {
     let mut index = HNSWIndex::new(3, 16, 16).unwrap();

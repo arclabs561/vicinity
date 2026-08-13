@@ -97,19 +97,12 @@ impl HNSWSegmentWriter {
 
         // Write each layer
         for layer in &index.layers {
-            // Get neighbors (only works for uncompressed layers)
-            let neighbors = layer.get_all_neighbors().ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "Cannot persist compressed layers - decompress first",
-                )
-            })?;
-
             // Write number of neighbor lists
-            layers_file.write_all(&(neighbors.len() as u32).to_le_bytes())?;
+            layers_file.write_all(&(layer.len() as u32).to_le_bytes())?;
 
             // Write each neighbor list
-            for neighbor_list in neighbors {
+            for node in 0..layer.len() as u32 {
+                let neighbor_list = layer.get_neighbors(node);
                 // Write number of neighbors
                 layers_file.write_all(&(neighbor_list.len() as u32).to_le_bytes())?;
 
@@ -138,6 +131,12 @@ impl HNSWSegmentWriter {
         };
         params_file.write_all(&[metric_byte])?;
         params_file.write_all(&[if index.params.auto_normalize { 1 } else { 0 }])?;
+        #[cfg(feature = "compact-hnsw")]
+        params_file.write_all(&[if index.params.compact_upper_layers {
+            1
+        } else {
+            0
+        }])?;
         params_file.flush()?;
 
         // Write metadata.
@@ -313,6 +312,12 @@ impl HNSWSegmentReader {
         let auto_normalize =
             params_file.read_exact(&mut auto_norm_byte).is_ok() && auto_norm_byte[0] != 0;
 
+        #[cfg(feature = "compact-hnsw")]
+        let compact_upper_layers = {
+            let mut compact_byte = [0u8; 1];
+            params_file.read_exact(&mut compact_byte).is_ok() && compact_byte[0] != 0
+        };
+
         let params = HNSWParams {
             m: u32::from_le_bytes(m_bytes) as usize,
             m_max: u32::from_le_bytes(m_max_bytes) as usize,
@@ -324,6 +329,8 @@ impl HNSWSegmentReader {
             neighborhood_diversification: NeighborhoodDiversification::default(),
             seed: None,
             metric,
+            #[cfg(feature = "compact-hnsw")]
+            compact_upper_layers,
             #[cfg(feature = "id-compression")]
             id_compression: None,
             #[cfg(feature = "id-compression")]
@@ -465,6 +472,11 @@ impl HNSWSegmentReader {
             doc_ids,
         )?;
 
+        #[cfg(feature = "compact-hnsw")]
+        if index.params.compact_upper_layers {
+            index.freeze_upper_layers()?;
+        }
+
         if let Some(flags) = tombstone_flags {
             index.restore_tombstone_flags(&flags)?;
         }
@@ -542,5 +554,51 @@ mod tests {
             "segment roundtrip resurrected deleted doc_id 42"
         );
         assert_eq!(result_ids, vec![7]);
+    }
+
+    #[cfg(feature = "compact-hnsw")]
+    #[test]
+    fn compact_hnsw_segment_roundtrip_preserves_layout_contract() {
+        let params = HNSWParams {
+            m: 8,
+            m_max: 16,
+            ef_construction: 64,
+            ef_search: 64,
+            seed: Some(42),
+            metric: crate::distance::DistanceMetric::L2,
+            compact_upper_layers: true,
+            ..Default::default()
+        };
+        let mut index = HNSWIndex::with_params(8, params).unwrap();
+        for id in 0..512_u32 {
+            let vector = (0..8)
+                .map(|dimension| ((id as usize * 17 + dimension * 31) % 101) as f32 / 101.0)
+                .collect();
+            index.add(id, vector).unwrap();
+        }
+        index.build().unwrap();
+        let occupancy = index.layer_occupancy();
+        let query = index.get_vector(137).to_vec();
+        let expected = index.search(&query, 20, 64).unwrap();
+
+        let mem = MemoryDirectory::new();
+        HNSWSegmentWriter::new(Box::new(mem.clone()), 3)
+            .write_hnsw_index(&index)
+            .unwrap();
+        let mut loaded = HNSWSegmentReader::load(Box::new(mem), 3)
+            .unwrap()
+            .load_index()
+            .unwrap();
+
+        assert!(loaded.params.compact_upper_layers);
+        assert_eq!(loaded.layer_occupancy(), occupancy);
+        assert_eq!(loaded.search(&query, 20, 64).unwrap(), expected);
+        assert!(loaded.delete_with_repair(137).is_err());
+        loaded.delete(137).unwrap();
+        assert!(loaded
+            .search(&query, 20, 64)
+            .unwrap()
+            .iter()
+            .all(|&(doc_id, _)| doc_id != 137));
     }
 }

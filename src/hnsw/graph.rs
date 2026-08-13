@@ -181,6 +181,11 @@ pub struct HNSWParams {
     /// When `None` (default), uses thread-local RNG.
     pub seed: Option<u64>,
 
+    /// Freeze upper graph layers into compact eligible-node CSR storage after build.
+    #[cfg(feature = "compact-hnsw")]
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub compact_upper_layers: bool,
+
     /// ID compression method (optional)
     #[cfg(feature = "id-compression")]
     #[cfg_attr(feature = "serde", serde(skip))]
@@ -215,6 +220,8 @@ impl Default for HNSWParams {
             seed_selection: SeedSelectionStrategy::default(),
             neighborhood_diversification: NeighborhoodDiversification::default(),
             seed: None,
+            #[cfg(feature = "compact-hnsw")]
+            compact_upper_layers: false,
             #[cfg(feature = "id-compression")]
             id_compression: None,
             #[cfg(feature = "id-compression")]
@@ -244,6 +251,19 @@ pub struct HNSWBuilder {
     ef_search: usize,
     auto_normalize: bool,
     metric: DistanceMetric,
+    #[cfg(feature = "compact-hnsw")]
+    compact_upper_layers: bool,
+}
+
+/// Exact logical occupancy of one HNSW layer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HNSWLayerOccupancy {
+    /// Zero-based layer index.
+    pub layer: usize,
+    /// Nodes assigned to this layer (`L_i`).
+    pub eligible_nodes: usize,
+    /// Directed neighbor references stored in this layer (`E_i`).
+    pub edges: usize,
 }
 
 impl HNSWBuilder {
@@ -291,6 +311,13 @@ impl HNSWBuilder {
         self
     }
 
+    /// Freeze layers above the dense base layer into compact CSR storage.
+    #[cfg(feature = "compact-hnsw")]
+    pub fn compact_upper_layers(mut self, compact: bool) -> Self {
+        self.compact_upper_layers = compact;
+        self
+    }
+
     /// Build the index.
     pub fn build(self) -> Result<HNSWIndex, RetrieveError> {
         let m_max = self.m_max.unwrap_or(2 * self.m); // Paper: m_max0 = 2*M
@@ -301,6 +328,8 @@ impl HNSWBuilder {
             ef_search: self.ef_search,
             auto_normalize: self.auto_normalize,
             metric: self.metric,
+            #[cfg(feature = "compact-hnsw")]
+            compact_upper_layers: self.compact_upper_layers,
             ..Default::default()
         };
         HNSWIndex::with_params(self.dimension, params)
@@ -319,6 +348,15 @@ enum NeighborStorage {
     Compressed {
         data: Vec<CompressedNeighborList>,
         universe_size: u32,
+    },
+
+    /// Immutable upper-layer adjacency for only the nodes assigned to the layer.
+    #[cfg(feature = "compact-hnsw")]
+    FrozenCsr {
+        num_nodes: usize,
+        node_ids: Vec<u32>,
+        offsets: Vec<u32>,
+        edges: Vec<u32>,
     },
 }
 
@@ -368,6 +406,10 @@ impl Layer {
             NeighborStorage::Compressed { .. } => {
                 panic!("Cannot get mutable access to compressed neighbors");
             }
+            #[cfg(feature = "compact-hnsw")]
+            NeighborStorage::FrozenCsr { .. } => {
+                panic!("Cannot get mutable access to frozen CSR neighbors");
+            }
         }
     }
 
@@ -384,6 +426,8 @@ impl Layer {
                 Self::new_compressed(neighbors, compressor, universe_size, threshold)?
             }
             NeighborStorage::Compressed { .. } => return Ok(()),
+            #[cfg(feature = "compact-hnsw")]
+            NeighborStorage::FrozenCsr { .. } => return Ok(()),
         };
 
         if let Some(compressed_layer) = compressed_layer {
@@ -494,6 +538,20 @@ impl Layer {
 
                 std::borrow::Cow::Owned(result)
             }
+            #[cfg(feature = "compact-hnsw")]
+            NeighborStorage::FrozenCsr {
+                node_ids,
+                offsets,
+                edges,
+                ..
+            } => {
+                let Ok(position) = node_ids.binary_search(&node) else {
+                    return std::borrow::Cow::Borrowed(&[]);
+                };
+                let start = offsets[position] as usize;
+                let end = offsets[position + 1] as usize;
+                std::borrow::Cow::Borrowed(&edges[start..end])
+            }
         }
     }
 
@@ -513,6 +571,8 @@ impl Layer {
             NeighborStorage::Uncompressed(neighbors) => neighbors.len(),
             #[cfg(feature = "id-compression")]
             NeighborStorage::Compressed { data, .. } => data.len(),
+            #[cfg(feature = "compact-hnsw")]
+            NeighborStorage::FrozenCsr { num_nodes, .. } => *num_nodes,
         }
     }
 
@@ -552,6 +612,10 @@ impl Layer {
                 // Compressed layers: would need decompress → remap → recompress.
                 // For now, reorder_for_locality should only be called before compression.
             }
+            #[cfg(feature = "compact-hnsw")]
+            NeighborStorage::FrozenCsr { .. } => {
+                panic!("frozen CSR layers must be created after locality reordering");
+            }
         }
     }
 
@@ -563,7 +627,104 @@ impl Layer {
             NeighborStorage::Uncompressed(neighbors) => Some(neighbors),
             #[cfg(feature = "id-compression")]
             NeighborStorage::Compressed { .. } => None,
+            #[cfg(feature = "compact-hnsw")]
+            NeighborStorage::FrozenCsr { .. } => None,
         }
+    }
+
+    #[cfg(feature = "compact-hnsw")]
+    fn freeze_csr(&mut self, eligible: &[u32]) -> Result<(), RetrieveError> {
+        let NeighborStorage::Uncompressed(neighbors) = &self.storage else {
+            return Err(RetrieveError::InvalidParameter(
+                "compact upper layers require uncompressed neighbor storage".into(),
+            ));
+        };
+        let mut node_ids = Vec::with_capacity(eligible.len());
+        let mut offsets = Vec::with_capacity(eligible.len() + 1);
+        let edge_count: usize = eligible
+            .iter()
+            .map(|&node| neighbors[node as usize].len())
+            .sum();
+        if edge_count > u32::MAX as usize {
+            return Err(RetrieveError::InvalidParameter(
+                "compact upper-layer edge count exceeds u32 offsets".into(),
+            ));
+        }
+        let mut edges = Vec::with_capacity(edge_count);
+        offsets.push(0);
+        for &node in eligible {
+            node_ids.push(node);
+            edges.extend_from_slice(&neighbors[node as usize]);
+            offsets.push(edges.len() as u32);
+        }
+        self.storage = NeighborStorage::FrozenCsr {
+            num_nodes: neighbors.len(),
+            node_ids,
+            offsets,
+            edges,
+        };
+        Ok(())
+    }
+
+    fn is_read_only(&self) -> bool {
+        match self.storage {
+            #[cfg(feature = "id-compression")]
+            NeighborStorage::Compressed { .. } => true,
+            #[cfg(feature = "compact-hnsw")]
+            NeighborStorage::FrozenCsr { .. } => true,
+            NeighborStorage::Uncompressed(_) => false,
+        }
+    }
+
+    fn validate_storage(
+        &self,
+        num_vectors: usize,
+        layer_idx: usize,
+        layer_assignments: &[u8],
+    ) -> Result<(), RetrieveError> {
+        #[cfg(feature = "compact-hnsw")]
+        if let NeighborStorage::FrozenCsr {
+            num_nodes,
+            node_ids,
+            offsets,
+            edges,
+        } = &self.storage
+        {
+            if *num_nodes != num_vectors {
+                return Err(RetrieveError::FormatError(
+                    "frozen CSR node count does not match index".into(),
+                ));
+            }
+            if offsets.len() != node_ids.len() + 1
+                || offsets.first() != Some(&0)
+                || offsets.last().copied().map(|value| value as usize) != Some(edges.len())
+                || offsets.windows(2).any(|pair| pair[0] > pair[1])
+            {
+                return Err(RetrieveError::FormatError(
+                    "invalid frozen CSR offsets".into(),
+                ));
+            }
+            if node_ids.windows(2).any(|pair| pair[0] >= pair[1])
+                || node_ids.iter().any(|&node| node as usize >= num_vectors)
+            {
+                return Err(RetrieveError::FormatError(
+                    "invalid frozen CSR node ids".into(),
+                ));
+            }
+            let expected_nodes =
+                layer_assignments
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(node, &assignment)| {
+                        (assignment as usize >= layer_idx).then_some(node as u32)
+                    });
+            if !node_ids.iter().copied().eq(expected_nodes) {
+                return Err(RetrieveError::FormatError(
+                    "frozen CSR node ids do not match layer assignments".into(),
+                ));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -578,6 +739,8 @@ impl HNSWIndex {
             ef_search: 50,
             auto_normalize: false,
             metric: DistanceMetric::Cosine,
+            #[cfg(feature = "compact-hnsw")]
+            compact_upper_layers: false,
         }
     }
 
@@ -756,6 +919,25 @@ impl HNSWIndex {
         max
     }
 
+    /// Return exact logical node and edge counts for every graph layer.
+    pub fn layer_occupancy(&self) -> Vec<HNSWLayerOccupancy> {
+        self.layers
+            .iter()
+            .enumerate()
+            .map(|(layer, storage)| HNSWLayerOccupancy {
+                layer,
+                eligible_nodes: self
+                    .layer_assignments
+                    .iter()
+                    .filter(|&&assignment| assignment as usize >= layer)
+                    .count(),
+                edges: (0..self.num_vectors)
+                    .map(|node| storage.get_neighbors(node as u32).len())
+                    .sum(),
+            })
+            .collect()
+    }
+
     /// Mark a vector as deleted. Deleted vectors are excluded from search results.
     ///
     /// The vector's storage is not reclaimed until the index is rebuilt.
@@ -798,14 +980,17 @@ impl HNSWIndex {
                 RetrieveError::InvalidParameter(format!("doc_id {} not found in index", doc_id))
             })?;
 
-        // Verify layers are uncompressed (compressed layers are read-only)
-        #[cfg(feature = "id-compression")]
-        for layer in &self.layers {
-            if matches!(layer.storage, NeighborStorage::Compressed { .. }) {
-                return Err(RetrieveError::InvalidParameter(
-                    "delete_with_repair requires uncompressed neighbor storage".into(),
-                ));
-            }
+        // Repair mutates adjacency and is unavailable after freezing/compression.
+        #[cfg(feature = "compact-hnsw")]
+        if self.params.compact_upper_layers {
+            return Err(RetrieveError::InvalidParameter(
+                "delete_with_repair is unavailable for compact upper layers".into(),
+            ));
+        }
+        if self.layers.iter().any(Layer::is_read_only) {
+            return Err(RetrieveError::InvalidParameter(
+                "delete_with_repair requires mutable neighbor storage".into(),
+            ));
         }
 
         let dist_fn = self.dist_fn();
@@ -948,13 +1133,16 @@ impl HNSWIndex {
 
         let deleted_set: std::collections::HashSet<u32> = internal_ids.iter().copied().collect();
 
-        #[cfg(feature = "id-compression")]
-        for layer in &self.layers {
-            if matches!(layer.storage, NeighborStorage::Compressed { .. }) {
-                return Err(RetrieveError::InvalidParameter(
-                    "delete_batch_with_repair requires uncompressed neighbor storage".into(),
-                ));
-            }
+        #[cfg(feature = "compact-hnsw")]
+        if self.params.compact_upper_layers {
+            return Err(RetrieveError::InvalidParameter(
+                "delete_batch_with_repair is unavailable for compact upper layers".into(),
+            ));
+        }
+        if self.layers.iter().any(Layer::is_read_only) {
+            return Err(RetrieveError::InvalidParameter(
+                "delete_batch_with_repair requires mutable neighbor storage".into(),
+            ));
         }
 
         let dist_fn = self.dist_fn();
@@ -1167,6 +1355,17 @@ impl HNSWIndex {
                 NeighborStorage::Compressed { data, .. } => {
                     data.capacity() * std::mem::size_of::<CompressedNeighborList>()
                         + data.iter().map(|list| list.data.capacity()).sum::<usize>()
+                }
+                #[cfg(feature = "compact-hnsw")]
+                NeighborStorage::FrozenCsr {
+                    node_ids,
+                    offsets,
+                    edges,
+                    ..
+                } => {
+                    node_ids.capacity() * std::mem::size_of::<u32>()
+                        + offsets.capacity() * std::mem::size_of::<u32>()
+                        + edges.capacity() * std::mem::size_of::<u32>()
                 }
             })
             .sum();
@@ -1432,6 +1631,7 @@ impl HNSWIndex {
 
         // All neighbor IDs must be in bounds.
         for (layer_idx, layer) in self.layers.iter().enumerate() {
+            layer.validate_storage(self.num_vectors, layer_idx, &self.layer_assignments)?;
             let layer_len = layer.len();
             for node in 0..layer_len {
                 let neighbors = layer.get_neighbors(node as u32);
@@ -1685,6 +1885,13 @@ impl HNSWIndex {
             return Err(RetrieveError::EmptyIndex);
         }
 
+        #[cfg(all(feature = "compact-hnsw", feature = "id-compression"))]
+        if self.params.compact_upper_layers && self.params.id_compression.is_some() {
+            return Err(RetrieveError::InvalidParameter(
+                "compact upper layers and id compression cannot be combined".into(),
+            ));
+        }
+
         // Construct graph
         crate::hnsw::construction::construct_graph(self)?;
 
@@ -1709,6 +1916,11 @@ impl HNSWIndex {
         self.cached_entry_point = self.compute_entry_point();
         self.reorder_for_locality();
 
+        #[cfg(feature = "compact-hnsw")]
+        if self.params.compact_upper_layers {
+            self.freeze_upper_layers()?;
+        }
+
         Ok(())
     }
 
@@ -1728,6 +1940,13 @@ impl HNSWIndex {
         }
         if self.num_vectors == 0 {
             return Err(RetrieveError::EmptyIndex);
+        }
+
+        #[cfg(all(feature = "compact-hnsw", feature = "id-compression"))]
+        if self.params.compact_upper_layers && self.params.id_compression.is_some() {
+            return Err(RetrieveError::InvalidParameter(
+                "compact upper layers and id compression cannot be combined".into(),
+            ));
         }
 
         crate::hnsw::construction::construct_graph_parallel(self, batch_size)?;
@@ -1750,6 +1969,26 @@ impl HNSWIndex {
         self.built = true;
         self.cached_entry_point = self.compute_entry_point();
         self.reorder_for_locality();
+        #[cfg(feature = "compact-hnsw")]
+        if self.params.compact_upper_layers {
+            self.freeze_upper_layers()?;
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "compact-hnsw")]
+    pub(crate) fn freeze_upper_layers(&mut self) -> Result<(), RetrieveError> {
+        for layer_idx in 1..self.layers.len() {
+            let eligible: Vec<u32> = self
+                .layer_assignments
+                .iter()
+                .enumerate()
+                .filter_map(|(node, &assignment)| {
+                    (assignment as usize >= layer_idx).then_some(node as u32)
+                })
+                .collect();
+            self.layers[layer_idx].freeze_csr(&eligible)?;
+        }
         Ok(())
     }
 

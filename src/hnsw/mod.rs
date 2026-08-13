@@ -150,7 +150,8 @@ mod search;
 
 #[cfg(feature = "hnsw")]
 pub use graph::{
-    HNSWBuilder, HNSWIndex, HNSWParams, NeighborhoodDiversification, SeedSelectionStrategy,
+    HNSWBuilder, HNSWIndex, HNSWLayerOccupancy, HNSWParams, NeighborhoodDiversification,
+    SeedSelectionStrategy,
 };
 #[cfg(all(feature = "hnsw", feature = "benchmark"))]
 pub use search::{reset_search_counters, take_search_counters, HnswSearchCounters};

@@ -87,6 +87,9 @@ default = ["hnsw", "innr"]
 persistence = ["serde", "dep:postcard", "dep:durability"]
 serde = ["dep:serde", "dep:serde_json", "smallvec/serde"]
 hnsw = ["innr"]
+# Freezes HNSW upper layers into compact eligible-node CSR storage after build.
+# Opt-in at the builder as well; the base layer remains mutable and dense.
+compact-hnsw = ["hnsw"]
 # `store` adds an updatable, durable multi-segment ANN index (`store::UpdatableIndex`)
 # via segstore.
 store = ["hnsw", "serde", "dep:segstore", "dep:durability", "dep:postcard"]
