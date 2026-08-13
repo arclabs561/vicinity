@@ -110,7 +110,7 @@ fn compact_fixture(compact: bool, count: usize) -> HNSWIndex {
 #[cfg(feature = "compact-hnsw")]
 #[test]
 fn compact_upper_layers_preserve_search_occupancy_and_tombstones() {
-    let dense = compact_fixture(false, 512);
+    let mut dense = compact_fixture(false, 512);
     let mut compact = compact_fixture(true, 512);
 
     assert_eq!(dense.layer_occupancy(), compact.layer_occupancy());
@@ -123,14 +123,18 @@ fn compact_upper_layers_preserve_search_occupancy_and_tombstones() {
         );
     }
 
-    let deleted_doc = compact.doc_ids[17];
-    compact.delete(deleted_doc).unwrap();
     let query = dense.get_vector(17).to_vec();
-    assert!(compact
-        .search(&query, 20, 64)
-        .unwrap()
-        .iter()
-        .all(|&(doc_id, _)| doc_id != deleted_doc));
+    let beam = dense.search(&query, 64, 64).unwrap();
+    let deleted_docs: Vec<u32> = beam.iter().take(3).map(|&(doc_id, _)| doc_id).collect();
+    let expected: Vec<(u32, f32)> = beam.iter().skip(3).take(20).copied().collect();
+    for &doc_id in &deleted_docs {
+        dense.delete(doc_id).unwrap();
+        compact.delete(doc_id).unwrap();
+    }
+    assert_eq!(dense.search(&query, 20, 64).unwrap(), expected);
+    assert_eq!(compact.search(&query, 20, 64).unwrap(), expected);
+
+    let deleted_doc = deleted_docs[0];
     assert!(compact.delete_with_repair(deleted_doc).is_err());
     assert!(compact
         .delete_batch_with_repair(&[compact.doc_ids[18]])
@@ -781,6 +785,60 @@ fn test_delete_excludes_from_results() {
         !after_ids.contains(&nearest_id),
         "deleted doc_id {} should not appear in results",
         nearest_id
+    );
+}
+
+#[test]
+fn tombstones_use_live_candidates_already_in_search_beam() {
+    let (mut index, query) = build_test_index();
+    let k = 5;
+    let ef = 32;
+    let beam = index.search(&query, ef, ef).unwrap();
+    let deleted: Vec<u32> = beam.iter().take(3).map(|&(doc_id, _)| doc_id).collect();
+    let expected: Vec<(u32, f32)> = beam.iter().skip(3).take(k).copied().collect();
+
+    for &doc_id in &deleted {
+        index.delete(doc_id).unwrap();
+    }
+
+    assert_eq!(index.search(&query, k, ef).unwrap(), expected);
+
+    let vectors = &index.vectors;
+    let dimension = index.dimension;
+    let distance = |query: &[f32], internal_id: u32| {
+        let start = internal_id as usize * dimension;
+        crate::distance::cosine_distance_normalized(query, &vectors[start..start + dimension])
+    };
+    assert_eq!(
+        index
+            .search_with_distance(&query, k, ef, &distance)
+            .unwrap(),
+        expected
+    );
+}
+
+#[test]
+fn prt_tombstones_use_live_candidates_already_in_search_beam() {
+    let (mut index, query) = build_test_index();
+    let k = 5;
+    let ef = 32;
+    let mut prt = crate::prt::ProbabilisticRoutingTest::new(index.dimension, 8, Some(42));
+    prt.project_database(&index.vectors);
+    let beam = index.search_prt(&query, ef, ef, &prt, 2.0, 1.0).unwrap().0;
+    assert!(
+        beam.len() >= k + 3,
+        "fixture needs spare PRT beam candidates"
+    );
+    let deleted: Vec<u32> = beam.iter().take(3).map(|&(doc_id, _)| doc_id).collect();
+    let expected: Vec<(u32, f32)> = beam.iter().skip(3).take(k).copied().collect();
+
+    for &doc_id in &deleted {
+        index.delete(doc_id).unwrap();
+    }
+
+    assert_eq!(
+        index.search_prt(&query, k, ef, &prt, 2.0, 1.0).unwrap().0,
+        expected
     );
 }
 

@@ -2395,9 +2395,6 @@ impl HNSWIndex {
                     )
                 };
 
-            // greedy_search_layer returns results sorted by distance; take top-k.
-            let results: Vec<(u32, f32)> = base_results.into_iter().take(k).collect();
-
             // Clear decompression caches after search
             #[cfg(feature = "id-compression")]
             {
@@ -2406,10 +2403,13 @@ impl HNSWIndex {
                 }
             }
 
-            // Convert internal IDs -> external doc_ids, filtering out deleted nodes.
-            let results = results
+            // Convert internal IDs -> external doc_ids. Filter before taking k so
+            // live candidates already present in the ef-wide beam are not lost
+            // when a nearer candidate is tombstoned.
+            let results = base_results
                 .into_iter()
                 .filter(|(internal_id, _)| !self.tombstones.is_deleted(*internal_id as usize))
+                .take(k)
                 .filter_map(|(internal_id, dist)| {
                     let doc_id = self.doc_ids.get(internal_id as usize).copied()?;
                     Some((doc_id, dist))
@@ -2482,8 +2482,8 @@ impl HNSWIndex {
 
             let results = base_results
                 .into_iter()
-                .take(k)
                 .filter(|(internal_id, _)| !self.tombstones.is_deleted(*internal_id as usize))
+                .take(k)
                 .filter_map(|(internal_id, dist)| {
                     let doc_id = self.doc_ids.get(internal_id as usize).copied()?;
                     Some((doc_id, dist))
@@ -3122,8 +3122,8 @@ impl HNSWIndex {
 
         let results = base_results
             .into_iter()
-            .take(k)
             .filter(|(internal_id, _)| !self.tombstones.is_deleted(*internal_id as usize))
+            .take(k)
             .filter_map(|(internal_id, dist)| {
                 let doc_id = self.doc_ids.get(internal_id as usize).copied()?;
                 Some((doc_id, dist))
