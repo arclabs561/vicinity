@@ -682,6 +682,9 @@ impl Layer {
         layer_idx: usize,
         layer_assignments: &[u8],
     ) -> Result<(), RetrieveError> {
+        #[cfg(not(feature = "compact-hnsw"))]
+        let _ = (num_vectors, layer_idx, layer_assignments);
+
         #[cfg(feature = "compact-hnsw")]
         if let NeighborStorage::FrozenCsr {
             num_nodes,
