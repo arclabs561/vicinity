@@ -732,6 +732,24 @@ impl Layer {
 }
 
 impl HNSWIndex {
+    /// Prepare a query according to the index metric contract.
+    ///
+    /// Keep this at the shared public-search boundary: every search variant must
+    /// apply the same transformation as insertion when `auto_normalize` is set.
+    #[inline]
+    fn prepare_query<'a>(&self, query: &'a [f32]) -> std::borrow::Cow<'a, [f32]> {
+        if self.params.auto_normalize
+            && matches!(
+                self.params.metric,
+                DistanceMetric::Cosine | DistanceMetric::Angular
+            )
+        {
+            std::borrow::Cow::Owned(crate::distance::normalize(query))
+        } else {
+            std::borrow::Cow::Borrowed(query)
+        }
+    }
+
     /// Create a builder for configuring an HNSW index.
     pub fn builder(dimension: usize) -> HNSWBuilder {
         HNSWBuilder {
@@ -2289,17 +2307,8 @@ impl HNSWIndex {
         // (`cosine_distance_normalized`); a non-unit query produces meaningless
         // distances. The Python binding already does this in `prep_query`; the
         // Rust API was previously asymmetric.
-        let normalized;
-        let query = if self.params.auto_normalize
-            && matches!(
-                self.params.metric,
-                DistanceMetric::Cosine | DistanceMetric::Angular
-            ) {
-            normalized = crate::distance::normalize(query);
-            normalized.as_slice()
-        } else {
-            query
-        };
+        let prepared_query = self.prepare_query(query);
+        let query = prepared_query.as_ref();
 
         // ef guard: HNSW beam search returns at most ef candidates, so requesting
         // k > ef is structurally unsound (the result set is smaller than requested).
@@ -2759,6 +2768,9 @@ impl HNSWIndex {
             ));
         }
 
+        let prepared_query = self.prepare_query(query);
+        let query = prepared_query.as_ref();
+
         // Extract category value from filter
         let desired_category = match filter {
             crate::filtering::MetadataFilter::Equals { field, value } => {
@@ -2929,17 +2941,8 @@ impl HNSWIndex {
             ));
         };
 
-        let normalized;
-        let query = if self.params.auto_normalize
-            && matches!(
-                self.params.metric,
-                DistanceMetric::Cosine | DistanceMetric::Angular
-            ) {
-            normalized = crate::distance::normalize(query);
-            normalized.as_slice()
-        } else {
-            query
-        };
+        let prepared_query = self.prepare_query(query);
+        let query = prepared_query.as_ref();
 
         let entry_point = self.get_entry_point().ok_or(RetrieveError::EmptyIndex)?;
         let entry_layer = self.layer_assignments[entry_point as usize] as usize;
@@ -3011,6 +3014,9 @@ impl HNSWIndex {
         if self.num_vectors == 0 {
             return Err(RetrieveError::EmptyIndex);
         }
+
+        let prepared_query = self.prepare_query(query);
+        let query = prepared_query.as_ref();
 
         // Upper-layer navigation
         let ep = self.get_entry_point().ok_or(RetrieveError::EmptyIndex)?;
@@ -3090,6 +3096,9 @@ impl HNSWIndex {
         if self.num_vectors == 0 {
             return Err(RetrieveError::EmptyIndex);
         }
+
+        let prepared_query = self.prepare_query(query);
+        let query = prepared_query.as_ref();
 
         let ef = ef.max(k);
 

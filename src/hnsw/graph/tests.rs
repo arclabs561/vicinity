@@ -1004,6 +1004,86 @@ fn test_auto_normalize_symmetric_for_angular() {
     );
 }
 
+#[test]
+fn auto_normalize_is_consistent_across_hnsw_search_variants() {
+    let dim = 8;
+    let mut index = HNSWIndex::with_filtering(dim, 8, 16, "group").unwrap();
+    index.params.auto_normalize = true;
+    index.params.seed = Some(42);
+    index.rng = std::sync::Mutex::new(Some(rand::rngs::StdRng::seed_from_u64(42)));
+
+    for i in 0..48_u32 {
+        let mut metadata = crate::filtering::DocumentMetadata::new();
+        metadata.insert("group".into(), crate::filtering::MetadataValue::from(0_u32));
+        index.add_metadata(i, metadata).unwrap();
+
+        let mut vector: Vec<f32> = (1..=dim).map(|d| d as f32).collect();
+        vector[0] = i as f32 + 1.0;
+        index.add_slice(i, &vector).unwrap();
+    }
+    index.build().unwrap();
+
+    // A scaled basis vector normalizes exactly to its unit counterpart, so any
+    // difference here comes from a search path skipping query preparation, not
+    // from a second normalization's floating-point roundoff.
+    let raw_query = vec![5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+    let normalized_query = crate::distance::normalize(&raw_query);
+    let filter = crate::filtering::MetadataFilter::equals("group", 0_u32);
+    let adaptive = crate::adaptive::AdaptiveConfig::conservative();
+    let mut prt = crate::prt::ProbabilisticRoutingTest::new(dim, 4, Some(42));
+    prt.project_database(index.raw_vectors());
+
+    let assert_same = |raw: &[(u32, f32)], normalized: &[(u32, f32)], variant: &str| {
+        assert_eq!(raw.len(), normalized.len(), "{variant} result count");
+        for ((raw_id, raw_distance), (normalized_id, normalized_distance)) in
+            raw.iter().zip(normalized)
+        {
+            assert_eq!(raw_id, normalized_id, "{variant} result IDs");
+            assert!(
+                (raw_distance - normalized_distance).abs() <= 1e-6,
+                "{variant} distance differs: {raw_distance} vs {normalized_distance}"
+            );
+        }
+    };
+
+    assert_same(
+        &index.search(&raw_query, 5, 32).unwrap(),
+        &index.search(&normalized_query, 5, 32).unwrap(),
+        "search",
+    );
+    assert_same(
+        &index
+            .search_with_filter(&raw_query, 5, 32, &filter)
+            .unwrap(),
+        &index
+            .search_with_filter(&normalized_query, 5, 32, &filter)
+            .unwrap(),
+        "search_with_filter",
+    );
+    assert_same(
+        &index
+            .search_adaptive(&raw_query, 5, 32, &adaptive)
+            .unwrap()
+            .0,
+        &index
+            .search_adaptive(&normalized_query, 5, 32, &adaptive)
+            .unwrap()
+            .0,
+        "search_adaptive",
+    );
+    assert_same(
+        &index
+            .search_prt(&raw_query, 5, 32, &prt, 1.5, 0.95)
+            .unwrap()
+            .0,
+        &index
+            .search_prt(&normalized_query, 5, 32, &prt, 1.5, 0.95)
+            .unwrap()
+            .0,
+        "search_prt",
+    );
+}
+
 #[cfg(feature = "parallel")]
 #[test]
 fn test_search_batch_matches_sequential() {
