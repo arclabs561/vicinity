@@ -207,7 +207,7 @@ pub(super) fn read_vector_from_storage<'a>(
         )));
     }
     read_bytes_from_storage(storage, offset, bytes)?;
-    for (value, chunk) in out.iter_mut().zip(bytes.chunks_exact(4)) {
+    for (value, chunk) in out.iter_mut().zip(bytes.as_chunks::<4>().0.iter()) {
         *value = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
     }
     Ok(out)
@@ -256,7 +256,7 @@ fn read_u64_exact(path: &Path, expected_len: usize) -> Result<Vec<u64>, Retrieve
         )));
     }
     let mut values = Vec::with_capacity(expected_len);
-    for chunk in bytes.chunks_exact(8) {
+    for chunk in bytes.as_chunks::<8>().0 {
         values.push(u64::from_le_bytes([
             chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
         ]));
