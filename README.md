@@ -34,18 +34,25 @@ expects unit-norm vectors unless `auto_normalize(true)` is set.
 ```rust
 use vicinity::hnsw::HNSWIndex;
 
-let mut index = HNSWIndex::builder(128)
-    .m(16)
-    .ef_search(50)
-    .auto_normalize(true)
-    .build()?;
+fn main() -> vicinity::Result<()> {
+    let mut index = HNSWIndex::builder(2)
+        .ef_search(50)
+        .auto_normalize(true)
+        .build()?;
 
-index.add_slice(0, &[0.1; 128])?;
-index.add_slice(1, &[0.2; 128])?;
-index.build()?;
+    index.add_slice(7, &[1.0, 0.0])?;
+    index.add_slice(8, &[0.8, 0.2])?;
+    index.add_slice(9, &[0.0, 1.0])?;
+    index.build()?;
 
-let results = index.search(&[0.1; 128], 5, 50)?;
-// Vec<(doc_id, distance)>; lower distance is closer.
+    let results = index.search(&[1.0, 0.0], 2, 50)?;
+    println!("{results:?}"); // (doc_id, distance); lower is closer.
+    Ok(())
+}
+```
+
+```text
+[(7, 0.0), (8, 0.029857516)]
 ```
 
 Use `DistanceMetric` when you need L2, angular, or inner-product distance:
@@ -115,28 +122,13 @@ ids, distances = index.search(embeddings[0], k=10)
 batch_ids, batch_distances = index.batch_search(embeddings[:32], k=10)
 ```
 
-For compressed search:
+See [`examples/python/02_batch_and_recall.py`](examples/python/02_batch_and_recall.py)
+for a runnable HNSW example. The package ships `.pyi` stubs and a `py.typed`
+marker.
 
-```python
-from pyvicinity import IVFPQIndex
-
-index = IVFPQIndex(dim=384, num_clusters=256, num_codebooks=8, codebook_size=256)
-index.add_items(embeddings)
-index.build(training_sample_size=100_000, kmeans_max_iter=20)
-ids, distances = index.search(embeddings[0], k=10, nprobe=16, rerank_pool=500)
-```
-
-Runnable Python examples are in [`examples/python/`](examples/python/). The
-package ships `.pyi` stubs and a `py.typed` marker.
-
-Python exposes the common HNSW constructor subset, HNSW JSON save/load, IVF-PQ
-directory save/load, and IVF-PQ file search. Mmap-backed IVF-PQ search is
-available in normal Python builds because the `python` feature includes
-`persistence`; Rust builds need the `persistence` feature for `mmap=True`.
-New Python APIs should first have stable Rust benchmarks, persistence behavior,
-and examples; the bindings are not intended to mirror every experimental Rust
-module.
-Rust-only surfaces include DiskANN, `store::UpdatableIndex`, FreshGraph,
+PyPI `pyvicinity` 0.8.0 exposes HNSW. The checkout's newer Python bindings
+also include IVF-PQ persistence and file search; use a source build for those
+APIs. Rust-only surfaces include DiskANN, `store::UpdatableIndex`, FreshGraph,
 filtered search/update APIs, and HNSW binary segments.
 
 ## Persistence
