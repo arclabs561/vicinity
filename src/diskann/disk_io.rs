@@ -269,7 +269,7 @@ impl DiskGraphReader {
         crate::file_io::read_exact_at(file, offset + 4, read_buf)?;
 
         let mut neighbors = Vec::with_capacity(degree);
-        for chunk in read_buf.chunks_exact(std::mem::size_of::<u32>()) {
+        for chunk in read_buf.as_chunks::<4>().0 {
             neighbors.push(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
         }
 
@@ -314,7 +314,7 @@ impl DiskGraphReader {
         }
 
         let mut neighbors = Vec::with_capacity(degree);
-        for chunk in bytes[neighbors_start..neighbors_end].chunks_exact(4) {
+        for chunk in bytes[neighbors_start..neighbors_end].as_chunks::<4>().0 {
             neighbors.push(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
         }
         Ok(neighbors)

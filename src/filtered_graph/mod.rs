@@ -983,7 +983,9 @@ fn read_f32_exact(path: &Path, expected_len: usize) -> Result<Vec<f32>, Retrieve
         )));
     }
     Ok(bytes
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
         .collect())
 }
@@ -1001,7 +1003,9 @@ fn read_u32_exact(path: &Path, expected_len: usize) -> Result<Vec<u32>, Retrieve
         )));
     }
     Ok(bytes
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|chunk| u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
         .collect())
 }

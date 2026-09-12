@@ -315,7 +315,9 @@ impl DiskANNSearcher {
                 )));
             }
             bytes
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                 .collect()
         } else {
@@ -496,7 +498,7 @@ impl DiskANNSearcher {
     }
 
     fn decode_vector_bytes(bytes: &[u8], out: &mut [f32]) {
-        for (value, chunk) in out.iter_mut().zip(bytes.chunks_exact(4)) {
+        for (value, chunk) in out.iter_mut().zip(bytes.as_chunks::<4>().0.iter()) {
             *value = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
         }
     }

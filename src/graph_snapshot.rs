@@ -187,7 +187,9 @@ cfg_f32_payload! {
             )));
         }
         Ok(bytes
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
             .collect())
     }
@@ -211,7 +213,9 @@ cfg_u32_payload! {
             )));
         }
         Ok(bytes
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|chunk| u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
             .collect())
     }
@@ -232,7 +236,9 @@ pub(crate) fn read_u64_exact(path: &Path, expected_len: usize) -> Result<Vec<u64
         )));
     }
     Ok(bytes
-        .chunks_exact(8)
+        .as_chunks::<8>()
+        .0
+        .iter()
         .map(|chunk| {
             u64::from_le_bytes([
                 chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],

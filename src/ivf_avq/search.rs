@@ -724,7 +724,7 @@ impl IVFAVQFileSearcher {
         for (slot, chunk) in self
             .id_buf
             .iter_mut()
-            .zip(self.id_byte_buf.chunks_exact(std::mem::size_of::<u32>()))
+            .zip(self.id_byte_buf.as_chunks::<4>().0.iter())
         {
             *slot = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
             if *slot as usize >= self.num_vectors {
@@ -778,7 +778,7 @@ impl IVFAVQFileSearcher {
         for (slot, chunk) in self
             .vector_buf
             .iter_mut()
-            .zip(self.raw_byte_buf.chunks_exact(4))
+            .zip(self.raw_byte_buf.as_chunks::<4>().0.iter())
         {
             *slot = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
         }
@@ -876,7 +876,7 @@ fn read_f32_exact(path: &Path, expected_len: usize) -> Result<Vec<f32>, Retrieve
         )));
     }
     let mut values = Vec::with_capacity(expected_len);
-    for chunk in bytes.chunks_exact(4) {
+    for chunk in bytes.as_chunks::<4>().0 {
         values.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
     }
     Ok(values)
@@ -896,7 +896,7 @@ fn read_u32_exact(path: &Path, expected_len: usize) -> Result<Vec<u32>, Retrieve
         )));
     }
     let mut values = Vec::with_capacity(expected_len);
-    for chunk in bytes.chunks_exact(4) {
+    for chunk in bytes.as_chunks::<4>().0 {
         values.push(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
     }
     Ok(values)

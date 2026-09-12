@@ -480,7 +480,7 @@ fn read_f32_exact(path: &Path, expected_len: usize) -> Result<Vec<f32>, Retrieve
         )));
     }
     let mut values = Vec::with_capacity(expected_len);
-    for chunk in bytes.chunks_exact(4) {
+    for chunk in bytes.as_chunks::<4>().0 {
         values.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
     }
     Ok(values)
