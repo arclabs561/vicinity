@@ -537,6 +537,24 @@ def test_ivfpq_save_load_round_trip(tmp_path) -> None:
     assert abs(float(dists[0])) < 1e-4
 
 
+def test_ivfpq_generation_round_trip(tmp_path) -> None:
+    index, x = _build_ivfpq(n=32, seed=14)
+    root = tmp_path / "ivfpq-generations"
+    index.save_generation(root)
+
+    loaded = IVFPQIndex.load_generation(root)
+    searcher = IVFPQFileSearcher.load_generation(root)
+    expected_ids, expected_dists = index.search(x[0], k=5, nprobe=8)
+
+    ids, dists = loaded.search(x[0], k=5, nprobe=8)
+    np.testing.assert_array_equal(ids, expected_ids)
+    np.testing.assert_allclose(dists, expected_dists)
+
+    file_ids, file_dists = searcher.search(x[0], k=5, nprobe=8)
+    np.testing.assert_array_equal(file_ids, expected_ids)
+    np.testing.assert_allclose(file_dists, expected_dists)
+
+
 def test_ivfpq_file_searcher_load_round_trip(tmp_path) -> None:
     index, x = _build_ivfpq(n=16, seed=12)
     path = tmp_path / "ivfpq"

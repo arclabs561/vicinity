@@ -603,11 +603,33 @@ impl PyIVFPQIndex {
             .map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
+    /// Save this index as an immutable generation below ``path``.
+    fn save_generation(&self, path: PathBuf) -> PyResult<()> {
+        self.inner
+            .save_to_generation(path)
+            .map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
     /// Load an index from a directory snapshot written by `save`.
     #[staticmethod]
     fn load(path: PathBuf) -> PyResult<Self> {
         let inner =
             RustIVFPQ::load_from_dir(path).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(Self {
+            nprobe: inner.nprobe(),
+            num_clusters: inner.num_clusters(),
+            num_codebooks: inner.num_codebooks(),
+            codebook_size: inner.codebook_size(),
+            use_opq: inner.use_opq(),
+            inner,
+        })
+    }
+
+    /// Load the generation named by ``path/CURRENT``.
+    #[staticmethod]
+    fn load_generation(path: PathBuf) -> PyResult<Self> {
+        let inner = RustIVFPQ::load_from_generation(path)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok(Self {
             nprobe: inner.nprobe(),
             num_clusters: inner.num_clusters(),
@@ -801,6 +823,21 @@ impl PyIVFPQFileSearcher {
         }
         .map_err(|e| PyValueError::new_err(e.to_string()))?;
 
+        Ok(Self {
+            nprobe: inner.nprobe(),
+            num_clusters: inner.num_clusters(),
+            num_codebooks: inner.num_codebooks(),
+            codebook_size: inner.codebook_size(),
+            inner,
+        })
+    }
+
+    /// Load the file-backed searcher from the generation named by
+    /// ``path/CURRENT``.
+    #[staticmethod]
+    fn load_generation(path: PathBuf) -> PyResult<Self> {
+        let inner = RustIVFPQFileSearcher::load_from_generation(path)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok(Self {
             nprobe: inner.nprobe(),
             num_clusters: inner.num_clusters(),

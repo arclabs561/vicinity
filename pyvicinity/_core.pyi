@@ -230,9 +230,16 @@ class IVFPQIndex:
     def save(self, path: str | PathLike[str]) -> None:
         """Save this index to a directory snapshot."""
 
+    def save_generation(self, path: str | PathLike[str]) -> None:
+        """Publish this index as an immutable generation below ``path``."""
+
     @staticmethod
     def load(path: str | PathLike[str]) -> IVFPQIndex:
         """Load an index from a directory snapshot written by :meth:`save`."""
+
+    @staticmethod
+    def load_generation(path: str | PathLike[str]) -> IVFPQIndex:
+        """Load the generation named by ``path/CURRENT``."""
 
     def search(
         self,
@@ -295,6 +302,10 @@ class IVFPQFileSearcher:
         ``mmap=True`` uses read-only memory maps and requires a build with
         the Rust ``persistence`` feature. PyPI wheels enable it.
         """
+
+    @staticmethod
+    def load_generation(path: str | PathLike[str]) -> IVFPQFileSearcher:
+        """Load the file-backed searcher named by ``path/CURRENT``."""
 
     def set_nprobe(self, nprobe: int) -> None:
         """Set the default number of IVF clusters scanned per query."""
