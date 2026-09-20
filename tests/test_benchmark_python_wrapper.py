@@ -35,6 +35,7 @@ def test_python_wrapper_benchmark_emits_comparable_phases(tmp_path: Path) -> Non
             "2",
             "--ef-search",
             "16",
+            "--exact-recall",
         ],
         check=True,
     )
@@ -47,9 +48,11 @@ def test_python_wrapper_benchmark_emits_comparable_phases(tmp_path: Path) -> Non
     }
     assert all(row["result_schema"] == 1 for row in rows)
     assert all(row["algorithm"] == "hnsw" for row in rows)
+    assert all(row["exact_recall_enabled"] for row in rows)
     assert all(row["seed"] == 42 and row["dim"] == 8 for row in rows)
     batch = next(row for row in rows if row["phase"] == "batch_query")
     assert batch["batches"] == 2
     single = next(row for row in rows if row["phase"] == "single_query")
     assert single["queries_performed"] == 8
     assert single["seconds_per_query_p95"] >= single["seconds_per_query_p50"]
+    assert 0.0 <= single["recall_at_k"] <= 1.0

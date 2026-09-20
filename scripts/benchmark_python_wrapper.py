@@ -47,6 +47,43 @@ def metric_value(name: str) -> DistanceMetric:
         raise argparse.ArgumentTypeError(f"unsupported metric: {name}") from error
 
 
+def exact_neighbors(
+    vectors: np.ndarray,
+    queries: np.ndarray,
+    metric: str,
+    k: int,
+) -> np.ndarray:
+    """Return exact top-k row IDs for the optional benchmark oracle."""
+    if metric == "inner_product":
+        scores = queries @ vectors.T
+        order = np.argpartition(-scores, kth=k - 1, axis=1)[:, :k]
+        row_scores = np.take_along_axis(scores, order, axis=1)
+        return np.take_along_axis(order, np.argsort(-row_scores, axis=1), axis=1)
+    if metric in {"cosine", "angular"}:
+        scores = queries @ vectors.T
+        order = np.argpartition(-scores, kth=k - 1, axis=1)[:, :k]
+        row_scores = np.take_along_axis(scores, order, axis=1)
+        return np.take_along_axis(order, np.argsort(-row_scores, axis=1), axis=1)
+    distances = (
+        np.sum(vectors * vectors, axis=1)[None, :]
+        + np.sum(queries * queries, axis=1)[:, None]
+        - 2.0 * (queries @ vectors.T)
+    )
+    order = np.argpartition(distances, kth=k - 1, axis=1)[:, :k]
+    row_distances = np.take_along_axis(distances, order, axis=1)
+    return np.take_along_axis(order, np.argsort(row_distances, axis=1), axis=1)
+
+
+def recall_at_k(found: np.ndarray, expected: np.ndarray) -> float:
+    """Compute mean set recall while ignoring padded missing labels."""
+    recalls = [
+        len(set(int(value) for value in row if value >= 0) & set(expected_row))
+        / len(expected_row)
+        for row, expected_row in zip(found, expected, strict=True)
+    ]
+    return float(np.mean(recalls))
+
+
 def benchmark(args: argparse.Namespace) -> list[dict[str, Any]]:
     rng = np.random.default_rng(args.seed)
     vectors = rng.standard_normal((args.train, args.dim), dtype=np.float32)
@@ -69,19 +106,31 @@ def benchmark(args: argparse.Namespace) -> list[dict[str, Any]]:
     warm_queries = queries[: min(args.warmup, args.queries)]
     index.batch_search(warm_queries, args.k, args.ef_search)
     single_times: list[float] = []
+    single_ids: list[np.ndarray] = []
     for query in queries:
-        _, elapsed = timed(
+        result, elapsed = timed(
             lambda query=query: index.search(query, args.k, args.ef_search)
         )
+        single_ids.append(np.asarray(result[0]))
         single_times.append(elapsed)
 
     batch_times: list[float] = []
+    batch_ids: list[np.ndarray] = []
     for start in range(0, args.queries, args.batch_size):
         batch = queries[start : start + args.batch_size]
-        _, elapsed = timed(
+        result, elapsed = timed(
             lambda batch=batch: index.batch_search(batch, args.k, args.ef_search)
         )
+        batch_ids.append(np.asarray(result[0]))
         batch_times.append(elapsed)
+
+    recall = None
+    if args.exact_recall:
+        expected = exact_neighbors(vectors, queries, args.metric, args.k)
+        recall = {
+            "single_query": recall_at_k(np.asarray(single_ids), expected),
+            "batch_query": recall_at_k(np.concatenate(batch_ids), expected),
+        }
 
     padded_queries = np.empty((args.queries, args.dim * 2), dtype=np.float32)
     padded_queries[:, ::2] = queries
@@ -105,6 +154,7 @@ def benchmark(args: argparse.Namespace) -> list[dict[str, Any]]:
         "numpy": np.__version__,
         "platform": platform.platform(),
         "rss_kb_peak": rss_kb(),
+        "exact_recall_enabled": args.exact_recall,
     }
     return [
         {**metadata, "phase": "build", "seconds": build_s},
@@ -116,6 +166,7 @@ def benchmark(args: argparse.Namespace) -> list[dict[str, Any]]:
             "seconds_per_query_p50": float(np.percentile(single_times, 50)),
             "seconds_per_query_p95": float(np.percentile(single_times, 95)),
             "seconds_per_query_p99": float(np.percentile(single_times, 99)),
+            **({"recall_at_k": recall["single_query"]} if recall else {}),
         },
         {
             **metadata,
@@ -124,6 +175,7 @@ def benchmark(args: argparse.Namespace) -> list[dict[str, Any]]:
             "seconds_total": sum(batch_times),
             "seconds_per_batch_p50": float(np.percentile(batch_times, 50)),
             "seconds_per_batch_p95": float(np.percentile(batch_times, 95)),
+            **({"recall_at_k": recall["batch_query"]} if recall else {}),
         },
         {
             **metadata,
@@ -152,6 +204,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ef-construction", type=int, default=200)
     parser.add_argument("--ef-search", type=int, default=100)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--exact-recall",
+        action="store_true",
+        help="Compute exact top-k neighbors and report recall_at_k.",
+    )
     parser.add_argument(
         "--metric",
         choices=("cosine", "angular", "l2", "inner_product"),
