@@ -37,6 +37,9 @@ pub mod directory;
 pub mod error;
 
 #[cfg(feature = "persistence")]
+pub mod generation;
+
+#[cfg(feature = "persistence")]
 pub mod format;
 
 #[cfg(feature = "persistence")]

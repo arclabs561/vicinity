@@ -22,6 +22,14 @@ types. New WAL, checkpoint, or segmented-update code should use `durability` or
 `segstore` directly unless the API specifically belongs to the HNSW binary
 segment format.
 
+For multi-file snapshots, `vicinity::persistence::generation` provides the
+chosen publication protocol: write components under a staged generation,
+validate and sync them, then atomically publish one `CURRENT` pointer. It is a
+foundation for format migrations, not an assertion that every existing
+`save_to_dir` implementation is already generation-atomic. A format must adopt
+it only after its manifest, interruption tests, compatibility policy, and
+retention policy are ready.
+
 `segstore` is narrower. Use it when the natural unit is an immutable segment
 plus tombstones, compaction, and optional per-segment sidecar indexes. It is a
 good fit for `store::UpdatableIndex` because that type is explicitly a
