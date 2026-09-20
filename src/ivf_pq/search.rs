@@ -1514,6 +1514,13 @@ impl IVFPQFileSearcher {
         Self::load_with_storage(input_dir.as_ref(), false)
     }
 
+    #[cfg(feature = "persistence")]
+    /// Open the generation named by a root directory's `CURRENT` pointer.
+    pub fn load_from_generation(root: impl AsRef<Path>) -> Result<Self, RetrieveError> {
+        let directory = open_current(root)?;
+        Self::load_mmap(directory)
+    }
+
     /// Open an IVF-PQ snapshot using read-only memory maps for large byte arrays.
     #[cfg(feature = "persistence")]
     pub fn load_mmap(input_dir: impl AsRef<Path>) -> Result<Self, RetrieveError> {
@@ -2487,6 +2494,8 @@ mod tests {
         index.save_to_generation(root.path()).unwrap();
         let first = IVFPQIndex::load_from_generation(root.path()).unwrap();
         assert_eq!(first.search(&query, 5).unwrap(), expected);
+        let mut file = IVFPQFileSearcher::load_from_generation(root.path()).unwrap();
+        assert_eq!(file.search(&query, 5).unwrap(), expected);
         let first_current = std::fs::read_to_string(root.path().join("CURRENT")).unwrap();
 
         index.save_to_generation(root.path()).unwrap();
