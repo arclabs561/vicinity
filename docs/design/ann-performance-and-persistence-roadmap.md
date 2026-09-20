@@ -250,3 +250,21 @@ has a larger representative DiskANN profile and the cache/coalescing contract is
 written down. Do not start Phase 4 or Phase 5 format work until Fork A has an
 accepted ADR. Do not start `.npy` work until Fork B has a named consumer and a
 security/compatibility gate.
+
+## Progress since proposal
+
+- `acaa959` / `bd7b483`: pushed the registry coverage matrix. It confirms 42
+  registered selections: 41 dense and one separate sparse selection, with no
+  unclassified registry row.
+- `243db46`: measured and rejected the first 512-vector working-set cache
+  wiring. It added overhead on mmap and did not establish a repeatable file-path
+  win, so the public cache-loading API was not retained.
+- `fb5023a` / `03fedc1`: added HNSW batch, flat-batch, MQO, and adaptive query
+  shape checks plus a CI smoke gate. On the current synthetic fixture, flat
+  batch is fastest; MQO and conservative adaptive need representative locality
+  data before optimization.
+
+The next implementation gate remains the larger representative DiskANN profile
+and a cache/read-ahead design with measured hit-rate instrumentation. The
+persistence generation fork and `.npy` importer fork remain decision-required;
+they are not silently approved by these benchmark additions.
