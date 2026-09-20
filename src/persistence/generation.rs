@@ -42,6 +42,11 @@ impl GenerationWriter {
         &self.generation_id
     }
 
+    /// Return the staging directory for a format-specific writer.
+    pub fn directory(&self) -> &Path {
+        &self.staging_dir
+    }
+
     /// Resolve a safe relative component path inside the staging directory.
     pub fn path(&self, relative: impl AsRef<Path>) -> PersistenceResult<PathBuf> {
         let relative = relative.as_ref();

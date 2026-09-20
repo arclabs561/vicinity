@@ -14,6 +14,8 @@ use super::persistence::{
     write_json_atomic, write_u32_atomic, write_u64_atomic, IVFPQ_FORMAT_VERSION,
 };
 use super::pq::ProductQuantizer;
+#[cfg(feature = "persistence")]
+use crate::persistence::generation::{open_current, GenerationWriter};
 use crate::pq_simd::{adc_batch_dispatch_into, PackedCodes4bit, PackedLUTRef};
 use crate::RetrieveError;
 use rand::seq::SliceRandom;
@@ -860,6 +862,30 @@ impl IVFPQIndex {
     /// compacted index reloads with approximate search available and
     /// `search_reranked()` unavailable.
     pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<(), RetrieveError> {
+        self.save_to_dir_impl(output_dir.as_ref())
+    }
+
+    #[cfg(feature = "persistence")]
+    /// Save an IVF-PQ index as one published generation below `root`.
+    ///
+    /// Existing generations remain available, and readers resolve only the
+    /// atomically published `CURRENT` pointer. The legacy [`Self::save_to_dir`]
+    /// API remains available for direct-directory compatibility.
+    pub fn save_to_generation(&self, root: impl AsRef<Path>) -> Result<(), RetrieveError> {
+        let writer = GenerationWriter::create(root)?;
+        self.save_to_dir_impl(writer.directory())?;
+        writer.publish()?;
+        Ok(())
+    }
+
+    #[cfg(feature = "persistence")]
+    /// Load the IVF-PQ index named by a generation root's `CURRENT` pointer.
+    pub fn load_from_generation(root: impl AsRef<Path>) -> Result<Self, RetrieveError> {
+        let directory = open_current(root)?;
+        Self::load_from_dir(directory)
+    }
+
+    fn save_to_dir_impl(&self, output_dir: &Path) -> Result<(), RetrieveError> {
         if !self.built {
             return Err(RetrieveError::InvalidParameter(
                 "cannot save unbuilt IVF-PQ index".into(),
@@ -874,7 +900,6 @@ impl IVFPQIndex {
             .pq
             .clone()
             .ok_or_else(|| RetrieveError::InvalidParameter("missing IVF-PQ quantizer".into()))?;
-        let output_dir = output_dir.as_ref();
         std::fs::create_dir_all(output_dir)?;
 
         let raw_vectors_present = self.vectors.len() == self.num_vectors * self.dimension;
@@ -2430,6 +2455,48 @@ mod tests {
             file_searcher.search_reranked(&query, 10, 80).unwrap(),
             loaded.search_reranked(&query, 10, 80).unwrap()
         );
+    }
+
+    #[cfg(feature = "persistence")]
+    #[test]
+    fn generation_save_load_preserves_search_and_previous_generation() {
+        let dim = 16;
+        use rand::{Rng, SeedableRng};
+        let mut rng = rand::rngs::StdRng::seed_from_u64(211);
+        let mut index = IVFPQIndex::new(
+            dim,
+            IVFPQParams {
+                num_clusters: 4,
+                num_codebooks: 4,
+                codebook_size: 16,
+                nprobe: 4,
+                seed: 211,
+                ..IVFPQParams::default()
+            },
+        )
+        .unwrap();
+        for i in 0..96 {
+            let vector: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
+            index.add(i as u32, vector).unwrap();
+        }
+        index.build().unwrap();
+        let query: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
+        let expected = index.search(&query, 5).unwrap();
+        let root = tempfile::tempdir().unwrap();
+
+        index.save_to_generation(root.path()).unwrap();
+        let first = IVFPQIndex::load_from_generation(root.path()).unwrap();
+        assert_eq!(first.search(&query, 5).unwrap(), expected);
+        let first_current = std::fs::read_to_string(root.path().join("CURRENT")).unwrap();
+
+        index.save_to_generation(root.path()).unwrap();
+        let second_current = std::fs::read_to_string(root.path().join("CURRENT")).unwrap();
+        assert_ne!(first_current, second_current);
+        assert!(root
+            .path()
+            .join("generations")
+            .join(first_current.trim())
+            .is_dir());
     }
 
     #[test]
