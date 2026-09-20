@@ -901,14 +901,19 @@ pub(crate) fn ivfavq_params_json(
 }
 
 fn diskann_checks(cfg: &Config) -> Vec<ExpectedResult> {
-    const STORAGE_ROWS: [(&str, &str, &str); 3] = [
+    const STORAGE_ROWS: &[(&str, &str, &str)] = &[
         ("diskann", "memory", "in_memory"),
         ("diskann_file", "file", "file"),
         ("diskann_mmap", "mmap", "mmap"),
+        #[cfg(feature = "benchmark")]
+        ("diskann_page_file", "page_file", "file"),
+        #[cfg(feature = "benchmark")]
+        ("diskann_page_mmap", "page_mmap", "mmap"),
     ];
 
     STORAGE_ROWS
-        .into_iter()
+        .iter()
+        .copied()
         .flat_map(|(algorithm, storage, storage_mode)| {
             cfg.ef_search_values.iter().map(move |&ef| {
                 ExpectedResult::with_params_and_storage(
@@ -2260,10 +2265,11 @@ mod tests {
     }
 
     fn diskann_line(algorithm: &str, storage: &str) -> String {
-        let storage_mode = if storage == "memory" {
-            "in_memory"
-        } else {
-            storage
+        let storage_mode = match storage {
+            "memory" => "in_memory",
+            "page_file" => "file",
+            "page_mmap" => "mmap",
+            storage => storage,
         };
         format!(
             "{{\"algorithm\":\"{}\",\"params\":{{\"m\":16,\"ef_construction\":200,\"alpha\":1.2,\"ef_search\":10,\"storage\":\"{}\"}},\"storage_mode\":\"{}\",\"recall_at_10\":1.0,\"qps\":1.0}}",
@@ -2772,6 +2778,59 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "benchmark")]
+    #[test]
+    fn diskann_resume_rejects_missing_page_rows() {
+        let cfg = Config {
+            ef_search_values: vec![10],
+            ..Config::default()
+        };
+        let base_lines = [
+            diskann_line("diskann", "memory"),
+            diskann_line("diskann_file", "file"),
+            diskann_line("diskann_mmap", "mmap"),
+        ];
+        let completed_without_page_file = CompletedResults {
+            lines: base_lines
+                .iter()
+                .cloned()
+                .chain(std::iter::once(diskann_line(
+                    "diskann_page_mmap",
+                    "page_mmap",
+                )))
+                .collect(),
+            ..CompletedResults::default()
+        };
+        assert!(!request_completed(
+            &completed_without_page_file,
+            "diskann",
+            &cfg,
+            25,
+            1_000,
+            100
+        ));
+
+        let completed_without_page_mmap = CompletedResults {
+            lines: base_lines
+                .iter()
+                .cloned()
+                .chain(std::iter::once(diskann_line(
+                    "diskann_page_file",
+                    "page_file",
+                )))
+                .collect(),
+            ..CompletedResults::default()
+        };
+        assert!(!request_completed(
+            &completed_without_page_mmap,
+            "diskann",
+            &cfg,
+            25,
+            1_000,
+            100
+        ));
+    }
+
     #[test]
     fn diskann_resume_accepts_all_storage_mode_rows() {
         let cfg = Config {
@@ -2783,6 +2842,10 @@ mod tests {
                 diskann_line("diskann", "memory"),
                 diskann_line("diskann_file", "file"),
                 diskann_line("diskann_mmap", "mmap"),
+                #[cfg(feature = "benchmark")]
+                diskann_line("diskann_page_file", "page_file"),
+                #[cfg(feature = "benchmark")]
+                diskann_line("diskann_page_mmap", "page_mmap"),
             ],
             ..CompletedResults::default()
         };

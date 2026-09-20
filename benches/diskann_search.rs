@@ -36,6 +36,45 @@ fn build_index(n_vectors: usize, dim: usize, ef_search: usize) -> (DiskANNIndex,
     (index, vectors)
 }
 
+// Use an independent f64 scalar scan over the unnormalized L2 fixture.
+// Neither this oracle nor the storage-parity checks belongs in the timed loop.
+#[cfg(feature = "diskann")]
+fn exact_neighbors(vectors: &[Vec<f32>], queries: &[Vec<f32>], k: usize) -> Vec<Vec<u32>> {
+    queries
+        .iter()
+        .map(|query| {
+            let mut scored: Vec<_> = vectors
+                .iter()
+                .enumerate()
+                .map(|(id, vector)| {
+                    let distance: f64 = query
+                        .iter()
+                        .zip(vector)
+                        .map(|(&a, &b)| (f64::from(a) - f64::from(b)).powi(2))
+                        .sum();
+                    (id as u32, distance)
+                })
+                .collect();
+            scored.sort_unstable_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
+            scored.into_iter().take(k).map(|(id, _)| id).collect()
+        })
+        .collect()
+}
+
+#[cfg(feature = "diskann")]
+fn checked_ids(results: &[(u32, f32)], k: usize, n_vectors: usize) -> Vec<u32> {
+    assert_eq!(results.len(), k);
+    assert!(results.iter().all(|(id, distance)| {
+        (*id as usize) < n_vectors && distance.is_finite() && *distance >= 0.0
+    }));
+    assert!(results.windows(2).all(|pair| pair[0].1 <= pair[1].1));
+    let mut ids: Vec<_> = results.iter().map(|(id, _)| *id).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(ids.len(), k, "search must return distinct IDs");
+    ids
+}
+
 #[cfg(feature = "diskann")]
 fn bench_diskann_search_only(c: &mut Criterion) {
     let mut group = c.benchmark_group("diskann_search_only");
@@ -45,7 +84,19 @@ fn bench_diskann_search_only(c: &mut Criterion) {
     let n_queries = 100;
     let k = 10;
     let queries = random_vectors(n_queries, dim, 123);
-    let (index, _vectors) = build_index(n_vectors, dim, 75);
+    let (index, vectors) = build_index(n_vectors, dim, 75);
+    let ground_truth = exact_neighbors(&vectors, &queries, k);
+    let mut exact_ids = ground_truth[0].clone();
+    exact_ids.sort_unstable();
+    assert_eq!(
+        checked_ids(
+            &index.search(&queries[0], k, n_vectors).unwrap(),
+            k,
+            n_vectors
+        ),
+        exact_ids,
+        "full-exploration control must match the scalar L2 oracle"
+    );
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let index_dir = temp_dir.path().join("diskann");
     index.save(&index_dir).expect("save DiskANN index");
@@ -59,6 +110,52 @@ fn bench_diskann_search_only(c: &mut Criterion) {
 
     group.throughput(Throughput::Elements(n_queries as u64));
     for ef_search in [50, 75, 250] {
+        let mut hits = 0;
+        for (query, truth) in queries.iter().zip(&ground_truth) {
+            let expected = index.search(query, k, ef_search).unwrap();
+            let expected_ids = checked_ids(&expected, k, n_vectors);
+            hits += truth.iter().filter(|id| expected_ids.contains(id)).count();
+            for (mode, results) in [
+                (
+                    "file",
+                    file_searcher
+                        .borrow_mut()
+                        .search(query, k, ef_search)
+                        .unwrap(),
+                ),
+                (
+                    "mmap",
+                    mmap_searcher
+                        .borrow_mut()
+                        .search(query, k, ef_search)
+                        .unwrap(),
+                ),
+                (
+                    "page_file",
+                    page_searcher
+                        .borrow_mut()
+                        .search(query, k, ef_search)
+                        .unwrap(),
+                ),
+                (
+                    "page_mmap",
+                    page_mmap_searcher
+                        .borrow_mut()
+                        .search(query, k, ef_search)
+                        .unwrap(),
+                ),
+            ] {
+                assert_eq!(
+                    checked_ids(&results, k, n_vectors),
+                    expected_ids,
+                    "{mode} must preserve the in-memory neighbor set at ef={ef_search}"
+                );
+            }
+        }
+        eprintln!(
+            "diskann quality: ef={ef_search} recall@{k}={:.4} storage_parity=5 modes cache=warm",
+            hits as f64 / (n_queries * k) as f64
+        );
         group.bench_function(format!("memory_ef{ef_search}"), |bench| {
             bench.iter(|| {
                 queries

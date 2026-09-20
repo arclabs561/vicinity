@@ -103,6 +103,58 @@ synthetic queries stayed fixed; these ranges measure graph-seed sensitivity,
 not uncertainty across datasets. None of the narrow-graph settings tested here
 reached 95% recall. The wider graph reached it at `ef=200` for all three seeds.
 
+## DiskANN storage microbenchmark (2026-09-20)
+
+`diskann_search` checks exact recall with a scalar f64 L2 scan before timing.
+It also checks distinct valid IDs, sorted finite distances, and matching neighbor
+sets across memory, file, mmap, page-file and page-mmap search. A full-exploration
+control must match the exact scan. The experimental page paths require
+`benchmark` and are included in the dense harness's completeness checks.
+
+The fixture has 5,000 unnormalized 64-dimensional vectors and 100 held-out
+synthetic queries, with vector/query/graph seeds 42/123/42. Recall@10 was 90.8%,
+94.9% and 99.8% at search breadth 50, 75 and 250. All five storage paths returned
+the same neighbor sets. These are fixture results, not dataset-level guarantees.
+
+At search breadth 75, three separate Criterion runs measured:
+
+| Storage path | Median µs/query | Run range |
+| --- | ---: | ---: |
+| Memory | 111.0 | 108.4–111.6 |
+| Separate files | 684.9 | 665.6–689.7 |
+| Separate mmap | 131.0 | 129.0–131.1 |
+| Page file | 1,114.9 | 1,050.0–1,125.3 |
+| Page mmap | 252.9 | 240.7–257.5 |
+
+Values are the median and range of three run means, each amortized over batches
+of 100 queries, not per-request latency percentiles. Apple M3 Max, Rust 1.98.1,
+base commit `f19fca3` plus the benchmark checks above; optimized build with debug
+information, `diskann,benchmark`, no default features or native-CPU flags.
+Each run used 20 samples, one-second warmup and a two-second target measurement
+window; Criterion extended windows when needed. Construction, save/open, exact
+scan and parity checks are outside timing. Reads use a warm OS cache: this does
+not measure cold storage or a larger-than-memory index. The page prototype was
+slower here; its layout is not a general performance recommendation.
+
+```sh
+CARGO_PROFILE_BENCH_DEBUG=1 cargo bench --bench diskann_search \
+  --no-default-features --features diskann,benchmark -- \
+  'diskann_search_only/.*_ef75$' --sample-size 20 \
+  --warm-up-time 1 --measurement-time 2 --save-baseline storage1
+```
+
+Repeat with `storage2` and `storage3` for independent run summaries.
+[Raw run means](diskann-storage-latency.csv).
+
+Separate ten-second Samply profiles selected measured Criterion search stacks,
+excluding setup and warmup. Of 8,984 selected direct-file samples, 8,425 included
+`pread` and 7,649 included `read_vector` (inclusive counts overlap). The memory
+profile selected 8,525 samples, almost all in `greedy_search`; this symbol-level
+view does not expand inline frames or identify a similarly dominant narrower
+helper. Each sample is counted once per symbol in its stack. This makes reducing repeated vector-read
+syscalls a candidate for the next file-path experiment, with mmap as a negative
+control. It is not evidence of a measured optimization yet.
+
 ## Ten-result comparison (2026-09-20)
 
 Fashion-MNIST, first 20,000 training vectors and 500 held-out queries, L2.
