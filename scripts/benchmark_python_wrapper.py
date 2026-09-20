@@ -83,7 +83,9 @@ def benchmark(args: argparse.Namespace) -> list[dict[str, Any]]:
         )
         batch_times.append(elapsed)
 
-    noncontiguous = queries[:, ::1]
+    padded_queries = np.empty((args.queries, args.dim * 2), dtype=np.float32)
+    padded_queries[:, ::2] = queries
+    noncontiguous = padded_queries[:, ::2]
     _, copy_s = timed(lambda: np.ascontiguousarray(noncontiguous, dtype=np.float32))
     metadata = {
         "result_schema": 1,
@@ -128,7 +130,7 @@ def benchmark(args: argparse.Namespace) -> list[dict[str, Any]]:
             "phase": "numpy_contiguous_conversion",
             "seconds": copy_s,
             "note": (
-                "The current fixture is contiguous; this records the conversion "
+                "This uses a genuinely strided view and records its conversion "
                 "boundary separately."
             ),
         },
