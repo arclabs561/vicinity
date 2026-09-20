@@ -70,13 +70,17 @@ def benchmark(args: argparse.Namespace) -> list[dict[str, Any]]:
     index.batch_search(warm_queries, args.k, args.ef_search)
     single_times: list[float] = []
     for query in queries:
-        _, elapsed = timed(lambda query=query: index.search(query, args.k, args.ef_search))
+        _, elapsed = timed(
+            lambda query=query: index.search(query, args.k, args.ef_search)
+        )
         single_times.append(elapsed)
 
     batch_times: list[float] = []
     for start in range(0, args.queries, args.batch_size):
         batch = queries[start : start + args.batch_size]
-        _, elapsed = timed(lambda batch=batch: index.batch_search(batch, args.k, args.ef_search))
+        _, elapsed = timed(
+            lambda batch=batch: index.batch_search(batch, args.k, args.ef_search)
+        )
         batch_times.append(elapsed)
 
     noncontiguous = queries[:, ::1]
@@ -123,14 +127,19 @@ def benchmark(args: argparse.Namespace) -> list[dict[str, Any]]:
             **metadata,
             "phase": "numpy_contiguous_conversion",
             "seconds": copy_s,
-            "note": "The current fixture is contiguous; this records the conversion boundary separately.",
+            "note": (
+                "The current fixture is contiguous; this records the conversion "
+                "boundary separately."
+            ),
         },
     ]
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", type=Path, help="Write JSONL here instead of stdout")
+    parser.add_argument(
+        "--output", type=Path, help="Write JSONL here instead of stdout"
+    )
     parser.add_argument("--train", type=int, default=10_000)
     parser.add_argument("--queries", type=int, default=500)
     parser.add_argument("--dim", type=int, default=128)
@@ -141,9 +150,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ef-construction", type=int, default=200)
     parser.add_argument("--ef-search", type=int, default=100)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--metric", choices=("cosine", "angular", "l2", "inner_product"), default="cosine")
+    parser.add_argument(
+        "--metric",
+        choices=("cosine", "angular", "l2", "inner_product"),
+        default="cosine",
+    )
     args = parser.parse_args()
-    if min(args.train, args.queries, args.dim, args.k, args.batch_size, args.m, args.ef_construction, args.ef_search) <= 0:
+    sizes = (
+        args.train,
+        args.queries,
+        args.dim,
+        args.k,
+        args.batch_size,
+        args.m,
+        args.ef_construction,
+        args.ef_search,
+    )
+    if min(sizes) <= 0:
         parser.error("sizes and search parameters must be positive")
     return args
 
