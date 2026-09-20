@@ -34,6 +34,7 @@ ann-benchmarks = ["h5py"]
 test = [
     "pytest>=7",
     "numpy",
+    "matplotlib>=3.8",
     "mypy>=1.19",
 ]
 
