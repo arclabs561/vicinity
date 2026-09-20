@@ -39,7 +39,7 @@ mean direct on-disk query support.
 | `diskann` | DiskANN in-memory | Heap-resident graph search. |
 | `diskann_file`, `diskann_mmap` | DiskANN separate-file paths | Positional reads or read-only mapped graph/vector files. |
 | `diskann_page_file`, `diskann_page_mmap` | DiskANN page-layout paths | Benchmark-feature experimental page readers. |
-| `ivf_rabitq`, `symphony_qg`, `symphony_qg_vr`, `finger` | Quantized/accelerated graph variants | Snapshot/rebuild-derived state; current compacted-VR restrictions remain. |
+| `symphony_qg`, `symphony_qg_vr`, `finger` | Quantized/accelerated graph variants | Snapshot/rebuild-derived state; current compacted-VR restrictions remain. |
 | `fresh_graph`, `fresh_graph_churn` | Mutable fresh graph | Snapshot/reload and churn; not a WAL-equivalent durability claim. |
 | `store`, `store_snapshot` | Segmented HNSW store | `segstore` mutable path plus reopened snapshot row. |
 | `inplace`, `inplace_churn`, `lsm_churn` | Mutable/update paths | Restart snapshots and churn; update persistence is distinct from `segstore`. |
