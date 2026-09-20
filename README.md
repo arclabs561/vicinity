@@ -49,7 +49,10 @@ Use `distance::DistanceMetric` to select L2, angular, or inner-product distance.
 
 ## Python
 
-The published Python package, `pyvicinity` 0.8.0, exposes HNSW.
+The Python package is named `pyvicinity` because the bare `vicinity` name is
+held by an unrelated PyPI project. The published wrapper exposes HNSW; the
+repository also contains IVF-PQ bindings that remain outside the published
+wheel until their benchmark and persistence contracts are settled.
 
 ```bash
 pip install pyvicinity
@@ -73,8 +76,31 @@ print(ids.tolist())
 ```
 
 [`examples/python/02_batch_and_recall.py`](examples/python/02_batch_and_recall.py)
-shows batch search and recall measurement. The repository also contains
-IVF-PQ Python bindings; these are not yet published on PyPI.
+shows batch search and recall measurement.
+
+## Feature and dependency footprints
+
+Choose the smallest feature set that matches the workload. Optional algorithm
+families do not belong in the default build, and `--all-features` is intended
+for development and comparison rather than a production dependency profile.
+
+| Use case | Cargo features | Adds |
+| --- | --- | --- |
+| Minimal library | `--no-default-features` | Core `smallvec`, `rand`, and `thiserror`. |
+| Default HNSW | *(default)* | `hnsw` plus SIMD distance kernels from `innr`. |
+| JSON snapshots | `hnsw,serde` | `serde` and `serde_json`. |
+| Binary persistence/mmap | `persistence` | `postcard` and `durability`; this is restart/file support, not automatically crash-safe generation publication. |
+| Segmented mutable store | `store` | `segstore` plus persistence dependencies and HNSW. |
+| IVF-PQ/OPQ | `ivf_pq` | `clump`, `nalgebra`, and serialization support. OPQ uses the linear-algebra path. |
+| Parallel batch search | `parallel` | `rayon`. |
+| Python extension | `python` | PyO3 stable ABI (`abi3-py310`), NumPy, HNSW, IVF-PQ, and persistence. The current wheel contract targets CPython 3.10+ and does not cover free-threaded CPython builds. |
+| WASM experiment | `--no-default-features` plus the target recipe | `getrandom` uses the `wasm_js` backend on `wasm32-unknown-unknown`; file/mmap and persistence support need separate validation. |
+
+Rust consumers should treat feature flags as part of the build contract. Python
+callers should benchmark end-to-end NumPy conversion, GIL detachment, and batch
+overhead, not only the native search loop. See the
+[Python wrapper competition plan](docs/design/python-wrapper-competition.md) and
+the reproducible `scripts/benchmark_python_wrapper.py` harness.
 
 ## Indexes and persistence
 
