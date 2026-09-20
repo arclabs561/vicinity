@@ -8,9 +8,9 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 use rand::prelude::*;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use vicinity::hnsw::HNSWIndex;
 #[cfg(feature = "benchmark")]
 use vicinity::hnsw::{reset_search_counters, take_search_counters, HnswSearchCounters};
+use vicinity::hnsw::{HNSWIndex, HNSWParams};
 
 static ALLOC_CALLS: AtomicUsize = AtomicUsize::new(0);
 static ALLOC_BYTES: AtomicUsize = AtomicUsize::new(0);
@@ -82,7 +82,16 @@ fn build_index_with_params(
     m_max: usize,
 ) -> (HNSWIndex, Vec<Vec<f32>>) {
     let vectors = random_vectors(n_vectors, dim, 42);
-    let mut index = HNSWIndex::new(dim, m, m_max).unwrap();
+    let mut index = HNSWIndex::with_params(
+        dim,
+        HNSWParams {
+            m,
+            m_max,
+            seed: Some(42),
+            ..Default::default()
+        },
+    )
+    .unwrap();
     for (i, v) in vectors.iter().enumerate() {
         index.add_slice(i as u32, v).unwrap();
     }
@@ -94,10 +103,33 @@ fn build_index(n_vectors: usize, dim: usize) -> (HNSWIndex, Vec<Vec<f32>>) {
     build_index_with_params(n_vectors, dim, 16, 16)
 }
 
-fn print_allocation_summary(
+// The fixture contains unit vectors and uses cosine distance. Keep the exact
+// scan outside both the allocation diagnostic and Criterion's timed closure.
+fn exact_neighbors(vectors: &[Vec<f32>], queries: &[Vec<f32>], k: usize) -> Vec<Vec<u32>> {
+    queries
+        .iter()
+        .map(|query| {
+            let mut scored: Vec<_> = vectors
+                .iter()
+                .enumerate()
+                .map(|(id, vector)| {
+                    (
+                        id as u32,
+                        vicinity::distance::cosine_distance_normalized(query, vector),
+                    )
+                })
+                .collect();
+            scored.sort_unstable_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
+            scored.into_iter().take(k).map(|(id, _)| id).collect()
+        })
+        .collect()
+}
+
+fn print_search_summary(
     label: &str,
     index: &HNSWIndex,
     queries: &[Vec<f32>],
+    ground_truth: &[Vec<u32>],
     k: usize,
     ef: usize,
 ) {
@@ -105,8 +137,10 @@ fn print_allocation_summary(
     #[cfg(feature = "benchmark")]
     let mut search_total = HnswSearchCounters::default();
     let mut result_count = 0usize;
+    let mut hits = 0usize;
+    assert_eq!(queries.len(), ground_truth.len());
 
-    for query in queries {
+    for (query, truth) in queries.iter().zip(ground_truth) {
         #[cfg(feature = "benchmark")]
         reset_search_counters();
         let (results, alloc_profile) =
@@ -126,10 +160,26 @@ fn print_allocation_summary(
                 search_total.max_frontier_len.max(counters.max_frontier_len);
         }
         alloc_total.add_assign(alloc_profile);
+        assert_eq!(results.len(), k);
+        assert!(results.iter().all(|(_, distance)| distance.is_finite()));
+        assert!(results.windows(2).all(|pair| pair[0].1 <= pair[1].1));
+        assert!(results
+            .iter()
+            .enumerate()
+            .all(|(i, (id, _))| { results[..i].iter().all(|(previous, _)| previous != id) }));
+        // Count each true neighbor at most once, even if search returns duplicates.
+        hits += truth
+            .iter()
+            .filter(|id| results.iter().any(|(found, _)| found == *id))
+            .count();
         result_count += results.len();
     }
 
     let queries_len = queries.len().max(1) as f64;
+    eprintln!(
+        "hnsw quality {label}: graph_seed=42 ef={ef} recall@{k}={:.4}",
+        hits as f64 / (queries.len() * k) as f64,
+    );
     eprintln!(
         "hnsw alloc {label}: ef={ef} alloc_calls={:.1}/query alloc_bytes={:.1}/query results={result_count}",
         alloc_total.calls as f64 / queries_len,
@@ -158,10 +208,21 @@ fn bench_hnsw_search_only(c: &mut Criterion) {
     let n_vectors = 10_000;
     let n_queries = 100;
     let queries = random_vectors(n_queries, dim, 123);
-    let (index, _vectors) = build_index(n_vectors, dim);
+    let (index, vectors) = build_index(n_vectors, dim);
+    let ground_truth = exact_neighbors(&vectors, &queries, 10);
+    assert_eq!(
+        index
+            .search(&queries[0], 10, n_vectors)
+            .unwrap()
+            .iter()
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>(),
+        ground_truth[0],
+        "full-exploration control must match exact neighbors"
+    );
 
     for ef in [10, 50, 100, 200] {
-        print_allocation_summary("dim128", &index, &queries, 10, ef);
+        print_search_summary("dim128", &index, &queries, &ground_truth, 10, ef);
         group.throughput(Throughput::Elements(n_queries as u64));
         group.bench_with_input(BenchmarkId::new("ef", ef), &ef, |bench, &ef| {
             bench.iter(|| {
@@ -183,10 +244,21 @@ fn bench_hnsw_search_mmax32(c: &mut Criterion) {
     let n_vectors = 10_000;
     let n_queries = 100;
     let queries = random_vectors(n_queries, dim, 123);
-    let (index, _vectors) = build_index_with_params(n_vectors, dim, 16, 32);
+    let (index, vectors) = build_index_with_params(n_vectors, dim, 16, 32);
+    let ground_truth = exact_neighbors(&vectors, &queries, 10);
+    assert_eq!(
+        index
+            .search(&queries[0], 10, n_vectors)
+            .unwrap()
+            .iter()
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>(),
+        ground_truth[0],
+        "full-exploration control must match exact neighbors"
+    );
 
     for ef in [10, 50, 100, 200] {
-        print_allocation_summary("dim128_m16_mmax32", &index, &queries, 10, ef);
+        print_search_summary("dim128_m16_mmax32", &index, &queries, &ground_truth, 10, ef);
         group.throughput(Throughput::Elements(n_queries as u64));
         group.bench_with_input(BenchmarkId::new("ef", ef), &ef, |bench, &ef| {
             bench.iter(|| {

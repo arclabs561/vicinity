@@ -38,6 +38,23 @@ The older `plot_pareto.py` uses the rigorous benchmark's aggregate JSON files,
 not this JSONL format. Its scaling chart requires a measured setting meeting
 the recall target; a missing point means the target was not reached.
 
+## Search microbenchmarks
+
+`cargo bench --bench hnsw_search --no-default-features --features hnsw` measures
+100 queries over 10,000 synthetic, normalized 128-dimensional vectors. Vector,
+query, and graph seeds are fixed (42, 123, and 42). It prints exact recall@10
+beside allocation diagnostics for each search breadth, outside the timed loop.
+An untimed full-exploration query must match the exact neighbors; diagnostic
+results must contain ten distinct IDs with finite, sorted distances.
+
+Treat these as fixed-fixture regression timings, not dataset performance claims.
+On the seeded fixture, `m=16, m_max=16` reaches 13.2% recall at `ef=10` and
+81.3% at `ef=200`; `m_max=32` reaches 25.7% and 96.0%, respectively. A faster
+setting can be much less accurate. Older timings used unseeded graphs: establish
+a new baseline before comparing changes. The benchmark's allocation-counting
+wrapper remains active during timing; enable `benchmark` only for additional
+search counters, and do not compare instrumented and uninstrumented builds.
+
 ## Ten-result comparison (2026-09-20)
 
 Fashion-MNIST, first 20,000 training vectors and 500 held-out queries, L2.
