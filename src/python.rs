@@ -221,8 +221,8 @@ impl PyHNSWIndex {
                     .map_err(|e| PyValueError::new_err(e.to_string()))?;
             }
             None => {
-                let base = self.inner.num_vectors as u32;
-                let id_vec: Vec<u32> = (base..base + n as u32).collect();
+                let id_vec =
+                    sequential_ids(self.inner.num_vectors, n).map_err(PyValueError::new_err)?;
                 self.inner
                     .add_batch(&id_vec, data)
                     .map_err(|e| PyValueError::new_err(e.to_string()))?;
@@ -552,10 +552,7 @@ impl PyIVFPQIndex {
                     .map_err(|_| PyValueError::new_err("ids must be contiguous"))?;
                 checked_ids(id_slice, n)?
             }
-            None => {
-                let base = self.inner.num_vectors as u32;
-                (base..base + n as u32).collect()
-            }
+            None => sequential_ids(self.inner.num_vectors, n).map_err(PyValueError::new_err)?,
         };
 
         for (row, &doc_id) in data.chunks_exact(d).zip(id_u32.iter()) {
@@ -1099,6 +1096,16 @@ fn checked_ids(ids: &[i64], expected_len: usize) -> PyResult<Vec<u32>> {
     Ok(id_u32)
 }
 
+fn sequential_ids(base: usize, count: usize) -> Result<Vec<u32>, &'static str> {
+    let end = base
+        .checked_add(count)
+        .ok_or("implicit IDs exceed the addressable vector count")?;
+    if end > (u32::MAX as usize) + 1 {
+        return Err("implicit IDs exceed the u32 ID limit");
+    }
+    Ok((base..end).map(|id| id as u32).collect())
+}
+
 /// Normalize the query if `auto_normalize` is on and the metric supports it.
 ///
 /// Cosine *requires* query normalization: the index uses the dot-only fast
@@ -1119,6 +1126,21 @@ fn prep_query<'a>(
         Cow::Owned(distance::normalize(query))
     } else {
         Cow::Borrowed(query)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sequential_ids;
+
+    #[test]
+    fn sequential_ids_rejects_u32_overflow() {
+        assert_eq!(
+            sequential_ids(u32::MAX as usize, 1).unwrap(),
+            vec![u32::MAX]
+        );
+        let error = sequential_ids(u32::MAX as usize, 2).unwrap_err();
+        assert!(error.contains("u32 ID limit"));
     }
 }
 
