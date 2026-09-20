@@ -16,6 +16,7 @@ Output: docs/plots/algorithm_comparison_<dataset>.png
 """
 
 import json
+import math
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -25,6 +26,8 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 
 ALGO_STYLE = {
+    "external_hnsw_rs": {"color": "#d55e00", "marker": "s", "label": "hnsw_rs"},
+    "external_usearch": {"color": "#009e73", "marker": "^", "label": "USearch (f32)"},
     "brute": {"color": "#aaaaaa", "marker": "x", "label": "Brute Force"},
     "hnsw": {"color": "#1f77b4", "marker": "o", "label": "HNSW"},
     "hnsw-m16": {"color": "#1f77b4", "marker": "o", "label": "HNSW (M=16)"},
@@ -78,14 +81,14 @@ def apply_style(ax):
 def pareto_frontier(points):
     """Extract Pareto-optimal points (maximize both recall and QPS).
 
-    A point is Pareto-optimal if no other point has both higher recall
-    AND higher QPS. For ANN algorithms, this traces the upper-right
+    A point is Pareto-optimal if no other point is at least as good on both
+    axes and strictly better on one. For ANN algorithms, this traces the upper-right
     envelope: as recall increases, QPS typically decreases.
     """
     if not points:
         return []
-    # Sort by recall descending; sweep tracking max QPS seen so far
-    pts = sorted(points, key=lambda p: -p[0])
+    # Visit the fastest equal-recall point first so slower ties are dominated.
+    pts = sorted(points, key=lambda p: (-p[0], -p[1]))
     frontier = []
     max_qps = -1
     for recall, qps in pts:
@@ -117,14 +120,33 @@ def scoped_dataset_name(meta: dict[str, Any]) -> str | None:
 def series_key(row: dict[str, Any]) -> str:
     algorithm = row["algorithm"]
     storage_mode = row.get("storage_mode")
+    context = []
     if storage_mode in {"file", "mmap", "snapshot_loaded", "segmented_store"}:
-        return f"{algorithm}:{storage_mode}"
-    return algorithm
+        context.append(storage_mode)
+    if row.get("cache_state"):
+        context.append(row["cache_state"])
+    if "search_k" in row:
+        context.append(f"k={row['search_k']}")
+    return f"{algorithm}:{', '.join(context)}" if context else algorithm
 
 
 def load_results(paths):
     """Load JSONL results, grouped by dataset and algorithm/storage series."""
     by_dataset = defaultdict(lambda: defaultdict(list))
+    protocols = {}
+    protocol_fields = (
+        "metric",
+        "result_schema",
+        "cpu",
+        "architecture",
+        "threads",
+        "rustc",
+        "vicinity",
+        "features",
+        "indexed_vectors",
+        "queries",
+        "warmup_queries",
+    )
     for path in [Path(p) for p in paths]:
         current_dataset = path.stem
         with path.open(encoding="utf-8") as f:
@@ -136,6 +158,16 @@ def load_results(paths):
                 meta = row.get("_meta")
                 if isinstance(meta, dict):
                     current_dataset = scoped_dataset_name(meta) or current_dataset
+                    protocol = {key: meta.get(key) for key in protocol_fields}
+                    if (
+                        current_dataset in protocols
+                        and protocols[current_dataset] != protocol
+                    ):
+                        raise ValueError(
+                            f"Incompatible benchmark metadata for {current_dataset}; "
+                            "plot different machines, builds, and protocols separately"
+                        )
+                    protocols[current_dataset] = protocol
                     continue
                 if "algorithm" not in row:
                     continue
@@ -145,6 +177,15 @@ def load_results(paths):
                     qps, (int, float)
                 ):
                     continue
+                if (
+                    isinstance(recall, bool)
+                    or isinstance(qps, bool)
+                    or not math.isfinite(recall)
+                    or not 0 <= recall <= 1
+                    or not math.isfinite(qps)
+                    or qps <= 0
+                ):
+                    raise ValueError(f"Invalid recall/QPS measurement in {path}")
                 by_dataset[current_dataset][series_key(row)].append(
                     (float(recall), float(qps))
                 )
@@ -209,14 +250,17 @@ def plot_one_dataset(dataset, by_algo, output_dir):
             )
 
     ax.set_title(
-        "Recall and queries per second tradeoff, up and to the right is better",
+        "Observed recall–throughput frontier · up and right is better",
         fontsize=10,
         pad=8,
     )
     ax.set_xlabel("Recall@10", fontsize=10)
     ax.set_ylabel("Queries per second (1/s)", fontsize=10)
     ax.set_yscale("log")
-    ax.set_xlim(0.0, 1.02)
+    # Preserve a readable high-recall region when the sweep is near saturation.
+    min_recall = min(r for points in by_algo.values() for r, _ in points)
+    recall_left = max(0.0, min_recall - 0.02)
+    ax.set_xlim(recall_left, 1.0 + (1.0 - recall_left) * 0.03)
 
     all_qps = [q for pts in by_algo.values() for _, q in pts]
     if all_qps:
@@ -249,6 +293,7 @@ def plot_one_dataset(dataset, by_algo, output_dir):
     fig.tight_layout()
     out_path = output_dir / f"algorithm_comparison_{dataset}.png"
     fig.savefig(out_path, bbox_inches="tight", pad_inches=0.15)
+    fig.savefig(out_path.with_suffix(".svg"), bbox_inches="tight", pad_inches=0.15)
     plt.close(fig)
     print(f"Wrote {out_path}")
 

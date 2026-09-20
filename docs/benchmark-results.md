@@ -2,6 +2,74 @@
 
 Historical benchmark tables for standard ANN datasets.
 
+## Reading and plotting results
+
+Compare speed at a recall floor, not at the same search parameter. A setting
+that misses 90% recall does not qualify as a 90%-recall result. Measure at
+least three independent builds; report median throughput and spread alongside
+recall, build time, and memory. Keep single-query and batch throughput separate.
+These choices follow the [ANN-Benchmarks principles](https://github.com/erikbern/ann-benchmarks#principles)
+on parameter sweeps, held-out queries, and single-query comparisons.
+
+To plot current JSONL output:
+
+```sh
+uv run scripts/plot_comparison.py results.jsonl plots
+```
+
+This writes PNG and SVG recall–throughput curves. The curve is the **observed
+frontier**, not a fitted prediction or a confidence interval: repeated runs
+can contribute their fastest observations. Use the summarizer's repeated-run
+statistics for performance claims. The plotter rejects conflicting recorded
+machine/build metadata and invalid recall/QPS values; missing metadata cannot
+prove that two runs are comparable. Recorded cache states and result depths
+appear as separate series. Do not compare serialized file size with resident memory.
+
+Check `search_k` before comparing throughput. The current runner requests up to
+100 neighbors (the ground-truth row width), then measures recall at 1, 10, and
+100. A recall@10 label does **not** mean the timed search requested only ten
+results. Compare against external results using the same requested depth.
+
+The older `plot_pareto.py` uses the rigorous benchmark's aggregate JSON files,
+not this JSONL format. Its scaling chart requires a measured setting meeting
+the recall target; a missing point means the target was not reached.
+
+## Historical context
+
+### Bounded harness check (2026-09-20)
+
+Commit `6f74bf8`, Apple M3 Max, Rust 1.98.1, release defaults (`hnsw,innr`):
+Fashion-MNIST's first 5,000 training vectors and 200 held-out queries, L2,
+50 warmup queries, `search_k=100`. Three recorded repetitions,
+seed 42, M=16, construction depth 100; search depths 100, 200, 400.
+Ground truth was recomputed against the capped corpus. At search depth 100:
+
+| Implementation | Median recall@10 | Median QPS | QPS range |
+| --- | ---: | ---: | ---: |
+| Brute force | 100% | 2,529 | 2,485–2,698 |
+| vicinity HNSW | 100% | 19,595 | 18,419–20,124 |
+| hnsw_rs 0.3.4 | 98.7% | 3,019 | 2,977–3,109 |
+| USearch 2.26.0, f32 | 100% | 4,165 | 4,154–4,263 |
+
+This is a harness check, **not a tuned library comparison**. The small corpus
+saturates recall, algorithm order was fixed, and external construction seeds
+cannot be controlled through these adapters.
+The next comparison needs a larger corpus, varied query difficulty, and an
+explicit requested-depth sweep before these numbers can guide optimization.
+The brute-force control reached exact recall in all three runs.
+
+Reproduce each repetition with `--repeat 0`, `1`, and `2`, using the same
+results file (do not use `--fresh` between repetitions):
+
+```sh
+cargo run --release --example ann_benchmark --features hnsw -- \
+  data/ann-benchmarks/fashion-mnist-784-euclidean \
+  --algo brute --algo hnsw --algo external_hnsw_rs --algo external_usearch \
+  --m 16 --ef-construction 100 --ef-search 100,200,400 \
+  --max-train 5000 --max-queries 200 --warmup-queries 50 \
+  --seed 42 --repeat 0 --json --results fashion-probe.jsonl
+```
+
 The checked-in `docs/*.jsonl` files are legacy result artifacts from this older
 schema. They do not include `_meta`, `storage_mode`, `cache_state`,
 `load_time_s`, or `index_bytes`, so use them only as historical in-memory

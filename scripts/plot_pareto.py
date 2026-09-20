@@ -17,6 +17,41 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
+def pareto_frontier(points: list[dict]) -> list[dict]:
+    """Keep nondominated recall/QPS records, ordered by increasing recall.
+
+    A higher-recall record at equal QPS dominates the lower-recall record, and
+    a higher-QPS record at equal recall dominates the lower-QPS record. Exact
+    ties retain the lower ``ef`` record so the plotted error bars are stable.
+    """
+    ordered = sorted(
+        points,
+        key=lambda point: (
+            -float(point["recall_mean"]),
+            -float(point["qps_mean"]),
+            int(point["ef"]),
+        ),
+    )
+    frontier = []
+    best_qps = float("-inf")
+    for point in ordered:
+        qps = float(point["qps_mean"])
+        if qps > best_qps:
+            frontier.append(point)
+            best_qps = qps
+    return sorted(frontier, key=lambda point: float(point["recall_mean"]))
+
+
+def fastest_at_recall(points: list[dict], recall_floor: float) -> float:
+    """Return the fastest measured QPS meeting a recall floor, or NaN."""
+    qualifying = [
+        float(point["qps_mean"])
+        for point in points
+        if float(point["recall_mean"]) >= recall_floor
+    ]
+    return max(qualifying, default=float("nan"))
+
+
 def load_results(data_dir: Path) -> dict:
     """Load all benchmark results."""
     results = {}
@@ -44,7 +79,7 @@ def plot_pareto_frontier(results: dict, output_dir: Path):
     }
     
     for scale, data in results.items():
-        points = data["pareto_points"]
+        points = pareto_frontier(data["pareto_points"])
         
         recalls = [p["recall_mean"] * 100 for p in points]
         qps = [p["qps_mean"] for p in points]
@@ -69,11 +104,10 @@ def plot_pareto_frontier(results: dict, output_dir: Path):
             linewidth=1.5,
         )
         
-        # Connect points with line
-        sorted_idx = np.argsort(recalls)
+        # Connect only the non-dominated frontier, from lower to higher recall.
         ax.plot(
-            [recalls[i] for i in sorted_idx],
-            [qps[i] for i in sorted_idx],
+            recalls,
+            qps,
             color=colors[scale],
             linestyle="--",
             alpha=0.5,
@@ -148,7 +182,7 @@ def plot_scaling_behavior(results: dict, output_dir: Path):
     
     fig, axes = plt.subplots(2, 2, figsize=(12, 10))
     
-    scales = sorted(results.keys())
+    scales = sorted(results, key=lambda scale: results[scale]["n_train"])
     n_trains = [results[s]["n_train"] for s in scales]
     
     # Build time scaling
@@ -162,17 +196,16 @@ def plot_scaling_behavior(results: dict, output_dir: Path):
     ax.set_yscale("log")
     ax.grid(True, alpha=0.3)
     
-    # QPS at 90% recall
+    # Fastest measured setting at 90% recall. A missing target stays visibly
+    # absent instead of substituting a lower-recall setting.
     ax = axes[0, 1]
-    qps_90 = []
-    for s in scales:
-        points = results[s]["pareto_points"]
-        # Find closest to 90% recall
-        best = min(points, key=lambda p: abs(p["recall_mean"] - 0.90))
-        qps_90.append(best["qps_mean"])
+    qps_90 = [
+        fastest_at_recall(results[scale]["pareto_points"], 0.90)
+        for scale in scales
+    ]
     ax.plot(n_trains, qps_90, "o-", markersize=10, linewidth=2, color="green")
     ax.set_xlabel("Dataset Size")
-    ax.set_ylabel("QPS at ~90% Recall")
+    ax.set_ylabel("QPS at Recall ≥90%")
     ax.set_title("Throughput at Target Recall")
     ax.set_xscale("log")
     ax.set_yscale("log")
