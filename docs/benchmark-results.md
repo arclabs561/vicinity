@@ -42,7 +42,7 @@ the recall target; a missing point means the target was not reached.
 
 `cargo bench --bench hnsw_search --no-default-features --features hnsw` measures
 100 queries over 10,000 synthetic, normalized 128-dimensional vectors. Vector,
-query, and graph seeds are fixed (42, 123, and 42). It prints exact recall@10
+query, and default graph seeds are fixed (42, 123, and 42). It prints exact recall@10
 beside allocation diagnostics for each search breadth, outside the timed loop.
 An untimed full-exploration query must match the exact neighbors; diagnostic
 results must contain ten distinct IDs with finite, sorted distances.
@@ -54,6 +54,31 @@ setting can be much less accurate. Older timings used unseeded graphs: establish
 a new baseline before comparing changes. The benchmark's allocation-counting
 wrapper remains active during timing; enable `benchmark` only for additional
 search counters, and do not compare instrumented and uninstrumented builds.
+
+Set `VICINITY_BENCH_SEED` to vary only the graph. The seed is included in each
+Criterion benchmark ID so saved baselines cannot silently mix different seeds.
+Invalid values fail rather than falling back to the default. To check quality
+without collecting timings:
+
+```sh
+for seed in 42 43 44; do
+  VICINITY_BENCH_SEED=$seed cargo bench --bench hnsw_search \
+    --no-default-features --features hnsw -- --test
+done
+```
+
+Across these three seeds, the measured recall@10 ranges were:
+
+| Graph (`m=16`) | `ef=10` | `ef=50` | `ef=100` | `ef=200` |
+| --- | ---: | ---: | ---: | ---: |
+| `m_max=16` | 13.0–13.2% | 39.5–40.5% | 59.8–61.8% | 80.5–81.3% |
+| `m_max=32` | 25.7–26.3% | 64.8–65.9% | 83.9% | 96.0–96.4% |
+
+[Raw recall measurements](hnsw-seed-recall.csv), collected on Apple M3 Max with
+Rust 1.98.1, `hnsw` enabled and default features disabled. The corpus and 100 held-out
+synthetic queries stayed fixed; these ranges measure graph-seed sensitivity,
+not uncertainty across datasets. None of the narrow-graph settings tested here
+reached 95% recall. The wider graph reached it at `ef=200` for all three seeds.
 
 ## Ten-result comparison (2026-09-20)
 

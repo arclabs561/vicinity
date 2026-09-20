@@ -80,6 +80,7 @@ fn build_index_with_params(
     dim: usize,
     m: usize,
     m_max: usize,
+    seed: u64,
 ) -> (HNSWIndex, Vec<Vec<f32>>) {
     let vectors = random_vectors(n_vectors, dim, 42);
     let mut index = HNSWIndex::with_params(
@@ -87,7 +88,7 @@ fn build_index_with_params(
         HNSWParams {
             m,
             m_max,
-            seed: Some(42),
+            seed: Some(seed),
             ..Default::default()
         },
     )
@@ -99,8 +100,12 @@ fn build_index_with_params(
     (index, vectors)
 }
 
-fn build_index(n_vectors: usize, dim: usize) -> (HNSWIndex, Vec<Vec<f32>>) {
-    build_index_with_params(n_vectors, dim, 16, 16)
+fn graph_seed() -> u64 {
+    match std::env::var("VICINITY_BENCH_SEED") {
+        Ok(value) => value.parse().expect("VICINITY_BENCH_SEED must be a u64"),
+        Err(std::env::VarError::NotPresent) => 42,
+        Err(error) => panic!("invalid VICINITY_BENCH_SEED: {error}"),
+    }
 }
 
 // The fixture contains unit vectors and uses cosine distance. Keep the exact
@@ -132,6 +137,7 @@ fn print_search_summary(
     ground_truth: &[Vec<u32>],
     k: usize,
     ef: usize,
+    seed: u64,
 ) {
     let mut alloc_total = AllocationProfile::default();
     #[cfg(feature = "benchmark")]
@@ -177,7 +183,7 @@ fn print_search_summary(
 
     let queries_len = queries.len().max(1) as f64;
     eprintln!(
-        "hnsw quality {label}: graph_seed=42 ef={ef} recall@{k}={:.4}",
+        "hnsw quality {label}: graph_seed={seed} ef={ef} recall@{k}={:.4}",
         hits as f64 / (queries.len() * k) as f64,
     );
     eprintln!(
@@ -208,7 +214,8 @@ fn bench_hnsw_search_only(c: &mut Criterion) {
     let n_vectors = 10_000;
     let n_queries = 100;
     let queries = random_vectors(n_queries, dim, 123);
-    let (index, vectors) = build_index(n_vectors, dim);
+    let seed = graph_seed();
+    let (index, vectors) = build_index_with_params(n_vectors, dim, 16, 16, seed);
     let ground_truth = exact_neighbors(&vectors, &queries, 10);
     assert_eq!(
         index
@@ -222,16 +229,20 @@ fn bench_hnsw_search_only(c: &mut Criterion) {
     );
 
     for ef in [10, 50, 100, 200] {
-        print_search_summary("dim128", &index, &queries, &ground_truth, 10, ef);
+        print_search_summary("dim128", &index, &queries, &ground_truth, 10, ef, seed);
         group.throughput(Throughput::Elements(n_queries as u64));
-        group.bench_with_input(BenchmarkId::new("ef", ef), &ef, |bench, &ef| {
-            bench.iter(|| {
-                queries
-                    .iter()
-                    .map(|q| index.search(black_box(q), 10, ef).unwrap().len())
-                    .sum::<usize>()
-            });
-        });
+        group.bench_with_input(
+            BenchmarkId::new("ef", format!("{ef}/seed_{seed}")),
+            &ef,
+            |bench, &ef| {
+                bench.iter(|| {
+                    queries
+                        .iter()
+                        .map(|q| index.search(black_box(q), 10, ef).unwrap().len())
+                        .sum::<usize>()
+                });
+            },
+        );
     }
 
     group.finish();
@@ -244,7 +255,8 @@ fn bench_hnsw_search_mmax32(c: &mut Criterion) {
     let n_vectors = 10_000;
     let n_queries = 100;
     let queries = random_vectors(n_queries, dim, 123);
-    let (index, vectors) = build_index_with_params(n_vectors, dim, 16, 32);
+    let seed = graph_seed();
+    let (index, vectors) = build_index_with_params(n_vectors, dim, 16, 32, seed);
     let ground_truth = exact_neighbors(&vectors, &queries, 10);
     assert_eq!(
         index
@@ -258,16 +270,28 @@ fn bench_hnsw_search_mmax32(c: &mut Criterion) {
     );
 
     for ef in [10, 50, 100, 200] {
-        print_search_summary("dim128_m16_mmax32", &index, &queries, &ground_truth, 10, ef);
+        print_search_summary(
+            "dim128_m16_mmax32",
+            &index,
+            &queries,
+            &ground_truth,
+            10,
+            ef,
+            seed,
+        );
         group.throughput(Throughput::Elements(n_queries as u64));
-        group.bench_with_input(BenchmarkId::new("ef", ef), &ef, |bench, &ef| {
-            bench.iter(|| {
-                queries
-                    .iter()
-                    .map(|q| index.search(black_box(q), 10, ef).unwrap().len())
-                    .sum::<usize>()
-            });
-        });
+        group.bench_with_input(
+            BenchmarkId::new("ef", format!("{ef}/seed_{seed}")),
+            &ef,
+            |bench, &ef| {
+                bench.iter(|| {
+                    queries
+                        .iter()
+                        .map(|q| index.search(black_box(q), 10, ef).unwrap().len())
+                        .sum::<usize>()
+                });
+            },
+        );
     }
 
     group.finish();
