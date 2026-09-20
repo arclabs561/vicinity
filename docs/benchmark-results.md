@@ -181,6 +181,12 @@ searcher wiring were removed. A future cache attempt needs hit-rate diagnostics,
 larger representative data, and a design that avoids an unconditional copy on
 the mmap path.
 
+A second file-only variant returned cached vectors by reference to avoid the
+copy. It still measured slower on the same short run: about 67 ms uncached
+versus 78 ms cached per 100-query batch. That wiring was also removed. The
+evidence rules out the current simple hash-cache shape on this workload; it does
+not rule out read coalescing or a cache designed around a larger working set.
+
 Separate ten-second Samply profiles selected measured Criterion search stacks,
 excluding setup and warmup. Of 8,984 selected direct-file samples, 8,425 included
 `pread` and 7,649 included `read_vector` (inclusive counts overlap). The memory
