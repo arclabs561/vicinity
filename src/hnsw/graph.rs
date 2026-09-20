@@ -164,8 +164,8 @@ pub struct HNSWParams {
     /// Default search width during query (typically 50-200)
     pub ef_search: usize,
 
-    /// When true, L2-normalize vectors before storing them.
-    /// Useful when callers cannot guarantee pre-normalized input.
+    /// L2-normalize inserts and queries for cosine and angular distance.
+    /// Ignored for L2 and inner product, which preserve vector magnitudes.
     pub auto_normalize: bool,
 
     /// Distance metric used for all comparisons (default: Cosine).
@@ -299,7 +299,6 @@ impl HNSWBuilder {
     /// Whether to L2-normalize vectors on add and search (default false).
     ///
     /// Applies to cosine and angular metrics; ignored for L2 and inner product.
-    /// Symmetric with the Python binding's `auto_normalize` flag.
     pub fn auto_normalize(mut self, normalize: bool) -> Self {
         self.auto_normalize = normalize;
         self
@@ -1755,8 +1754,9 @@ impl HNSWIndex {
     /// # Errors
     ///
     /// Returns [`RetrieveError::InvalidParameter`] if:
-    /// - The vector is not L2-normalized (`norm^2` outside `[0.9, 1.1]`),
-    ///   unless `auto_normalize` is enabled on the builder.
+    /// - Cosine distance is selected and the vector is not L2-normalized
+    ///   (`norm^2` differs from 1 by more than 0.01), unless `auto_normalize`
+    ///   is enabled on the builder.
     /// - The `doc_id` is a duplicate.
     /// - The index has already been built.
     pub fn add_slice(&mut self, doc_id: u32, vector: &[f32]) -> Result<(), RetrieveError> {
@@ -1782,7 +1782,11 @@ impl HNSWIndex {
 
         // Normalize if requested, otherwise borrow the original slice.
         let normalized;
-        let vector = if self.params.auto_normalize {
+        let vector = if self.params.auto_normalize
+            && matches!(
+                self.params.metric,
+                DistanceMetric::Cosine | DistanceMetric::Angular
+            ) {
             normalized = crate::distance::normalize(vector);
             normalized.as_slice()
         } else {

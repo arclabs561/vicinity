@@ -13,8 +13,8 @@ For non-trivial work (new index types, distance metrics, on-disk format changes)
 - Optional: `just` — canonical recipes (`brew install just` or `cargo install just`).
 
 ```
-just check    # fmt + clippy + tests
-just test     # full test suite
+just qa       # fmt + clippy + default-feature tests
+just check    # compile all features
 ```
 
 ## Style
@@ -25,13 +25,16 @@ just test     # full test suite
 
 ## Testing
 
-- `just test` (or `cargo test --all-features`) runs the full suite.
+- `just test` runs the default-feature suite. Use `cargo test --all-features`
+  for optional-feature tests; Python bindings require a Python 3.10+ interpreter.
 - HNSW / NSW tests with fewer than ~10 nodes are flaky (graph connectivity is degenerate). Use 15-20+ nodes for deterministic test behavior.
 - Distance metric tests must use vectors normalized for the metric being tested (L2-normalized for cosine, etc.). Un-normalized data changes search difficulty and makes regression numbers meaningless.
 
 ## Benchmarks
 
-Benchmark scripts live under `examples/`. Recall numbers in the README correspond to GloVe-25 (1.18M) at the documented hyperparameters; don't ship a metric change without re-running on the same dataset.
+Benchmark runners live under `examples/`. Dataset sizes, parameters, and
+measurement conditions are recorded in `docs/benchmark-results.md`. Re-run the
+affected workload when changing a distance metric or search behavior.
 
 ## Pull requests
 

@@ -2,34 +2,20 @@
 
 [![crates.io](https://img.shields.io/crates/v/vicinity.svg)](https://crates.io/crates/vicinity)
 [![docs.rs](https://docs.rs/vicinity/badge.svg)](https://docs.rs/vicinity)
-[![PyPI](https://img.shields.io/pypi/v/pyvicinity.svg)](https://pypi.org/project/pyvicinity/)
 
 Approximate nearest-neighbor search.
 
-`vicinity` provides Rust indexes and Python bindings for vector search. HNSW is
-the default in-memory index. IVF-PQ is the compressed in-memory index. Other
-indexes are feature-gated and documented in
-[`docs/algorithms.md`](docs/algorithms.md).
+`vicinity` provides Rust indexes and Python bindings for vector search.
 
-## Install
+## Rust
 
 ```toml
 [dependencies]
 vicinity = { version = "0.11.1", features = ["hnsw"] }
 ```
 
-Optional features enable additional indexes:
-
-```toml
-vicinity = { version = "0.11.1", features = ["ivf_pq"] }
-vicinity = { version = "0.11.1", features = ["diskann"] }
-vicinity = { version = "0.11.1", features = ["hnsw", "serde"] }
-```
-
-## HNSW
-
-HNSW is the default index for dense vectors that fit in memory. Cosine distance
-expects unit-norm vectors unless `auto_normalize(true)` is set.
+HNSW is the default in-memory index for dense vectors. For cosine distance,
+pass unit-norm vectors or set `auto_normalize(true)`.
 
 ```rust
 use vicinity::hnsw::HNSWIndex;
@@ -46,58 +32,24 @@ fn main() -> vicinity::Result<()> {
     index.build()?;
 
     let results = index.search(&[1.0, 0.0], 2, 50)?;
-    println!("{results:?}"); // (doc_id, distance); lower is closer.
+    for (id, distance) in results {
+        println!("{id}: {distance:.4}");
+    }
     Ok(())
 }
 ```
 
 ```text
-[(7, 0.0), (8, 0.029857516)]
+7: 0.0000
+8: 0.0299
 ```
 
-Use `DistanceMetric` when you need L2, angular, or inner-product distance:
-
-```rust
-use vicinity::{distance::DistanceMetric, hnsw::HNSWIndex};
-
-let index = HNSWIndex::builder(384)
-    .metric(DistanceMetric::L2)
-    .build()?;
-```
-
-## IVF-PQ
-
-IVF-PQ stores compressed vectors and searches an inverted file. Use it when raw
-vectors dominate memory and lower recall is acceptable.
-
-```rust
-use vicinity::ivf_pq::{IVFPQIndex, IVFPQParams};
-
-let params = IVFPQParams {
-    num_clusters: 1024,
-    num_codebooks: 8,
-    nprobe: 16,
-    ..Default::default()
-};
-
-let mut index = IVFPQIndex::new(128, params)?;
-for (id, vector) in dataset.iter().enumerate() {
-    index.add_slice(id as u32, vector)?;
-}
-index.build()?;
-
-let compressed = index.search(&query, 5)?;
-let reranked = index.search_reranked(&query, 5, 200)?;
-```
-
-`search()` uses PQ distances and works after `compact()`. `search_reranked()`
-keeps raw vectors and reranks a candidate pool with exact cosine distance.
-
-See [`examples/ivf_pq_demo.rs`](examples/ivf_pq_demo.rs) for a runnable example.
+Results contain the IDs supplied on insert and distances; lower is closer.
+Use `distance::DistanceMetric` to select L2, angular, or inner-product distance.
 
 ## Python
 
-The Python package is `pyvicinity`.
+The published Python package, `pyvicinity` 0.8.0, exposes HNSW.
 
 ```bash
 pip install pyvicinity
@@ -107,104 +59,65 @@ pip install pyvicinity
 import numpy as np
 from pyvicinity import DistanceMetric, HNSWIndex
 
-embeddings = np.random.default_rng(0).standard_normal((10_000, 384), dtype=np.float32)
-
-index = HNSWIndex(
-    dim=384,
-    metric=DistanceMetric.Cosine,
-    auto_normalize=True,
-    seed=42,
-)
-index.add_items(embeddings)
+vectors = np.array([[1.0, 0.0], [0.8, 0.2], [0.0, 1.0]], dtype=np.float32)
+index = HNSWIndex(dim=2, metric=DistanceMetric.Cosine, auto_normalize=True, seed=42)
+index.add_items(vectors)
 index.build()
 
-ids, distances = index.search(embeddings[0], k=10)
-batch_ids, batch_distances = index.batch_search(embeddings[:32], k=10)
+ids, distances = index.search(vectors[0], k=2)
+print(ids.tolist())
 ```
 
-See [`examples/python/02_batch_and_recall.py`](examples/python/02_batch_and_recall.py)
-for a runnable HNSW example. The package ships `.pyi` stubs and a `py.typed`
-marker.
-
-PyPI `pyvicinity` 0.8.0 exposes HNSW. The checkout's newer Python bindings
-also include IVF-PQ persistence and file search; use a source build for those
-APIs. Rust-only surfaces include DiskANN, `store::UpdatableIndex`, FreshGraph,
-filtered search/update APIs, and HNSW binary segments.
-
-## Persistence
-
-HNSW supports JSON save/load with the `serde` feature:
-
-```rust
-index.save_to_file("index.json")?;
-let loaded = HNSWIndex::load_from_file("index.json")?;
+```text
+[0, 1]
 ```
 
-The `persistence` feature adds a binary segment format for HNSW. The `store`
-feature adds `store::UpdatableIndex`, a segmented index with add/delete,
-checkpoint, compaction, and crash recovery. See
-[`examples/updatable_store.rs`](examples/updatable_store.rs).
+[`examples/python/02_batch_and_recall.py`](examples/python/02_batch_and_recall.py)
+shows batch search and recall measurement. The repository also contains
+IVF-PQ Python bindings; these are not yet published on PyPI.
+
+## Indexes and persistence
+
+| Need | Use | Feature |
+| --- | --- | --- |
+| Dense vectors in memory | HNSW | `hnsw` (default) |
+| Lower vector memory use | IVF-PQ, with recall tradeoffs | `ivf_pq` |
+| HNSW JSON save/load | `save_to_file` / `load_from_file` | `serde` |
+| HNSW binary segments | `persistence::hnsw` | `persistence` |
+
+IVF-PQ's `search()` uses compressed PQ distances. `search_reranked()` retains
+raw vectors and reranks candidates with exact cosine distance. See the runnable
+[`examples/ivf_pq_demo.rs`](examples/ivf_pq_demo.rs). Other indexes are
+feature-gated; their status and tradeoffs are in the
+[algorithm catalog](docs/algorithms.md).
 
 ## Benchmarks
 
-The benchmark runner writes JSONL rows with recall, QPS, build time, RSS, and
-latency percentiles:
+Selected HNSW measurements use the full corpus, 1,000 queries, and the median
+of three isolated runs on an Apple M3 Max with Rust 1.97.1. QPS measures
+sequential single-query throughput; index sizes are heap estimates.
 
-```bash
-cargo run --example ann_benchmark --release --features hnsw,ivf_pq,ivf_avq -- \
-  data/ann-benchmarks/glove-25-angular \
-  --algo hnsw --algo ivfpq --algo ivf_avq --json --fresh
-```
+| Dataset | Vectors | `ef_search` | Recall@10 | QPS | Index size |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| GloVe-100 cosine | 1,183,514 | 1600 | 91.51% | 742 | 1.50 GB |
+| SIFT-128 L2 | 1,000,000 | 200 | 98.20% | 3,836 | 1.38 GB |
 
-Selected current full-corpus rows use 1,000 fixed queries and report the median
-of three isolated runs on an Apple M3 Max with Rust 1.97.1. Index bytes are
-in-memory heap estimates.
-
-| Dataset | Algorithm | Recall@10 | QPS | Index bytes |
-| --- | --- | ---: | ---: | ---: |
-| GloVe-100 cosine | HNSW, `ef_search=1600` | 91.51% | 742.3 | 1,501,879,266 |
-| GloVe-100 cosine | SQ8U, `ef_search=400` | 95.63% | 470.9 | 1,620,230,666 |
-| GloVe-100 cosine | SQ4 flat | 99.99% | 25.2 | 906,426,308 |
-| SIFT-128 L2 | HNSW, `ef_search=200` | 98.20% | 3,835.5 | 1,381,000,000 |
-| SIFT-128 L2 | SymphonyQG-VR, `ef_search=100` | 99.31% | 3,148.2 | 3,332,000,004 |
-| SIFT-128 L2 | IVF-RaBitQ, `nprobe=64` | 98.47% | 66.1 | 840,131,072 |
-| SIFT-128 L2 | SQ4 flat | 99.22% | 19.6 | 605,066,752 |
-
-Commands, repeat spread, single-run screens, and historical results are in
-[`docs/benchmark-results.md`](docs/benchmark-results.md).
-
-## Choosing an Index
-
-| Workload | Start with | Try next |
-| --- | --- | --- |
-| Small corpus (<10K vectors) | Brute force | HNSW when scale or latency requires |
-| Dense vectors that fit in memory | HNSW | NSW or Vamana |
-| Raw vectors dominate RAM | IVF-PQ or IVF-RaBitQ | Compare recall and probe cost on the target metric |
-| Frequent writes/deletes | Evaluate `store::UpdatableIndex` | Compare FreshGraph, in-place HNSW, and LSM HNSW on churn rows |
-| Metadata filters | HNSW with post-filtering | ACORN, Curator, and FilteredGraph need selectivity sweeps |
-| Sparse learned retrieval | SparseMIPS | Workload-specific sparse baseline |
-| File-backed graph search | Evaluate DiskANN | Promote after full-corpus mmap/file rows |
-| File-backed compressed search | IVF-PQ file or mmap searcher | Add rerank only when the raw-vector locality cost is acceptable |
-
-The full algorithm table is in [`docs/algorithms.md`](docs/algorithms.md).
+Results depend on the dataset and search settings. See
+[benchmark results](docs/benchmark-results.md#current-full-corpus-compressed-search-comparison)
+for parameters, repeat spread, compressed indexes, and reproduction commands.
 
 ## Limits
 
-- Search is approximate; tune recall with `ef_search`, `nprobe`, and rerank pool
-  sizes.
-- HNSW cosine and angular search need normalized vectors unless
-  `auto_normalize(true)` is enabled.
-- DiskANN is available but still experimental for production file-backed search.
-- Some algorithms are research paths, not recommended defaults.
+Search is approximate. Increase `ef_search` for higher HNSW recall at the cost
+of query time. Build the index before searching; the default HNSW index does
+not accept new vectors after build. DiskANN and several other indexes are
+experimental; see the [algorithm catalog](docs/algorithms.md) before choosing them.
 
 ## Documentation
 
-- [User guide](docs/GUIDE.md)
-- [Algorithm catalog](docs/algorithms.md)
-- [Benchmarks](docs/benchmark-results.md)
-- [Datasets](docs/datasets.md)
-- [Background](docs/landscape.md)
-- [References](docs/references.md)
+[User guide](docs/GUIDE.md) · [API](https://docs.rs/vicinity) ·
+[Algorithms](docs/algorithms.md) · [Datasets](docs/datasets.md) ·
+[References](docs/references.md)
 
 ## License
 

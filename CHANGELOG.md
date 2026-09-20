@@ -7,6 +7,36 @@ series is unstable: minor bumps may break the public API.
 
 ## [Unreleased]
 
+### Added
+
+- Opt-in `compact-hnsw` feature and `compact_upper_layers` builder setting
+  for compact storage of immutable upper graph layers, plus layer occupancy
+  diagnostics.
+- Benchmark adapters for `hnsw_rs` and USearch, with explicit metric, storage,
+  and construction metadata.
+
+### Fixed
+
+- HNSW search fills result sets from live candidates when tombstones are present.
+- HNSW filtered, ACORN, adaptive, and projection-tree searches apply query
+  normalization consistently when `auto_normalize` is enabled.
+- HNSW flat batch search rejects incomplete query rows and dimension mismatches.
+- HNSW insertion preserves vector magnitudes for L2 and inner-product metrics
+  when `auto_normalize` is enabled, matching the builder's documented behavior.
+- HNSW memory estimates include reserved storage. Benchmark summaries compare
+  compatible footprint measurements and report fixed-recall dominance.
+- Updated PyO3 and NumPy bindings to 0.29 and restored the full Apache license.
+- README examples show runnable HNSW usage and distinguish the published Python
+  package from the newer bindings in this repository.
+- Updated byte decoders for current Clippy checks.
+
+## [0.11.1] - 2026-07-09
+
+### Changed
+
+- Optional persistence and store backends require `durability` 0.7.2.
+- Clarified persistence adapter boundaries and store reopen diagnostics.
+
 ## [0.11.0] - 2026-07-09
 
 ### Added
