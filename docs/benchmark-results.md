@@ -146,6 +146,19 @@ CARGO_PROFILE_BENCH_DEBUG=1 cargo bench --bench diskann_search \
 Repeat with `storage2` and `storage3` for independent run summaries.
 [Raw run means](diskann-storage-latency.csv).
 
+### Rejected: first working-set cache wiring
+
+The first profile suggested repeated direct-file vector reads, so a bounded
+512-vector working-set cache was wired experimentally into file and mmap
+searchers. The cache preserved exact results and compiled cleanly, but the
+short warm-cache run did not justify shipping it: file-backed batches measured
+about 85 ms without the cache versus 80 ms with it under a noisy ten-sample
+trial, while mmap moved from about 12.7 ms to 24.9 ms. The cache also copied
+every hit into the reusable vector buffer. The public cache-loading API and
+searcher wiring were removed. A future cache attempt needs hit-rate diagnostics,
+larger representative data, and a design that avoids an unconditional copy on
+the mmap path.
+
 Separate ten-second Samply profiles selected measured Criterion search stacks,
 excluding setup and warmup. Of 8,984 selected direct-file samples, 8,425 included
 `pread` and 7,649 included `read_vector` (inclusive counts overlap). The memory
