@@ -4,9 +4,11 @@ use crate::RetrieveError;
 use serde::{Deserialize, Serialize};
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub(super) const IVFPQ_FORMAT_VERSION: u32 = 1;
 const IVFPQ_CLUSTER_MAGIC: &[u8; 8] = b"VICIVF1\0";
+static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub(super) fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), RetrieveError> {
     write_atomic(path, |writer| {
@@ -69,15 +71,25 @@ fn write_atomic(
     path: &Path,
     write: impl FnOnce(&mut BufWriter<std::fs::File>) -> std::io::Result<()>,
 ) -> Result<(), RetrieveError> {
-    let tmp_path = path.with_extension("tmp");
-    {
+    // A per-process sequence avoids collisions when two snapshots are saved
+    // concurrently into the same directory. The rename remains the only
+    // publication step for this individual component file.
+    let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let tmp_path = path.with_extension(format!("tmp.{}.{}", std::process::id(), sequence));
+    let result: std::io::Result<()> = (|| {
         let file = std::fs::File::create(&tmp_path)?;
         let mut writer = BufWriter::new(file);
         write(&mut writer)?;
         writer.flush()?;
+        writer.get_ref().sync_all()?;
+        drop(writer);
+        std::fs::rename(&tmp_path, path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp_path);
     }
-    std::fs::rename(&tmp_path, path)?;
-    Ok(())
+    result.map_err(Into::into)
 }
 
 pub(super) fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, RetrieveError> {
