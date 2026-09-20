@@ -21,6 +21,9 @@ Evidence: `src/python.rs`, `pyvicinity/__init__.py`,
    latency, p50/p95/p99, throughput, build time, RSS, conversion/copy time, and
    native-only time on the same datasets and operating points as Rust. Compare
    against FAISS, hnswlib, USearch, and the relevant ANN-Benchmarks baselines.
+   `scripts/benchmark_python_wrapper.py` is the reproducible HNSW starting
+   point; it emits JSONL rows for build, single-query, batch-query, NumPy
+   conversion, and peak RSS.
 2. **Wrapper breadth.** Decide whether DiskANN file/mmap, filtered/range search,
    mutable store/LSM, and compressed file search are supported Python products.
    If not, keep them explicitly Rust-only rather than implying parity.
