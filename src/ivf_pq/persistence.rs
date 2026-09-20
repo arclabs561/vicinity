@@ -92,6 +92,22 @@ fn write_atomic(
     result.map_err(Into::into)
 }
 
+/// Persist directory-entry updates after component renames on Unix.
+///
+/// Windows does not expose the same directory-handle sync operation through
+/// the standard library, so component-file sync remains the portable floor.
+pub(super) fn sync_directory(path: &Path) -> Result<(), RetrieveError> {
+    #[cfg(unix)]
+    {
+        std::fs::File::open(path)?.sync_all()?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+    Ok(())
+}
+
 pub(super) fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, RetrieveError> {
     let file = std::fs::File::open(path)?;
     serde_json::from_reader(BufReader::new(file))

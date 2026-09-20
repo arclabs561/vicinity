@@ -9,9 +9,9 @@ use super::file_storage::{
 use super::manifest::{IVFPQManifest, PersistedFilterMetadata, PersistedIVFPQParams};
 use super::opq::OptimizedProductQuantizer;
 use super::persistence::{
-    read_bytes_exact, read_clusters, read_f32_exact, read_json, read_u32_exact, validate_manifest,
-    write_bytes_atomic, write_clusters_atomic, write_f32_atomic, write_json_atomic,
-    write_u32_atomic, write_u64_atomic, IVFPQ_FORMAT_VERSION,
+    read_bytes_exact, read_clusters, read_f32_exact, read_json, read_u32_exact, sync_directory,
+    validate_manifest, write_bytes_atomic, write_clusters_atomic, write_f32_atomic,
+    write_json_atomic, write_u32_atomic, write_u64_atomic, IVFPQ_FORMAT_VERSION,
 };
 use super::pq::ProductQuantizer;
 use crate::pq_simd::{adc_batch_dispatch_into, PackedCodes4bit, PackedLUTRef};
@@ -917,6 +917,7 @@ impl IVFPQIndex {
         if raw_vectors_present {
             write_f32_atomic(&output_dir.join("raw_vectors.bin"), &self.vectors)?;
         }
+        sync_directory(output_dir)?;
 
         Ok(())
     }
