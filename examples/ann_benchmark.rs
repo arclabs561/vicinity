@@ -39,6 +39,8 @@
 
 #[path = "common/mod.rs"]
 mod common;
+#[path = "ann_benchmark/coverage.rs"]
+mod coverage;
 #[path = "ann_benchmark/external_hnsw_rs.rs"]
 mod external_hnsw_rs;
 #[cfg(any(
@@ -3844,6 +3846,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn run(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
+    coverage::validate_config(&cfg)?;
     set_warmup_queries(cfg.warmup_queries);
     set_run_identity(cfg.seed, cfg.repeat);
 
@@ -4312,6 +4315,7 @@ fn run(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    coverage::verify_results(&cfg, dim, train.len(), test.len())?;
     Ok(())
 }
 
@@ -4345,6 +4349,7 @@ fn interleaved_resume_preserves_metadata_scope_and_completed_noop() {
         results_path: path.clone(),
         json: true,
         resume: true,
+        require_complete: true,
         search_k,
         ef_search_values: vec![ef],
         warmup_queries: 0,
@@ -4368,5 +4373,14 @@ fn interleaved_resume_preserves_metadata_scope_and_completed_noop() {
     }
     assert_eq!(measured_rows, 3);
     run(config(100, 200)).unwrap();
-    assert_eq!(std::fs::read_to_string(path).unwrap(), before);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+    let mut missing_snapshot = config(100, 200);
+    missing_snapshot.snapshot_load = true;
+    assert!(coverage::verify_results(&missing_snapshot, 1, 100, 1).is_err());
+    let mut unknown = config(100, 200);
+    unknown.algos = vec!["unknown_algorithm".into()];
+    assert!(run(unknown)
+        .unwrap_err()
+        .to_string()
+        .contains("unknown_algorithm"));
 }

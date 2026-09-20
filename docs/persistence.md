@@ -31,6 +31,29 @@ Do not add another lower-layer crate until at least two index families share the
 same code. Keep the first shared pieces internal to `vicinity`, then extract
 only after the interface has two real consumers.
 
+## Interchange and native indexes
+
+Keep importing vectors separate from reopening a built index. Familiar formats
+help users bring their data; native layouts preserve graphs, posting lists,
+quantizers, IDs, and deletion state without rebuilding them unnecessarily.
+
+- JSONL is the existing CLI input (`{"id":7,"vec":[1.0,0.0]}`). It is convenient
+  for small inputs and inspection, not the intended random-access query layout.
+- ANN-Benchmarks HDF5 is supported by `scripts/download_ann_benchmarks.py`, which
+  converts vectors and ground truth into the harness's VEC1/NBR1 files.
+- NumPy `.npy` is a candidate for direct dense-array interchange, not a currently
+  supported Rust file loader. Its format records shape and dtype and supports
+  memory mapping for non-object arrays. A future importer should validate dtype,
+  dimensions, byte order and IDs, and reject object/pickle payloads.
+  See the [NumPy format specification](https://numpy.org/doc/stable/reference/generated/numpy.lib.format.html).
+
+These formats should not dictate every index's serving layout. Retain native
+versioned snapshots and algorithm-specific file/mmap layouts. Stream/buffer
+save/load and a mapped read-only view are useful convenience options when the
+implementation supports them; [USearch](https://github.com/unum-cloud/usearch#serialization--serving-index-from-disk)
+shows this separation. Supporting vector interchange does not promise binary
+compatibility with another library's built index.
+
 ## Storage Model
 
 Storage is not a binary choice between "in memory" and "on disk". Treat each
@@ -87,6 +110,18 @@ must be part of the benchmark row.
 | Classic trees | Yes, directory format | Yes | No | No | Build-once | KD-tree, Ball tree, K-means tree, RP-tree, and RP-forest persist built trees and preserve external doc IDs. |
 
 ## Required Persistence Tests
+
+Round-trip correctness is not crash consistency. Current multi-file directory
+snapshots are not uniformly published as one atomic generation: the shared graph
+snapshot writer replaces component files independently, and DiskANN writes its
+final component paths directly. Do not overwrite a snapshot directory being
+served. Writing to a new destination avoids mixing it with an older snapshot,
+but does not by itself guarantee survival of power loss.
+
+Before promising crash-safe replacement, a format needs a single publication
+point for a fully written generation, file and directory sync, and recovery
+tests for interruptions between writes. Keep these guarantees separate from
+the WAL/checkpoint contract supplied by `segstore`.
 
 Each saved format must have tests for:
 

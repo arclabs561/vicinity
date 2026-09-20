@@ -207,6 +207,7 @@ pub(crate) struct Config {
     pub(crate) kmeans_leaf_budgets: Vec<usize>,
     pub(crate) batch: bool,
     pub(crate) resume: bool,
+    pub(crate) require_complete: bool,
     pub(crate) snapshot_load: bool,
     pub(crate) max_train: Option<usize>,
     pub(crate) max_queries: Option<usize>,
@@ -248,6 +249,7 @@ impl Default for Config {
             kmeans_leaf_budgets: Vec::new(),
             batch: false,
             resume: false,
+            require_complete: false,
             snapshot_load: false,
             max_train: None,
             max_queries: None,
@@ -561,7 +563,16 @@ impl ExpectedResult {
                 }
             }
             ParamCheck::Fragments(fragments) => {
-                if !fragments.iter().all(|fragment| line.contains(fragment)) {
+                let Some(params) = json_value_field(line, "params") else {
+                    return false;
+                };
+                if !fragments.iter().all(|fragment| {
+                    let Some((field, expected)) = fragment.split_once(':') else {
+                        return false;
+                    };
+                    json_value_field(params, field.trim_matches('"'))
+                        .is_some_and(|actual| expected.is_empty() || actual == expected)
+                }) {
                     return false;
                 }
             }
@@ -1208,12 +1219,22 @@ fn required_result_checks(
             let Some((base_size, cycles, queries)) = churn_shape(cfg, train_len, test_len) else {
                 return Vec::new();
             };
-            ef_exact_checks("inplace_churn", cfg, |beam_width| {
-                format!(
-                    "{{\"max_degree\":32,\"build_beam_width\":{},\"beam_width\":{},\"base_size\":{},\"cycles\":{},\"queries\":{}}}",
-                    cfg.ef_construction, beam_width, base_size, cycles, queries
-                )
-            })
+            cfg.ef_search_values
+                .iter()
+                .map(|beam_width| {
+                    params_containing_check(
+                        "inplace_churn",
+                        [
+                            "\"max_degree\":32".to_owned(),
+                            format!("\"build_beam_width\":{}", cfg.ef_construction),
+                            format!("\"beam_width\":{beam_width}"),
+                            format!("\"base_size\":{base_size}"),
+                            format!("\"cycles\":{cycles}"),
+                            format!("\"queries\":{queries}"),
+                        ],
+                    )
+                })
+                .collect()
         }
         "lsm_churn" => {
             let Some((base_size, cycles, queries)) = churn_shape(cfg, train_len, test_len) else {
@@ -1452,6 +1473,7 @@ Usage:
 
 Common options:
   --algo NAME                 Algorithm to benchmark (repeatable)
+  --all-dense                 Select every registered dense workload and baseline
   --m N                       Graph degree
   --ef-construction N         Graph construction depth
   --ef-search N[,N...]        Search depths
@@ -1464,6 +1486,7 @@ Common options:
   --results PATH              JSONL output path
   --json                      Emit JSONL rows
   --resume                    Skip completed rows for this run identity
+  --require-complete          Fail if requested JSONL result rows are missing
   --fresh                     Remove the selected results file first
   -h, --help                  Print this help and exit
 ";
@@ -1487,6 +1510,14 @@ pub(crate) fn parse_args() -> Config {
 
     while i < args.len() {
         match args[i].as_str() {
+            "--all-dense" => {
+                cfg.algos = ALGORITHM_OPTIONS
+                    .iter()
+                    .filter(|name| **name != "sparse_mips")
+                    .map(|name| (*name).to_owned())
+                    .collect();
+                algos_set = true;
+            }
             "--algo" => {
                 i += 1;
                 if !algos_set {
@@ -1619,6 +1650,9 @@ pub(crate) fn parse_args() -> Config {
             }
             "--resume" => {
                 cfg.resume = true;
+            }
+            "--require-complete" => {
+                cfg.require_complete = true;
             }
             "--snapshot-load" => {
                 cfg.snapshot_load = true;
@@ -2352,6 +2386,43 @@ mod tests {
             2_000,
             200
         ));
+    }
+
+    #[test]
+    fn inplace_churn_resume_ignores_measurements_but_matches_exact_settings() {
+        let cfg = Config {
+            ef_search_values: vec![10],
+            churn_base_size: 32,
+            churn_cycles: 8,
+            churn_queries: 6,
+            ..Default::default()
+        };
+        let params = r#"{"max_degree":32,"build_beam_width":200,"beam_width":10,"base_size":32,"cycles":8,"queries":6,"update_time_s":0.0001,"update_qps":68940.6,"free_slot_ratio":0.0000}"#;
+        let completed = |params: &str| CompletedResults {
+            lines: vec![single_line("inplace_churn", params)],
+            ..Default::default()
+        };
+        assert!(request_completed(
+            &completed(params),
+            "inplace_churn",
+            &cfg,
+            8,
+            64,
+            12
+        ));
+        for (from, to) in [
+            ("\"beam_width\":10", "\"beam_width\":100"),
+            ("\"cycles\":8", "\"cycles\":80"),
+        ] {
+            assert!(!request_completed(
+                &completed(&params.replace(from, to)),
+                "inplace_churn",
+                &cfg,
+                8,
+                64,
+                12
+            ));
+        }
     }
 
     fn sample_result() -> BenchResult {

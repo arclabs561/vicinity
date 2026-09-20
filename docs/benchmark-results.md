@@ -38,6 +38,29 @@ The older `plot_pareto.py` uses the rigorous benchmark's aggregate JSON files,
 not this JSONL format. Its scaling chart requires a measured setting meeting
 the recall target; a missing point means the target was not reached.
 
+## Coverage checks
+
+The dense harness's `--all-dense` option selects every registered dense
+workload and both external baselines. Use `--all-features` to build them and
+`--snapshot-load --batch` to exercise their registered reload and batch paths.
+SparseMIPS has a separate SPV1 harness; it is not a dense-vector substitute.
+
+Add `--json --require-complete` to fail when a requested workload or one of its
+expected result rows is missing. This reuses the resume checks for parameters
+and storage modes. Non-resume strict runs need a new output path or `--fresh`,
+so old rows cannot hide a failed run. `--resume` permits matching completed rows.
+Metric-incompatible requests fail this coverage gate rather than counting as
+tested. The CI smoke selects all registered dense workloads on a tiny angular
+fixture and runs the sparse harness separately. Smoke timings are not performance
+evidence.
+
+This is coverage of the current registry, not every public search API. Remaining
+work includes HNSW adaptive, flat-batch and selectivity-routing paths, comparable
+filtered workloads, and dedicated query-loop profiling for the other families.
+LEMUR needs a trained-model/multi-vector workload; EVoC is clustering, not ANN.
+Each new path needs exact ground truth or a suitable quality oracle and an
+explicit persistence-mode expectation before its speed can be compared.
+
 ## Search microbenchmarks
 
 `cargo bench --bench hnsw_search --no-default-features --features hnsw` measures
