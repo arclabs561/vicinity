@@ -22,6 +22,67 @@ def load_script() -> ModuleType:
     return module
 
 
+def test_requested_depths_are_separate_comparisons(tmp_path: Path) -> None:
+    script = load_script()
+    path = tmp_path / "depths.jsonl"
+    rows = []
+    for depth, qps in [(10, 500.0), (100, 100.0)]:
+        rows.extend(
+            [
+                {
+                    "_meta": {
+                        "dataset": "data/fashion",
+                        "result_schema": 3,
+                        "requested_search_k": depth,
+                    }
+                },
+                {
+                    "algorithm": "hnsw",
+                    "search_k": depth,
+                    "recall_at_10": 1.0,
+                    "recall_at_100": None if depth == 10 else 1.0,
+                    "qps": qps,
+                },
+            ]
+        )
+    path.write_text("\n".join(json.dumps(row) for row in rows))
+    summaries = script.load_summaries([path])
+    assert summaries[("fashion[k=10]", "hnsw", "in_memory")].best_qps == 500.0
+    assert summaries[("fashion[k=100]", "hnsw", "in_memory")].best_qps == 100.0
+    assert len(summaries) == 2
+
+
+def test_unavailable_recall_is_not_zero_or_a_qualified_measurement(
+    tmp_path, capsys
+) -> None:
+    path = tmp_path / "short.jsonl"
+    path.write_text(
+        json.dumps(
+            {"algorithm": "hnsw", "search_k": 3, "recall_at_10": None, "qps": 1000}
+        )
+    )
+    assert load_script().load_summaries([path]) == {}
+    assert "recall@10 is unavailable" in capsys.readouterr().err
+
+
+def test_repeat_aggregate_keeps_unmeasured_recall_unavailable() -> None:
+    summary = load_script().Summary()
+    for repeat in range(3):
+        summary.add(
+            {
+                "run_id": f"r{repeat}",
+                "search_k": 10,
+                "recall_at_10": 0.99,
+                "recall_at_100": None,
+                "qps": 100.0,
+            }
+        )
+    aggregate = summary.aggregate()
+    assert aggregate["repeats"] == 3
+    assert aggregate["recall_at_10_median"] == 0.99
+    assert "recall_at_100_median" not in aggregate
+
+
 def test_repeat_aggregation_reports_median_and_full_spread(tmp_path: Path) -> None:
     script = load_script()
     path = tmp_path / "repeats.jsonl"

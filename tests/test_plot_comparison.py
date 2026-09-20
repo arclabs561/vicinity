@@ -85,6 +85,16 @@ def test_series_separates_cache_state_and_actual_result_depth() -> None:
     assert script.series_key(row) != script.series_key({**row, "cache_state": "cold"})
 
 
+def test_requested_depth_gets_its_own_plot_scope() -> None:
+    script = load_script()
+    meta = {"dataset": "fashion", "train_limit": 20000, "requested_search_k": 10}
+    assert script.scoped_dataset_name(meta) == "fashion[train=20000,k=10]"
+    assert (
+        script.scoped_dataset_name({**meta, "requested_search_k": 100})
+        == "fashion[train=20000,k=100]"
+    )
+
+
 def test_load_results_groups_current_schema_by_scoped_dataset(tmp_path: Path) -> None:
     script = load_script()
     path = tmp_path / "rows.jsonl"

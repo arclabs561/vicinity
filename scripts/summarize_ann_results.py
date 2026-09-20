@@ -410,6 +410,8 @@ def scoped_dataset_name(meta: dict[str, Any]) -> str | None:
         scope.append(f"train={train_limit}")
     if query_limit is not None:
         scope.append(f"queries={query_limit}")
+    if meta.get("requested_search_k") is not None:
+        scope.append(f"k={meta['requested_search_k']}")
     if scope:
         name = f"{name}[{','.join(scope)}]"
     return name
@@ -563,6 +565,12 @@ def load_summaries(
                     continue
                 algorithm = row.get("algorithm")
                 if not isinstance(algorithm, str):
+                    continue
+                if "recall_at_10" in row and row["recall_at_10"] is None:
+                    print(
+                        f"Skipping {algorithm} in {path}: recall@10 is unavailable",
+                        file=sys.stderr,
+                    )
                     continue
                 storage_mode = row.get("storage_mode")
                 if not isinstance(storage_mode, str):

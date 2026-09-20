@@ -227,9 +227,43 @@ fn capped_neighbors_if_needed(
         indexed,
         &active_ids,
         test,
-        10,
+        cfg.search_k,
         dataset_metric(cfg),
     ))
+}
+
+fn prepare_ground_truth(neighbors: &mut [Vec<i32>], requested_search_k: usize) -> usize {
+    let actual_search_k = neighbors
+        .iter()
+        .map(Vec::len)
+        .min()
+        .unwrap_or(0)
+        .min(requested_search_k);
+    for row in neighbors {
+        row.truncate(actual_search_k);
+    }
+    actual_search_k
+}
+
+#[test]
+fn requested_depth_controls_the_search_call() {
+    for requested in [10, 100] {
+        let mut truth = vec![(0..100).collect::<Vec<i32>>()];
+        assert_eq!(prepare_ground_truth(&mut truth, requested), requested);
+        let result = evaluate(
+            &|_, k| {
+                assert_eq!(k, requested);
+                (0..k).map(|id| (id as u32, 0.0)).collect()
+            },
+            &[vec![0.0]],
+            &truth,
+            10,
+        );
+        assert_eq!(result.search_k, requested);
+        assert_eq!(result.recall_at_k, 1.0);
+    }
+    let mut short = vec![vec![0, 1, 2]];
+    assert_eq!(prepare_ground_truth(&mut short, 10), 3);
 }
 
 #[cfg(feature = "hnsw")]
@@ -2163,7 +2197,13 @@ fn run_fresh_graph_churn(cfg: &Config, train: &[Vec<f32>], test: &[Vec<f32>], di
     let live_neighbors: Vec<Vec<i32>> = test_subset
         .iter()
         .map(|query| {
-            brute_force_search_ids(train, &active, query, 10, vicinity::DistanceMetric::Cosine)
+            brute_force_search_ids(
+                train,
+                &active,
+                query,
+                cfg.search_k,
+                vicinity::DistanceMetric::Cosine,
+            )
         })
         .collect();
 
@@ -2424,7 +2464,9 @@ fn run_inplace_churn(cfg: &Config, train: &[Vec<f32>], test: &[Vec<f32>], dim: u
     let test_subset = &test[..query_count];
     let live_neighbors: Vec<Vec<i32>> = test_subset
         .iter()
-        .map(|query| brute_force_search_ids(train, &active, query, 10, dataset_metric(cfg)))
+        .map(|query| {
+            brute_force_search_ids(train, &active, query, cfg.search_k, dataset_metric(cfg))
+        })
         .collect();
 
     if !cfg.json {
@@ -2569,7 +2611,9 @@ fn run_lsm_churn(cfg: &Config, train: &[Vec<f32>], test: &[Vec<f32>], dim: usize
     let test_subset = &test[..query_count];
     let live_neighbors: Vec<Vec<i32>> = test_subset
         .iter()
-        .map(|query| brute_force_search_ids(train, &active, query, 10, dataset_metric(cfg)))
+        .map(|query| {
+            brute_force_search_ids(train, &active, query, cfg.search_k, dataset_metric(cfg))
+        })
         .collect();
 
     if !cfg.json {
@@ -3814,7 +3858,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (mut train, dim) = common::load_vectors(&format!("{}/train.bin", cfg.data_dir))?;
     let (mut test, _) = common::load_vectors(&format!("{}/test.bin", cfg.data_dir))?;
-    let (mut neighbors, k_gt) = common::load_neighbors(&format!("{}/neighbors.bin", cfg.data_dir))?;
+    let (mut neighbors, _) = common::load_neighbors(&format!("{}/neighbors.bin", cfg.data_dir))?;
 
     if let Some(max_queries) = cfg.max_queries {
         if max_queries == 0 {
@@ -3836,17 +3880,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &train,
                 &active_ids,
                 &test,
-                k_gt,
+                cfg.search_k,
                 dataset_metric(&cfg),
             );
         }
     }
 
+    let actual_search_k = prepare_ground_truth(&mut neighbors, cfg.search_k);
+    if actual_search_k == 0 {
+        return Err("ground truth has no neighbors for the evaluated corpus".into());
+    }
+
     let meta = || {
         format!(
-            "{{\"_meta\":{{\"dataset\":\"{}\",\"metric\":\"{}\",\"result_schema\":3,\"index_bytes_required\":true,\"seed\":{},\"repeat\":{},\"run_id\":\"seed-{}-repeat-{}\",\"seed_fingerprint\":\"{}\",\"cpu\":\"{}\",\"architecture\":\"{}\",\"threads\":{},\"train_full\":{},\"query_full\":{},\"rustc\":\"{}\",\"rust_msrv\":\"{}\",\"vicinity\":\"{}\",\"features\":{},\"train_limit\":{},\"indexed_vectors\":{},\"query_limit\":{},\"queries\":{},\"warmup_queries\":{}}}}}",
+            "{{\"_meta\":{{\"dataset\":\"{}\",\"metric\":\"{}\",\"result_schema\":3,\"index_bytes_required\":true,\"requested_search_k\":{},\"seed\":{},\"repeat\":{},\"run_id\":\"seed-{}-repeat-{}\",\"seed_fingerprint\":\"{}\",\"cpu\":\"{}\",\"architecture\":\"{}\",\"threads\":{},\"train_full\":{},\"query_full\":{},\"rustc\":\"{}\",\"rust_msrv\":\"{}\",\"vicinity\":\"{}\",\"features\":{},\"train_limit\":{},\"indexed_vectors\":{},\"query_limit\":{},\"queries\":{},\"warmup_queries\":{}}}}}",
             cfg.data_dir,
             if cfg.is_euclidean { "l2" } else { "cosine" },
+            cfg.search_k,
             cfg.seed,
             cfg.repeat,
             cfg.seed,
@@ -3881,7 +3931,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !cfg.json {
         println!("Train: {} vectors x {} dims", train.len(), dim);
         println!("Test:  {} queries", test.len());
-        println!("Ground truth: {} neighbors per query\n", k_gt);
+        println!(
+            "Ground truth: {} neighbors per query (requested --search-k={})\n",
+            actual_search_k, cfg.search_k
+        );
     }
 
     let completed = if cfg.resume {
@@ -3891,6 +3944,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             cfg.max_train,
             cfg.max_queries,
             cfg.warmup_queries,
+            cfg.search_k,
             cfg.seed,
             cfg.repeat,
         )

@@ -112,6 +112,8 @@ def scoped_dataset_name(meta: dict[str, Any]) -> str | None:
         scope.append(f"train={train_limit}")
     if query_limit is not None:
         scope.append(f"queries={query_limit}")
+    if meta.get("requested_search_k") is not None:
+        scope.append(f"k={meta['requested_search_k']}")
     if scope:
         name = f"{name}[{','.join(scope)}]"
     return name

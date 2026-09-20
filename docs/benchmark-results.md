@@ -25,10 +25,14 @@ machine/build metadata and invalid recall/QPS values; missing metadata cannot
 prove that two runs are comparable. Recorded cache states and result depths
 appear as separate series. Do not compare serialized file size with resident memory.
 
-Check `search_k` before comparing throughput. The current runner requests up to
-100 neighbors (the ground-truth row width), then measures recall at 1, 10, and
-100. A recall@10 label does **not** mean the timed search requested only ten
-results. Compare against external results using the same requested depth.
+Choose the timed result depth with `--search-k 10` or `--search-k 100` (the
+default). The actual `search_k` can be smaller when ground truth is shorter.
+A ten-result search reports recall@1 and recall@10; recall@100 is `null`, not
+a duplicate of recall@10. Compare throughput only at the same requested depth.
+Resume, summaries, and plots keep explicitly requested depths separate.
+Older internally capped and churn benchmarks sometimes hardcoded ten results;
+they now honor the flag too. Use `--search-k 10` to retain that query depth.
+Legacy resume rows with a conflicting recorded depth are ignored.
 
 The older `plot_pareto.py` uses the rigorous benchmark's aggregate JSON files,
 not this JSONL format. Its scaling chart requires a measured setting meeting
@@ -116,11 +120,11 @@ cargo run --example ann_benchmark --release --features hnsw,ivf_pq,ivf_avq -- \
   data/ann-benchmarks/glove-25-angular \
   --algo hnsw --algo ivfpq --algo ivf_avq --json --fresh
 
-# Bounded probe for fast iteration. The query limit is recorded in `_meta`, and
+# Ten-result search for fast iteration. The query limit is recorded in `_meta`, and
 # `--resume` will not mix these rows with full-query runs.
 cargo run --example ann_benchmark --release --features hnsw -- \
   data/ann-benchmarks/glove-25-angular --algo hnsw \
-  --ef-search 10,20,30,40,50 --max-queries 1000 --json --fresh
+  --search-k 10 --ef-search 10,20,30,40,50 --max-queries 1000 --json --fresh
 
 # Bounded corpus probe for algorithms whose full-index build is expensive.
 # Both the indexed-vector cap and the query cap are recorded in `_meta`, and

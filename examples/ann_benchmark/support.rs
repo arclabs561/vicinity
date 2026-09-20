@@ -210,6 +210,7 @@ pub(crate) struct Config {
     pub(crate) snapshot_load: bool,
     pub(crate) max_train: Option<usize>,
     pub(crate) max_queries: Option<usize>,
+    pub(crate) search_k: usize,
     pub(crate) warmup_queries: usize,
     pub(crate) seed: u64,
     pub(crate) repeat: usize,
@@ -250,6 +251,7 @@ impl Default for Config {
             snapshot_load: false,
             max_train: None,
             max_queries: None,
+            search_k: 100,
             warmup_queries: DEFAULT_WARMUP_QUERIES,
             seed: 42,
             repeat: 0,
@@ -350,6 +352,13 @@ fn meta_warmup_field_matches(line: &str, expected: usize) -> bool {
     }
 }
 
+fn meta_requested_search_k_matches(line: &str, expected: usize) -> bool {
+    match json_value_field(line, "requested_search_k").map(str::trim) {
+        None => expected == 100,
+        Some(raw) => raw.parse::<usize>().ok() == Some(expected),
+    }
+}
+
 fn meta_has_current_result_contract(line: &str) -> bool {
     matches!(
         json_value_field(line, "result_schema").map(str::trim),
@@ -387,6 +396,7 @@ pub(crate) fn load_completed_results_with_warmup(
         expected_train_limit,
         expected_query_limit,
         expected_warmup_queries,
+        100,
         42,
         0,
         false,
@@ -399,6 +409,7 @@ pub(crate) fn load_completed_results_for_run(
     expected_train_limit: Option<usize>,
     expected_query_limit: Option<usize>,
     expected_warmup_queries: usize,
+    expected_search_k: usize,
     expected_seed: u64,
     expected_repeat: usize,
 ) -> CompletedResults {
@@ -408,6 +419,7 @@ pub(crate) fn load_completed_results_for_run(
         expected_train_limit,
         expected_query_limit,
         expected_warmup_queries,
+        expected_search_k,
         expected_seed,
         expected_repeat,
         true,
@@ -420,6 +432,7 @@ fn load_completed_results_impl(
     expected_train_limit: Option<usize>,
     expected_query_limit: Option<usize>,
     expected_warmup_queries: usize,
+    expected_search_k: usize,
     expected_seed: u64,
     expected_repeat: usize,
     require_run_identity: bool,
@@ -427,6 +440,7 @@ fn load_completed_results_impl(
     let mut counts = HashMap::new();
     let mut lines = Vec::new();
     let mut seen_meta = false;
+    let mut legacy_depth = true;
     let mut active_dataset_matches = false;
     let mut has_matching_meta = false;
     let mut has_mismatched_meta = false;
@@ -436,6 +450,7 @@ fn load_completed_results_impl(
     for line in BufReader::new(file).lines() {
         let Ok(line) = line else { continue };
         if line.contains("\"_meta\":") {
+            legacy_depth = json_value_field(&line, "requested_search_k").is_none();
             if let Some(dataset) = json_string_field(&line, "dataset") {
                 seen_meta = true;
                 if dataset != expected_dataset
@@ -443,6 +458,7 @@ fn load_completed_results_impl(
                     || !meta_usize_field_matches(&line, "train_limit", expected_train_limit)
                     || !meta_usize_field_matches(&line, "query_limit", expected_query_limit)
                     || !meta_warmup_field_matches(&line, expected_warmup_queries)
+                    || !meta_requested_search_k_matches(&line, expected_search_k)
                     || (require_run_identity
                         && (json_value_field(&line, "result_schema").map(str::trim) != Some("3")
                             || json_value_field(&line, "seed").and_then(|v| v.trim().parse().ok())
@@ -459,6 +475,13 @@ fn load_completed_results_impl(
                 }
             }
         } else if active_dataset_matches || !seen_meta {
+            if legacy_depth
+                && json_value_field(&line, "search_k")
+                    .and_then(|value| value.trim().parse::<usize>().ok())
+                    .is_some_and(|actual| actual != expected_search_k)
+            {
+                continue;
+            }
             if let Some(algorithm) = json_string_field(&line, "algorithm") {
                 *counts.entry(algorithm).or_insert(0) += 1;
             }
@@ -1434,6 +1457,7 @@ Common options:
   --ef-search N[,N...]        Search depths
   --max-train N               Cap indexed vectors
   --max-queries N             Cap evaluated queries
+  --search-k 10|100           Requested result depth (default: 100)
   --warmup-queries N          Warmup query count
   --seed N                    Builder seed
   --repeat N                  Repeat identity
@@ -1610,6 +1634,17 @@ pub(crate) fn parse_args() -> Config {
                 if i < args.len() {
                     cfg.max_queries = args[i].parse().ok();
                 }
+            }
+            "--search-k" => {
+                i += 1;
+                cfg.search_k = match args.get(i).map(String::as_str) {
+                    Some("10") => 10,
+                    Some("100") => 100,
+                    _ => {
+                        eprintln!("--search-k requires 10 or 100");
+                        std::process::exit(2);
+                    }
+                };
             }
             "--warmup-queries" => {
                 i += 1;
@@ -1844,8 +1879,10 @@ pub(crate) fn json_line_with_storage(
     storage: &ResultStorage<'_>,
 ) -> String {
     let (seed, repeat, run_id) = run_identity();
+    let recall_at_10 = (result.search_k >= 10).then(|| format!("{:.4}", result.recall_at_k));
+    let recall_at_100 = (result.search_k >= 100).then(|| format!("{:.4}", result.recall_at_100));
     let mut s = format!(
-        "{{\"algorithm\":\"{}\",\"params\":{},\"storage_mode\":\"{}\",\"cache_state\":\"{}\",\"seed\":{},\"repeat\":{},\"run_id\":\"{}\",\"seed_fingerprint\":\"{}\",\"recall_at_1\":{:.4},\"recall_at_10\":{:.4},\"recall_at_100\":{:.4},\"search_k\":{},\"qps\":{:.1},\"build_time_s\":{:.2},\"latency_us\":{:.1},\"p50_us\":{:.1},\"p95_us\":{:.1},\"p99_us\":{:.1}",
+        "{{\"algorithm\":\"{}\",\"params\":{},\"storage_mode\":\"{}\",\"cache_state\":\"{}\",\"seed\":{},\"repeat\":{},\"run_id\":\"{}\",\"seed_fingerprint\":\"{}\",\"recall_at_1\":{:.4},\"recall_at_10\":{},\"recall_at_100\":{},\"search_k\":{},\"qps\":{:.1},\"build_time_s\":{:.2},\"latency_us\":{:.1},\"p50_us\":{:.1},\"p95_us\":{:.1},\"p99_us\":{:.1}",
         algorithm,
         params,
         storage.storage_mode,
@@ -1855,8 +1892,8 @@ pub(crate) fn json_line_with_storage(
         run_id,
         seed_fingerprint(seed),
         result.recall_at_1,
-        result.recall_at_k,
-        result.recall_at_100,
+        recall_at_10.as_deref().unwrap_or("null"),
+        recall_at_100.as_deref().unwrap_or("null"),
         result.search_k,
         result.qps,
         build_time_s,
@@ -2157,14 +2194,14 @@ pub(crate) fn print_header() {
 }
 
 pub(crate) fn print_row(param_label: &str, result: &BenchResult) {
+    let recall = if result.search_k >= 10 {
+        format!("{:.1}%", result.recall_at_k * 100.0)
+    } else {
+        "n/a".to_owned()
+    };
     println!(
-        "{:>10} {:>9.1}% {:>9.0} {:>9.0} {:>9.0} {:>9.0}",
-        param_label,
-        result.recall_at_k * 100.0,
-        result.qps,
-        result.p50_us,
-        result.p95_us,
-        result.p99_us
+        "{:>10} {:>10} {:>9.0} {:>9.0} {:>9.0} {:>9.0}",
+        param_label, recall, result.qps, result.p50_us, result.p95_us, result.p99_us
     );
 }
 
@@ -3652,6 +3689,23 @@ mod tests {
     }
 
     #[test]
+    fn json_marks_recall_depths_beyond_the_evaluated_k_as_unavailable() {
+        let test = vec![vec![0.0]];
+        let neighbors = vec![(0..10).collect::<Vec<i32>>()];
+        let result = evaluate(
+            &|_, k| (0..k).map(|id| (id as u32, id as f32)).collect(),
+            &test,
+            &neighbors,
+            10,
+        );
+        assert_eq!(result.search_k, 10);
+        let line =
+            json_line_with_storage("hnsw", "{}", 1.0, None, &result, &ResultStorage::default());
+        assert!(line.contains("\"recall_at_10\":1.0000"));
+        assert!(line.contains("\"recall_at_100\":null"));
+    }
+
+    #[test]
     fn non_resume_json_append_starts_fresh_metadata_scope() {
         assert!(should_emit_run_meta(true, false, true));
         assert!(should_emit_run_meta(true, true, false));
@@ -3669,10 +3723,40 @@ mod tests {
         )
         .unwrap();
 
-        let first = load_completed_results_for_run(&path, "data/a", None, None, 50, 7, 0);
-        let second = load_completed_results_for_run(&path, "data/a", None, None, 50, 7, 1);
+        let first = load_completed_results_for_run(&path, "data/a", None, None, 50, 100, 7, 0);
+        let second = load_completed_results_for_run(&path, "data/a", None, None, 50, 100, 7, 1);
         assert_eq!(first.counts.get("hnsw"), Some(&1));
         assert!(second.counts.is_empty());
         assert!(second.has_mismatched_meta);
+    }
+
+    #[test]
+    fn resume_scope_distinguishes_requested_search_k() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("results.jsonl");
+        std::fs::write(
+            &path,
+            "{\"_meta\":{\"dataset\":\"data/a\",\"result_schema\":3,\"index_bytes_required\":true,\"requested_search_k\":10,\"seed\":7,\"repeat\":0,\"train_limit\":null,\"query_limit\":null,\"warmup_queries\":50}}\n{\"algorithm\":\"hnsw\",\"params\":{},\"recall_at_10\":1.0}\n",
+        )
+        .unwrap();
+
+        let k10 = load_completed_results_for_run(&path, "data/a", None, None, 50, 10, 7, 0);
+        let k100 = load_completed_results_for_run(&path, "data/a", None, None, 50, 100, 7, 0);
+        assert_eq!(k10.counts.get("hnsw"), Some(&1));
+        assert!(k100.counts.is_empty());
+    }
+
+    #[test]
+    fn legacy_resume_does_not_reuse_hardcoded_ten_result_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("results.jsonl");
+        std::fs::write(&path, concat!(
+            "{\"_meta\":{\"dataset\":\"data/a\",\"result_schema\":3,\"index_bytes_required\":true,\"seed\":7,\"repeat\":0,\"train_limit\":null,\"query_limit\":null,\"warmup_queries\":50}}\n",
+            "{\"algorithm\":\"hnsw\",\"search_k\":100}\n",
+            "{\"algorithm\":\"fresh_graph_churn\",\"search_k\":10}\n",
+        )).unwrap();
+        let completed = load_completed_results_for_run(&path, "data/a", None, None, 50, 100, 7, 0);
+        assert_eq!(completed.counts.get("hnsw"), Some(&1));
+        assert!(!completed.counts.contains_key("fresh_graph_churn"));
     }
 }
