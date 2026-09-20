@@ -103,6 +103,7 @@ jobs:
           python scripts/generate_ann_smoke_data.py /tmp/vicinity-ann-ci --train 64 --test 12 --dim 8 --k 10
           python scripts/generate_sparse_mips_smoke_data.py /tmp/vicinity-sparse-ci --train 64 --test 12 --vocab 256 --topics 8 --nnz 16 --k 10
           cargo test --example ann_benchmark --no-default-features --features hnsw,serde
+          cargo bench --bench hnsw_search --no-default-features --features hnsw,parallel -- hnsw_query_shapes --test
           cargo run --no-default-features --features sparse_mips --release --example sparse_mips_benchmark -- \
             /tmp/vicinity-sparse-ci
           cargo run --all-features --release --example ann_benchmark -- \
