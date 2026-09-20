@@ -63,6 +63,28 @@ explicit persistence-mode expectation before its speed can be compared.
 
 ## Search microbenchmarks
 
+### HNSW query-shape coverage
+
+The `hnsw_search` target now exercises parallel `search_batch`, flat-buffer
+`search_batch_flat`, MQO `batch_search_mqo`, and conservative
+`search_adaptive` alongside the sequential path. Batch and flat-batch results
+must be exactly equal to sequential results outside the timed closure. MQO and
+adaptive rows report recall against the same exact oracle because they are
+allowed to trade recall for work reduction.
+
+On the fixed 10,000-vector, 128-dimensional synthetic fixture at `k=10`,
+`ef=100`, `m=16`, `m_max=32`, seed 42, and 100 queries, one short Criterion
+run measured batch 988 us, flat-batch 897 us, MQO 7.13 ms, and conservative
+adaptive 7.16 ms per 100-query batch. MQO recall@10 was 83.9%; conservative
+adaptive recall@10 was 83.3%. These are coverage and baseline measurements,
+not production rankings; the short run had outliers on the MQO and flat-batch
+rows. Repeat on representative query locality before optimizing either path.
+
+```sh
+cargo bench --bench hnsw_search --no-default-features \
+  --features hnsw,parallel -- hnsw_query_shapes
+```
+
 `cargo bench --bench hnsw_search --no-default-features --features hnsw` measures
 100 queries over 10,000 synthetic, normalized 128-dimensional vectors. Vector,
 query, and default graph seeds are fixed (42, 123, and 42). It prints exact recall@10

@@ -12,6 +12,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use vicinity::hnsw::{reset_search_counters, take_search_counters, HnswSearchCounters};
 use vicinity::hnsw::{HNSWIndex, HNSWParams};
 
+#[cfg(feature = "parallel")]
+use vicinity::hnsw::AdaptiveConfig;
+
 static ALLOC_CALLS: AtomicUsize = AtomicUsize::new(0);
 static ALLOC_BYTES: AtomicUsize = AtomicUsize::new(0);
 
@@ -297,5 +300,106 @@ fn bench_hnsw_search_mmax32(c: &mut Criterion) {
     group.finish();
 }
 
+#[cfg(feature = "parallel")]
+fn bench_hnsw_query_shapes(c: &mut Criterion) {
+    let mut group = c.benchmark_group("hnsw_query_shapes");
+    let dim = 128;
+    let n_vectors = 10_000;
+    let n_queries = 100;
+    let k = 10;
+    let ef = 100;
+    let queries = random_vectors(n_queries, dim, 123);
+    let query_refs: Vec<&[f32]> = queries.iter().map(Vec::as_slice).collect();
+    let flat_queries: Vec<f32> = queries.iter().flatten().copied().collect();
+    let (index, vectors) = build_index_with_params(n_vectors, dim, 16, 32, graph_seed());
+    let truth = exact_neighbors(&vectors, &queries, k);
+    let sequential: Vec<_> = query_refs
+        .iter()
+        .map(|query| index.search(query, k, ef).unwrap())
+        .collect();
+
+    let batch = index.search_batch(&query_refs, k, ef).unwrap();
+    let flat = index
+        .search_batch_flat(&flat_queries, n_queries, k, ef)
+        .unwrap();
+    assert_eq!(
+        batch, sequential,
+        "parallel batch must preserve sequential results"
+    );
+    assert_eq!(
+        flat, sequential,
+        "flat batch must preserve sequential results"
+    );
+
+    let mqo = index.batch_search_mqo(&query_refs, k, ef).unwrap();
+    let adaptive = query_refs
+        .iter()
+        .map(|query| {
+            index
+                .search_adaptive(query, k, ef, &AdaptiveConfig::conservative())
+                .unwrap()
+                .0
+        })
+        .collect::<Vec<_>>();
+    let recall = |rows: &[Vec<(u32, f32)>]| {
+        rows.iter()
+            .zip(&truth)
+            .map(|(found, expected)| {
+                expected
+                    .iter()
+                    .filter(|id| found.iter().any(|(found_id, _)| found_id == *id))
+                    .count()
+            })
+            .sum::<usize>() as f64
+            / (n_queries * k) as f64
+    };
+    eprintln!(
+        "hnsw query shapes: ef={ef} mqo_recall@{k}={:.4} adaptive_conservative_recall@{k}={:.4}",
+        recall(&mqo),
+        recall(&adaptive)
+    );
+
+    group.throughput(Throughput::Elements(n_queries as u64));
+    group.bench_function("batch", |bench| {
+        bench.iter(|| black_box(index.search_batch(&query_refs, k, ef).unwrap()).len())
+    });
+    group.bench_function("batch_flat", |bench| {
+        bench.iter(|| {
+            black_box(
+                index
+                    .search_batch_flat(&flat_queries, n_queries, k, ef)
+                    .unwrap(),
+            )
+            .len()
+        })
+    });
+    group.bench_function("batch_mqo", |bench| {
+        bench.iter(|| black_box(index.batch_search_mqo(&query_refs, k, ef).unwrap()).len())
+    });
+    group.bench_function("adaptive_conservative", |bench| {
+        bench.iter(|| {
+            query_refs
+                .iter()
+                .map(|query| {
+                    index
+                        .search_adaptive(query, k, ef, &AdaptiveConfig::conservative())
+                        .unwrap()
+                        .0
+                        .len()
+                })
+                .sum::<usize>()
+        })
+    });
+    group.finish();
+}
+
+#[cfg(feature = "parallel")]
+criterion_group!(
+    benches,
+    bench_hnsw_search_only,
+    bench_hnsw_search_mmax32,
+    bench_hnsw_query_shapes
+);
+#[cfg(not(feature = "parallel"))]
 criterion_group!(benches, bench_hnsw_search_only, bench_hnsw_search_mmax32);
 criterion_main!(benches);
