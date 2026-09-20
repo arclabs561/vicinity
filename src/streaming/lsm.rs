@@ -347,10 +347,15 @@ impl LsmIndex {
             )));
         }
 
-        let tombstones =
+        let tombstones: HashSet<u32> =
             read_u32_exact(&input_dir.join("tombstones.bin"), manifest.tombstone_count)?
                 .into_iter()
                 .collect();
+        if tombstones.len() != manifest.tombstone_count {
+            return Err(RetrieveError::FormatError(
+                "duplicate LSM tombstones in snapshot".into(),
+            ));
+        }
         let mut levels = Vec::with_capacity(manifest.level_counts.len());
         for (level_idx, &count) in manifest.level_counts.iter().enumerate() {
             let vector_len = count.checked_mul(config.dimension).ok_or_else(|| {
@@ -1201,6 +1206,37 @@ mod tests {
         match err {
             RetrieveError::FormatError(message) => {
                 assert!(message.contains("unsupported LSM format version"));
+            }
+            other => panic!("expected format error, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn load_rejects_duplicate_tombstones() {
+        let mut index = LsmIndex::new(make_config(4));
+        index.insert(5, make_vector(4, 5)).unwrap();
+        index.insert(7, make_vector(4, 7)).unwrap();
+        index.delete(5);
+        index.delete(7);
+
+        let dir = tempfile::tempdir().unwrap();
+        index.save_to_dir(dir.path()).unwrap();
+
+        let duplicate = 5u32.to_le_bytes();
+        std::fs::write(
+            dir.path().join("tombstones.bin"),
+            [duplicate, duplicate].concat(),
+        )
+        .unwrap();
+
+        let err = match LsmIndex::load_from_dir(dir.path()) {
+            Ok(_) => panic!("duplicate LSM tombstones should be rejected"),
+            Err(err) => err,
+        };
+        match err {
+            RetrieveError::FormatError(message) => {
+                assert!(message.contains("duplicate LSM tombstones"));
             }
             other => panic!("expected format error, got {other:?}"),
         }
