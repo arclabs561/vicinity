@@ -14,11 +14,14 @@ or concurrent publication.
 ## Chosen approach
 
 Writers create a hidden staging directory beneath `<root>/generations`, write
-and validate all algorithm-native files there, sync the files and staging
-directory, rename the staging directory to an immutable generation ID, sync the
-generations directory, then atomically replace `<root>/CURRENT` with the
-generation ID. Readers resolve only `CURRENT`, validate that it names a safe
-generation directory, and then open files within that directory.
+and validate all algorithm-native files there, sync every regular file and
+directory in the staging tree, rename the staging directory to an immutable
+generation ID, sync the generations directory, then atomically replace
+`<root>/CURRENT` with the generation ID and sync the root. Publication rejects
+symlinks and unsupported filesystem entries, including entries created through
+the raw staging-directory accessor. Readers resolve only `CURRENT`, validate
+that it names a safe generation directory, and then open files within that
+directory.
 
 The first implementation is a reusable filesystem foundation in
 `persistence::generation`. It deliberately does not rewrite existing index
@@ -39,7 +42,11 @@ validation path are ready.
   are rejected.
 - A published generation is never modified by the publisher after the pointer
   changes.
-- A failed publication leaves the prior `CURRENT` value untouched.
+- A pre-commit publication failure leaves the prior `CURRENT` value untouched.
+- `publish_with_outcome` distinguishes a pre-commit error from a
+  `DurabilityUncertain` result after `CURRENT` has been replaced but the final
+  root sync failed. The latter is visible to readers and must be reconciled by
+  the caller using the returned generation path and error.
 - Readers never resolve a generation outside the configured root.
 - Cleanup is a separate, retention-aware operation.
 
@@ -49,7 +56,8 @@ An index format may adopt the foundation only after it has:
 
 1. a versioned manifest naming every required component;
 2. validation before publication and on open;
-3. interruption tests before and after pointer replacement;
+3. interruption tests before and after pointer replacement, including handling
+   of `DurabilityUncertain`;
 4. a compatibility policy for old generations; and
 5. a retention/garbage-collection policy.
 

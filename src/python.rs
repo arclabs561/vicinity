@@ -6,7 +6,9 @@
 //! produced via `into_pyarray`.
 
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::exceptions::PyValueError;
@@ -77,6 +79,7 @@ impl From<RustMetric> for PyDistanceMetric {
 #[pyclass(name = "HNSWIndex", module = "pyvicinity")]
 pub struct PyHNSWIndex {
     inner: RustHNSW,
+    used_ids: HashSet<u32>,
     ef_search: usize,
     auto_normalize: bool,
     metric: PyDistanceMetric,
@@ -92,6 +95,8 @@ pub struct PyHNSWIndex {
 #[pyclass(name = "IVFPQIndex", module = "pyvicinity")]
 pub struct PyIVFPQIndex {
     inner: RustIVFPQ,
+    used_ids: HashSet<u32>,
+    search_lock: Mutex<()>,
     nprobe: usize,
     num_clusters: usize,
     num_codebooks: usize,
@@ -107,6 +112,7 @@ pub struct PyIVFPQIndex {
 #[pyclass(name = "IVFPQFileSearcher", module = "pyvicinity")]
 pub struct PyIVFPQFileSearcher {
     inner: RustIVFPQFileSearcher,
+    search_lock: Mutex<()>,
     nprobe: usize,
     num_clusters: usize,
     num_codebooks: usize,
@@ -161,6 +167,7 @@ impl PyHNSWIndex {
             RustHNSW::with_params(dim, params).map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok(Self {
             inner,
+            used_ids: HashSet::new(),
             ef_search,
             auto_normalize,
             metric,
@@ -196,7 +203,7 @@ impl PyHNSWIndex {
             .as_slice()
             .map_err(|_| PyValueError::new_err("vectors must be contiguous (C-order)"))?;
 
-        match ids {
+        let id_u32 = match ids {
             Some(id_arr) => {
                 let id_slice = id_arr
                     .as_slice()
@@ -207,27 +214,15 @@ impl PyHNSWIndex {
                         id_slice.len()
                     )));
                 }
-                let mut id_u32 = Vec::with_capacity(id_slice.len());
-                for (i, &id) in id_slice.iter().enumerate() {
-                    if !(0..=u32::MAX as i64).contains(&id) {
-                        return Err(PyValueError::new_err(format!(
-                            "ids[{i}] = {id} out of range [0, 2**32); pyvicinity stores IDs as u32 internally",
-                        )));
-                    }
-                    id_u32.push(id as u32);
-                }
-                self.inner
-                    .add_batch(&id_u32, data)
-                    .map_err(|e| PyValueError::new_err(e.to_string()))?;
+                checked_ids_unique(id_slice, n, &self.used_ids)?
             }
-            None => {
-                let id_vec =
-                    sequential_ids(self.inner.num_vectors, n).map_err(PyValueError::new_err)?;
-                self.inner
-                    .add_batch(&id_vec, data)
-                    .map_err(|e| PyValueError::new_err(e.to_string()))?;
-            }
-        }
+            None => sequential_ids_avoiding(self.inner.num_vectors, n, &self.used_ids)
+                .map_err(PyValueError::new_err)?,
+        };
+        self.inner
+            .add_batch(&id_u32, data)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        self.used_ids.extend(id_u32);
         Ok(())
     }
 
@@ -267,6 +262,7 @@ impl PyHNSWIndex {
             m: inner.params.m,
             ef_construction: inner.params.ef_construction,
             inner,
+            used_ids: HashSet::new(),
         })
     }
 
@@ -510,6 +506,8 @@ impl PyIVFPQIndex {
             RustIVFPQ::new(dim, params).map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok(Self {
             inner,
+            used_ids: HashSet::new(),
+            search_lock: Mutex::new(()),
             nprobe,
             num_clusters,
             num_codebooks,
@@ -550,9 +548,10 @@ impl PyIVFPQIndex {
                 let id_slice = id_arr
                     .as_slice()
                     .map_err(|_| PyValueError::new_err("ids must be contiguous"))?;
-                checked_ids(id_slice, n)?
+                checked_ids_unique(id_slice, n, &self.used_ids)?
             }
-            None => sequential_ids(self.inner.num_vectors, n).map_err(PyValueError::new_err)?,
+            None => sequential_ids_avoiding(self.inner.num_vectors, n, &self.used_ids)
+                .map_err(PyValueError::new_err)?,
         };
 
         for (row, &doc_id) in data.chunks_exact(d).zip(id_u32.iter()) {
@@ -560,6 +559,7 @@ impl PyIVFPQIndex {
                 .add_slice(doc_id, row)
                 .map_err(|e| PyValueError::new_err(e.to_string()))?;
         }
+        self.used_ids.extend(id_u32);
         Ok(())
     }
 
@@ -621,6 +621,8 @@ impl PyIVFPQIndex {
             num_codebooks: inner.num_codebooks(),
             codebook_size: inner.codebook_size(),
             use_opq: inner.use_opq(),
+            used_ids: HashSet::new(),
+            search_lock: Mutex::new(()),
             inner,
         })
     }
@@ -636,6 +638,8 @@ impl PyIVFPQIndex {
             num_codebooks: inner.num_codebooks(),
             codebook_size: inner.codebook_size(),
             use_opq: inner.use_opq(),
+            used_ids: HashSet::new(),
+            search_lock: Mutex::new(()),
             inner,
         })
     }
@@ -828,6 +832,7 @@ impl PyIVFPQFileSearcher {
             num_clusters: inner.num_clusters(),
             num_codebooks: inner.num_codebooks(),
             codebook_size: inner.codebook_size(),
+            search_lock: Mutex::new(()),
             inner,
         })
     }
@@ -843,6 +848,7 @@ impl PyIVFPQFileSearcher {
             num_clusters: inner.num_clusters(),
             num_codebooks: inner.num_codebooks(),
             codebook_size: inner.codebook_size(),
+            search_lock: Mutex::new(()),
             inner,
         })
     }
@@ -1022,6 +1028,10 @@ impl PyIVFPQIndex {
         nprobe: Option<usize>,
         rerank_pool: Option<usize>,
     ) -> Result<Vec<(u32, f32)>, crate::RetrieveError> {
+        let _search_guard = self
+            .search_lock
+            .lock()
+            .map_err(|_| crate::RetrieveError::Other("IVF-PQ search lock poisoned".into()))?;
         let saved_nprobe = self.nprobe;
         if let Some(nprobe) = nprobe {
             self.inner.set_nprobe(nprobe);
@@ -1060,6 +1070,10 @@ impl PyIVFPQFileSearcher {
         nprobe: Option<usize>,
         rerank_pool: Option<usize>,
     ) -> Result<Vec<(u32, f32)>, crate::RetrieveError> {
+        let _search_guard = self
+            .search_lock
+            .lock()
+            .map_err(|_| crate::RetrieveError::Other("IVF-PQ search lock poisoned".into()))?;
         let saved_nprobe = self.nprobe;
         if let Some(nprobe) = nprobe {
             self.inner.set_nprobe(nprobe);
@@ -1114,7 +1128,11 @@ fn validate_ivfpq_shape(
     Ok(())
 }
 
-fn checked_ids(ids: &[i64], expected_len: usize) -> PyResult<Vec<u32>> {
+fn checked_ids_unique(
+    ids: &[i64],
+    expected_len: usize,
+    used_ids: &HashSet<u32>,
+) -> PyResult<Vec<u32>> {
     if ids.len() != expected_len {
         return Err(PyValueError::new_err(format!(
             "ids length {} != vectors rows {expected_len}",
@@ -1122,25 +1140,44 @@ fn checked_ids(ids: &[i64], expected_len: usize) -> PyResult<Vec<u32>> {
         )));
     }
     let mut id_u32 = Vec::with_capacity(ids.len());
+    let mut batch_ids = HashSet::with_capacity(ids.len());
     for (i, &id) in ids.iter().enumerate() {
         if !(0..=u32::MAX as i64).contains(&id) {
             return Err(PyValueError::new_err(format!(
                 "ids[{i}] = {id} out of range [0, 2**32); pyvicinity stores IDs as u32 internally",
             )));
         }
-        id_u32.push(id as u32);
+        let id = id as u32;
+        if used_ids.contains(&id) || !batch_ids.insert(id) {
+            return Err(PyValueError::new_err(format!(
+                "duplicate doc_id {id} (IDs must be unique within an index)"
+            )));
+        }
+        id_u32.push(id);
     }
     Ok(id_u32)
 }
 
-fn sequential_ids(base: usize, count: usize) -> Result<Vec<u32>, &'static str> {
-    let end = base
-        .checked_add(count)
-        .ok_or("implicit IDs exceed the addressable vector count")?;
-    if end > (u32::MAX as usize) + 1 {
-        return Err("implicit IDs exceed the u32 ID limit");
+fn sequential_ids_avoiding(
+    base: usize,
+    count: usize,
+    used_ids: &HashSet<u32>,
+) -> Result<Vec<u32>, &'static str> {
+    let mut ids = Vec::with_capacity(count);
+    let mut candidate = base;
+    while ids.len() < count {
+        if candidate > u32::MAX as usize {
+            return Err("implicit IDs exceed the u32 ID limit");
+        }
+        let id = candidate as u32;
+        if !used_ids.contains(&id) {
+            ids.push(id);
+        }
+        candidate = candidate
+            .checked_add(1)
+            .ok_or("implicit IDs exceed the addressable vector count")?;
     }
-    Ok((base..end).map(|id| id as u32).collect())
+    Ok(ids)
 }
 
 /// Normalize the query if `auto_normalize` is on and the metric supports it.

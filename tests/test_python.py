@@ -172,6 +172,32 @@ def test_dimension_mismatch_raises_valueerror() -> None:
         idx.batch_search(np.zeros((2, 7), dtype=np.float32), k=3)
 
 
+def test_hnsw_duplicate_ids_are_rejected_atomically() -> None:
+    idx = HNSWIndex(dim=4, metric=DistanceMetric.L2)
+    vectors = np.eye(4, dtype=np.float32)[:2]
+
+    with pytest.raises(ValueError, match="duplicate doc_id"):
+        idx.add_items(vectors, ids=np.array([7, 7], dtype=np.int64))
+
+    assert len(idx) == 0
+
+    idx.add_items(vectors[:1], ids=np.array([7], dtype=np.int64))
+    with pytest.raises(ValueError, match="duplicate doc_id"):
+        idx.add_items(vectors[1:], ids=np.array([7], dtype=np.int64))
+    assert len(idx) == 1
+
+
+def test_hnsw_implicit_ids_skip_explicit_ids() -> None:
+    idx = HNSWIndex(dim=2, metric=DistanceMetric.L2)
+    vectors = np.eye(2, dtype=np.float32)
+    idx.add_items(vectors[:1], ids=np.array([1], dtype=np.int64))
+    idx.add_items(vectors[1:])
+    idx.build()
+
+    ids, _ = idx.search(vectors[1], k=2)
+    assert set(ids.tolist()) == {1, 2}
+
+
 def test_batch_search_on_unbuilt_index_raises() -> None:
     idx = HNSWIndex(dim=4, metric=DistanceMetric.L2)
     queries = np.zeros((2, 4), dtype=np.float32)
@@ -520,6 +546,25 @@ def test_ivfpq_compact_before_build_raises() -> None:
 
     with pytest.raises(ValueError, match="built before compact"):
         index.compact()
+
+
+def test_ivfpq_duplicate_ids_are_rejected_atomically() -> None:
+    index = IVFPQIndex(
+        dim=4,
+        num_clusters=2,
+        num_codebooks=2,
+        codebook_size=2,
+    )
+    vectors = np.eye(4, dtype=np.float32)[:2]
+
+    with pytest.raises(ValueError, match="duplicate doc_id"):
+        index.add_items(vectors, ids=np.array([11, 11], dtype=np.int64))
+
+    assert len(index) == 0
+
+    index.add_items(vectors[:1], ids=np.array([11], dtype=np.int64))
+    index.add_items(vectors[1:])
+    assert len(index) == 2
 
 
 def test_ivfpq_save_load_round_trip(tmp_path) -> None:
