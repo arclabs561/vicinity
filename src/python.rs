@@ -1205,15 +1205,17 @@ fn prep_query<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::sequential_ids;
+    use super::sequential_ids_avoiding;
+    use std::collections::HashSet;
 
     #[test]
     fn sequential_ids_rejects_u32_overflow() {
+        let used = HashSet::new();
         assert_eq!(
-            sequential_ids(u32::MAX as usize, 1).unwrap(),
+            sequential_ids_avoiding(u32::MAX as usize, 1, &used).unwrap(),
             vec![u32::MAX]
         );
-        let error = sequential_ids(u32::MAX as usize, 2).unwrap_err();
+        let error = sequential_ids_avoiding(u32::MAX as usize, 2, &used).unwrap_err();
         assert!(error.contains("u32 ID limit"));
     }
 }
