@@ -2,18 +2,28 @@ use crate::RetrieveError;
 use serde::{de::DeserializeOwned, Serialize};
 use std::io::{BufReader, BufWriter, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), RetrieveError> {
-    let tmp_path = path.with_extension("tmp");
-    {
+    let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let tmp_path = path.with_extension(format!("tmp.{}.{}", std::process::id(), sequence));
+    let result: std::io::Result<()> = (|| {
         let file = std::fs::File::create(&tmp_path)?;
         let mut writer = BufWriter::new(file);
         serde_json::to_writer_pretty(&mut writer, value)
             .map_err(|e| std::io::Error::other(e.to_string()))?;
         writer.flush()?;
+        writer.get_ref().sync_all()?;
+        drop(writer);
+        std::fs::rename(&tmp_path, path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp_path);
     }
-    std::fs::rename(&tmp_path, path)?;
-    Ok(())
+    result.map_err(Into::into)
 }
 
 pub(crate) fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T, RetrieveError> {
