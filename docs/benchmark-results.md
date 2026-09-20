@@ -38,6 +38,49 @@ The older `plot_pareto.py` uses the rigorous benchmark's aggregate JSON files,
 not this JSONL format. Its scaling chart requires a measured setting meeting
 the recall target; a missing point means the target was not reached.
 
+## Ten-result comparison (2026-09-20)
+
+Fashion-MNIST, first 20,000 training vectors and 500 held-out queries, L2.
+Apple M3 Max, Rust 1.98.1, commit `4595279`, release build with `hnsw,innr`.
+All searches request ten results. Three builds per setting, 50 warmup queries,
+M=16, construction depth 100, search sweep 10/20/50/100. Ground truth is exact
+for the capped corpus. Vicinity uses seed 42; repeated builds do not measure
+sensitivity to different seeds. External adapters cannot control their seeds.
+
+![Ten-result recall and throughput comparison](<plots/algorithm_comparison_fashion-mnist-784-euclidean[train=20000,queries=500,k=10].png>)
+
+The plot shows the observed frontier across all runs. The table instead selects
+each implementation's fastest swept setting with **median recall@10 ≥95%**:
+
+| Implementation | Search breadth | Median recall@10 | Median QPS | QPS range |
+| --- | ---: | ---: | ---: | ---: |
+| vicinity HNSW | 10 | 95.10% | 27,077 | 24,637–29,998 |
+| hnsw_rs 0.3.4 | 20 | 97.10% | 5,079 | 4,723–5,533 |
+| USearch 2.26.0, f32 | 10 | 95.62% | 10,620 | 10,225–11,230 |
+| Brute force | — | 100% | 432 | 425–442 |
+
+Search breadth is `ef_search`, or `expansion_search` for USearch—not the number
+of returned results.
+
+This bounded, fixed-order run is not a tuned library ranking. It demonstrates
+why requested result depth must be explicit: these timings must not be merged
+with 100-result timings. The exact control reached recall@10=1 in all runs.
+No index implementation was optimized for this comparison.
+
+[Raw rows](fashion20k-k10.jsonl) preserve the measurements; the local dataset
+path was normalized and the source commit added to metadata. Reproduce each
+run with `--repeat 0`, `1`, then `2`:
+
+```sh
+cargo run --release --example ann_benchmark --features hnsw -- \
+  data/ann-benchmarks/fashion-mnist-784-euclidean \
+  --algo brute --algo hnsw --algo external_hnsw_rs --algo external_usearch \
+  --search-k 10 --m 16 --ef-construction 100 --ef-search 10,20,50,100 \
+  --max-train 20000 --max-queries 500 --warmup-queries 50 \
+  --seed 42 --repeat 0 --json --results fashion20k-k10.jsonl
+uv run scripts/plot_comparison.py fashion20k-k10.jsonl plots
+```
+
 ## Historical context
 
 ### Bounded harness check (2026-09-20)

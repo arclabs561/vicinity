@@ -3840,7 +3840,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let cfg = parse_args();
+    run(parse_args())
+}
+
+fn run(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
     set_warmup_queries(cfg.warmup_queries);
     set_run_identity(cfg.seed, cfg.repeat);
 
@@ -3924,7 +3927,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Every invocation starts a fresh metadata scope before appending raw rows.
-    if should_emit_run_meta(cfg.json, cfg.resume, cfg.results_path.exists()) {
+    let mut run_meta_written =
+        should_emit_run_meta(cfg.json, cfg.resume, cfg.results_path.exists());
+    if run_meta_written {
         emit_result(&cfg.results_path, &meta());
     }
 
@@ -3959,6 +3964,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         eprintln!("{}", message);
         emit_result(&cfg.results_path, &meta());
+        run_meta_written = true;
     }
     if !completed.counts.is_empty() {
         eprintln!(
@@ -3979,6 +3985,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for algo in &cfg.algos {
         if request_completed(&completed, algo, &cfg, dim, train.len(), test.len()) {
             continue;
+        }
+        // A matching scope may occur earlier in an interleaved results file.
+        // Start our own scope before appending, but leave complete runs untouched.
+        if cfg.json && !run_meta_written {
+            emit_result(&cfg.results_path, &meta());
+            run_meta_written = true;
         }
         match algo.as_str() {
             "external_hnsw_rs" => {
@@ -4304,3 +4316,57 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 // File loading now in examples/common/mod.rs (shared across benchmark examples).
+
+#[cfg(feature = "hnsw")]
+#[test]
+fn interleaved_resume_preserves_metadata_scope_and_completed_noop() {
+    let dir = tempfile::tempdir().unwrap();
+    // VEC1/NBR1 fixture: scalar vectors 0..99, query 0, exact L2 order 0..99.
+    let mut train = b"VEC1".to_vec();
+    train.extend_from_slice(&100u32.to_le_bytes());
+    train.extend_from_slice(&1u32.to_le_bytes());
+    let mut truth = b"NBR1".to_vec();
+    truth.extend_from_slice(&1u32.to_le_bytes());
+    truth.extend_from_slice(&100u32.to_le_bytes());
+    for id in 0..100i32 {
+        train.extend_from_slice(&(id as f32).to_le_bytes());
+        truth.extend_from_slice(&id.to_le_bytes());
+    }
+    let mut query = b"VEC1".to_vec();
+    query.extend_from_slice(&1u32.to_le_bytes());
+    query.extend_from_slice(&1u32.to_le_bytes());
+    query.extend_from_slice(&0f32.to_le_bytes());
+    std::fs::write(dir.path().join("train.bin"), train).unwrap();
+    std::fs::write(dir.path().join("test.bin"), query).unwrap();
+    std::fs::write(dir.path().join("neighbors.bin"), truth).unwrap();
+    let path = dir.path().join("results.jsonl");
+    let config = |search_k, ef| Config {
+        data_dir: dir.path().to_string_lossy().into_owned(),
+        results_path: path.clone(),
+        json: true,
+        resume: true,
+        search_k,
+        ef_search_values: vec![ef],
+        warmup_queries: 0,
+        is_euclidean: true,
+        ..Default::default()
+    };
+    for (k, ef) in [(100, 100), (10, 100), (100, 200)] {
+        run(config(k, ef)).unwrap();
+    }
+    let before = std::fs::read_to_string(&path).unwrap();
+    let mut current_depth = 0;
+    let mut measured_rows = 0;
+    for line in before.lines() {
+        let row: serde_json::Value = serde_json::from_str(line).unwrap();
+        if let Some(meta) = row.get("_meta") {
+            current_depth = meta["requested_search_k"].as_u64().unwrap();
+        } else if row.get("algorithm").is_some() {
+            assert_eq!(row["search_k"].as_u64(), Some(current_depth));
+            measured_rows += 1;
+        }
+    }
+    assert_eq!(measured_rows, 3);
+    run(config(100, 200)).unwrap();
+    assert_eq!(std::fs::read_to_string(path).unwrap(), before);
+}
