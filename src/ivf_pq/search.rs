@@ -15,7 +15,9 @@ use super::persistence::{
 };
 use super::pq::ProductQuantizer;
 #[cfg(feature = "persistence")]
-use crate::persistence::generation::{open_current, GenerationWriter, PublicationOutcome};
+use crate::persistence::generation::{
+    open_current, open_current_pinned, GenerationLease, GenerationWriter, PublicationOutcome,
+};
 use crate::pq_simd::{adc_batch_dispatch_into, PackedCodes4bit, PackedLUTRef};
 use crate::RetrieveError;
 use rand::seq::SliceRandom;
@@ -1557,6 +1559,16 @@ impl IVFPQFileSearcher {
         Self::load_mmap(directory)
     }
 
+    /// Open the current generation and return its reader lease to retain while searching.
+    #[cfg(feature = "persistence")]
+    pub fn load_from_generation_pinned(
+        root: impl AsRef<Path>,
+    ) -> Result<(Self, GenerationLease), RetrieveError> {
+        let lease = open_current_pinned(root).map_err(RetrieveError::from)?;
+        let searcher = Self::load_mmap(lease.path())?;
+        Ok((searcher, lease))
+    }
+
     /// Open an IVF-PQ snapshot using read-only memory maps for large byte arrays.
     #[cfg(feature = "persistence")]
     pub fn load_mmap(input_dir: impl AsRef<Path>) -> Result<Self, RetrieveError> {
@@ -2535,6 +2547,10 @@ mod tests {
         assert_eq!(first.search(&query, 5).unwrap(), expected);
         let mut file = IVFPQFileSearcher::load_from_generation(root.path()).unwrap();
         assert_eq!(file.search(&query, 5).unwrap(), expected);
+        let (mut pinned_file, lease) =
+            IVFPQFileSearcher::load_from_generation_pinned(root.path()).unwrap();
+        assert_eq!(pinned_file.search(&query, 5).unwrap(), expected);
+        assert!(lease.path().is_dir());
         let first_current = std::fs::read_to_string(root.path().join("CURRENT")).unwrap();
         let first_directory = open_current(root.path()).unwrap();
         let first_manifest: IVFPQManifest =

@@ -4,7 +4,9 @@ use crate::ivf_avq::partitioning::KMeans;
 use crate::ivf_avq::quantization::AnisotropicQuantizer;
 use crate::ivf_avq::reranking;
 #[cfg(feature = "persistence")]
-use crate::persistence::generation::{open_current, GenerationWriter, PublicationOutcome};
+use crate::persistence::generation::{
+    open_current, open_current_pinned, GenerationLease, GenerationWriter, PublicationOutcome,
+};
 use crate::RetrieveError;
 #[cfg(feature = "persistence")]
 use durability::mmap::{AccessPattern, MappedFile};
@@ -560,6 +562,16 @@ impl IVFAVQFileSearcher {
     pub fn load_from_generation(root: impl AsRef<Path>) -> Result<Self, RetrieveError> {
         let directory = open_current(root)?;
         Self::open_mmap(directory)
+    }
+
+    /// Open the current generation and return its reader lease to retain while searching.
+    #[cfg(feature = "persistence")]
+    pub fn load_from_generation_pinned(
+        root: impl AsRef<Path>,
+    ) -> Result<(Self, GenerationLease), RetrieveError> {
+        let lease = open_current_pinned(root).map_err(RetrieveError::from)?;
+        let searcher = Self::open_mmap(lease.path())?;
+        Ok((searcher, lease))
     }
 
     /// Open an IVF-AVQ snapshot with read-only mmap-backed payloads.
@@ -1661,6 +1673,10 @@ mod tests {
         assert_eq!(loaded.search(&query, 10).unwrap(), expected);
         let mut file_searcher = IVFAVQFileSearcher::load_from_generation(root.path()).unwrap();
         assert_eq!(file_searcher.search(&query, 10).unwrap(), expected);
+        let (mut pinned_file_searcher, lease) =
+            IVFAVQFileSearcher::load_from_generation_pinned(root.path()).unwrap();
+        assert_eq!(pinned_file_searcher.search(&query, 10).unwrap(), expected);
+        assert!(lease.path().is_dir());
         let first_current = std::fs::read_to_string(root.path().join("CURRENT")).unwrap();
 
         index.save_to_generation(root.path()).unwrap();
