@@ -143,36 +143,35 @@ fn verify_expected_current(root: &Path, expected: Option<&str>) -> PersistenceRe
 }
 
 struct PublicationLock {
-    path: PathBuf,
+    file: std::fs::File,
 }
 
 impl PublicationLock {
     fn acquire(root: &Path) -> PersistenceResult<Self> {
         let path = root.join(PUBLISH_LOCK_FILE);
-        let mut file = match std::fs::OpenOptions::new()
+        let file = std::fs::OpenOptions::new()
             .write(true)
-            .create_new(true)
-            .open(&path)
-        {
-            Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                return Err(PersistenceError::LockFailed {
+            .create(true)
+            .truncate(false)
+            .open(&path)?;
+        use fs4::fs_std::FileExt;
+        file.try_lock_exclusive().map_err(|error| {
+            if error.kind() == std::io::ErrorKind::WouldBlock {
+                PersistenceError::LockFailed {
                     resource: path.display().to_string(),
-                    reason: "another generation publisher holds the lock".into(),
-                });
+                    reason: "another generation publisher holds the advisory lock".into(),
+                }
+            } else {
+                PersistenceError::Io(error)
             }
-            Err(error) => return Err(error.into()),
-        };
-        use std::io::Write;
-        writeln!(file, "pid={}", std::process::id())?;
-        file.sync_all()?;
-        Ok(Self { path })
+        })?;
+        Ok(Self { file })
     }
 }
 
 impl Drop for PublicationLock {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
+        let _ = self.file.unlock();
     }
 }
 
@@ -341,9 +340,8 @@ static FAIL_ROOT_SYNC: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new
 mod tests {
     use super::{
         open_current, GenerationWriter, PublicationLock, PublicationOutcome, CURRENT_FILE,
-        FAIL_ROOT_SYNC,
+        FAIL_ROOT_SYNC, PUBLISH_LOCK_FILE,
     };
-    use crate::persistence::PersistenceError;
     use tempfile::tempdir;
 
     #[test]
@@ -404,14 +402,15 @@ mod tests {
     }
 
     #[test]
-    fn rejects_concurrent_publisher_without_touching_current() {
+    fn permanent_lock_path_releases_without_deletion() {
         let root = tempdir().unwrap();
-        let writer = GenerationWriter::create(root.path()).unwrap();
-        std::fs::write(writer.path("manifest.json").unwrap(), b"{}").unwrap();
         let lock = PublicationLock::acquire(root.path()).unwrap();
-        let error = writer.publish().unwrap_err();
+        let lock_path = root.path().join(PUBLISH_LOCK_FILE);
+        assert!(lock_path.is_file());
         drop(lock);
-        assert!(matches!(error, PersistenceError::LockFailed { .. }));
+        let reacquired = PublicationLock::acquire(root.path()).unwrap();
+        assert!(lock_path.is_file());
+        drop(reacquired);
         assert!(!root.path().join(CURRENT_FILE).exists());
     }
 

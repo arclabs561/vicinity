@@ -52,11 +52,11 @@ validation path are ready.
 - Readers never resolve a generation outside the configured root.
 - Cleanup is a separate, retention-aware operation.
 
-The lock is an intentionally conservative local-filesystem contract. A crash
-can leave a stale lock file; operators or a future verified cleanup command must
-remove it only after checking that the recorded process is no longer alive.
-Automatic age-based lock stealing is not safe because a slow valid publisher
-can look stale.
+The lock pathname is permanent, but ownership is held by a kernel advisory lock
+on its open file handle. A process crash releases the lock without deleting the
+pathname. Participants must cooperate with the lock, and remote filesystems
+such as NFS/SMB require separate deployment validation; they are not part of the
+default durability claim.
 
 ## Adoption gates
 
