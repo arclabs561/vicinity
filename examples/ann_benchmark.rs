@@ -1354,6 +1354,8 @@ struct DiskAnnDiagnosticsTotals {
     graph_bytes: usize,
     vector_bytes: usize,
     page_bytes: usize,
+    page_physical_bytes: usize,
+    page_logical_bytes: usize,
     retained_candidates: usize,
 }
 
@@ -1368,6 +1370,8 @@ impl DiskAnnDiagnosticsTotals {
         self.graph_bytes += diagnostics.graph_bytes;
         self.vector_bytes += diagnostics.vector_bytes;
         self.page_bytes += diagnostics.page_bytes;
+        self.page_physical_bytes += diagnostics.page_physical_bytes;
+        self.page_logical_bytes += diagnostics.page_logical_bytes;
         self.retained_candidates += diagnostics.retained_candidates;
     }
 
@@ -1381,6 +1385,8 @@ impl DiskAnnDiagnosticsTotals {
             avg_graph_bytes: self.graph_bytes as f64 / queries,
             avg_vector_bytes: self.vector_bytes as f64 / queries,
             avg_page_bytes: self.page_bytes as f64 / queries,
+            avg_page_physical_bytes: self.page_physical_bytes as f64 / queries,
+            avg_page_logical_bytes: self.page_logical_bytes as f64 / queries,
             avg_retained_candidates: self.retained_candidates as f64 / queries,
             ..StorageDiagnostics::default()
         }

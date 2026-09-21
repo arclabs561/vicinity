@@ -1814,6 +1814,8 @@ pub(crate) struct StorageDiagnostics {
     pub(crate) avg_code_bytes: f64,
     pub(crate) avg_vector_bytes: f64,
     pub(crate) avg_page_bytes: f64,
+    pub(crate) avg_page_physical_bytes: f64,
+    pub(crate) avg_page_logical_bytes: f64,
     pub(crate) avg_retained_candidates: f64,
 }
 
@@ -1952,7 +1954,7 @@ pub(crate) fn json_line_with_storage(
     }
     if let Some(diagnostics) = storage.diagnostics {
         s.push_str(&format!(
-            ",\"avg_visited_nodes\":{:.2},\"avg_probed_lists\":{:.2},\"avg_scanned_vectors\":{:.2},\"avg_partition_reads\":{:.2},\"avg_partition_bytes\":{:.2},\"avg_graph_reads\":{:.2},\"avg_code_reads\":{:.2},\"avg_vector_reads\":{:.2},\"avg_page_reads\":{:.2},\"avg_graph_bytes\":{:.2},\"avg_code_bytes\":{:.2},\"avg_vector_bytes\":{:.2},\"avg_page_bytes\":{:.2},\"avg_retained_candidates\":{:.2}",
+            ",\"avg_visited_nodes\":{:.2},\"avg_probed_lists\":{:.2},\"avg_scanned_vectors\":{:.2},\"avg_partition_reads\":{:.2},\"avg_partition_bytes\":{:.2},\"avg_graph_reads\":{:.2},\"avg_code_reads\":{:.2},\"avg_vector_reads\":{:.2},\"avg_page_reads\":{:.2},\"avg_graph_bytes\":{:.2},\"avg_code_bytes\":{:.2},\"avg_vector_bytes\":{:.2},\"avg_page_bytes\":{:.2},\"avg_page_physical_bytes\":{:.2},\"avg_page_logical_bytes\":{:.2},\"avg_retained_candidates\":{:.2}",
             diagnostics.avg_visited_nodes,
             diagnostics.avg_probed_lists,
             diagnostics.avg_scanned_vectors,
@@ -1966,6 +1968,8 @@ pub(crate) fn json_line_with_storage(
             diagnostics.avg_code_bytes,
             diagnostics.avg_vector_bytes,
             diagnostics.avg_page_bytes,
+            diagnostics.avg_page_physical_bytes,
+            diagnostics.avg_page_logical_bytes,
             diagnostics.avg_retained_candidates
         ));
     }
@@ -2550,6 +2554,8 @@ mod tests {
                 avg_code_bytes: 512.0,
                 avg_vector_bytes: 1200.0,
                 avg_page_bytes: 24_576.0,
+                avg_page_physical_bytes: 24_576.0,
+                avg_page_logical_bytes: 3_200.0,
                 avg_retained_candidates: 10.0,
             }),
         };
@@ -2578,6 +2584,8 @@ mod tests {
         assert!(line.contains("\"avg_code_bytes\":512.00"));
         assert!(line.contains("\"avg_vector_bytes\":1200.00"));
         assert!(line.contains("\"avg_page_bytes\":24576.00"));
+        assert!(line.contains("\"avg_page_physical_bytes\":24576.00"));
+        assert!(line.contains("\"avg_page_logical_bytes\":3200.00"));
     }
 
     #[test]

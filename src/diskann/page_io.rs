@@ -197,6 +197,9 @@ impl DiskANNPageSearcher {
 
         let start = self.reader.get_node(self.reader.start_node)?;
         diagnostics.page_reads += 1;
+        diagnostics.page_physical_bytes += self.reader.record_size;
+        diagnostics.page_logical_bytes +=
+            logical_record_size(self.reader.dimension, start.neighbors.len());
         let start_dist = crate::simd::l2_distance_squared(query, &start.vector);
         frontier.push(Reverse(PageFrontierCandidate {
             id: self.reader.start_node,
@@ -227,6 +230,9 @@ impl DiskANNPageSearcher {
 
                 let node = self.reader.get_node(neighbor)?;
                 diagnostics.page_reads += 1;
+                diagnostics.page_physical_bytes += self.reader.record_size;
+                diagnostics.page_logical_bytes +=
+                    logical_record_size(self.reader.dimension, node.neighbors.len());
                 let dist = crate::simd::l2_distance_squared(query, &node.vector);
                 frontier.push(Reverse(PageFrontierCandidate {
                     id: neighbor,
@@ -502,6 +508,13 @@ fn record_size(dimension: usize, max_degree: usize) -> PersistenceResult<usize> 
     Ok(payload.next_multiple_of(PAGE_ALIGNMENT))
 }
 
+/// Number of bytes containing a node's encoded fields, excluding record
+/// alignment padding. The value is derived from the decoded node so it
+/// reflects the actual degree rather than the configured maximum degree.
+fn logical_record_size(dimension: usize, degree: usize) -> usize {
+    8 + (dimension + degree) * std::mem::size_of::<u32>()
+}
+
 fn decode_node(
     record: &[u8],
     dimension: usize,
@@ -645,6 +658,28 @@ mod tests {
     }
 
     #[test]
+    fn page_diagnostics_separate_physical_padding_from_logical_payload() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nodes.page");
+        let mut writer = DiskPageWriter::create(&path, 1, 3, 4, 0).unwrap();
+        writer.write_node(10, &[1.0, 2.0, 3.0], &[0]).unwrap();
+        writer.flush().unwrap();
+
+        let mut searcher = DiskANNPageSearcher::load(dir.path()).unwrap();
+        let (results, diagnostics) = searcher
+            .search_with_diagnostics(&[1.0, 2.0, 3.0], 1, 1)
+            .unwrap();
+
+        assert_eq!(results, vec![(10, 0.0)]);
+        assert_eq!(diagnostics.page_reads, 1);
+        assert_eq!(diagnostics.page_physical_bytes, PAGE_ALIGNMENT);
+        assert_eq!(diagnostics.page_bytes, PAGE_ALIGNMENT);
+        // 8-byte id/degree header + 3 f32 vector values + 1 u32 neighbor.
+        assert_eq!(diagnostics.page_logical_bytes, 8 + 3 * 4 + 4);
+        assert!(diagnostics.page_logical_bytes < diagnostics.page_physical_bytes);
+    }
+
+    #[test]
     fn page_search_matches_heap_and_reads_each_visited_node_once() {
         let n = 300;
         let d = 16;
@@ -682,6 +717,12 @@ mod tests {
                 diagnostics.page_bytes,
                 diagnostics.page_reads * PAGE_ALIGNMENT
             );
+            assert_eq!(
+                diagnostics.page_physical_bytes,
+                diagnostics.page_reads * PAGE_ALIGNMENT
+            );
+            assert!(diagnostics.page_logical_bytes <= diagnostics.page_physical_bytes);
+            assert!(diagnostics.page_logical_bytes > 0);
             assert_eq!(diagnostics.graph_reads, 0);
             assert_eq!(diagnostics.vector_reads, 0);
 

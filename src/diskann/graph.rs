@@ -240,6 +240,16 @@ pub struct DiskANNSearchDiagnostics {
     pub page_reads: usize,
     /// Logical bytes read from page-co-located node records.
     pub page_bytes: usize,
+    /// Physical bytes occupied by page-co-located records read by the query.
+    ///
+    /// This is the fixed, page-aligned record footprint and is useful for
+    /// estimating storage traffic. It is separate from `page_logical_bytes`,
+    /// which excludes alignment padding. `page_bytes` remains the legacy
+    /// aligned-record field for backwards-compatible benchmark consumers.
+    pub page_physical_bytes: usize,
+    /// Bytes containing a page record's header, vector, and present neighbors,
+    /// excluding alignment padding.
+    pub page_logical_bytes: usize,
 }
 
 impl DiskANNSearcher {

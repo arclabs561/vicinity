@@ -115,6 +115,8 @@ DIAGNOSTIC_KEYS = (
     "avg_code_bytes",
     "avg_vector_bytes",
     "avg_page_bytes",
+    "avg_page_physical_bytes",
+    "avg_page_logical_bytes",
     "avg_retained_candidates",
     "active_count",
     "update_time_s",
