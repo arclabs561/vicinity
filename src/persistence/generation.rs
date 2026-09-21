@@ -7,6 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 static GENERATION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const CURRENT_FILE: &str = "CURRENT";
+const PUBLISH_LOCK_FILE: &str = ".PUBLISH.lock";
 
 /// The result of a generation publication after the staging directory is
 /// renamed into place.
@@ -100,6 +101,7 @@ impl GenerationWriter {
     /// Validate and publish this generation, preserving whether a failure
     /// happened before or after the `CURRENT` pointer was replaced.
     pub fn publish_with_outcome(self) -> PersistenceResult<PublicationOutcome> {
+        let _lock = PublicationLock::acquire(&self.root)?;
         sync_tree(&self.staging_dir)?;
         let published_dir = self.generations_dir.join(&self.generation_id);
         std::fs::rename(&self.staging_dir, &published_dir)?;
@@ -114,6 +116,40 @@ impl GenerationWriter {
                 })
             }
         }
+    }
+}
+
+struct PublicationLock {
+    path: PathBuf,
+}
+
+impl PublicationLock {
+    fn acquire(root: &Path) -> PersistenceResult<Self> {
+        let path = root.join(PUBLISH_LOCK_FILE);
+        let mut file = match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Err(PersistenceError::LockFailed {
+                    resource: path.display().to_string(),
+                    reason: "another generation publisher holds the lock".into(),
+                });
+            }
+            Err(error) => return Err(error.into()),
+        };
+        use std::io::Write;
+        writeln!(file, "pid={}", std::process::id())?;
+        file.sync_all()?;
+        Ok(Self { path })
+    }
+}
+
+impl Drop for PublicationLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
     }
 }
 
@@ -280,7 +316,11 @@ static FAIL_ROOT_SYNC: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new
 
 #[cfg(test)]
 mod tests {
-    use super::{open_current, GenerationWriter, PublicationOutcome, FAIL_ROOT_SYNC};
+    use super::{
+        open_current, GenerationWriter, PublicationLock, PublicationOutcome, CURRENT_FILE,
+        FAIL_ROOT_SYNC,
+    };
+    use crate::persistence::PersistenceError;
     use tempfile::tempdir;
 
     #[test]
@@ -338,5 +378,17 @@ mod tests {
             }
             PublicationOutcome::Committed(_) => panic!("injected sync should be uncertain"),
         }
+    }
+
+    #[test]
+    fn rejects_concurrent_publisher_without_touching_current() {
+        let root = tempdir().unwrap();
+        let writer = GenerationWriter::create(root.path()).unwrap();
+        std::fs::write(writer.path("manifest.json").unwrap(), b"{}").unwrap();
+        let lock = PublicationLock::acquire(root.path()).unwrap();
+        let error = writer.publish().unwrap_err();
+        drop(lock);
+        assert!(matches!(error, PersistenceError::LockFailed { .. }));
+        assert!(!root.path().join(CURRENT_FILE).exists());
     }
 }

@@ -43,12 +43,20 @@ validation path are ready.
 - A published generation is never modified by the publisher after the pointer
   changes.
 - A pre-commit publication failure leaves the prior `CURRENT` value untouched.
+- Publication takes a root-scoped single-writer lock; concurrent publishers
+  fail explicitly rather than silently racing last-writer-wins.
 - `publish_with_outcome` distinguishes a pre-commit error from a
   `DurabilityUncertain` result after `CURRENT` has been replaced but the final
   root sync failed. The latter is visible to readers and must be reconciled by
   the caller using the returned generation path and error.
 - Readers never resolve a generation outside the configured root.
 - Cleanup is a separate, retention-aware operation.
+
+The lock is an intentionally conservative local-filesystem contract. A crash
+can leave a stale lock file; operators or a future verified cleanup command must
+remove it only after checking that the recorded process is no longer alive.
+Automatic age-based lock stealing is not safe because a slow valid publisher
+can look stale.
 
 ## Adoption gates
 
