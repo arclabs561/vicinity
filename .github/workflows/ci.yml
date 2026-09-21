@@ -309,6 +309,23 @@ jobs:
         run: python -m pytest tests/test_python.py tests/test_benchmark_python_wrapper.py tests/test_download_ann_benchmarks.py tests/test_generate_sparse_mips_smoke_data.py tests/test_summarize_ann_results.py tests/test_plot_comparison.py tests/test_plot_pareto.py -v
       - name: Python wrapper benchmark smoke
         run: python scripts/benchmark_python_wrapper.py --train 256 --queries 16 --dim 16 --k 5 --batch-size 8 --warmup 4 --ef-search 32 --exact-recall --output /tmp/pyvicinity-wrapper.jsonl
+      - name: Python wrapper recall floor
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          rows = [
+              json.loads(line)
+              for line in Path("/tmp/pyvicinity-wrapper.jsonl").read_text().splitlines()
+          ]
+          recall_rows = [
+              row for row in rows if row["phase"] in {"single_query", "batch_query"}
+          ]
+          if len(recall_rows) != 2 or any(row["recall_at_k"] < 0.80 for row in recall_rows):
+              raise SystemExit(f"Python wrapper recall floor failed: {recall_rows}")
+          print("Python wrapper recall floor:", [row["recall_at_k"] for row in recall_rows])
+          PY
       - name: Python harness example
         run: python examples/python/03_ann_benchmarks_harness.py
   # Documentation build
