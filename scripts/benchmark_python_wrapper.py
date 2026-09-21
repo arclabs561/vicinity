@@ -9,6 +9,7 @@ Build the extension first, for example with ``maturin develop --release``.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import platform
 import resource
@@ -151,7 +152,15 @@ def benchmark(args: argparse.Namespace) -> list[dict[str, Any]]:
         "ef_construction": args.ef_construction,
         "ef_search": args.ef_search,
         "seed": args.seed,
+        "repeat": args.repeat,
+        "run_id": f"seed-{args.seed}-repeat-{args.repeat}",
+        "seed_fingerprint": hashlib.sha256(
+            f"{args.seed}:{args.train}:{args.queries}:{args.dim}".encode()
+        ).hexdigest()[:16],
         "warmup_queries": len(warm_queries),
+        "build_mode": "bulk_add_build",
+        "query_mode": "sequential",
+        "cache_state": "warm_after_build",
         "python": platform.python_version(),
         "numpy": np.__version__,
         "platform": platform.platform(),
@@ -207,6 +216,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ef-construction", type=int, default=200)
     parser.add_argument("--ef-search", type=int, default=100)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--repeat", type=int, default=0)
     parser.add_argument(
         "--exact-recall",
         action="store_true",

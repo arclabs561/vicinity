@@ -49,6 +49,8 @@ def test_python_wrapper_benchmark_emits_comparable_phases(tmp_path: Path) -> Non
     assert all(row["result_schema"] == 1 for row in rows)
     assert all(row["algorithm"] == "hnsw" for row in rows)
     assert all(row["exact_recall_enabled"] for row in rows)
+    assert all(row["run_id"] == "seed-42-repeat-0" for row in rows)
+    assert all(row["cache_state"] == "warm_after_build" for row in rows)
     assert all(row["effective_recall_k"] == 3 for row in rows)
     assert all(row["seed"] == 42 and row["dim"] == 8 for row in rows)
     batch = next(row for row in rows if row["phase"] == "batch_query")
