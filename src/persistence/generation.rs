@@ -35,6 +35,7 @@ pub struct GenerationWriter {
     generations_dir: PathBuf,
     staging_dir: PathBuf,
     generation_id: String,
+    expected_current: Option<String>,
 }
 
 impl GenerationWriter {
@@ -43,6 +44,11 @@ impl GenerationWriter {
         let root = root.as_ref().to_path_buf();
         let generations_dir = root.join("generations");
         std::fs::create_dir_all(&generations_dir)?;
+        let expected_current = match std::fs::read_to_string(root.join(CURRENT_FILE)) {
+            Ok(value) => Some(value.trim().to_string()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
         let generation_id = unique_generation_id()?;
         let staging_dir = generations_dir.join(format!(".staging-{generation_id}"));
         std::fs::create_dir(&staging_dir)?;
@@ -51,6 +57,7 @@ impl GenerationWriter {
             generations_dir,
             staging_dir,
             generation_id,
+            expected_current,
         })
     }
 
@@ -102,6 +109,7 @@ impl GenerationWriter {
     /// happened before or after the `CURRENT` pointer was replaced.
     pub fn publish_with_outcome(self) -> PersistenceResult<PublicationOutcome> {
         let _lock = PublicationLock::acquire(&self.root)?;
+        verify_expected_current(&self.root, self.expected_current.as_deref())?;
         sync_tree(&self.staging_dir)?;
         let published_dir = self.generations_dir.join(&self.generation_id);
         std::fs::rename(&self.staging_dir, &published_dir)?;
@@ -117,6 +125,21 @@ impl GenerationWriter {
             }
         }
     }
+}
+
+fn verify_expected_current(root: &Path, expected: Option<&str>) -> PersistenceResult<()> {
+    let current = match std::fs::read_to_string(root.join(CURRENT_FILE)) {
+        Ok(value) => Some(value.trim().to_string()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.into()),
+    };
+    if current.as_deref() != expected {
+        return Err(PersistenceError::LockFailed {
+            resource: root.join(CURRENT_FILE).display().to_string(),
+            reason: "CURRENT changed while this generation was being built".into(),
+        });
+    }
+    Ok(())
 }
 
 struct PublicationLock {
@@ -390,5 +413,17 @@ mod tests {
         drop(lock);
         assert!(matches!(error, PersistenceError::LockFailed { .. }));
         assert!(!root.path().join(CURRENT_FILE).exists());
+    }
+
+    #[test]
+    fn rejects_stale_publisher_after_newer_generation_commits() {
+        let root = tempdir().unwrap();
+        let stale = GenerationWriter::create(root.path()).unwrap();
+        let current = GenerationWriter::create(root.path()).unwrap();
+        std::fs::write(current.path("manifest.json").unwrap(), b"new").unwrap();
+        current.publish().unwrap();
+        std::fs::write(stale.path("manifest.json").unwrap(), b"stale").unwrap();
+        let error = stale.publish().unwrap_err();
+        assert!(error.to_string().contains("CURRENT changed"));
     }
 }
