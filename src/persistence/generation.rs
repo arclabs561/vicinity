@@ -412,6 +412,7 @@ fn validate_generation_id(id: &str) -> PersistenceResult<()> {
 fn validate_relative_path(path: &Path) -> PersistenceResult<()> {
     if path.as_os_str().is_empty()
         || path.is_absolute()
+        || path.to_string_lossy().contains('\\')
         || path.components().any(|component| {
             matches!(
                 component,
