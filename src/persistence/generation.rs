@@ -204,6 +204,73 @@ pub fn open_current(root: impl AsRef<Path>) -> PersistenceResult<PathBuf> {
     Ok(path)
 }
 
+/// A kernel-held shared lease protecting a generation from future cleanup.
+///
+/// The lease is advisory and only has meaning for cleanup code that acquires
+/// the matching exclusive lock. Existing callers may continue using
+/// [`open_current`] when they do not perform generation retention.
+pub struct GenerationLease {
+    generation: PathBuf,
+    file: std::fs::File,
+}
+
+impl GenerationLease {
+    /// Return the immutable generation directory protected by this lease.
+    pub fn path(&self) -> &Path {
+        &self.generation
+    }
+}
+
+impl Drop for GenerationLease {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
+}
+
+/// Resolve `CURRENT` and acquire a shared lease before returning its path.
+///
+/// The pointer is read again after locking so a publication racing this open
+/// causes a retry instead of returning a lease for a generation that is no
+/// longer current.
+pub fn open_current_pinned(root: impl AsRef<Path>) -> PersistenceResult<GenerationLease> {
+    let root = root.as_ref();
+    let leases = root.join("leases");
+    std::fs::create_dir_all(&leases)?;
+    for _ in 0..3 {
+        let current = std::fs::read_to_string(root.join(CURRENT_FILE))?;
+        let generation_id = current.trim().to_owned();
+        validate_generation_id(&generation_id)?;
+        let generation = root.join("generations").join(&generation_id);
+        let metadata = std::fs::symlink_metadata(&generation)?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(PersistenceError::Format(format!(
+                "current generation {} is not a directory",
+                generation.display()
+            )));
+        }
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(leases.join(format!("{generation_id}.lock")))?;
+        file.try_lock_shared()
+            .map_err(|error| PersistenceError::LockFailed {
+                resource: generation.display().to_string(),
+                reason: error.to_string(),
+            })?;
+        let reread = std::fs::read_to_string(root.join(CURRENT_FILE))?;
+        if reread.trim() == generation_id {
+            return Ok(GenerationLease { generation, file });
+        }
+        let _ = file.unlock();
+    }
+    Err(PersistenceError::LockFailed {
+        resource: root.join(CURRENT_FILE).display().to_string(),
+        reason: "CURRENT changed while acquiring a generation lease".into(),
+    })
+}
+
 /// Verify every file in a generation against its `GENERATION.json` inventory.
 ///
 /// The inventory is intentionally not required by [`open_current`], so files
@@ -570,9 +637,9 @@ fn take_injected_failure(root: &Path, point: FaultPoint) -> Option<PersistenceEr
 #[cfg(test)]
 mod tests {
     use super::{
-        open_current, verify_current, verify_generation, FaultPoint, GenerationWriter,
-        PublicationLock, PublicationOutcome, CURRENT_FILE, FAIL_ROOT_SYNC, INJECTED_FAILURES,
-        PUBLISH_LOCK_FILE,
+        open_current, open_current_pinned, verify_current, verify_generation, FaultPoint,
+        GenerationWriter, PublicationLock, PublicationOutcome, CURRENT_FILE, FAIL_ROOT_SYNC,
+        INJECTED_FAILURES, PUBLISH_LOCK_FILE,
     };
     use crate::persistence::PersistenceError;
     use tempfile::tempdir;
@@ -588,6 +655,30 @@ mod tests {
         assert!(published.join("manifest.json").is_file());
         assert_eq!(open_current(root.path()).unwrap(), published);
         assert_eq!(verify_current(root.path()).unwrap(), published);
+    }
+
+    #[test]
+    fn pinned_current_holds_shared_lease_and_exposes_generation_path() {
+        let root = tempdir().unwrap();
+        let published = publish_test_generation(root.path(), b"leased");
+        let lease = open_current_pinned(root.path()).unwrap();
+        assert_eq!(lease.path(), published.as_path());
+        assert!(root
+            .path()
+            .join("leases")
+            .join(format!(
+                "{}.lock",
+                published.file_name().unwrap().to_string_lossy()
+            ))
+            .is_file());
+        let second = open_current_pinned(root.path()).unwrap();
+        assert_eq!(second.path(), published.as_path());
+    }
+
+    fn publish_test_generation(root: &std::path::Path, bytes: &[u8]) -> std::path::PathBuf {
+        let writer = GenerationWriter::create(root).unwrap();
+        std::fs::write(writer.path("manifest.json").unwrap(), bytes).unwrap();
+        writer.publish().unwrap()
     }
 
     #[test]
