@@ -7,11 +7,11 @@
 
 use std::borrow::Cow;
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2};
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyFileNotFoundError, PyOSError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 
 use crate::distance::{self, DistanceMetric as RustMetric};
@@ -19,6 +19,41 @@ use crate::hnsw::{HNSWIndex as RustHNSW, HNSWParams};
 use crate::ivf_pq::{
     IVFPQFileSearcher as RustIVFPQFileSearcher, IVFPQIndex as RustIVFPQ, IVFPQParams,
 };
+
+fn map_io_error(error: std::io::Error) -> PyErr {
+    if error.kind() == std::io::ErrorKind::NotFound {
+        PyFileNotFoundError::new_err(error.to_string())
+    } else {
+        PyOSError::new_err(error.to_string())
+    }
+}
+
+/// Map errors from persistence entry points without changing the established
+/// `ValueError` contract for invalid parameters and index state.
+fn map_persistence_error(error: crate::RetrieveError) -> PyErr {
+    match error {
+        crate::RetrieveError::Io(error) => {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                PyFileNotFoundError::new_err(error.to_string())
+            } else {
+                PyOSError::new_err(error.to_string())
+            }
+        }
+        crate::RetrieveError::InvalidParameter(message) => PyValueError::new_err(message),
+        crate::RetrieveError::FormatError(message)
+        | crate::RetrieveError::Serialization(message) => PyRuntimeError::new_err(message),
+        // Generation persistence currently wraps its I/O errors through the
+        // persistence layer before returning `RetrieveError::Other`.
+        crate::RetrieveError::Other(message) if message.starts_with("persistence I/O:") => {
+            PyOSError::new_err(message)
+        }
+        other => PyRuntimeError::new_err(other.to_string()),
+    }
+}
+
+fn ensure_exists(path: &Path) -> PyResult<()> {
+    std::fs::metadata(path).map(|_| ()).map_err(map_io_error)
+}
 
 /// Distance metric for vector comparison.
 #[pyclass(
@@ -245,16 +280,15 @@ impl PyHNSWIndex {
     /// pyvicinity does not expose deletion or filtered-search APIs today;
     /// snapshots preserve the Rust index state this binding can create.
     fn save(&self, path: PathBuf) -> PyResult<()> {
-        self.inner
-            .save_to_file(path)
-            .map_err(|e| PyValueError::new_err(e.to_string()))
+        self.inner.save_to_file(path).map_err(map_persistence_error)
     }
 
     /// Load an index from a JSON snapshot file written by `save`.
     #[staticmethod]
-    fn load(path: PathBuf) -> PyResult<Self> {
-        let inner =
-            RustHNSW::load_from_file(path).map_err(|e| PyValueError::new_err(e.to_string()))?;
+    fn load(py: Python<'_>, path: PathBuf) -> PyResult<Self> {
+        let inner = py
+            .detach(move || RustHNSW::load_from_file(path))
+            .map_err(map_persistence_error)?;
         Ok(Self {
             ef_search: inner.params.ef_search,
             auto_normalize: inner.params.auto_normalize,
@@ -598,23 +632,20 @@ impl PyIVFPQIndex {
 
     /// Save this index to a directory snapshot.
     fn save(&self, path: PathBuf) -> PyResult<()> {
-        self.inner
-            .save_to_dir(path)
-            .map_err(|e| PyValueError::new_err(e.to_string()))
+        self.inner.save_to_dir(path).map_err(map_persistence_error)
     }
 
     /// Save this index as an immutable generation below ``path``.
     fn save_generation(&self, path: PathBuf) -> PyResult<()> {
         self.inner
             .save_to_generation(path)
-            .map_err(|e| PyValueError::new_err(e.to_string()))
+            .map_err(map_persistence_error)
     }
 
     /// Load an index from a directory snapshot written by `save`.
     #[staticmethod]
     fn load(path: PathBuf) -> PyResult<Self> {
-        let inner =
-            RustIVFPQ::load_from_dir(path).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let inner = RustIVFPQ::load_from_dir(path).map_err(map_persistence_error)?;
         Ok(Self {
             nprobe: inner.nprobe(),
             num_clusters: inner.num_clusters(),
@@ -630,8 +661,8 @@ impl PyIVFPQIndex {
     /// Load the generation named by ``path/CURRENT``.
     #[staticmethod]
     fn load_generation(path: PathBuf) -> PyResult<Self> {
-        let inner = RustIVFPQ::load_from_generation(path)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        ensure_exists(&path.join("CURRENT"))?;
+        let inner = RustIVFPQ::load_from_generation(path).map_err(map_persistence_error)?;
         Ok(Self {
             nprobe: inner.nprobe(),
             num_clusters: inner.num_clusters(),
@@ -825,7 +856,7 @@ impl PyIVFPQFileSearcher {
         } else {
             RustIVFPQFileSearcher::load(path)
         }
-        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        .map_err(map_persistence_error)?;
 
         Ok(Self {
             nprobe: inner.nprobe(),
@@ -841,8 +872,9 @@ impl PyIVFPQFileSearcher {
     /// ``path/CURRENT``.
     #[staticmethod]
     fn load_generation(path: PathBuf) -> PyResult<Self> {
-        let inner = RustIVFPQFileSearcher::load_from_generation(path)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        ensure_exists(&path.join("CURRENT"))?;
+        let inner =
+            RustIVFPQFileSearcher::load_from_generation(path).map_err(map_persistence_error)?;
         Ok(Self {
             nprobe: inner.nprobe(),
             num_clusters: inner.num_clusters(),

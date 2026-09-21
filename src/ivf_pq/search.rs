@@ -862,7 +862,7 @@ impl IVFPQIndex {
     /// compacted index reloads with approximate search available and
     /// `search_reranked()` unavailable.
     pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<(), RetrieveError> {
-        self.save_to_dir_impl(output_dir.as_ref())
+        self.save_to_dir_impl(output_dir.as_ref(), false)
     }
 
     #[cfg(feature = "persistence")]
@@ -873,7 +873,8 @@ impl IVFPQIndex {
     /// API remains available for direct-directory compatibility.
     pub fn save_to_generation(&self, root: impl AsRef<Path>) -> Result<(), RetrieveError> {
         let writer = GenerationWriter::create(root)?;
-        self.save_to_dir_impl(writer.directory())?;
+        self.save_to_dir_impl(writer.directory(), true)?;
+        Self::validate_staged_generation(writer.directory())?;
         writer.publish()?;
         Ok(())
     }
@@ -885,7 +886,11 @@ impl IVFPQIndex {
         Self::load_from_dir(directory)
     }
 
-    fn save_to_dir_impl(&self, output_dir: &Path) -> Result<(), RetrieveError> {
+    fn save_to_dir_impl(
+        &self,
+        output_dir: &Path,
+        include_generation_components: bool,
+    ) -> Result<(), RetrieveError> {
         if !self.built {
             return Err(RetrieveError::InvalidParameter(
                 "cannot save unbuilt IVF-PQ index".into(),
@@ -915,7 +920,7 @@ impl IVFPQIndex {
             Vec::new()
         };
         filter_metadata.sort_by_key(|entry| entry.doc_id);
-        let manifest = IVFPQManifest {
+        let mut manifest = IVFPQManifest {
             version: IVFPQ_FORMAT_VERSION,
             dimension: self.dimension,
             num_vectors: self.num_vectors,
@@ -925,7 +930,11 @@ impl IVFPQIndex {
             quantizer: pq,
             filter_field: self.filter_field.clone(),
             filter_metadata,
+            generation_components: None,
         };
+        if include_generation_components {
+            manifest.generation_components = Some(manifest.expected_generation_components());
+        }
 
         write_json_atomic(&output_dir.join("manifest.json"), &manifest)?;
         write_f32_atomic(&output_dir.join("centroids.bin"), &self.centroids)?;
@@ -947,11 +956,30 @@ impl IVFPQIndex {
         Ok(())
     }
 
+    #[cfg(feature = "persistence")]
+    fn validate_staged_generation(input_dir: &Path) -> Result<(), RetrieveError> {
+        let manifest: IVFPQManifest = read_json(&input_dir.join("manifest.json"))?;
+        validate_manifest(&manifest)?;
+        manifest
+            .validate_generation_components(true)
+            .map_err(RetrieveError::FormatError)?;
+
+        // Exercise both readers before publication: the heap reader validates
+        // metadata and primary payloads, while the file reader also validates
+        // the list-contiguous sidecars used by file-backed generation opens.
+        drop(Self::load_from_dir(input_dir)?);
+        drop(IVFPQFileSearcher::load(input_dir)?);
+        Ok(())
+    }
+
     /// Load an IVF-PQ index saved by [`Self::save_to_dir`].
     pub fn load_from_dir(input_dir: impl AsRef<Path>) -> Result<Self, RetrieveError> {
         let input_dir = input_dir.as_ref();
         let manifest: IVFPQManifest = read_json(&input_dir.join("manifest.json"))?;
         validate_manifest(&manifest)?;
+        manifest
+            .validate_generation_components(false)
+            .map_err(RetrieveError::FormatError)?;
 
         let params = manifest.params.into_params();
         let mut index = Self::new(manifest.dimension, params)?;
@@ -1541,6 +1569,9 @@ impl IVFPQFileSearcher {
     fn load_from_parts(input_dir: &Path, mmap: bool) -> Result<Self, RetrieveError> {
         let manifest: IVFPQManifest = read_json(&input_dir.join("manifest.json"))?;
         validate_manifest(&manifest)?;
+        manifest
+            .validate_generation_components(false)
+            .map_err(RetrieveError::FormatError)?;
 
         let params = manifest.params.clone().into_params();
         let doc_ids = read_u32_exact(&input_dir.join("doc_ids.bin"), manifest.num_vectors)?;
@@ -2497,6 +2528,14 @@ mod tests {
         let mut file = IVFPQFileSearcher::load_from_generation(root.path()).unwrap();
         assert_eq!(file.search(&query, 5).unwrap(), expected);
         let first_current = std::fs::read_to_string(root.path().join("CURRENT")).unwrap();
+        let first_directory = open_current(root.path()).unwrap();
+        let first_manifest: IVFPQManifest =
+            read_json(&first_directory.join("manifest.json")).unwrap();
+        let expected_components = first_manifest.expected_generation_components();
+        assert_eq!(
+            first_manifest.generation_components.as_ref(),
+            Some(&expected_components)
+        );
 
         index.save_to_generation(root.path()).unwrap();
         let second_current = std::fs::read_to_string(root.path().join("CURRENT")).unwrap();
@@ -2506,6 +2545,46 @@ mod tests {
             .join("generations")
             .join(first_current.trim())
             .is_dir());
+    }
+
+    #[cfg(feature = "persistence")]
+    #[test]
+    fn invalid_staged_generation_does_not_replace_current() {
+        let dim = 8;
+        let mut index = IVFPQIndex::new(
+            dim,
+            IVFPQParams {
+                num_clusters: 2,
+                num_codebooks: 2,
+                codebook_size: 8,
+                nprobe: 2,
+                seed: 212,
+                ..IVFPQParams::default()
+            },
+        )
+        .unwrap();
+        for i in 0..32u32 {
+            let vector = (0..dim)
+                .map(|dimension| (i as usize * dim + dimension) as f32)
+                .collect();
+            index.add(i, vector).unwrap();
+        }
+        index.build().unwrap();
+
+        let root = tempfile::tempdir().unwrap();
+        index.save_to_generation(root.path()).unwrap();
+        let current_before = std::fs::read_to_string(root.path().join("CURRENT")).unwrap();
+
+        let writer = GenerationWriter::create(root.path()).unwrap();
+        index.save_to_dir_impl(writer.directory(), true).unwrap();
+        std::fs::write(writer.directory().join("codes.bin"), b"truncated").unwrap();
+
+        let error = IVFPQIndex::validate_staged_generation(writer.directory()).unwrap_err();
+        assert!(error.to_string().contains("size mismatch"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("CURRENT")).unwrap(),
+            current_before
+        );
     }
 
     #[test]

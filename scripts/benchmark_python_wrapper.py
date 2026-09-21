@@ -54,6 +54,7 @@ def exact_neighbors(
     k: int,
 ) -> np.ndarray:
     """Return exact top-k row IDs for the optional benchmark oracle."""
+    k = min(k, len(vectors))
     if metric == "inner_product":
         scores = queries @ vectors.T
         order = np.argpartition(-scores, kth=k - 1, axis=1)[:, :k]
@@ -125,8 +126,9 @@ def benchmark(args: argparse.Namespace) -> list[dict[str, Any]]:
         batch_times.append(elapsed)
 
     recall = None
+    effective_recall_k = min(args.k, args.train)
     if args.exact_recall:
-        expected = exact_neighbors(vectors, queries, args.metric, args.k)
+        expected = exact_neighbors(vectors, queries, args.metric, effective_recall_k)
         recall = {
             "single_query": recall_at_k(np.asarray(single_ids), expected),
             "batch_query": recall_at_k(np.concatenate(batch_ids), expected),
@@ -155,6 +157,7 @@ def benchmark(args: argparse.Namespace) -> list[dict[str, Any]]:
         "platform": platform.platform(),
         "rss_kb_peak": rss_kb(),
         "exact_recall_enabled": args.exact_recall,
+        **({"effective_recall_k": effective_recall_k} if args.exact_recall else {}),
     }
     return [
         {**metadata, "phase": "build", "seconds": build_s},

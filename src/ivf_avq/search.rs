@@ -3,6 +3,8 @@
 use crate::ivf_avq::partitioning::KMeans;
 use crate::ivf_avq::quantization::AnisotropicQuantizer;
 use crate::ivf_avq::reranking;
+#[cfg(feature = "persistence")]
+use crate::persistence::generation::{open_current, GenerationWriter};
 use crate::RetrieveError;
 #[cfg(feature = "persistence")]
 use durability::mmap::{AccessPattern, MappedFile};
@@ -332,6 +334,19 @@ impl IVFAVQIndex {
         Ok(())
     }
 
+    #[cfg(feature = "persistence")]
+    /// Save an IVF-AVQ index as one published generation below `root`.
+    ///
+    /// Existing generations remain available, and readers resolve only the
+    /// atomically published `CURRENT` pointer. The legacy [`Self::save_to_dir`]
+    /// API remains available for direct-directory compatibility.
+    pub fn save_to_generation(&self, root: impl AsRef<Path>) -> Result<(), RetrieveError> {
+        let writer = GenerationWriter::create(root)?;
+        self.save_to_dir(writer.directory())?;
+        writer.publish()?;
+        Ok(())
+    }
+
     /// Load an IVF-AVQ index saved by [`Self::save_to_dir`].
     pub fn load_from_dir(input_dir: impl AsRef<Path>) -> Result<Self, RetrieveError> {
         let input_dir = input_dir.as_ref();
@@ -375,6 +390,13 @@ impl IVFAVQIndex {
         )?;
         index.built = true;
         Ok(index)
+    }
+
+    #[cfg(feature = "persistence")]
+    /// Load the IVF-AVQ index named by a generation root's `CURRENT` pointer.
+    pub fn load_from_generation(root: impl AsRef<Path>) -> Result<Self, RetrieveError> {
+        let directory = open_current(root)?;
+        Self::load_from_dir(directory)
     }
 
     /// Search for the k nearest neighbors of the query vector.
@@ -521,6 +543,13 @@ impl IVFAVQFileSearcher {
     /// Open an IVF-AVQ snapshot for direct file-backed search.
     pub fn open(input_dir: impl AsRef<Path>) -> Result<Self, RetrieveError> {
         Self::open_with_storage(input_dir.as_ref(), false)
+    }
+
+    #[cfg(feature = "persistence")]
+    /// Open the generation named by a root directory's `CURRENT` pointer.
+    pub fn load_from_generation(root: impl AsRef<Path>) -> Result<Self, RetrieveError> {
+        let directory = open_current(root)?;
+        Self::open_mmap(directory)
     }
 
     /// Open an IVF-AVQ snapshot with read-only mmap-backed payloads.
@@ -1524,6 +1553,49 @@ mod tests {
             mmap_searcher.search(&query, 10).unwrap(),
             loaded.search(&query, 10).unwrap()
         );
+    }
+
+    #[cfg(feature = "persistence")]
+    #[test]
+    fn generation_save_load_preserves_search_and_previous_generation() {
+        use rand::{Rng, SeedableRng};
+
+        let dim = 8;
+        let params = IVFAVQParams {
+            num_partitions: 4,
+            nprobe: 4,
+            num_reorder: 32,
+            num_codebooks: 4,
+            codebook_size: 16,
+            seed: 83,
+        };
+        let mut rng = rand::rngs::StdRng::seed_from_u64(83);
+        let mut index = IVFAVQIndex::new(dim, params).unwrap();
+        for i in 0..96 {
+            let vector: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
+            index.add(50_000 + i as u32, vector).unwrap();
+        }
+        index.build().unwrap();
+
+        let query: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
+        let expected = index.search(&query, 10).unwrap();
+        let root = tempfile::tempdir().unwrap();
+
+        index.save_to_generation(root.path()).unwrap();
+        let loaded = IVFAVQIndex::load_from_generation(root.path()).unwrap();
+        assert_eq!(loaded.search(&query, 10).unwrap(), expected);
+        let mut file_searcher = IVFAVQFileSearcher::load_from_generation(root.path()).unwrap();
+        assert_eq!(file_searcher.search(&query, 10).unwrap(), expected);
+        let first_current = std::fs::read_to_string(root.path().join("CURRENT")).unwrap();
+
+        index.save_to_generation(root.path()).unwrap();
+        let second_current = std::fs::read_to_string(root.path().join("CURRENT")).unwrap();
+        assert_ne!(first_current, second_current);
+        assert!(root
+            .path()
+            .join("generations")
+            .join(first_current.trim())
+            .is_dir());
     }
 
     #[test]

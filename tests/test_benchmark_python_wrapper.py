@@ -49,6 +49,7 @@ def test_python_wrapper_benchmark_emits_comparable_phases(tmp_path: Path) -> Non
     assert all(row["result_schema"] == 1 for row in rows)
     assert all(row["algorithm"] == "hnsw" for row in rows)
     assert all(row["exact_recall_enabled"] for row in rows)
+    assert all(row["effective_recall_k"] == 3 for row in rows)
     assert all(row["seed"] == 42 and row["dim"] == 8 for row in rows)
     batch = next(row for row in rows if row["phase"] == "batch_query")
     assert batch["batches"] == 2
@@ -56,3 +57,39 @@ def test_python_wrapper_benchmark_emits_comparable_phases(tmp_path: Path) -> Non
     assert single["queries_performed"] == 8
     assert single["seconds_per_query_p95"] >= single["seconds_per_query_p50"]
     assert 0.0 <= single["recall_at_k"] <= 1.0
+
+
+def test_exact_recall_clamps_k_to_indexed_vectors(tmp_path: Path) -> None:
+    output = tmp_path / "wrapper.jsonl"
+    script = Path(__file__).parents[1] / "scripts" / "benchmark_python_wrapper.py"
+    subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--output",
+            str(output),
+            "--train",
+            "3",
+            "--queries",
+            "2",
+            "--dim",
+            "4",
+            "--k",
+            "5",
+            "--batch-size",
+            "2",
+            "--warmup",
+            "1",
+            "--ef-search",
+            "8",
+            "--exact-recall",
+        ],
+        check=True,
+    )
+
+    rows = [json.loads(line) for line in output.read_text().splitlines()]
+    assert all(row["k"] == 5 for row in rows)
+    assert all(row["effective_recall_k"] == 3 for row in rows)
+    query_rows = [row for row in rows if "recall_at_k" in row]
+    assert len(query_rows) == 2
+    assert all(0.0 <= row["recall_at_k"] <= 1.0 for row in query_rows)

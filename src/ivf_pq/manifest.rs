@@ -54,6 +54,47 @@ pub(super) struct IVFPQManifest {
     pub(super) filter_field: Option<String>,
     #[serde(default)]
     pub(super) filter_metadata: Vec<PersistedFilterMetadata>,
+    /// Complete payload inventory for generation snapshots. Legacy
+    /// direct-directory snapshots predate this field and remain loadable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) generation_components: Option<Vec<String>>,
+}
+
+impl IVFPQManifest {
+    pub(super) fn expected_generation_components(&self) -> Vec<String> {
+        let mut components = vec![
+            "centroids.bin",
+            "clusters.bin",
+            "codes.bin",
+            "doc_ids.bin",
+            "list_codes.bin",
+            "list_offsets.bin",
+        ];
+        if self.raw_vectors_present {
+            components.push("raw_vectors.bin");
+        }
+        components.into_iter().map(String::from).collect()
+    }
+
+    pub(super) fn validate_generation_components(
+        &self,
+        require_inventory: bool,
+    ) -> Result<(), String> {
+        let Some(components) = &self.generation_components else {
+            return if require_inventory {
+                Err("IVF-PQ generation manifest is missing its component inventory".into())
+            } else {
+                Ok(())
+            };
+        };
+        let expected = self.expected_generation_components();
+        if components != &expected {
+            return Err(format!(
+                "IVF-PQ generation component inventory mismatch: expected {expected:?}, got {components:?}"
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]

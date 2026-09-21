@@ -274,6 +274,26 @@ def test_save_load_round_trip(tmp_path) -> None:
     assert abs(float(dists[0])) < 1e-4
 
 
+def test_hnsw_load_missing_file_raises_file_not_found(tmp_path) -> None:
+    with pytest.raises(FileNotFoundError):
+        HNSWIndex.load(tmp_path / "missing.json")
+
+
+def test_hnsw_load_corrupt_snapshot_raises_runtime_error(tmp_path) -> None:
+    path = tmp_path / "corrupt.json"
+    path.write_text("not valid JSON", encoding="utf-8")
+
+    with pytest.raises(RuntimeError):
+        HNSWIndex.load(path)
+
+
+def test_hnsw_save_io_failure_raises_os_error(tmp_path) -> None:
+    index, _ = _build(n=8, dim=4)
+
+    with pytest.raises(OSError):
+        index.save(tmp_path)
+
+
 def test_distance_metric_equality() -> None:
     assert DistanceMetric.Cosine == DistanceMetric.Cosine
     assert DistanceMetric.Cosine != DistanceMetric.L2
@@ -580,6 +600,29 @@ def test_ivfpq_save_load_round_trip(tmp_path) -> None:
     ids, dists = loaded.search(x[0], k=5, nprobe=8, rerank_pool=len(x))
     assert ids[0] == 0
     assert abs(float(dists[0])) < 1e-4
+
+
+def test_ivfpq_load_missing_snapshot_raises_file_not_found(tmp_path) -> None:
+    with pytest.raises(FileNotFoundError):
+        IVFPQIndex.load(tmp_path / "missing")
+    with pytest.raises(FileNotFoundError):
+        IVFPQFileSearcher.load(tmp_path / "missing")
+
+
+def test_ivfpq_load_corrupt_manifest_raises_runtime_error(tmp_path) -> None:
+    path = tmp_path / "ivfpq"
+    path.mkdir()
+    (path / "manifest.json").write_text("not valid JSON", encoding="utf-8")
+
+    with pytest.raises(RuntimeError):
+        IVFPQIndex.load(path)
+
+
+def test_ivfpq_persistence_parameter_errors_stay_value_errors(tmp_path) -> None:
+    index = IVFPQIndex(dim=8, num_clusters=8, num_codebooks=4, codebook_size=8)
+
+    with pytest.raises(ValueError, match="unbuilt"):
+        index.save(tmp_path / "ivfpq")
 
 
 def test_ivfpq_generation_round_trip(tmp_path) -> None:
