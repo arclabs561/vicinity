@@ -51,9 +51,13 @@ use std::collections::HashSet;
 use std::io::{BufReader, BufWriter, Write};
 #[cfg(feature = "serde")]
 use std::path::Path;
+#[cfg(feature = "serde")]
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(feature = "serde")]
 const LSM_FORMAT_VERSION: u32 = 1;
+#[cfg(feature = "serde")]
+static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
 /// Configuration for LSM-tiered streaming.
 #[derive(Debug, Clone)]
@@ -968,15 +972,40 @@ fn write_atomic(
     path: &Path,
     write: impl FnOnce(&mut BufWriter<std::fs::File>) -> std::io::Result<()>,
 ) -> Result<()> {
-    let tmp_path = path.with_extension("tmp");
-    {
-        let file = std::fs::File::create(&tmp_path)?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("snapshot");
+    let (tmp_path, file) = loop {
+        let temp_name = format!(
+            ".{file_name}.tmp-{}-{}",
+            std::process::id(),
+            NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed)
+        );
+        let tmp_path = path.with_file_name(temp_name);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp_path)
+        {
+            Ok(file) => break (tmp_path, file),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        }
+    };
+    let result = (|| {
         let mut writer = BufWriter::new(file);
         write(&mut writer)?;
         writer.flush()?;
+        writer.get_ref().sync_all()?;
+        drop(writer);
+        std::fs::rename(&tmp_path, path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp_path);
     }
-    std::fs::rename(&tmp_path, path)?;
-    Ok(())
+    result
 }
 
 #[cfg(test)]
@@ -1178,6 +1207,47 @@ mod tests {
             assert_ne!(id, 5);
             assert_ne!(id, 7);
         }
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn atomic_writes_use_unique_temps_and_clean_failures() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("snapshot.bin");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let first_path = path.clone();
+        let first_barrier = barrier.clone();
+        let first = std::thread::spawn(move || {
+            first_barrier.wait();
+            write_atomic(&first_path, |writer| writer.write_all(b"first"))
+        });
+        let second_path = path.clone();
+        let second_barrier = barrier;
+        let second = std::thread::spawn(move || {
+            second_barrier.wait();
+            write_atomic(&second_path, |writer| writer.write_all(b"second"))
+        });
+        assert!(first.join().unwrap().is_ok());
+        assert!(second.join().unwrap().is_ok());
+        assert!(matches!(
+            std::fs::read(&path).unwrap().as_slice(),
+            b"first" | b"second"
+        ));
+
+        let failed_path = dir.path().join("failed.bin");
+        assert!(write_atomic(&failed_path, |_writer| {
+            Err(std::io::Error::other("intentional test failure"))
+        })
+        .is_err());
+        assert!(!dir
+            .path()
+            .read_dir()
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .any(|entry| entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".failed.bin.tmp-")));
     }
 
     #[cfg(feature = "serde")]

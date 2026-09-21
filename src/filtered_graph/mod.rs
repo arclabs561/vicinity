@@ -50,7 +50,10 @@ use smallvec::SmallVec;
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::io::{BufReader, BufWriter, Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+
+static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 const FILTERED_GRAPH_FORMAT_VERSION: u32 = 1;
 const FILTERED_GRAPH_NEIGHBORS_MAGIC: &[u8; 8] = b"FILTGRAF";
@@ -954,14 +957,47 @@ fn write_atomic<F>(path: &Path, write: F) -> Result<(), RetrieveError>
 where
     F: FnOnce(&mut BufWriter<std::fs::File>) -> std::io::Result<()>,
 {
-    let tmp_path = path.with_extension("tmp");
-    let file = std::fs::File::create(&tmp_path)?;
-    let mut writer = BufWriter::new(file);
-    write(&mut writer)?;
-    writer.flush()?;
-    drop(writer);
-    std::fs::rename(&tmp_path, path)?;
-    Ok(())
+    let (tmp_path, file) = create_temp_file(path)?;
+    let result: std::io::Result<()> = (|| {
+        let mut writer = BufWriter::new(file);
+        write(&mut writer)?;
+        writer.flush()?;
+        writer.get_ref().sync_all()?;
+        drop(writer);
+        std::fs::rename(&tmp_path, path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp_path);
+    }
+    result.map_err(Into::into)
+}
+
+fn create_temp_file(path: &Path) -> std::io::Result<(PathBuf, std::fs::File)> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let name = path.file_name().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "snapshot path has no filename",
+        )
+    })?;
+    let process_id = std::process::id();
+    loop {
+        let counter = TEMP_FILE_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
+        let tmp_path = parent.join(format!(
+            ".{}.tmp.{process_id}.{counter}",
+            name.to_string_lossy()
+        ));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp_path)
+        {
+            Ok(file) => return Ok((tmp_path, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, RetrieveError> {

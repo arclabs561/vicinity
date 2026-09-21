@@ -52,8 +52,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BinaryHeap, HashMap};
 use std::io::{BufReader, BufWriter, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const CURATOR_FORMAT_VERSION: u32 = 1;
+static NEXT_TEMP_FILE_ID: AtomicU64 = AtomicU64::new(0);
 
 /// Curator parameters.
 #[derive(Clone, Debug)]
@@ -829,15 +831,36 @@ fn write_atomic(
     path: &Path,
     write: impl FnOnce(&mut BufWriter<std::fs::File>) -> std::io::Result<()>,
 ) -> Result<(), RetrieveError> {
-    let tmp_path = path.with_extension("tmp");
-    {
-        let file = std::fs::File::create(&tmp_path)?;
+    let (tmp_path, file) = loop {
+        let tmp_path = path.with_extension(format!(
+            "tmp-{}-{}",
+            std::process::id(),
+            NEXT_TEMP_FILE_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp_path)
+        {
+            Ok(file) => break (tmp_path, file),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        }
+    };
+
+    let result: std::io::Result<()> = (|| {
         let mut writer = BufWriter::new(file);
         write(&mut writer)?;
         writer.flush()?;
+        writer.get_ref().sync_all()?;
+        drop(writer);
+        std::fs::rename(&tmp_path, path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp_path);
     }
-    std::fs::rename(&tmp_path, path)?;
-    Ok(())
+    result.map_err(Into::into)
 }
 
 fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, RetrieveError> {
@@ -1105,6 +1128,38 @@ mod tests {
             Err(err) => panic!("expected format error, got {err:?}"),
             Ok(_) => panic!("expected format error, got successful load"),
         }
+    }
+
+    #[test]
+    fn atomic_write_uses_unique_temp_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("snapshot.bin");
+        let legacy_tmp = dir.path().join("snapshot.tmp");
+        std::fs::write(&legacy_tmp, b"preserve").unwrap();
+
+        write_atomic(&path, |writer| writer.write_all(b"contents")).unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"contents");
+        assert_eq!(std::fs::read(&legacy_tmp).unwrap(), b"preserve");
+    }
+
+    #[test]
+    fn atomic_write_cleans_up_failed_temp_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("snapshot.bin");
+
+        let result = write_atomic(&path, |writer| {
+            writer.write_all(b"partial")?;
+            Err(std::io::Error::other("injected write failure"))
+        });
+
+        assert!(result.is_err());
+        assert!(!path.exists());
+        let remaining: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert!(remaining.is_empty(), "leftover files: {remaining:?}");
     }
 
     #[test]

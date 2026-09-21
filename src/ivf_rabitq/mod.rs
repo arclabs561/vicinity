@@ -71,9 +71,11 @@ use qntz::rabitq::{RaBitQConfig, RaBitQQuantizer};
 use serde::{Deserialize, Serialize};
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const IVFRABITQ_FORMAT_VERSION: u32 = 1;
 const IVFRABITQ_CLUSTERS_MAGIC: &[u8; 8] = b"IVFRBQCL";
+static IVFRABITQ_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// IVF-RaBitQ parameters.
 #[derive(Clone, Debug)]
@@ -732,15 +734,40 @@ fn write_atomic(
     path: &Path,
     write: impl FnOnce(&mut BufWriter<std::fs::File>) -> std::io::Result<()>,
 ) -> Result<(), RetrieveError> {
-    let tmp_path = path.with_extension("tmp");
-    {
-        let file = std::fs::File::create(&tmp_path)?;
-        let mut writer = BufWriter::new(file);
-        write(&mut writer)?;
-        writer.flush()?;
+    let (tmp_path, file) = create_temp_file(path)?;
+    let result = (|| {
+        {
+            let mut writer = BufWriter::new(file);
+            write(&mut writer)?;
+            writer.flush()?;
+            writer.get_ref().sync_all()?;
+        }
+        std::fs::rename(&tmp_path, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp_path);
     }
-    std::fs::rename(&tmp_path, path)?;
-    Ok(())
+    result.map_err(Into::into)
+}
+
+fn create_temp_file(path: &Path) -> std::io::Result<(std::path::PathBuf, std::fs::File)> {
+    for _ in 0..100 {
+        let sequence = IVFRABITQ_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let tmp_path = path.with_extension(format!("tmp-{}-{sequence}", std::process::id()));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp_path)
+        {
+            Ok(file) => return Ok((tmp_path, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "unable to create a unique snapshot temporary file",
+    ))
 }
 
 fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, RetrieveError> {
@@ -1076,6 +1103,46 @@ mod tests {
         let loaded = IVFRaBitQIndex::load_from_dir(dir.path()).unwrap();
 
         assert_eq!(loaded.search(query, 10).unwrap(), before);
+    }
+
+    #[test]
+    fn atomic_writes_use_unique_temps_and_clean_failures() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("snapshot.bin");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let first_path = path.clone();
+        let first_barrier = barrier.clone();
+        let first = std::thread::spawn(move || {
+            first_barrier.wait();
+            write_atomic(&first_path, |writer| writer.write_all(b"first"))
+        });
+        let second_path = path.clone();
+        let second_barrier = barrier;
+        let second = std::thread::spawn(move || {
+            second_barrier.wait();
+            write_atomic(&second_path, |writer| writer.write_all(b"second"))
+        });
+        assert!(first.join().unwrap().is_ok());
+        assert!(second.join().unwrap().is_ok());
+        assert!(matches!(
+            std::fs::read(&path).unwrap().as_slice(),
+            b"first" | b"second"
+        ));
+
+        let failed_path = dir.path().join("failed.bin");
+        assert!(write_atomic(&failed_path, |_writer| {
+            Err(std::io::Error::other("intentional test failure"))
+        })
+        .is_err());
+        assert!(!dir
+            .path()
+            .read_dir()
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|entry| entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("failed.tmp-")));
     }
 
     #[test]
