@@ -23,6 +23,17 @@ the raw staging-directory accessor. Readers resolve only `CURRENT`, validate
 that it names a safe generation directory, and then open files within that
 directory.
 
+Each newly published generation also contains a reserved `GENERATION.json`
+inventory. It records version `1` and a sorted list of every regular file
+other than the inventory itself, with its relative path, byte length, and
+CRC32. `persistence::generation::verify_generation` strictly checks that
+inventory, including the file set, lengths, and checksums;
+`verify_current` resolves `CURRENT` and applies the same check. These are
+explicit integrity checks rather than an implicit change to every reader.
+Generations created before the inventory was introduced remain loadable through
+`open_current`, but intentionally fail strict verification until migrated or
+re-published.
+
 The first implementation is a reusable filesystem foundation in
 `persistence::generation`. It deliberately does not rewrite existing index
 formats automatically. Each format can adopt it once its manifest and
