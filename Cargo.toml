@@ -85,7 +85,7 @@ getrandom = { version = "0.3", features = ["wasm_js"] }
 
 [features]
 default = ["hnsw", "innr"]
-persistence = ["serde", "dep:postcard", "dep:durability", "dep:fs4"]
+persistence = ["serde", "dep:serde_json", "dep:postcard", "dep:durability", "dep:fs4"]
 serde = ["dep:serde", "dep:serde_json", "smallvec/serde"]
 hnsw = ["innr"]
 # Freezes HNSW upper layers into compact eligible-node CSR storage after build.

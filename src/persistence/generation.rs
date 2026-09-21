@@ -1,6 +1,8 @@
 //! Crash-oriented publication of multi-file index generations.
 
 use super::error::{PersistenceError, PersistenceResult};
+use serde::{Deserialize, Serialize};
+use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -8,6 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 static GENERATION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const CURRENT_FILE: &str = "CURRENT";
 const PUBLISH_LOCK_FILE: &str = ".PUBLISH.lock";
+const INVENTORY_FILE: &str = "GENERATION.json";
 
 /// The result of a generation publication after the staging directory is
 /// renamed into place.
@@ -114,6 +117,7 @@ impl GenerationWriter {
         if let Some(error) = take_injected_failure(&self.root, FaultPoint::BeforeStagingSync) {
             return Err(error);
         }
+        write_inventory(&self.staging_dir)?;
         sync_tree(&self.staging_dir)?;
         let published_dir = self.generations_dir.join(&self.generation_id);
         std::fs::rename(&self.staging_dir, &published_dir)?;
@@ -198,6 +202,193 @@ pub fn open_current(root: impl AsRef<Path>) -> PersistenceResult<PathBuf> {
         )));
     }
     Ok(path)
+}
+
+/// Verify every file in a generation against its `GENERATION.json` inventory.
+///
+/// The inventory is intentionally not required by [`open_current`], so files
+/// written by older versions remain loadable. Callers that need integrity
+/// verification should use this strict API; a missing or malformed inventory,
+/// an unexpected file, a missing file, or a checksum/length mismatch fails.
+pub fn verify_generation(generation: impl AsRef<Path>) -> PersistenceResult<()> {
+    let generation = generation.as_ref();
+    let inventory_path = generation.join(INVENTORY_FILE);
+    let bytes = std::fs::read(&inventory_path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            PersistenceError::Format(format!(
+                "generation inventory {} is missing",
+                inventory_path.display()
+            ))
+        } else {
+            error.into()
+        }
+    })?;
+    let inventory: GenerationInventory = serde_json::from_slice(&bytes).map_err(|error| {
+        PersistenceError::Format(format!("invalid generation inventory: {error}"))
+    })?;
+    if inventory.version != 1 {
+        return Err(PersistenceError::Format(format!(
+            "unsupported generation inventory version {}",
+            inventory.version
+        )));
+    }
+    if inventory
+        .files
+        .windows(2)
+        .any(|pair| pair[0].path >= pair[1].path)
+    {
+        return Err(PersistenceError::Format(
+            "generation inventory paths must be strictly sorted and unique".into(),
+        ));
+    }
+    for file in &inventory.files {
+        validate_relative_path(Path::new(&file.path))?;
+        if file.path == INVENTORY_FILE {
+            return Err(PersistenceError::Format(
+                "GENERATION.json cannot inventory itself".into(),
+            ));
+        }
+    }
+
+    let mut actual = Vec::new();
+    collect_files(generation, generation, &mut actual)?;
+    actual.sort_by(|a, b| a.path.cmp(&b.path));
+    for file in &actual {
+        let Some(expected) = inventory
+            .files
+            .binary_search_by(|candidate| candidate.path.cmp(&file.path))
+            .ok()
+            .map(|index| &inventory.files[index])
+        else {
+            return Err(PersistenceError::Format(format!(
+                "generation file {} is absent from GENERATION.json inventory",
+                file.path
+            )));
+        };
+        if expected.length != file.length {
+            return Err(PersistenceError::Format(format!(
+                "generation file {} length mismatch: expected {}, got {}",
+                file.path, expected.length, file.length
+            )));
+        }
+        if expected.crc32 != file.crc32 {
+            return Err(PersistenceError::ChecksumMismatch {
+                expected: expected.crc32,
+                actual: file.crc32,
+            });
+        }
+    }
+    if inventory.files.len() != actual.len() {
+        return Err(PersistenceError::Format(
+            "GENERATION.json lists a file that is missing from the generation".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Resolve and strictly verify the generation named by `CURRENT`.
+pub fn verify_current(root: impl AsRef<Path>) -> PersistenceResult<PathBuf> {
+    let generation = open_current(root)?;
+    verify_generation(&generation)?;
+    Ok(generation)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GenerationFile {
+    path: String,
+    length: u64,
+    crc32: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GenerationInventory {
+    version: u32,
+    files: Vec<GenerationFile>,
+}
+
+fn write_inventory(generation: &Path) -> PersistenceResult<()> {
+    let inventory_path = generation.join(INVENTORY_FILE);
+    if inventory_path.exists() {
+        return Err(PersistenceError::Format(
+            "GENERATION.json is reserved for the generation inventory".into(),
+        ));
+    }
+    let mut files = Vec::new();
+    collect_files(generation, generation, &mut files)?;
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    let inventory = GenerationInventory { version: 1, files };
+    let bytes = serde_json::to_vec_pretty(&inventory).map_err(|error| {
+        PersistenceError::Serialization(format!("generation inventory: {error}"))
+    })?;
+    std::fs::write(inventory_path, bytes)?;
+    Ok(())
+}
+
+fn collect_files(
+    root: &Path,
+    path: &Path,
+    files: &mut Vec<GenerationFile>,
+) -> PersistenceResult<()> {
+    for entry in std::fs::read_dir(path)? {
+        let entry = entry?;
+        let entry_path = entry.path();
+        let metadata = std::fs::symlink_metadata(&entry_path)?;
+        let file_type = metadata.file_type();
+        if file_type.is_symlink() {
+            return Err(PersistenceError::Format(format!(
+                "generation contains symlink {}",
+                entry_path.display()
+            )));
+        }
+        if file_type.is_dir() {
+            collect_files(root, &entry_path, files)?;
+        } else if file_type.is_file() {
+            let relative = entry_path.strip_prefix(root).map_err(|error| {
+                PersistenceError::InvalidState(format!("generation path: {error}"))
+            })?;
+            let relative = relative.to_str().ok_or_else(|| {
+                PersistenceError::Format("generation paths must be valid UTF-8".into())
+            })?;
+            if relative == INVENTORY_FILE {
+                continue;
+            }
+            let (length, crc32) = checksum_file(&entry_path)?;
+            files.push(GenerationFile {
+                path: relative.replace(std::path::MAIN_SEPARATOR, "/"),
+                length,
+                crc32,
+            });
+        } else {
+            return Err(PersistenceError::Format(format!(
+                "generation contains unsupported entry {}",
+                entry_path.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn checksum_file(path: &Path) -> PersistenceResult<(u64, u32)> {
+    let mut crc = u32::MAX;
+    let mut length = 0;
+    let mut bytes = [0_u8; 64 * 1024];
+    let mut file = std::fs::File::open(path)?;
+    loop {
+        let read = file.read(&mut bytes)?;
+        if read == 0 {
+            break;
+        }
+        length += read as u64;
+        for &byte in &bytes[..read] {
+            crc ^= u32::from(byte);
+            for _ in 0..8 {
+                crc = (crc >> 1) ^ (0xEDB8_8320 & (!((crc & 1).wrapping_sub(1))));
+            }
+        }
+    }
+    Ok((length, !crc))
 }
 
 fn unique_generation_id() -> PersistenceResult<String> {
@@ -378,9 +569,11 @@ fn take_injected_failure(root: &Path, point: FaultPoint) -> Option<PersistenceEr
 #[cfg(test)]
 mod tests {
     use super::{
-        open_current, FaultPoint, GenerationWriter, PublicationLock, PublicationOutcome,
-        CURRENT_FILE, FAIL_ROOT_SYNC, INJECTED_FAILURES, PUBLISH_LOCK_FILE,
+        open_current, verify_current, verify_generation, FaultPoint, GenerationWriter,
+        PublicationLock, PublicationOutcome, CURRENT_FILE, FAIL_ROOT_SYNC, INJECTED_FAILURES,
+        PUBLISH_LOCK_FILE,
     };
+    use crate::persistence::PersistenceError;
     use tempfile::tempdir;
 
     #[test]
@@ -393,6 +586,35 @@ mod tests {
         let published = writer.publish().unwrap();
         assert!(published.join("manifest.json").is_file());
         assert_eq!(open_current(root.path()).unwrap(), published);
+        assert_eq!(verify_current(root.path()).unwrap(), published);
+    }
+
+    #[test]
+    fn inventory_is_deterministic_and_detects_tampering() {
+        let root = tempdir().unwrap();
+        let writer = GenerationWriter::create(root.path()).unwrap();
+        std::fs::write(writer.path("z.bin").unwrap(), b"z").unwrap();
+        std::fs::write(writer.path("a.bin").unwrap(), b"a").unwrap();
+        let published = writer.publish().unwrap();
+        let inventory = std::fs::read_to_string(published.join("GENERATION.json")).unwrap();
+        assert!(inventory.find("a.bin").unwrap() < inventory.find("z.bin").unwrap());
+        verify_generation(&published).unwrap();
+        std::fs::write(published.join("a.bin"), b"x").unwrap();
+        assert!(matches!(
+            verify_generation(&published),
+            Err(PersistenceError::ChecksumMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn strict_verification_rejects_legacy_generation_without_inventory() {
+        let root = tempdir().unwrap();
+        let generation = root.path().join("generations/legacy");
+        std::fs::create_dir_all(&generation).unwrap();
+        std::fs::write(generation.join("manifest"), b"legacy").unwrap();
+        std::fs::write(root.path().join(CURRENT_FILE), "legacy\n").unwrap();
+        assert!(open_current(root.path()).is_ok());
+        assert!(verify_current(root.path()).is_err());
     }
 
     #[test]
