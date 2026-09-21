@@ -10,7 +10,7 @@ use std::collections::HashSet;
 
 /// Compute recall@k: fraction of true k-nearest neighbors that were retrieved.
 ///
-/// recall@k = |retrieved ∩ ground_truth| / k
+/// recall@k = |retrieved ∩ ground_truth| / min(k, |ground_truth|)
 ///
 /// # Arguments
 ///
@@ -26,11 +26,15 @@ pub fn recall_at_k(ground_truth: &[u32], retrieved: &[u32], k: usize) -> f32 {
         return 0.0;
     }
 
-    let gt_set: HashSet<u32> = ground_truth.iter().take(k).copied().collect();
-    let retrieved_set: HashSet<u32> = retrieved.iter().take(k).copied().collect();
+    let effective_k = k.min(ground_truth.len());
+    if effective_k == 0 {
+        return 0.0;
+    }
+    let gt_set: HashSet<u32> = ground_truth.iter().take(effective_k).copied().collect();
+    let retrieved_set: HashSet<u32> = retrieved.iter().take(effective_k).copied().collect();
 
     let intersection = gt_set.intersection(&retrieved_set).count();
-    intersection as f32 / k as f32
+    intersection as f32 / effective_k as f32
 }
 
 /// Compute precision@k: fraction of retrieved items that are true neighbors.
@@ -60,8 +64,20 @@ pub fn precision_at_k(ground_truth: &[u32], retrieved: &[u32], k: usize) -> f32 
 
 /// Compute mean recall across multiple queries.
 pub fn mean_recall(ground_truths: &[Vec<u32>], retrievals: &[Vec<u32>], k: usize) -> f32 {
+    mean_recall_checked(ground_truths, retrievals, k).unwrap_or(0.0)
+}
+
+/// Compute mean recall while rejecting mismatched query counts.
+pub fn mean_recall_checked(
+    ground_truths: &[Vec<u32>],
+    retrievals: &[Vec<u32>],
+    k: usize,
+) -> Result<f32, &'static str> {
     if ground_truths.is_empty() {
-        return 0.0;
+        return Ok(0.0);
+    }
+    if ground_truths.len() != retrievals.len() {
+        return Err("ground-truth and retrieval query counts differ");
     }
 
     let total: f32 = ground_truths
@@ -70,7 +86,7 @@ pub fn mean_recall(ground_truths: &[Vec<u32>], retrievals: &[Vec<u32>], k: usize
         .map(|(gt, ret)| recall_at_k(gt, ret, k))
         .sum();
 
-    total / ground_truths.len() as f32
+    Ok(total / ground_truths.len() as f32)
 }
 
 /// Compute recall at multiple k values.
@@ -217,6 +233,16 @@ mod tests {
         // Zero recall
         let miss = vec![6, 7, 8, 9, 10];
         assert!((recall_at_k(&gt, &miss, 5) - 0.0).abs() < 0.001);
+
+        let short_gt = vec![1, 2];
+        assert!((recall_at_k(&short_gt, &short_gt, 5) - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn checked_mean_recall_rejects_shape_mismatch() {
+        let ground_truths = vec![vec![1, 2], vec![3, 4]];
+        let retrievals = vec![vec![1, 2]];
+        assert!(mean_recall_checked(&ground_truths, &retrievals, 2).is_err());
     }
 
     #[test]
