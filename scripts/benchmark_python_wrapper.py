@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import platform
 import resource
 import sys
@@ -161,6 +162,7 @@ def benchmark(args: argparse.Namespace) -> list[dict[str, Any]]:
         "build_mode": "bulk_add_build",
         "query_mode": "sequential",
         "cache_state": "warm_after_build",
+        "threads": int(os.environ.get("RAYON_NUM_THREADS", os.cpu_count() or 1)),
         "python": platform.python_version(),
         "numpy": np.__version__,
         "platform": platform.platform(),
