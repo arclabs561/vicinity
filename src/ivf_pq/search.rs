@@ -2569,6 +2569,7 @@ mod tests {
             .join("generations")
             .join(first_current.trim())
             .is_dir());
+        assert_eq!(pinned_file.search(&query, 5).unwrap(), expected);
     }
 
     #[cfg(feature = "persistence")]

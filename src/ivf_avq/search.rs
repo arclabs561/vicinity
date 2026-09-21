@@ -1687,6 +1687,7 @@ mod tests {
             .join("generations")
             .join(first_current.trim())
             .is_dir());
+        assert_eq!(pinned_file_searcher.search(&query, 10).unwrap(), expected);
     }
 
     #[test]
