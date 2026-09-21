@@ -63,12 +63,12 @@ validation path are ready.
 - Readers never resolve a generation outside the configured root.
 - Cleanup is a separate, retention-aware operation.
 
-Generation cleanup is not yet safe to automate. `open_current` returns a path
-without a reader lifetime token, so deleting an older generation concurrently
-with a file-backed reader could invalidate that reader. Before retention or
-garbage collection is enabled, add a kernel-held per-generation reader lease,
-make file-backed readers retain it, and have cleanup acquire the corresponding
-exclusive lock before removing a generation. Until that work lands, published
+Generation cleanup is not yet safe to automate. `open_current` remains a
+compatibility path without a reader lifetime token, while
+`open_current_pinned` now provides a kernel-held per-generation shared lease.
+Before retention or garbage collection is enabled, file-backed readers must
+retain that lease and cleanup must acquire the corresponding exclusive lock
+before removing a generation. Until reader adoption lands, published
 generations are retained and cleanup remains an operator-owned decision.
 
 The lock pathname is permanent, but ownership is held by a kernel advisory lock
