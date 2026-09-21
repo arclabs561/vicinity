@@ -15,7 +15,7 @@ use super::persistence::{
 };
 use super::pq::ProductQuantizer;
 #[cfg(feature = "persistence")]
-use crate::persistence::generation::{open_current, GenerationWriter};
+use crate::persistence::generation::{open_current, GenerationWriter, PublicationOutcome};
 use crate::pq_simd::{adc_batch_dispatch_into, PackedCodes4bit, PackedLUTRef};
 use crate::RetrieveError;
 use rand::seq::SliceRandom;
@@ -872,11 +872,19 @@ impl IVFPQIndex {
     /// atomically published `CURRENT` pointer. The legacy [`Self::save_to_dir`]
     /// API remains available for direct-directory compatibility.
     pub fn save_to_generation(&self, root: impl AsRef<Path>) -> Result<(), RetrieveError> {
+        self.save_to_generation_with_outcome(root).map(|_| ())
+    }
+
+    #[cfg(feature = "persistence")]
+    /// Save and return whether publication completed or became durability-uncertain.
+    pub fn save_to_generation_with_outcome(
+        &self,
+        root: impl AsRef<Path>,
+    ) -> Result<PublicationOutcome, RetrieveError> {
         let writer = GenerationWriter::create(root)?;
         self.save_to_dir_impl(writer.directory(), true)?;
         Self::validate_staged_generation(writer.directory())?;
-        writer.publish()?;
-        Ok(())
+        Ok(writer.publish_with_outcome()?)
     }
 
     #[cfg(feature = "persistence")]

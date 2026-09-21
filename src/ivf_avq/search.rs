@@ -4,7 +4,7 @@ use crate::ivf_avq::partitioning::KMeans;
 use crate::ivf_avq::quantization::AnisotropicQuantizer;
 use crate::ivf_avq::reranking;
 #[cfg(feature = "persistence")]
-use crate::persistence::generation::{open_current, GenerationWriter};
+use crate::persistence::generation::{open_current, GenerationWriter, PublicationOutcome};
 use crate::RetrieveError;
 #[cfg(feature = "persistence")]
 use durability::mmap::{AccessPattern, MappedFile};
@@ -343,10 +343,18 @@ impl IVFAVQIndex {
     /// atomically published `CURRENT` pointer. The legacy [`Self::save_to_dir`]
     /// API remains available for direct-directory compatibility.
     pub fn save_to_generation(&self, root: impl AsRef<Path>) -> Result<(), RetrieveError> {
+        self.save_to_generation_with_outcome(root).map(|_| ())
+    }
+
+    #[cfg(feature = "persistence")]
+    /// Save and return whether publication completed or became durability-uncertain.
+    pub fn save_to_generation_with_outcome(
+        &self,
+        root: impl AsRef<Path>,
+    ) -> Result<PublicationOutcome, RetrieveError> {
         let writer = GenerationWriter::create(root)?;
         self.save_to_dir(writer.directory())?;
-        writer.publish()?;
-        Ok(())
+        Ok(writer.publish_with_outcome()?)
     }
 
     /// Load an IVF-AVQ index saved by [`Self::save_to_dir`].
