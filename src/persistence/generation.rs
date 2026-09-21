@@ -110,9 +110,17 @@ impl GenerationWriter {
     pub fn publish_with_outcome(self) -> PersistenceResult<PublicationOutcome> {
         let _lock = PublicationLock::acquire(&self.root)?;
         verify_expected_current(&self.root, self.expected_current.as_deref())?;
+        #[cfg(test)]
+        if let Some(error) = take_injected_failure(&self.root, FaultPoint::BeforeStagingSync) {
+            return Err(error);
+        }
         sync_tree(&self.staging_dir)?;
         let published_dir = self.generations_dir.join(&self.generation_id);
         std::fs::rename(&self.staging_dir, &published_dir)?;
+        #[cfg(test)]
+        if let Some(error) = take_injected_failure(&self.root, FaultPoint::AfterGenerationRename) {
+            return Err(error);
+        }
         sync_directory(&self.generations_dir)?;
         match write_current(&self.root, &self.generation_id) {
             Ok(()) => Ok(PublicationOutcome::Committed(published_dir)),
@@ -263,6 +271,11 @@ fn write_current(root: &Path, generation_id: &str) -> Result<(), CurrentWriteErr
             .map_err(PersistenceError::from)
             .map_err(CurrentWriteError::BeforeCommit)?;
     }
+    #[cfg(test)]
+    if let Some(error) = take_injected_failure(root, FaultPoint::AfterCurrentTempSync) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(CurrentWriteError::BeforeCommit(error));
+    }
     let result = std::fs::rename(&tmp, &current).map_err(PersistenceError::from);
     if result.is_err() {
         let _ = std::fs::remove_file(&tmp);
@@ -337,10 +350,36 @@ fn reject_symlink_components(staging_dir: &Path, relative: &Path) -> Persistence
 static FAIL_ROOT_SYNC: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
 
 #[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FaultPoint {
+    BeforeStagingSync,
+    AfterGenerationRename,
+    AfterCurrentTempSync,
+}
+
+#[cfg(test)]
+static INJECTED_FAILURES: std::sync::Mutex<Vec<(PathBuf, FaultPoint)>> =
+    std::sync::Mutex::new(Vec::new());
+
+#[cfg(test)]
+fn take_injected_failure(root: &Path, point: FaultPoint) -> Option<PersistenceError> {
+    let mut failures = INJECTED_FAILURES.lock().unwrap();
+    failures
+        .iter()
+        .position(|(failure_root, failure_point)| failure_root == root && *failure_point == point)
+        .map(|index| {
+            failures.remove(index);
+            PersistenceError::Io(std::io::Error::other(format!(
+                "injected publication failure at {point:?}"
+            )))
+        })
+}
+
+#[cfg(test)]
 mod tests {
     use super::{
-        open_current, GenerationWriter, PublicationLock, PublicationOutcome, CURRENT_FILE,
-        FAIL_ROOT_SYNC, PUBLISH_LOCK_FILE,
+        open_current, FaultPoint, GenerationWriter, PublicationLock, PublicationOutcome,
+        CURRENT_FILE, FAIL_ROOT_SYNC, INJECTED_FAILURES, PUBLISH_LOCK_FILE,
     };
     use tempfile::tempdir;
 
@@ -399,6 +438,86 @@ mod tests {
             }
             PublicationOutcome::Committed(_) => panic!("injected sync should be uncertain"),
         }
+    }
+
+    fn publish_baseline(root: &std::path::Path) -> std::path::PathBuf {
+        let writer = GenerationWriter::create(root).unwrap();
+        std::fs::write(writer.path("manifest.json").unwrap(), b"baseline").unwrap();
+        writer.publish().unwrap()
+    }
+
+    fn arm_failure(root: &std::path::Path, point: FaultPoint) {
+        INJECTED_FAILURES
+            .lock()
+            .unwrap()
+            .push((root.to_path_buf(), point));
+    }
+
+    #[test]
+    fn prepublication_failure_keeps_current_and_staging_recoverable() {
+        let root = tempdir().unwrap();
+        let baseline = publish_baseline(root.path());
+        let writer = GenerationWriter::create(root.path()).unwrap();
+        let staging = writer.directory().to_path_buf();
+        std::fs::write(writer.path("manifest.json").unwrap(), b"candidate").unwrap();
+        arm_failure(root.path(), FaultPoint::BeforeStagingSync);
+
+        let error = writer.publish().unwrap_err();
+        assert!(error.to_string().contains("BeforeStagingSync"));
+        assert_eq!(open_current(root.path()).unwrap(), baseline);
+        assert!(
+            staging.is_dir(),
+            "pre-publication failure must retain staging"
+        );
+        assert_eq!(
+            std::fs::read_dir(root.path().join("generations"))
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_type().unwrap().is_dir())
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn generation_rename_failure_leaves_old_current_and_complete_new_directory() {
+        let root = tempdir().unwrap();
+        let baseline = publish_baseline(root.path());
+        let writer = GenerationWriter::create(root.path()).unwrap();
+        let generation_id = writer.generation_id().to_owned();
+        std::fs::write(writer.path("manifest.json").unwrap(), b"candidate").unwrap();
+        arm_failure(root.path(), FaultPoint::AfterGenerationRename);
+
+        let error = writer.publish().unwrap_err();
+        assert!(error.to_string().contains("AfterGenerationRename"));
+        assert_eq!(open_current(root.path()).unwrap(), baseline);
+        let published = root.path().join("generations").join(generation_id);
+        assert!(published.join("manifest.json").is_file());
+        assert!(!published.join("manifest.json").read_link().is_ok());
+    }
+
+    #[test]
+    fn current_temp_sync_failure_keeps_old_pointer_and_removes_temp_file() {
+        let root = tempdir().unwrap();
+        let baseline = publish_baseline(root.path());
+        let writer = GenerationWriter::create(root.path()).unwrap();
+        let generation_id = writer.generation_id().to_owned();
+        std::fs::write(writer.path("manifest.json").unwrap(), b"candidate").unwrap();
+        arm_failure(root.path(), FaultPoint::AfterCurrentTempSync);
+
+        let error = writer.publish().unwrap_err();
+        assert!(error.to_string().contains("AfterCurrentTempSync"));
+        assert_eq!(open_current(root.path()).unwrap(), baseline);
+        assert!(root.path().join("generations").join(generation_id).is_dir());
+        assert!(!root
+            .path()
+            .read_dir()
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|entry| entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".CURRENT.tmp.")));
     }
 
     #[test]
