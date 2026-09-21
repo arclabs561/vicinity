@@ -115,6 +115,26 @@ jobs:
             --pq-clusters 8 --pq-codebooks 2 --pq-codebook-size 8 \
             --pq-training-sample-size 64 --pq-kmeans-max-iter 3 --pq-nprobes 1 \
             --snapshot-load --batch --json --fresh --results /tmp/vicinity-ann-ci-all.jsonl
+      - name: representative-scale HNSW quality gate
+        run: |
+          python scripts/generate_ann_smoke_data.py /tmp/vicinity-ann-ci-scale --train 2048 --test 64 --dim 32 --k 10
+          cargo run --all-features --release --example ann_benchmark -- \
+            /tmp/vicinity-ann-ci-scale --algo hnsw --ef-search 64 --search-k 10 \
+            --snapshot-load --batch --json --fresh --results /tmp/vicinity-ann-ci-scale.jsonl
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          rows = [
+              json.loads(line)
+              for line in Path("/tmp/vicinity-ann-ci-scale.jsonl").read_text().splitlines()
+              if line and not line.startswith('{"_meta"')
+          ]
+          recalls = [row["recall_at_10"] for row in rows if "recall_at_10" in row]
+          if not recalls or min(recalls) < 0.80:
+              raise SystemExit(f"representative HNSW recall floor failed: {recalls}")
+          print("representative HNSW recall:", recalls)
+          PY
       - name: CLI smoke
         run: |
           printf '{"id":0,"vec":[1.0,0.0,0.0]}\n{"id":1,"vec":[0.0,1.0,0.0]}\n{"id":2,"vec":[0.7,0.7,0.0]}\n' > /tmp/v.jsonl
