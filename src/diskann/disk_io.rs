@@ -250,11 +250,18 @@ impl DiskGraphReader {
         max_degree: usize,
         read_buf: &mut Vec<u8>,
     ) -> Result<Vec<u32>, RetrieveError> {
+        let record_bytes = max_degree
+            .checked_mul(std::mem::size_of::<u32>())
+            .and_then(|n| n.checked_add(std::mem::size_of::<u32>()))
+            .ok_or_else(|| RetrieveError::FormatError("graph record size overflow".into()))?;
+        read_buf.resize(record_bytes, 0);
+
         // Safety: `&mut self` prevents concurrent calls. For parallel search,
         // create one DiskGraphReader per thread (each with its own file handle).
-        let mut degree_buf = [0u8; 4];
-        crate::file_io::read_exact_at(file, offset, &mut degree_buf)?;
-        let degree = u32::from_le_bytes(degree_buf) as usize;
+        crate::file_io::read_exact_at(file, offset, read_buf)?;
+
+        let degree =
+            u32::from_le_bytes([read_buf[0], read_buf[1], read_buf[2], read_buf[3]]) as usize;
 
         if degree > max_degree {
             return Err(RetrieveError::FormatError(
@@ -265,11 +272,10 @@ impl DiskGraphReader {
         let neighbor_bytes = degree
             .checked_mul(std::mem::size_of::<u32>())
             .ok_or_else(|| RetrieveError::FormatError("neighbor byte count overflow".into()))?;
-        read_buf.resize(neighbor_bytes, 0);
-        crate::file_io::read_exact_at(file, offset + 4, read_buf)?;
+        let neighbor_end = 4 + neighbor_bytes;
 
         let mut neighbors = Vec::with_capacity(degree);
-        for chunk in read_buf.as_chunks::<4>().0 {
+        for chunk in read_buf[4..neighbor_end].as_chunks::<4>().0 {
             neighbors.push(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
         }
 
@@ -358,4 +364,26 @@ fn read_u64_at(bytes: &[u8], offset: usize) -> PersistenceResult<u64> {
     Ok(u64::from_le_bytes([
         chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
     ]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_reader_decodes_sparse_degrees_from_full_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.index");
+        let mut writer = DiskGraphWriter::new(&path, 3, 4, 0).unwrap();
+        writer.write_adjacency(&[1, 2, 0, 2]).unwrap();
+        writer.write_adjacency(&[2]).unwrap();
+        writer.write_adjacency(&[]).unwrap();
+        writer.flush().unwrap();
+
+        let mut reader = DiskGraphReader::open(&path).unwrap();
+
+        assert_eq!(reader.get_neighbors(0).unwrap(), vec![1, 2, 0, 2]);
+        assert_eq!(reader.get_neighbors(1).unwrap(), vec![2]);
+        assert!(reader.get_neighbors(2).unwrap().is_empty());
+    }
 }
