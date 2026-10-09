@@ -237,3 +237,9 @@ pub mod persistence;
 pub mod python;
 #[cfg(feature = "hnsw")]
 pub mod streaming;
+
+// Run the README's Rust examples as doctests without duplicating the README
+// on the docs.rs crate page (the crate docs above already cover it).
+#[cfg(all(doctest, feature = "hnsw"))]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;

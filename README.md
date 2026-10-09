@@ -98,9 +98,8 @@ for development and comparison rather than a production dependency profile.
 
 Rust consumers should treat feature flags as part of the build contract. Python
 callers should benchmark end-to-end NumPy conversion, GIL detachment, and batch
-overhead, not only the native search loop. See the
-[Python wrapper competition plan](docs/design/python-wrapper-competition.md) and
-the reproducible `scripts/benchmark_python_wrapper.py` harness.
+overhead, not only the native search loop. See the reproducible
+`scripts/benchmark_python_wrapper.py` harness.
 
 ## Indexes and persistence
 

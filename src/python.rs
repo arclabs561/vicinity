@@ -5,6 +5,10 @@
 //! views where possible (`PyReadonlyArray`); outputs are owned arrays
 //! produced via `into_pyarray`.
 
+// pyo3's `#[pyclass(from_py_object)]` expansion calls `.clone()` on the
+// `Copy` enum `PyDistanceMetric`; clippy 1.99 flags that generated code.
+#![allow(clippy::clone_on_copy)]
+
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
