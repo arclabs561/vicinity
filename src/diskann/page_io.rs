@@ -349,6 +349,8 @@ impl DiskPageReader {
     pub(crate) fn open(path: &Path) -> PersistenceResult<Self> {
         let mut file = File::open(path)?;
         let header = read_header_from_file(&mut file)?;
+        let len = usize::try_from(file.metadata()?.len()).unwrap_or(usize::MAX);
+        validate_file_len(len, &header)?;
         Ok(Self {
             storage: PageStorage::File(file),
             read_buf: vec![0; header.record_size],
@@ -632,6 +634,26 @@ mod tests {
                 neighbors: vec![0],
             }
         );
+    }
+
+    #[test]
+    fn file_reader_rejects_header_claiming_more_records_than_the_file_holds() {
+        // A header-only file that claims 100M nodes must fail at open, as the
+        // mmap reader already does, instead of sizing per-node state from the
+        // untrusted count.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nodes.page");
+        let mut writer = DiskPageWriter::create(&path, 1, 3, 4, 0).unwrap();
+        writer.write_node(10, &[1.0, 2.0, 3.0], &[0]).unwrap();
+        writer.flush().unwrap();
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes[8..16].copy_from_slice(&100_000_000u64.to_le_bytes());
+        bytes.truncate(HEADER_SIZE);
+        std::fs::write(&path, &bytes).unwrap();
+
+        let err = DiskPageReader::open(&path).err().expect("open must fail");
+        assert!(err.to_string().contains("truncated"), "{err}");
+        assert!(DiskPageReader::open_mmap(&path).is_err());
     }
 
     #[test]

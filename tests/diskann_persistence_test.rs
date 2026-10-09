@@ -33,7 +33,7 @@ fn brute_force_knn(vectors: &[Vec<f32>], query: &[f32], k: usize) -> Vec<(u32, f
         .enumerate()
         .map(|(i, v)| (i as u32, l2_distance(query, v)))
         .collect();
-    dists.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+    dists.sort_by(|a, b| a.1.total_cmp(&b.1));
     dists.truncate(k);
     dists
 }
@@ -158,6 +158,59 @@ fn test_diskann_save_load_roundtrip() {
         avg_recall > 0.5,
         "Recall too low: {:.2}%",
         avg_recall * 100.0
+    );
+}
+
+#[test]
+fn diskann_resave_does_not_rewrite_files_open_in_a_searcher() {
+    // A searcher keeps its graph and vector files open (positional reads or a
+    // memory map). Saving another index to the same directory must replace
+    // the files, not rewrite them in place: an in-place rewrite changes the
+    // bytes under the live searcher, and a shorter rewrite of a mapped file
+    // faults with SIGBUS.
+    let n = 200;
+    let d = 8;
+    let params = DiskANNParams {
+        m: 8,
+        ef_construction: 30,
+        alpha: 1.2,
+        ef_search: 30,
+        seed: Some(3),
+        ..DiskANNParams::default()
+    };
+    let build = |seed: u64| {
+        let mut index = DiskANNIndex::new(d, params.clone()).expect("create index");
+        for (i, vec) in generate_vectors(n, d, seed).iter().enumerate() {
+            index.add(i as u32, vec.clone()).expect("add vector");
+        }
+        index.build().expect("build index");
+        index
+    };
+    let first = build(11);
+    let second = build(12);
+    let query = generate_vectors(1, d, 13).remove(0);
+
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let index_path = temp_dir.path().join("diskann_resave");
+    first.save(&index_path).expect("save first index");
+    let mut searcher = DiskANNSearcher::load(&index_path).expect("load searcher");
+    let mut mmap_searcher = DiskANNSearcher::load_mmap(&index_path).expect("load mmap searcher");
+    let expected = first.search(&query, 5, 30).expect("in-memory search");
+
+    second.save(&index_path).expect("save second index");
+
+    assert_eq!(
+        searcher.search(&query, 5, 30).expect("file search"),
+        expected
+    );
+    assert_eq!(
+        mmap_searcher.search(&query, 5, 30).expect("mmap search"),
+        expected
+    );
+    let mut reloaded = DiskANNSearcher::load(&index_path).expect("reload");
+    assert_eq!(
+        reloaded.search(&query, 5, 30).expect("reloaded search"),
+        second.search(&query, 5, 30).expect("in-memory search")
     );
 }
 

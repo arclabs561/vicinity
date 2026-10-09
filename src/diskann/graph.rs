@@ -1,7 +1,7 @@
 //! DiskANN graph structure and Vamana construction.
 
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use rand::seq::SliceRandom;
@@ -11,6 +11,17 @@ use smallvec::SmallVec;
 use crate::RetrieveError;
 use durability::mmap::{AccessPattern, MappedFile};
 use std::io::{BufWriter, Write};
+
+/// Unique sibling path for write-then-rename saves.
+fn temp_sibling(path: &Path) -> PathBuf {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let name = path
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    path.with_file_name(format!(".{name}.tmp.{}.{n}", std::process::id()))
+}
 
 /// DiskANN index for disk-based approximate nearest neighbor search.
 ///
@@ -83,20 +94,54 @@ impl DiskANNIndex {
             std::fs::create_dir_all(output_dir)?;
         }
 
-        // 1. Save Vectors (vectors.bin)
+        // Write every file to a unique sibling temp path, then rename over the
+        // target. A searcher opened on the previous save keeps reading its own
+        // (now unlinked) files instead of bytes rewritten under it; a shorter
+        // in-place rewrite of a memory-mapped file would fault with SIGBUS.
         let vectors_path = output_dir.join("vectors.bin");
-        let mut vectors_file = BufWriter::new(std::fs::File::create(&vectors_path)?);
+        let graph_path = output_dir.join("graph.index");
+        let doc_ids_path = output_dir.join("doc_ids.bin");
+        let metadata_path = output_dir.join("metadata.json");
+        let files = [
+            (temp_sibling(&vectors_path), vectors_path),
+            (temp_sibling(&graph_path), graph_path),
+            (temp_sibling(&doc_ids_path), doc_ids_path),
+            (temp_sibling(&metadata_path), metadata_path),
+        ];
+        let result = self.write_index_files(&files[0].0, &files[1].0, &files[2].0, &files[3].0);
+        let result = result.and_then(|()| {
+            for (tmp, target) in &files {
+                std::fs::rename(tmp, target)?;
+            }
+            Ok(())
+        });
+        if result.is_err() {
+            for (tmp, _) in &files {
+                let _ = std::fs::remove_file(tmp);
+            }
+        }
+        result
+    }
+
+    fn write_index_files(
+        &self,
+        vectors_path: &Path,
+        graph_path: &Path,
+        doc_ids_path: &Path,
+        metadata_path: &Path,
+    ) -> Result<(), RetrieveError> {
+        // 1. Save Vectors (vectors.bin)
+        let mut vectors_file = BufWriter::new(std::fs::File::create(vectors_path)?);
         for value in &self.vectors {
             vectors_file.write_all(&value.to_le_bytes())?;
         }
         vectors_file.flush()?;
 
         // 2. Save Graph (graph.index)
-        let graph_path = output_dir.join("graph.index");
         // Convert persistence error to RetrieveError if needed, or handle unwraps
         // We'll define a simple wrapper
         let mut graph_writer = super::disk_io::DiskGraphWriter::new(
-            &graph_path,
+            graph_path,
             self.num_vectors,
             self.params.m,
             self.start_node,
@@ -124,15 +169,13 @@ impl DiskANNIndex {
         })?;
 
         // 3. Save doc_ids (doc_ids.bin)
-        let doc_ids_path = output_dir.join("doc_ids.bin");
-        let mut doc_ids_file = BufWriter::new(std::fs::File::create(&doc_ids_path)?);
+        let mut doc_ids_file = BufWriter::new(std::fs::File::create(doc_ids_path)?);
         for doc_id in &self.doc_ids {
             doc_ids_file.write_all(&doc_id.to_le_bytes())?;
         }
         doc_ids_file.flush()?;
 
         // 4. Save Metadata (metadata.json)
-        let metadata_path = output_dir.join("metadata.json");
         let metadata = serde_json::json!({
             "dimension": self.dimension,
             "num_vectors": self.num_vectors,
@@ -144,7 +187,7 @@ impl DiskANNIndex {
                 "ef_search": self.params.ef_search
             }
         });
-        let metadata_file = std::fs::File::create(&metadata_path)?;
+        let metadata_file = std::fs::File::create(metadata_path)?;
         serde_json::to_writer_pretty(metadata_file, &metadata)
             .map_err(|e| RetrieveError::Serialization(e.to_string()))?; // Need to add Serialization error to RetrieveError
 
@@ -954,7 +997,7 @@ impl DiskANNIndex {
             }
 
             // Check if cand is reachable from any existing neighbor with shorter path
-            // alpha parameter controls "shorter": distance(p*, p') <= alpha * distance(p, p')
+            // alpha parameter controls "shorter": alpha * distance(p*, p') <= distance(p, p')
             let mut prune = false;
             let cand_vec = self.get_vector(cand.id);
 
@@ -963,7 +1006,9 @@ impl DiskANNIndex {
 
                 // If existing neighbor is closer to candidate than node is (scaled by alpha),
                 // then candidate is redundant (we can reach it via existing neighbor).
-                if alpha * dist_existing_cand <= cand.dist {
+                // Distances here are squared L2, and the paper applies alpha to the
+                // Euclidean distance: alpha * d <= d' iff alpha^2 * d^2 <= d'^2.
+                if alpha * alpha * dist_existing_cand <= cand.dist {
                     prune = true;
                     break;
                 }
@@ -1149,6 +1194,28 @@ mod tests {
             .expect("DiskANNIndex::new must succeed for valid params");
         assert_eq!(index.dimension(), 4);
         assert_eq!(index.num_vectors(), 0);
+    }
+
+    /// RobustPrune (Subramanya et al. 2019, Alg. 2) removes p' when
+    /// alpha * d(p*, p') <= d(p, p') with Euclidean d. Here d(p, p') = 1.10
+    /// and d(p*, p') = 0.95, so with alpha = 1.2 the paper keeps p -> p'
+    /// (1.14 > 1.10). Applying alpha to squared distances (1.083 <= 1.21)
+    /// pruned it, which made alpha act like sqrt(alpha).
+    #[test]
+    fn robust_prune_applies_alpha_to_euclidean_distance() {
+        let x = 0.65375_f32;
+        let y = (1.21_f32 - x * x).sqrt();
+        let mut index = DiskANNIndex::new(2, DiskANNParams::default()).unwrap();
+        index.add(0, vec![0.0, 0.0]).unwrap(); // p
+        index.add(1, vec![1.0, 0.0]).unwrap(); // p*
+        index.add(2, vec![x, y]).unwrap(); // p'
+
+        let kept = index.robust_prune(0, &[1, 2], 1.2, 4);
+        assert_eq!(kept, vec![1, 2], "alpha = 1.2 must keep p -> p'");
+
+        // With alpha = 1.1, 1.1 * 0.95 = 1.045 <= 1.10, so p' is pruned.
+        let kept = index.robust_prune(0, &[1, 2], 1.1, 4);
+        assert_eq!(kept, vec![1]);
     }
 
     #[test]
