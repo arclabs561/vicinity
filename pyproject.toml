@@ -32,7 +32,7 @@ Changelog = "https://github.com/arclabs561/vicinity/blob/main/CHANGELOG.md"
 [project.optional-dependencies]
 ann-benchmarks = ["h5py"]
 test = [
-    "pytest>=7",
+    "pytest>=9.1.1",
     "numpy",
     "matplotlib>=3.8",
     "mypy>=1.19",
