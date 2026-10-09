@@ -276,7 +276,11 @@ pub fn get_vector(vectors: &[f32], dimension: usize, idx: usize) -> &[f32] {
 
 /// Construct HNSW graph layers.
 ///
-/// Implements the insertion algorithm from the HNSW paper (Malkov & Yashunin, 2018).
+/// Implements the insertion algorithm from the HNSW paper (Malkov & Yashunin, 2018),
+/// with two deliberate differences: layer 0 selects up to `m_max` neighbors for a
+/// new node (the paper selects `M` and uses `M_max0` only as the shrink cap), and
+/// rejected candidates always backfill the list up to the cap (the paper's optional
+/// `keepPrunedConnections`).
 ///
 /// Key insight: When descending through layers, we use the closest node found
 /// in the layer above as the entry point for the next layer. This ensures

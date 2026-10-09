@@ -40,8 +40,8 @@
 //!
 //! # References
 //!
-//! - Kulkarni et al. (2025). "LEMUR: Improving Single-Vector Retrieval with
-//!   Learned Multi-Vector Retrieval." arXiv 2601.21853.
+//! - Jääsaari, Hyvönen, Roos (2026). "LEMUR: Learned Multi-Vector Retrieval."
+//!   arXiv 2601.21853.
 
 mod model;
 

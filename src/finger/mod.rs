@@ -1,11 +1,15 @@
 //! FINGER: Fast Inference for Graph-based Approximate Nearest Neighbor Search.
 //!
 //! A proximity graph that augments edges with projection-based distance lower
-//! bounds for faster search pruning (Chen et al., KDD 2023). During search,
+//! bounds for faster search pruning (Chen et al., WWW 2023). During search,
 //! before computing the full distance to a neighbor, a 1-D lower bound is
 //! checked: for unit vectors, `|proj_q - proj_v|^2 / 2 <= cosine_dist(q, v)`,
 //! so if `lb^2/2 > worst_dist` the neighbor is skipped without a full distance
 //! computation. The projection direction is derived from the data centroid.
+//!
+//! This is a simplified bound inspired by FINGER, not the paper's method:
+//! FINGER decomposes each edge's distance around the current node with a
+//! low-rank angle estimate, while this module uses one global direction.
 //!
 //! # Feature Flag
 //!
@@ -46,8 +50,8 @@
 //!
 //! # References
 //!
-//! - Chen et al. (2023). "FINGER: Fast Inference for Graph-based Approximate
-//!   Nearest Neighbor Search." KDD 2023.
+//! - Chen, Chang, Yu, Dhillon, Hsieh (2023). "FINGER: Fast Inference for
+//!   Graph-based Approximate Nearest Neighbor Search." WWW 2023. arXiv:2206.11408.
 
 use crate::distance::cosine_distance_normalized;
 use crate::distance::FloatOrd;

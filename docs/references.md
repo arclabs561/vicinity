@@ -11,7 +11,7 @@ It is intended to backstop claims in module docs and to give you a starting poin
 - Malkov, Ponomarenko, Logvinov, Krylov (2014). *Approximate nearest neighbor algorithm based on navigable small world graphs.* (NSW)  
   `https://doi.org/10.1016/j.is.2013.10.006`
 
-- Fu, Xiang, Wang, Huang (2017). *Fast Approximate Nearest Neighbor Search With The Navigating Spreading-out Graph (NSG).*  
+- Fu, Xiang, Wang, Cai (2017). *Fast Approximate Nearest Neighbor Search With The Navigating Spreading-out Graph (NSG).*  
   `https://arxiv.org/abs/1707.00143`
 
 ## “Hierarchy may not matter” (flat vs hierarchical)
@@ -29,8 +29,8 @@ It is intended to backstop claims in module docs and to give you a starting poin
 - Jégou, Douze, Schmid (2011). *Product Quantization for Nearest Neighbor Search.* (PQ / IVFADC)  
   `https://ieeexplore.ieee.org/document/5432202`
 
-- Ge, He, Ke, Sun (2014). *Optimized Product Quantization.* (OPQ)  
-  `https://arxiv.org/abs/1311.4055`
+- Ge, He, Ke, Sun (2014). *Optimized Product Quantization.* (OPQ, IEEE TPAMI 36(4))  
+  `https://doi.org/10.1109/TPAMI.2013.240`
 
 - André et al. (2019). *Quicker ADC: Unlocking the Hidden Potential of Product Quantization with SIMD.* (SIMD ADC / FastScan lineage)
   `https://arxiv.org/abs/1812.09162`
@@ -51,7 +51,7 @@ It is intended to backstop claims in module docs and to give you a starting poin
 
 ## Filtering in graph ANN (predicate-aware search)
 
-- Wang et al. (2024). *ACORN: Approximate Nearest Neighbor Search with Attribute Filtering.* (SIGMOD 2024)  
+- Patel, Kraft, Guestrin, Zaharia (2024). *ACORN: Performant and Predicate-Agnostic Search Over Vector Embeddings and Structured Data.* (SIGMOD 2024)  
   `https://dl.acm.org/doi/10.1145/3626246.3653367`
 
 ## Probabilistic routing / learned navigation
@@ -138,7 +138,7 @@ It is intended to backstop claims in module docs and to give you a starting poin
 
 ## Error-bounded monotonic graphs
 
-- Yin et al. (2025). *delta-EMG: Error-Bounded Monotonic Graph for Approximate Nearest Neighbor Search.* (provable per-query distance bounds via occlusion pruning)
+- Xiang, Feng, Yin, Li, Xue, Qin, Li, Wang (2025). *delta-EMG: A Monotonic Graph Index for Approximate Nearest Neighbor Search.* (provable per-query distance bounds via occlusion pruning)
   `https://arxiv.org/abs/2511.16921`
 
 ## Range-filtered ANN
@@ -156,17 +156,17 @@ It is intended to backstop claims in module docs and to give you a starting poin
 
 ## IVF-RaBitQ
 
-- Chen et al. (2026). *IVF-RaBitQ: GPU-native IVF with RaBitQ quantization.*
+- Shi, Gao, Xia, Fehér, Long (2026). *GPU-Native Approximate Nearest Neighbor Search with IVF-RaBitQ: Fast Index Build and Search.*
   `https://arxiv.org/abs/2602.23999`
 
 ## Multi-vector retrieval (ColBERT-style)
 
-- Kulkarni, Hrishikesh, Simhadri (2026). *LEMUR: Learned Multi-Vector Retrieval.* (MLP + OLS for MaxSim-compatible single-vector ANNS)
+- Jääsaari, Hyvönen, Roos (2026). *LEMUR: Learned Multi-Vector Retrieval.* (MLP + OLS for MaxSim-compatible single-vector ANNS)
   `https://arxiv.org/abs/2601.21853`
 
 ## LSM-tree vector indexing
 
-- Bai et al. (2025). *LSM-VEC: Streaming Vector Search via LSM-tree.* (Poly-LSM engine, delta/pivot entries)
+- Zhong, Mo, Luo (2025). *LSM-VEC: A Large-Scale Disk-Based System for Dynamic Vector Search.* (Poly-LSM engine, delta/pivot entries)
   `https://arxiv.org/abs/2505.17152`
 
 ## Parallel graph construction
@@ -198,10 +198,10 @@ It is intended to backstop claims in module docs and to give you a starting poin
 
 ## Projection-based distance bounds (FINGER / PAG)
 
-- Chen, Wei-cheng, Yu, Dhillon, Hsieh (2022). *FINGER: Fast Inference for Graph-based Approximate Nearest Neighbor Search.* (edge-projection distance bounds; basis for `finger` module)
+- Chen, Chang, Yu, Dhillon, Hsieh (2023). *FINGER: Fast Inference for Graph-based Approximate Nearest Neighbor Search.* (WWW 2023) (edge-projection distance bounds; basis for `finger` module)
   `https://arxiv.org/abs/2206.11408`
 
-- Ma et al. (2026). *PAG: Projection-Augmented Graph for ANN Search.* (PRT + TFB + PES; up to 5x HNSW QPS on high-dim embeddings)
+- Lu, Pan, Qin, Ishikawa, Xiao (2026). *Approximate Nearest Neighbor Search for Modern AI: A Projection-Augmented Graph Approach.* (PAG) (PRT + TFB + PES; up to 5x HNSW QPS on high-dim embeddings)
   `https://arxiv.org/abs/2603.06660`
 
 ## Projection-quantization fusion (MRQ / QMP)
@@ -236,8 +236,8 @@ It is intended to backstop claims in module docs and to give you a starting poin
 
 ## Extended quantization
 
-- Chen et al. (2026). *Extended-RaBitQ: Arbitrary-rate vector quantization from 2-7 bits/dim.*
-  `https://github.com/VectorDB-NTU/Extended-RaBitQ`
+- Gao, Gou, Xu, Yang, Long, Wong (2024). *Practical and Asymptotically Optimal Quantization of High-Dimensional Vectors in Euclidean Space for Approximate Nearest Neighbor Search.* (Extended RaBitQ: 2-7 bits/dim)
+  `https://arxiv.org/abs/2409.09913`, code: `https://github.com/VectorDB-NTU/Extended-RaBitQ`
 
 - Google Research (2025). *SOAR: Orthogonality-Amplified Residuals for reduced correlated search failures in ScaNN.*
   `https://research.google/blog/soar-new-algorithms-for-even-faster-vector-search-with-scann/`
@@ -249,7 +249,8 @@ It is intended to backstop claims in module docs and to give you a starting poin
 
 ## Graph layout optimization
 
-- Zheng et al. (2025). *MARGO: Graph Layout Optimization for Disk-Based ANN via Monotonic Reachability Weighting.* (VLDB 2025)
+- Yue, Zheng, Xu, Xu, Zhang, Du, Gao, Zhou, Jensen (2025). *Select Edges Wisely: Monotonic Path Aware Graph Layout Optimization for Disk-Based ANN Search.* (MARGO, PVLDB 18(11))
+  `https://doi.org/10.14778/3749646.3749697`
 
 ## Capacity-law failure
 
@@ -258,8 +259,8 @@ It is intended to backstop claims in module docs and to give you a starting poin
 
 ## Parallel / concurrent ANN
 
-- ParlayANN (CMU, 2025). *Lock-free deterministic parallel graph-based ANN (DiskANN, HNSW, HCNNG, pyNNDescent). CLEANN-Tree: first linearizable concurrent k-NN structure.*
-  `https://arxiv.org/abs/2603.06660`
+- Manohar, Shen, Blelloch, Dhulipala, Gu, Simhadri, Sun (2023). *ParlayANN: Scalable and Deterministic Parallel Graph-Based Approximate Nearest Neighbor Search Algorithms.* (deterministic parallel DiskANN, HNSW, HCNNG, pyNNDescent)
+  `https://arxiv.org/abs/2305.04359`
 
 ## GPU graph ANN
 

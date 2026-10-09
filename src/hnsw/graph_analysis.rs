@@ -16,8 +16,10 @@
 //!
 //! # References
 //!
-//! - Ma et al. (2025). "On the Sparse Neighborhood Graph" (arXiv:2603.06660)
-//! - Zheng et al. (2025). "MARGO: Maximizing Recall on Graph with Optimal Disk Layout." VLDB.
+//! - Ma et al. (2025). "Sparse Neighborhood Graph-Based Approximate Nearest Neighbor
+//!   Search Revisited: Theoretical Analysis and Optimization." arXiv:2509.15531.
+//! - Yue, Zheng, et al. (2025). "Select Edges Wisely: Monotonic Path Aware Graph Layout
+//!   Optimization for Disk-Based ANN Search" (MARGO). PVLDB 18(11).
 
 use std::collections::{HashSet, VecDeque};
 

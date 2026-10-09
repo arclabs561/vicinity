@@ -1,5 +1,9 @@
 //! IVF-AVQ: k-means partitioning + Anisotropic Vector Quantization + reranking.
 //!
+//! Status: the codebooks and encoding currently minimize plain L2 error; the
+//! anisotropic (score-aware) loss of Guo et al. (2020) described below is not
+//! implemented yet, so this behaves like IVF-PQ with inner-product scoring.
+//!
 //! Optimized for **inner product search** (MIPS): recommendations, two-tower retrieval.
 //!
 //! # Feature Flag

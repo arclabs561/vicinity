@@ -10,7 +10,9 @@
 //! # When to use
 //!
 //! - Streaming/online settings: O(1) insertion (no graph reconnection).
-//! - Provable guarantees: (1+ε)-approximation with known space/time tradeoffs.
+//! - Bounded-cost candidate generation. The classic (1+ε)-approximation guarantees
+//!   need k-fold hash concatenation tuned to (r, c); this module uses one
+//!   cross-polytope hash per table, so it does not carry those guarantees.
 //! - Distributed systems: hash tables partition naturally across nodes.
 //! - Candidate generation: LSH as a first-pass filter feeding exact reranking.
 //!

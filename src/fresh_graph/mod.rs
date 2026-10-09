@@ -52,8 +52,8 @@
 //!
 //! - Singh et al. (2021). "FreshDiskANN: A Fast and Accurate Graph-Based ANN
 //!   Index for Streaming Similarity Search."
-//! - Xu, Bernstein, Guestrin (2023). "CleANN: Efficient Concurrent Insertions
-//!   and Deletions for Graph-based ANN indexes." arXiv:2310.03264.
+//! - Zhang, Wei, Engels, Shun (2025). "CleANN: Efficient Full Dynamism in
+//!   Graph-based Approximate Nearest Neighbor Search." arXiv:2507.19802.
 
 use crate::distance::cosine_distance_normalized;
 use crate::RetrieveError;

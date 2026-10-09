@@ -16,9 +16,10 @@
 //!
 //! - **Early termination**: Stop once result is "good enough" (~1.5-2x speedup)
 //!
-//! Based on the DARTH paper: estimate probability that any remaining candidate
+//! Inspired by the DARTH paper: estimate probability that any remaining candidate
 //! would displace the current top-k, stop when that probability falls below a
-//! threshold.
+//! threshold. DARTH trains a recall predictor on search-state features; this
+//! module uses a Gaussian z-score heuristic over observed distances instead.
 
 /// Configuration for adaptive search.
 #[derive(Debug, Clone)]

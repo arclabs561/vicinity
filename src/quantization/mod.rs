@@ -41,8 +41,9 @@
 //!
 //! ## RaBitQ: The Modern Approach
 //!
-//! [Gao et al. 2024](https://arxiv.org/abs/2409.09913) introduces randomized
-//! binary quantization with corrective factors.
+//! [Gao & Long 2024](https://arxiv.org/abs/2405.12497) introduces randomized
+//! binary quantization with corrective factors;
+//! [Gao et al. 2024](https://arxiv.org/abs/2409.09913) extends it to multiple bits.
 //!
 //! **Key insight**: Random rotation before quantization spreads information
 //! evenly across dimensions. Then:

@@ -146,7 +146,7 @@
 //! # References
 //!
 //! - Jégou, Douze, Schmid (2011). "Product Quantization for Nearest Neighbor Search." `https://ieeexplore.ieee.org/document/5432202`
-//! - Ge et al. (2014). "Optimized Product Quantization." `https://arxiv.org/abs/1311.4055`
+//! - Ge et al. (2014). "Optimized Product Quantization." IEEE TPAMI. `https://doi.org/10.1109/TPAMI.2013.240`
 
 // IVF-PQ core implementation (always available when ivf_pq feature is enabled)
 mod cluster;

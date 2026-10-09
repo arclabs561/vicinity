@@ -36,8 +36,12 @@
 //! |--------|-------------|-------|-----------|
 //! | Raw f32 | 512 | 512 MB | 100% |
 //! | IVF-PQ (M=8) | 8 | 8 MB | ~85% |
-//! | IVF-RaBitQ (4-bit) | 68 | 68 MB | ~95% |
-//! | IVF-RaBitQ (1-bit) | 20 | 20 MB | ~80% |
+//! | IVF-RaBitQ (4-bit) | 72 | 72 MB | ~95% |
+//! | IVF-RaBitQ (1-bit) | 24 | 24 MB | ~80% |
+//!
+//! RaBitQ byte counts are the compact encoding: `d * bits / 8` code bytes plus
+//! two f32 correction factors. This implementation's in-memory index also keeps
+//! per-dimension codes and other fields; `memory_usage()` reports the actual size.
 //!
 //! The 4-bit variant uses more memory than PQ but achieves higher recall because
 //! RaBitQ preserves per-dimension information (vs PQ's subspace compression).
@@ -61,9 +65,10 @@
 //!
 //! # References
 //!
-//! - Gao et al. (2024). "RaBitQ: Quantizing High-Dimensional Vectors with a
+//! - Gao, Long (2024). "RaBitQ: Quantizing High-Dimensional Vectors with a
 //!   Theoretical Error Bound for Approximate Nearest Neighbor Search." SIGMOD 2024.
-//! - Chen et al. (2026). "IVF-RaBitQ: GPU-native IVF with RaBitQ." arXiv:2602.23999.
+//! - Shi, Gao, Xia, Fehér, Long (2026). "GPU-Native Approximate Nearest Neighbor
+//!   Search with IVF-RaBitQ: Fast Index Build and Search." arXiv:2602.23999.
 
 use crate::distance::FloatOrd;
 use crate::RetrieveError;

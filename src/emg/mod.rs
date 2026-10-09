@@ -6,6 +6,11 @@
 //! scalar alpha relaxation), delta-EMG encodes the approximation bound
 //! directly into the graph structure via occlusion-based edge pruning.
 //!
+//! The paper proves the bound for the exact delta-EMG with Euclidean distance.
+//! This module builds the approximate variant and evaluates the occlusion rule
+//! on cosine distance, so treat the bound below as the design target, not a
+//! guarantee of this implementation.
+//!
 //! # Feature Flag
 //!
 //! ```toml
@@ -59,7 +64,7 @@
 //!
 //! # References
 //!
-//! - Yin et al. (2025). "delta-EMG: Error-Bounded Monotonic Graph for
+//! - Xiang, Feng, Yin, et al. (2025). "delta-EMG: A Monotonic Graph Index for
 //!   Approximate Nearest Neighbor Search." arXiv:2511.16921.
 
 use crate::distance::cosine_distance_normalized;
