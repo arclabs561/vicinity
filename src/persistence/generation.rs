@@ -167,17 +167,17 @@ impl PublicationLock {
             .truncate(false)
             .open(&path)?;
         use fs4::fs_std::FileExt;
-        file.try_lock_exclusive().map_err(|error| {
-            if error.kind() == std::io::ErrorKind::WouldBlock {
-                PersistenceError::LockFailed {
-                    resource: path.display().to_string(),
-                    reason: "another generation publisher holds the advisory lock".into(),
-                }
-            } else {
-                PersistenceError::Io(error)
-            }
-        })?;
-        Ok(Self { file })
+        let contended = || PersistenceError::LockFailed {
+            resource: path.display().to_string(),
+            reason: "another generation publisher holds the advisory lock".into(),
+        };
+        // fs4 0.13 reports contention as `Ok(false)`, not as a WouldBlock error.
+        match file.try_lock_exclusive() {
+            Ok(true) => Ok(Self { file }),
+            Ok(false) => Err(contended()),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Err(contended()),
+            Err(error) => Err(PersistenceError::Io(error)),
+        }
     }
 }
 
@@ -845,6 +845,42 @@ mod tests {
         assert!(lock_path.is_file());
         drop(reacquired);
         assert!(!root.path().join(CURRENT_FILE).exists());
+    }
+
+    #[test]
+    fn publication_lock_excludes_a_second_publisher() {
+        // flock locks belong to the open file description, so two handles in
+        // one process conflict just as two processes would.
+        let root = tempdir().unwrap();
+        let held = PublicationLock::acquire(root.path()).unwrap();
+        assert!(matches!(
+            PublicationLock::acquire(root.path()),
+            Err(PersistenceError::LockFailed { .. })
+        ));
+        drop(held);
+        PublicationLock::acquire(root.path()).unwrap();
+    }
+
+    #[test]
+    fn pinned_open_fails_while_lease_is_held_exclusively() {
+        // Cleanup takes the lease file exclusively; a reader must not be
+        // handed a lease on a generation that cleanup currently owns.
+        let root = tempdir().unwrap();
+        let published = publish_test_generation(root.path(), b"leased");
+        drop(open_current_pinned(root.path()).unwrap());
+        let lease_path = root.path().join("leases").join(format!(
+            "{}.lock",
+            published.file_name().unwrap().to_string_lossy()
+        ));
+        let cleanup = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&lease_path)
+            .unwrap();
+        cleanup.try_lock().unwrap();
+        assert!(matches!(
+            open_current_pinned(root.path()),
+            Err(PersistenceError::LockFailed { .. })
+        ));
     }
 
     #[test]
