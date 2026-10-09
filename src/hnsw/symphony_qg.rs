@@ -1141,7 +1141,8 @@ fn nibble_lut(cb: f32) -> [f32; 16] {
     lut
 }
 
-/// Approximate L2^2 from a globally-rotated query to packed 4-bit edge codes.
+/// Edge term `||q-v||^2 - ||q-u||^2` from a globally-rotated query to packed
+/// 4-bit edge codes (the caller adds `||q-u||^2`).
 ///
 /// Uses a 16-entry nibble LUT (64 bytes, fits in L1) to avoid per-element
 /// u8->f32 conversion + cb addition. The hot loop is: load byte, two LUT
@@ -1173,10 +1174,13 @@ fn approx_dist_vr_packed(
         ip += rotated_query[dim - 1] * lut[(byte >> 4) as usize];
     }
 
-    (scalars.f_add + scalars.f_rescale * (ip - scalars.ip_u_rot_codes)).max(0.0)
+    // Signed on purpose: this estimates ||q-v||^2 - ||q-u||^2, which is
+    // negative whenever v is nearer the query than its parent u. Clamping it
+    // at zero ties every such child at ||q-u||^2 (see qntz's edge term).
+    scalars.f_add + scalars.f_rescale * (ip - scalars.ip_u_rot_codes)
 }
 
-/// Approximate L2^2 using 1-bit (binary) packed codes.
+/// Edge term `||q-v||^2 - ||q-u||^2` using 1-bit (binary) packed codes.
 ///
 /// Each byte holds 8 sign bits. Code value is 0 or 1, cb = -0.5.
 /// The IP becomes: `sum(q[i] * (bit[i] - 0.5))` = `sum_positive - 0.5 * sum_all`
@@ -1201,7 +1205,8 @@ fn approx_dist_vr_binary(rotated_query: &[f32], packed: &[u8], scalars: &EdgeSca
         }
     }
     let ip = sum_positive - 0.5 * sum_all;
-    (scalars.f_add + scalars.f_rescale * (ip - scalars.ip_u_rot_codes)).max(0.0)
+    // Signed on purpose, as in `approx_dist_vr_packed`.
+    scalars.f_add + scalars.f_rescale * (ip - scalars.ip_u_rot_codes)
 }
 
 #[cfg(test)]
@@ -1768,6 +1773,77 @@ mod tests {
     /// This is the core correctness check for VR. If the per-edge distance
     /// formula doesn't produce distances correlated with true L2, the beam
     /// search cannot navigate the graph effectively.
+    /// The per-edge term estimates `||q-v||^2 - ||q-u||^2` (RaBitQ applied to
+    /// the residual `v - u`). With the query placed on the child `v`, the true
+    /// term is `-||v-u||^2 < 0` for every edge, so the estimate must be
+    /// negative for (nearly) all of them. A clamp at zero makes every such
+    /// child score exactly `||q-u||^2` and ties them.
+    #[test]
+    fn vr_edge_term_is_signed_for_children_nearer_than_parent() {
+        use crate::distance::DistanceMetric;
+        use crate::hnsw::graph::HNSWParams;
+
+        let dim = 32;
+        let n = 300;
+        let vectors: Vec<Vec<f32>> = (0..n)
+            .map(|seed| {
+                (0..dim)
+                    .map(|j| ((seed * dim + j) as f32 * 0.618_034).fract() * 20.0 - 10.0)
+                    .collect()
+            })
+            .collect();
+
+        for config in [RaBitQConfig::default(), RaBitQConfig::bits4()] {
+            let params = HNSWParams {
+                m: 8,
+                m_max: 16,
+                ef_construction: 50,
+                metric: DistanceMetric::L2,
+                seed: Some(7),
+                ..Default::default()
+            };
+            let mut index = SymphonyQGVRIndex::new(dim, params, config, 7).unwrap();
+            for (i, v) in vectors.iter().enumerate() {
+                index.add_slice(i as u32, v).unwrap();
+            }
+            index.build().unwrap();
+
+            let quantizer = index.quantizer.as_ref().unwrap();
+            let base_layer = &index.index.layers[0];
+            let packed_dim = index.packed_dim;
+            let lut = nibble_lut(index.cb);
+
+            let mut negative = 0usize;
+            let mut total = 0usize;
+            for node_id in 0..50u32 {
+                let base_offset = index.neighbor_offsets[node_id as usize] as usize;
+                for (slot, &nbr_id) in base_layer.get_neighbors(node_id).iter().enumerate() {
+                    let query = index.index.get_vector(nbr_id as usize).to_vec();
+                    let rotated_query = quantizer.rotate_query(&query).unwrap();
+                    let offset = base_offset + slot;
+                    let scalars = &index.edge_scalars[offset];
+                    let codes = &index.packed_codes[offset * packed_dim..(offset + 1) * packed_dim];
+                    let term = if index.total_bits >= 4 {
+                        approx_dist_vr_packed(&rotated_query, codes, scalars, &lut)
+                    } else {
+                        approx_dist_vr_binary(&rotated_query, codes, scalars)
+                    };
+                    total += 1;
+                    if term < 0.0 {
+                        negative += 1;
+                    }
+                }
+            }
+            assert!(total > 0);
+            assert!(
+                negative * 10 >= total * 9,
+                "total_bits={}: only {negative}/{total} edge terms negative for queries \
+                 placed on the child; the term must stay signed",
+                index.total_bits
+            );
+        }
+    }
+
     #[test]
     fn test_vr_edge_distance_correlation() {
         use crate::distance::DistanceMetric;
