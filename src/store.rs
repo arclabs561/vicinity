@@ -365,6 +365,7 @@ impl UpdatableIndex {
         let params = HNSWParams {
             m,
             m_max,
+            m_l: HNSWParams::level_multiplier(m),
             ..Default::default()
         };
         format!(

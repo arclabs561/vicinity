@@ -154,8 +154,11 @@ pub struct HNSWParams {
     /// Maximum connections for newly inserted nodes (typically 16)
     pub m_max: usize,
 
-    /// Layer assignment probability parameter (typically 1/ln(2) ≈ 1.44)
-    /// Higher = more vectors in upper layers
+    /// Level generation multiplier `mL` (default `1/ln(M)`, ≈ 0.36 for M=16).
+    /// Higher = more vectors in upper layers.
+    ///
+    /// Constructors that take `m` set this to [`HNSWParams::level_multiplier`]`(m)`;
+    /// a hand-built `HNSWParams` keeps whatever value it is given.
     pub m_l: f64,
 
     /// Search width during construction (typically 200)
@@ -211,8 +214,8 @@ impl Default for HNSWParams {
     fn default() -> Self {
         Self {
             m: 16,
-            m_max: 32,                // Paper: m_max0 = 2*M for layer 0
-            m_l: 1.0 / 16.0_f64.ln(), // 1/ln(M), per Malkov & Yashunin 2018
+            m_max: 32, // Paper: m_max0 = 2*M for layer 0
+            m_l: HNSWParams::level_multiplier(16),
             ef_construction: 200,
             ef_search: 50,
             auto_normalize: false,
@@ -227,6 +230,15 @@ impl Default for HNSWParams {
             #[cfg(feature = "id-compression")]
             compression_threshold: 32, // Only compress if m >= 32 (per paper)
         }
+    }
+}
+
+impl HNSWParams {
+    /// The paper's level multiplier `mL = 1/ln(M)` (Malkov & Yashunin 2018,
+    /// Section 4), which makes each layer about `M` times sparser than the
+    /// one below. `M < 2` is treated as 2, since `ln(1) = 0`.
+    pub fn level_multiplier(m: usize) -> f64 {
+        1.0 / (m.max(2) as f64).ln()
     }
 }
 
@@ -323,6 +335,7 @@ impl HNSWBuilder {
         let params = HNSWParams {
             m: self.m,
             m_max,
+            m_l: HNSWParams::level_multiplier(self.m),
             ef_construction: self.ef_construction,
             ef_search: self.ef_search,
             auto_normalize: self.auto_normalize,
@@ -800,6 +813,7 @@ impl HNSWIndex {
             params: HNSWParams {
                 m,
                 m_max,
+                m_l: HNSWParams::level_multiplier(m),
                 ..Default::default()
             },
             built: false,
@@ -880,6 +894,7 @@ impl HNSWIndex {
             params: HNSWParams {
                 m,
                 m_max,
+                m_l: HNSWParams::level_multiplier(m),
                 ..Default::default()
             },
             built: false,
@@ -1438,7 +1453,8 @@ impl HNSWIndex {
     /// Serialize the index to a file path (JSON), atomically and durably.
     ///
     /// Three-step pipeline:
-    /// 1. Write to a sibling temp file (`<path>.tmp`).
+    /// 1. Write to a sibling temp file unique to this call
+    ///    (`<path>.tmp-<pid>-<seq>`, created with `create_new`).
     /// 2. `sync_all` on the temp file (push bytes through the page cache to
     ///    the device).
     /// 3. `std::fs::rename` into place. POSIX rename is atomic within a
@@ -1466,21 +1482,48 @@ impl HNSWIndex {
         let filename = path.file_name().ok_or_else(|| {
             RetrieveError::Serialization("save_to_file: target path has no filename".into())
         })?;
-        let mut tmp_name: std::ffi::OsString = filename.to_owned();
-        tmp_name.push(".tmp");
-        let tmp_path = parent.join(&tmp_name);
+        // A per-call temp name keeps concurrent savers to the same path from
+        // truncating or renaming each other's partial writes.
+        static NEXT_TEMP_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let (tmp_path, file) = loop {
+            let mut tmp_name: std::ffi::OsString = filename.to_owned();
+            tmp_name.push(format!(
+                ".tmp-{}-{}",
+                std::process::id(),
+                NEXT_TEMP_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
+            let tmp_path = parent.join(&tmp_name);
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&tmp_path)
+            {
+                Ok(file) => break (tmp_path, file),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(e.into()),
+            }
+        };
 
         {
-            let file = std::fs::File::create(&tmp_path)?;
-            let mut writer = std::io::BufWriter::new(file);
-            self.save_to_writer(&mut writer)?;
-            let file = writer.into_inner().map_err(|e| {
-                RetrieveError::Serialization(format!("save_to_file flush failed: {}", e.error()))
-            })?;
-            // Push bytes through the kernel page cache to the device.
-            // Without this, the rename below can succeed while the
-            // contents are still buffered, defeating the atomicity.
-            file.sync_all()?;
+            let write = || -> Result<(), RetrieveError> {
+                let mut writer = std::io::BufWriter::new(file);
+                self.save_to_writer(&mut writer)?;
+                let file = writer.into_inner().map_err(|e| {
+                    RetrieveError::Serialization(format!(
+                        "save_to_file flush failed: {}",
+                        e.error()
+                    ))
+                })?;
+                // Push bytes through the kernel page cache to the device.
+                // Without this, the rename below can succeed while the
+                // contents are still buffered, defeating the atomicity.
+                file.sync_all()?;
+                Ok(())
+            };
+            if let Err(e) = write() {
+                let _ = std::fs::remove_file(&tmp_path);
+                return Err(e);
+            }
         }
 
         std::fs::rename(&tmp_path, path).map_err(|e| {
@@ -1754,6 +1797,7 @@ impl HNSWIndex {
     /// # Errors
     ///
     /// Returns [`RetrieveError::InvalidParameter`] if:
+    /// - Any component is NaN or infinite.
     /// - Cosine distance is selected and the vector is not L2-normalized
     ///   (`norm^2` differs from 1 by more than 0.01), unless `auto_normalize`
     ///   is enabled on the builder.
@@ -1778,6 +1822,15 @@ impl HNSWIndex {
                 query_dim: vector.len(),
                 doc_dim: self.dimension,
             });
+        }
+
+        // NaN slips past the cosine norm check below, gives meaningless
+        // distances, and serializes as JSON null, which cannot be loaded back.
+        if let Some(i) = vector.iter().position(|x| !x.is_finite()) {
+            return Err(RetrieveError::InvalidParameter(format!(
+                "vector for doc_id {} has a non-finite component at index {} ({})",
+                doc_id, i, vector[i]
+            )));
         }
 
         // Normalize if requested, otherwise borrow the original slice.
@@ -3170,25 +3223,27 @@ impl HNSWIndex {
     ///
     /// # Mathematical Foundation
     ///
-    /// The layer assignment follows a geometric distribution with parameter `p = 1/m_l`.
+    /// The layer is `floor(-ln(U) * m_l)` with `U` uniform on (0, 1), a
+    /// geometric distribution with `P(L >= l) = exp(-l / m_l)`.
     /// This creates the hierarchical structure essential for HNSW's O(log n) search.
     ///
     /// ## Probability Distribution
     ///
     /// ```text
-    /// P(layer = l) = (1 - 1/m_l) × (1/m_l)^l
+    /// q = exp(-1 / m_l)            (q = 1/M when m_l = 1/ln(M))
+    /// P(layer = l) = (1 - q) × q^l
     /// ```
     ///
-    /// This is a truncated geometric distribution where:
-    /// - `m_l` is typically `1/ln(M)` ≈ 1.44 for M=16
+    /// This is a geometric distribution (truncated at 255) where:
+    /// - `m_l` is typically `1/ln(M)` ≈ 0.36 for M=16
     /// - Most vectors are at layer 0 (base layer)
     /// - Higher layers are exponentially sparser
     ///
     /// ## Expected Properties
     ///
-    /// - **E[layer]** ≈ 1/(m_l - 1): Expected layer level
-    /// - **Layer 0 probability**: P(L=0) = 1 - 1/m_l ≈ 0.31 for default m_l
-    /// - **Expected vectors per layer**: N × (1/m_l)^l
+    /// - **E[layer]** = q/(1 - q): Expected layer level (1/15 for M=16)
+    /// - **Layer 0 probability**: P(L=0) = 1 - q ≈ 0.94 for M=16
+    /// - **Expected vectors per layer**: N × q^l
     ///
     /// ## Why This Works
     ///

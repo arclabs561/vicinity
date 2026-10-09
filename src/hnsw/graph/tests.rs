@@ -8,6 +8,69 @@ fn test_create_index() {
 }
 
 #[test]
+fn level_multiplier_is_one_over_ln_m_for_every_constructor() {
+    // Malkov & Yashunin (2018), Section 4: the optimal level multiplier is
+    // mL = 1/ln(M), so it must follow the configured M, not a fixed 16.
+    let expected = |m: usize| 1.0 / (m as f64).ln();
+
+    let built = HNSWIndex::builder(8).m(4).build().unwrap();
+    assert_eq!(built.params.m_l, expected(4));
+
+    let plain = HNSWIndex::new(8, 32, 64).unwrap();
+    assert_eq!(plain.params.m_l, expected(32));
+
+    let filtered = HNSWIndex::with_filtering(8, 8, 16, "category").unwrap();
+    assert_eq!(filtered.params.m_l, expected(8));
+
+    assert_eq!(HNSWParams::default().m_l, expected(16));
+}
+
+#[test]
+fn add_rejects_non_finite_components() {
+    // A NaN or infinite component has no meaningful distance and cannot
+    // round-trip through JSON persistence, so it must be refused at insert.
+    for metric in [DistanceMetric::Cosine, DistanceMetric::L2] {
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut index = HNSWIndex::builder(2).metric(metric).build().unwrap();
+            assert!(
+                matches!(
+                    index.add_slice(7, &[bad, 0.0]),
+                    Err(RetrieveError::InvalidParameter(_))
+                ),
+                "{metric:?} accepted {bad}"
+            );
+            assert!(index.add(7, vec![0.0, bad]).is_err());
+            assert_eq!(index.num_vectors, 0, "rejected vector must not be stored");
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn save_to_file_leaves_other_savers_temp_files_alone() {
+    // Two savers targeting the same path must not share a temp file; a
+    // fixed `<path>.tmp` lets one truncate and rename the other's bytes.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("index.json");
+    let foreign_tmp = dir.path().join("index.json.tmp");
+    std::fs::write(&foreign_tmp, b"another saver's partial write").unwrap();
+
+    let mut index = HNSWIndex::builder(2)
+        .metric(DistanceMetric::L2)
+        .build()
+        .unwrap();
+    index.add_slice(1, &[1.0, 0.0]).unwrap();
+    index.build().unwrap();
+    index.save_to_file(&path).unwrap();
+
+    assert_eq!(
+        std::fs::read(&foreign_tmp).unwrap(),
+        b"another saver's partial write"
+    );
+    assert!(HNSWIndex::load_from_file(&path).is_ok());
+}
+
+#[test]
 fn neighbor_list_holds_default_base_degree_inline() {
     let neighbors: NeighborList = (0..32).collect();
     assert_eq!(neighbors.len(), 32);

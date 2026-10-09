@@ -191,6 +191,7 @@ impl PyHNSWIndex {
         let params = HNSWParams {
             m,
             m_max: m * 2,
+            m_l: HNSWParams::level_multiplier(m),
             ef_construction,
             ef_search,
             auto_normalize,
