@@ -7,8 +7,8 @@
 //! Treat this as experimental until local quantization-error, encoding
 //! throughput, and downstream recall rows justify it against the other
 //! quantizers in this crate. This is not yet a full SAQ paper reproduction:
-//! PCA projection, dynamic-programming bit allocation, and trained k-means
-//! codebooks are reserved future work in the current implementation.
+//! PCA projection and dynamic-programming bit allocation are reserved future
+//! work. Per-segment codebooks are trained with deterministic spherical k-means.
 //!
 //! # References
 //!
@@ -128,9 +128,7 @@ impl SAQQuantizer {
                 // Reduce from segments with least variance
                 let mut sorted_indices: Vec<usize> = (0..self.num_segments).collect();
                 sorted_indices.sort_unstable_by(|&a, &b| {
-                    segment_variances[a]
-                        .partial_cmp(&segment_variances[b])
-                        .unwrap_or(std::cmp::Ordering::Equal)
+                    segment_variances[a].total_cmp(&segment_variances[b])
                 });
 
                 for &idx in sorted_indices.iter().take(diff) {
@@ -163,17 +161,77 @@ impl SAQQuantizer {
                 subvectors.push(vec[*start..*end].to_vec());
             }
 
-            // Train k-means on subvectors (simplified: use random centroids for now)
-            // Full implementation would use proper k-means clustering
-            use rand::Rng;
-            let mut rng = rand::rng();
-            let mut codebook = Vec::new();
-
-            for _ in 0..codebook_size {
-                let centroid: Vec<f32> = (0..segment_dim)
-                    .map(|_| rng.random::<f32>() * 2.0 - 1.0)
+            // Spherical k-means (codewords are unit vectors, assignment by cosine
+            // distance, matching `quantize`). Deterministic farthest-point init:
+            // start from the first subvector, then repeatedly add the subvector
+            // farthest from every codeword chosen so far.
+            let normalized: Vec<Vec<f32>> = subvectors
+                .iter()
+                .map(|sub| crate::distance::normalize(sub))
+                .collect();
+            let mut codebook: Vec<Vec<f32>> = Vec::with_capacity(codebook_size);
+            if let Some(first) = normalized.first() {
+                codebook.push(first.clone());
+                let mut nearest: Vec<f32> = normalized
+                    .iter()
+                    .map(|v| cosine_distance_normalized(v, first))
                     .collect();
-                codebook.push(crate::distance::normalize(&centroid));
+                while codebook.len() < codebook_size {
+                    let (far, _) =
+                        nearest
+                            .iter()
+                            .enumerate()
+                            .fold((0, f32::NEG_INFINITY), |best, (i, &d)| {
+                                if d > best.1 {
+                                    (i, d)
+                                } else {
+                                    best
+                                }
+                            });
+                    let next = normalized[far].clone();
+                    for (d, v) in nearest.iter_mut().zip(normalized.iter()) {
+                        *d = d.min(cosine_distance_normalized(v, &next));
+                    }
+                    codebook.push(next);
+                }
+            } else {
+                codebook = vec![vec![0.0; segment_dim]; codebook_size];
+            }
+
+            const KMEANS_ITERS: usize = 20;
+            for _ in 0..KMEANS_ITERS {
+                let mut sums = vec![vec![0.0f32; segment_dim]; codebook_size];
+                let mut counts = vec![0usize; codebook_size];
+                for sub in &subvectors {
+                    let mut best = 0;
+                    let mut best_dist = f32::INFINITY;
+                    for (code, codeword) in codebook.iter().enumerate() {
+                        let dist = cosine_distance_normalized(sub, codeword);
+                        if dist < best_dist {
+                            best_dist = dist;
+                            best = code;
+                        }
+                    }
+                    counts[best] += 1;
+                    for (s, &x) in sums[best].iter_mut().zip(sub.iter()) {
+                        *s += x;
+                    }
+                }
+                let mut changed = false;
+                for (code, sum) in sums.iter().enumerate() {
+                    // Empty clusters keep their previous codeword.
+                    if counts[code] == 0 {
+                        continue;
+                    }
+                    let updated = crate::distance::normalize(sum);
+                    if updated != codebook[code] {
+                        codebook[code] = updated;
+                        changed = true;
+                    }
+                }
+                if !changed {
+                    break;
+                }
             }
 
             self.codebooks.push(codebook);
@@ -297,6 +355,44 @@ mod tests {
             data.extend_from_slice(&v);
         }
         data
+    }
+
+    /// Two segments sharing 4 bits; variance-based allocation gives each segment
+    /// at least 1 bit (2 codewords). Every training
+    /// segment points near +e or -e, so trained codebooks must contain both
+    /// directions and every vector must quantize to a codeword within a small
+    /// cosine distance. Random codewords miss them. Fitting twice on the same
+    /// data must give the same codebooks.
+    #[test]
+    fn saq_fit_trains_codebooks_on_the_data() {
+        let dim = 8;
+        let mut data = Vec::new();
+        for i in 0..40usize {
+            for seg in 0..2usize {
+                let sign = if (i + seg) % 2 == 0 { 1.0 } else { -1.0 };
+                let jitter = (i as f32 * 0.37).fract() * 0.1;
+                let mut s = [sign, jitter, -jitter * 0.5, jitter * 0.25];
+                normalize(&mut s);
+                data.extend_from_slice(&s);
+            }
+        }
+        let n = data.len() / dim;
+
+        let mut q = SAQQuantizer::new(dim, 2, 4).unwrap();
+        q.fit(&data, n).unwrap();
+        for i in 0..n {
+            let v = &data[i * dim..(i + 1) * dim];
+            let codes = q.quantize(v);
+            for (seg, (start, end)) in q.segment_bounds.iter().enumerate() {
+                let codeword = &q.codebooks[seg][codes[seg][0] as usize];
+                let d = cosine_distance_normalized(&v[*start..*end], codeword);
+                assert!(d < 0.05, "vector {i} segment {seg}: cosine distance {d}");
+            }
+        }
+
+        let mut again = SAQQuantizer::new(dim, 2, 4).unwrap();
+        again.fit(&data, n).unwrap();
+        assert_eq!(q.codebooks, again.codebooks);
     }
 
     #[test]
