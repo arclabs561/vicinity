@@ -23,7 +23,6 @@
 //! Vectors are L2-normalized on ingest so the default cosine HNSW is well-formed.
 
 use std::cell::RefCell;
-use std::cmp::Ordering;
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
@@ -254,7 +253,7 @@ impl UpdatableIndex {
             cand.extend(idx.search(&q, k, ef).unwrap_or_default());
         }
         // Lower cosine distance is nearer.
-        cand.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
+        cand.sort_by(|a, b| a.1.total_cmp(&b.1));
         cand.truncate(k);
         cand
     }
@@ -510,7 +509,7 @@ impl SnapshotIndex {
             }
         }
 
-        cand.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
+        cand.sort_by(|a, b| a.1.total_cmp(&b.1));
         cand.truncate(k);
         Ok(cand)
     }

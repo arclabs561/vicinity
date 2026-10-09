@@ -27,7 +27,7 @@ fn exact_knn_cosine(vectors: &[Vec<f32>], query: &[f32], k: usize) -> Vec<(u32, 
         })
         .collect();
 
-    distances.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+    distances.sort_by(|a, b| a.1.total_cmp(&b.1));
     distances.truncate(k);
     distances
 }
@@ -737,7 +737,7 @@ fn test_filtered_search_oracle() {
                 )
             })
             .collect();
-        dists.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        dists.sort_by(|a, b| a.1.total_cmp(&b.1));
         for &(j, _) in dists.iter().take(neighbors_per_node) {
             graph[i].insert(j);
             graph[j as usize].insert(i as u32); // reverse edge
@@ -766,7 +766,7 @@ fn test_filtered_search_oracle() {
                 )
             })
             .collect();
-        gt.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        gt.sort_by(|a, b| a.1.total_cmp(&b.1));
         gt.truncate(k);
 
         let gt_ids: HashSet<u32> = gt.iter().map(|(id, _)| *id).collect();
@@ -776,7 +776,7 @@ fn test_filtered_search_oracle() {
             .min_by(|&a, &b| {
                 let da = vicinity::distance::cosine_distance(&vectors[a as usize], query);
                 let db = vicinity::distance::cosine_distance(&vectors[b as usize], query);
-                da.partial_cmp(&db).unwrap()
+                da.total_cmp(&db)
             })
             .unwrap();
 
@@ -867,7 +867,7 @@ fn test_acorn_low_selectivity_returns_valid_results() {
                 )
             })
             .collect();
-        dists.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        dists.sort_by(|a, b| a.1.total_cmp(&b.1));
         for &(j, _) in dists.iter().take(neighbors_per_node) {
             graph[i].insert(j);
             graph[j as usize].insert(i as u32);
@@ -893,7 +893,7 @@ fn test_acorn_low_selectivity_returns_valid_results() {
                 )
             })
             .collect();
-        gt.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        gt.sort_by(|a, b| a.1.total_cmp(&b.1));
         gt.truncate(k);
         if gt.is_empty() {
             continue;
@@ -904,7 +904,7 @@ fn test_acorn_low_selectivity_returns_valid_results() {
             .min_by(|&a, &b| {
                 let da = vicinity::distance::cosine_distance(&vectors[a as usize], query);
                 let db = vicinity::distance::cosine_distance(&vectors[b as usize], query);
-                da.partial_cmp(&db).unwrap()
+                da.total_cmp(&db)
             })
             .unwrap();
 
@@ -989,7 +989,7 @@ fn test_acorn_two_hop_branch_fires_at_sparse_selectivity() {
                 )
             })
             .collect();
-        dists.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        dists.sort_by(|a, b| a.1.total_cmp(&b.1));
         for &(j, _) in dists.iter().take(neighbors_per_node) {
             graph[i].insert(j);
             graph[j as usize].insert(i as u32);
@@ -1004,7 +1004,7 @@ fn test_acorn_two_hop_branch_fires_at_sparse_selectivity() {
         .min_by(|&a, &b| {
             let da = vicinity::distance::cosine_distance(&vectors[a as usize], &query);
             let db = vicinity::distance::cosine_distance(&vectors[b as usize], &query);
-            da.partial_cmp(&db).unwrap()
+            da.total_cmp(&db)
         })
         .unwrap();
 

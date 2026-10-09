@@ -170,7 +170,7 @@ impl StreamBuffer {
             })
             .collect();
 
-        results.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
         results.truncate(k);
         results
     }
@@ -229,5 +229,39 @@ mod tests {
 
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].0, 0); // Closest to query
+    }
+
+    /// A buffered vector containing NaN yields a NaN distance. Sorting mixed
+    /// NaN and finite distances with `partial_cmp(..).unwrap_or(Equal)` is not
+    /// a total order and can panic since Rust 1.81; search must not panic and
+    /// must keep finite distances in ascending order.
+    #[test]
+    fn search_with_nan_vectors_does_not_panic() {
+        let mut s = 0x5EED_u64;
+        let mut next = || {
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (s >> 33) as f32 / (1u32 << 31) as f32
+        };
+        for _trial in 0..300 {
+            let config = StreamBufferConfig {
+                distance_metric: crate::distance::DistanceMetric::L2,
+                ..Default::default()
+            };
+            let mut buffer = StreamBuffer::with_config(config);
+            for id in 0..64u32 {
+                let x = if next() < 0.1 { f32::NAN } else { next() };
+                buffer.insert(id, vec![x, next()]).unwrap();
+            }
+            let results = buffer.search(&[0.5, 0.5], 64);
+            assert_eq!(results.len(), 64);
+            let finite: Vec<f32> = results
+                .iter()
+                .map(|r| r.1)
+                .filter(|d| !d.is_nan())
+                .collect();
+            assert!(finite.windows(2).all(|w| w[0] <= w[1]));
+        }
     }
 }

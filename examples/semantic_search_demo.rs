@@ -181,7 +181,7 @@ fn demo_recall_latency_tradeoff(corpus: &[Vec<f32>]) -> vicinity::Result<()> {
                 .enumerate()
                 .map(|(i, doc)| (i as u32, cosine_distance(q, doc)))
                 .collect();
-            dists.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+            dists.sort_by(|a, b| a.1.total_cmp(&b.1));
             dists.iter().take(k).map(|(id, _)| *id).collect()
         })
         .collect();

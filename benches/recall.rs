@@ -26,7 +26,7 @@ fn compute_ground_truth(query: &[f32], database: &[Vec<f32>], k: usize) -> Vec<u
         .enumerate()
         .map(|(i, vec)| (i as u32, l2_distance_squared(query, vec)))
         .collect();
-    distances.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+    distances.sort_by(|a, b| a.1.total_cmp(&b.1));
     distances.into_iter().take(k).map(|(id, _)| id).collect()
 }
 

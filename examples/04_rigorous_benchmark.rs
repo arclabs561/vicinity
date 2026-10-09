@@ -73,7 +73,7 @@ fn percentile(values: &mut [f64], p: f64) -> f64 {
     if values.is_empty() {
         return 0.0;
     }
-    values.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    values.sort_by(|a, b| a.total_cmp(b));
     let idx = ((values.len() - 1) as f64 * p / 100.0) as usize;
     values[idx.min(values.len() - 1)]
 }
@@ -271,7 +271,7 @@ fn brute_force_search(train: &[Vec<f32>], query: &[f32], k: usize) -> Vec<(u32, 
         })
         .collect();
 
-    scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    scores.sort_by(|a, b| b.1.total_cmp(&a.1));
     scores.truncate(k);
     scores
 }

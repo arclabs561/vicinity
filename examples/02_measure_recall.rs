@@ -79,7 +79,7 @@ fn brute_force_knn(query: &[f32], data: &[Vec<f32>], k: usize) -> Vec<u32> {
         .enumerate()
         .map(|(i, v)| (i as u32, cosine_distance(query, v)))
         .collect();
-    dists.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+    dists.sort_by(|a, b| a.1.total_cmp(&b.1));
     dists.into_iter().take(k).map(|(id, _)| id).collect()
 }
 

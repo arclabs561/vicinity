@@ -29,7 +29,7 @@ fn brute_force_knn(query: &[f32], database: &[Vec<f32>], k: usize) -> Vec<(u32, 
         .enumerate()
         .map(|(i, v)| (i as u32, l2_distance_squared(query, v)))
         .collect();
-    distances.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+    distances.sort_by(|a, b| a.1.total_cmp(&b.1));
     distances.truncate(k);
     distances
 }

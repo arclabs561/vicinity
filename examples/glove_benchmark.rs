@@ -133,7 +133,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .enumerate()
                     .map(|(i, v)| (i, angular_distance(query, v)))
                     .collect();
-                dists.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+                dists.sort_by(|a, b| a.1.total_cmp(&b.1));
                 dists.iter().take(100).map(|(i, _)| *i).collect()
             })
             .collect();

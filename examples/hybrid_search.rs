@@ -172,7 +172,7 @@ fn bm25_rank(docs: &[Document], query: &str) -> Vec<(usize, f64)> {
         .filter(|(_, s)| *s > 0.0)
         .collect();
 
-    scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    scores.sort_by(|a, b| b.1.total_cmp(&a.1));
     scores
 }
 
@@ -199,7 +199,7 @@ fn reciprocal_rank_fusion(lists: &[&[(usize, f64)]], k: f64) -> Vec<(usize, f64)
         }
     }
     let mut result: Vec<(usize, f64)> = fused.into_iter().collect();
-    result.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    result.sort_by(|a, b| b.1.total_cmp(&a.1));
     result
 }
 

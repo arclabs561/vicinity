@@ -222,7 +222,7 @@ fn demo_lid_analysis() {
 
     // Show top high-LID points
     let mut sorted = lid_estimates.clone();
-    sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    sorted.sort_by(|a, b| b.1.total_cmp(&a.1));
 
     println!("   Top 10 highest-LID points:");
     println!("   {:>6}  {:>8}  {:>10}", "Index", "LID", "Type");
@@ -448,7 +448,7 @@ fn brute_force_knn_metric(
         })
         .collect();
 
-    distances.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+    distances.sort_by(|a, b| a.1.total_cmp(&b.1));
     distances.into_iter().take(k).collect()
 }
 
@@ -479,7 +479,7 @@ fn compute_distances_from(query: &[f32], data: &[f32], dim: usize, skip_idx: usi
             l2_distance(query, vec)
         })
         .collect();
-    dists.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    dists.sort_by(|a, b| a.total_cmp(b));
     dists
 }
 

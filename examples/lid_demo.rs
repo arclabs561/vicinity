@@ -61,7 +61,7 @@ fn demo_synthetic_sphere() {
                 .sqrt()
         })
         .collect();
-    dists.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    dists.sort_by(|a, b| a.total_cmp(b));
 
     println!("\n   Sample distances from point 0 (first 10):");
     for (i, d) in dists.iter().take(10).enumerate() {
@@ -329,7 +329,7 @@ fn compute_twonn_ratios(flat_vectors: &[f32], dim: usize) -> Vec<f32> {
             })
             .collect();
 
-        distances.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        distances.sort_by(|a, b| a.1.total_cmp(&b.1));
 
         if distances.len() >= 2 {
             let r1 = distances[0].1;
