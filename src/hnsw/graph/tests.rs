@@ -26,6 +26,40 @@ fn level_multiplier_is_one_over_ln_m_for_every_constructor() {
 }
 
 #[test]
+fn k_sampled_random_search_is_reproducible_with_a_seed() {
+    // With `HNSWParams::seed` set, repeated searches for one query must pick
+    // the same random seeds and so return the same results.
+    let dim = 16;
+    let params = HNSWParams {
+        m: 4,
+        m_max: 8,
+        ef_construction: 16,
+        metric: DistanceMetric::L2,
+        seed: Some(1),
+        seed_selection: SeedSelectionStrategy::KSampledRandom { k: 2 },
+        ..Default::default()
+    };
+    let mut index = HNSWIndex::with_params(dim, params).unwrap();
+    for i in 0..600u32 {
+        let v: Vec<f32> = (0..dim)
+            .map(|j| ((i as usize * dim + j) as f32 * 0.618_034).fract() * 2.0 - 1.0)
+            .collect();
+        index.add_slice(i, &v).unwrap();
+    }
+    index.build().unwrap();
+
+    for q in 0..20usize {
+        let query: Vec<f32> = (0..dim)
+            .map(|j| ((q * 7919 + j) as f32 * 0.414_213).fract() * 2.0 - 1.0)
+            .collect();
+        let first = index.search(&query, 10, 10).unwrap();
+        for _ in 0..10 {
+            assert_eq!(index.search(&query, 10, 10).unwrap(), first, "query {q}");
+        }
+    }
+}
+
+#[test]
 fn add_rejects_non_finite_components() {
     // A NaN or infinite component has no meaningful distance and cannot
     // round-trip through JSON persistence, so it must be refused at insert.

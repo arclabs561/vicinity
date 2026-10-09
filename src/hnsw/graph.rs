@@ -2228,7 +2228,14 @@ impl HNSWIndex {
                 if use_sampling {
                     // Sample up to MAX_CANDIDATES random peers
                     use rand::Rng;
-                    let mut rng = rand::rng();
+                    // Seeded per vector so the sample does not depend on the
+                    // (hash-randomized) order categories are visited in.
+                    let mut rng = match self.params.seed {
+                        Some(seed) => rand::rngs::StdRng::seed_from_u64(
+                            seed ^ u64::from(vector_id).wrapping_mul(0x9E37_79B9_7F4A_7C15),
+                        ),
+                        None => rand::rngs::StdRng::from_rng(&mut rand::rng()),
+                    };
                     let mut sampled = 0;
                     let mut attempts = 0;
                     while sampled < MAX_CANDIDATES && attempts < MAX_CANDIDATES * 2 {
@@ -2385,7 +2392,18 @@ impl HNSWIndex {
                 // K-Sampled Random: Sample k random nodes
                 // Optimized: use reservoir sampling or direct random generation instead of collecting full Vec
                 use rand::Rng;
-                let mut rng = rand::rng();
+                // With a configured seed, derive the stream from the seed and the
+                // query bits so repeated searches for one query pick the same seeds
+                // on any thread; without one, sample fresh randomness.
+                let mut rng = match self.params.seed {
+                    Some(seed) => {
+                        let mixed = query.iter().fold(seed ^ 0x9E37_79B9_7F4A_7C15, |h, x| {
+                            (h ^ u64::from(x.to_bits())).wrapping_mul(0x0000_0100_0000_01B3)
+                        });
+                        rand::rngs::StdRng::seed_from_u64(mixed)
+                    }
+                    None => rand::rngs::StdRng::from_rng(&mut rand::rng()),
+                };
                 let num_samples = (*k).min(self.num_vectors);
 
                 // Generate random seeds without creating full Vec of all IDs
