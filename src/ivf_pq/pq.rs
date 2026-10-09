@@ -34,6 +34,13 @@ impl ProductQuantizer {
             ));
         }
 
+        if codebook_size > 256 {
+            return Err(RetrieveError::InvalidParameter(format!(
+                "codebook_size must be <= 256 (codes are stored as u8), got {}",
+                codebook_size
+            )));
+        }
+
         if !dimension.is_multiple_of(num_codebooks) {
             return Err(RetrieveError::InvalidParameter(
                 "dimension must be divisible by num_codebooks".into(),
@@ -311,6 +318,16 @@ fn get_vector(vectors: &[f32], dimension: usize, idx: usize) -> &[f32] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejects_codebook_size_that_does_not_fit_u8_codes() {
+        // Codes are stored as u8, so a codebook has at most 256 entries.
+        assert!(ProductQuantizer::new(8, 2, 256).is_ok());
+        assert!(matches!(
+            ProductQuantizer::new(8, 2, 257),
+            Err(RetrieveError::InvalidParameter(_))
+        ));
+    }
 
     #[test]
     fn adc_table_specializes_one_dimensional_subvectors() {

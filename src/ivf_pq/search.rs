@@ -287,7 +287,7 @@ pub struct IVFPQParams {
     /// Product quantization: number of codebooks
     pub num_codebooks: usize,
 
-    /// Product quantization: codebook size
+    /// Product quantization: codebook size (at most 256; codes are `u8`)
     pub codebook_size: usize,
 
     /// Use Optimized Product Quantization (OPQ)
@@ -320,6 +320,17 @@ impl Default for IVFPQParams {
             compression_threshold: 100, // Only compress clusters with > 100 IDs
         }
     }
+}
+
+/// PQ codes are stored as `u8`, so a codebook holds at most 256 entries.
+fn validate_codebook_size(codebook_size: usize) -> Result<(), RetrieveError> {
+    if codebook_size > 256 {
+        return Err(RetrieveError::InvalidParameter(format!(
+            "codebook_size must be <= 256 (PQ codes are stored as u8), got {}",
+            codebook_size
+        )));
+    }
+    Ok(())
 }
 
 impl IVFPQIndex {
@@ -368,6 +379,7 @@ impl IVFPQIndex {
                 "dimension must be > 0".into(),
             ));
         }
+        validate_codebook_size(params.codebook_size)?;
 
         Ok(Self {
             vectors: Vec::new(),
@@ -399,6 +411,7 @@ impl IVFPQIndex {
         params: IVFPQParams,
         filter_field: impl Into<String>,
     ) -> Result<Self, RetrieveError> {
+        validate_codebook_size(params.codebook_size)?;
         Ok(Self {
             vectors: Vec::new(),
             dimension,
@@ -1955,6 +1968,23 @@ mod tests {
 
         let out = finish_top_k_by_distance(vec![(2, 2.0), (1, 1.0)], 5);
         assert_eq!(out, vec![(1, 1.0), (2, 2.0)]);
+    }
+
+    #[test]
+    fn construction_rejects_codebook_size_above_u8_code_range() {
+        // PQ codes are u8; codebook_size > 256 would silently clamp codes.
+        let params = IVFPQParams {
+            codebook_size: 257,
+            ..IVFPQParams::default()
+        };
+        assert!(matches!(
+            IVFPQIndex::new(16, params.clone()),
+            Err(RetrieveError::InvalidParameter(_))
+        ));
+        assert!(matches!(
+            IVFPQIndex::with_filtering(16, params, "category"),
+            Err(RetrieveError::InvalidParameter(_))
+        ));
     }
 
     /// compact() drops raw vectors; search still returns results using PQ distances.

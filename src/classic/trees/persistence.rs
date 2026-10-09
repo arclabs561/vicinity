@@ -18,6 +18,13 @@ pub(crate) fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<
         writer.get_ref().sync_all()?;
         drop(writer);
         std::fs::rename(&tmp_path, path)?;
+        // Best-effort: make the rename itself durable. Opening a directory
+        // as a file fails on some platforms (Windows); the data is already
+        // synced, so that is not a save failure.
+        let parent = path.parent().filter(|p| !p.as_os_str().is_empty());
+        if let Ok(dir) = std::fs::File::open(parent.unwrap_or(Path::new("."))) {
+            let _ = dir.sync_all();
+        }
         Ok(())
     })();
     if result.is_err() {
