@@ -42,9 +42,9 @@ benchmarking, persistence, Python bindings, and performance work.
   SIFT-128, GloVe-25, GloVe-50, GloVe-100, GloVe-200, Fashion-MNIST, MNIST,
   NYTimes, GIST, and Deep Image now have expected SHA-256 values.
 - The benchmark resume contract is storage-aware for the implemented storage
-  modes. DiskANN requires memory, file, and mmap rows. IVF-PQ and IVF-AVQ
-  require snapshot-loaded and file rows, plus mmap rows when the `persistence`
-  feature is compiled.
+  modes. DiskANN requires memory and file rows. IVF-PQ and IVF-AVQ require
+  snapshot-loaded and file rows. (mmap rows were removed with memory mapping;
+  older result files that contain them still load.)
   `store::UpdatableIndex` requires a `segmented_store` row. Other snapshot-
   capable families require `snapshot_loaded` rows when `--snapshot-load` is
   requested.
