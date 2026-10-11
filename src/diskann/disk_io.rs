@@ -1,12 +1,12 @@
 //! Disk I/O optimization for DiskANN.
 //!
-//! Handles sequential file access patterns and memory-mapped files.
+//! Writes the graph sequentially and reads node records with positional reads.
 
+use crate::file_io::{CachedFile, FileCacheConfig, FileCacheStats};
 use crate::persistence::error::{PersistenceError, PersistenceResult};
 use crate::RetrieveError;
-use durability::mmap::{AccessPattern, MappedFile};
 use std::fs::File;
-use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::{BufWriter, Read, Write};
 use std::path::Path;
 
 // Magic bytes for DiskANN graph file: "DANN" + version 1
@@ -90,18 +90,12 @@ impl DiskGraphWriter {
     }
 }
 
-enum DiskGraphStorage {
-    File(File),
-    Mmap(Box<MappedFile>),
-}
-
 /// Reader for DiskANN graph format.
 ///
-/// Uses standard IO by default and can be opened in mmap mode with
-/// [`DiskGraphReader::open_mmap`]. The mmap path preserves the same on-disk
-/// format and avoids per-record seek/read syscalls.
+/// Reads node records through a block cache over positional reads (`pread`
+/// on Unix, `seek_read` on Windows); see [`FileCacheConfig`].
 pub struct DiskGraphReader {
-    storage: DiskGraphStorage,
+    file: CachedFile,
     read_buf: Vec<u8>,
     /// Total number of nodes in the graph.
     pub num_nodes: usize,
@@ -114,8 +108,13 @@ pub struct DiskGraphReader {
 }
 
 impl DiskGraphReader {
-    /// Open a graph file.
+    /// Open a graph file with the default block cache.
     pub fn open(path: &Path) -> PersistenceResult<Self> {
+        Self::open_with_cache(path, FileCacheConfig::default())
+    }
+
+    /// Open a graph file with the given block cache settings.
+    pub fn open_with_cache(path: &Path, cache: FileCacheConfig) -> PersistenceResult<Self> {
         let mut file = File::open(path)?;
 
         // Read header
@@ -138,35 +137,25 @@ impl DiskGraphReader {
         file.read_exact(&mut buf_u64)?;
         let start_node = u64::from_le_bytes(buf_u64) as u32;
 
-        // Skip padding
-        file.seek(SeekFrom::Current(32))?;
-
-        // Guard against crafted files that claim enormous graph sizes.
-        const MAX_NODES: usize = 100_000_000; // 100M nodes
-        const MAX_DEGREE: usize = 65_536; // 64K degree
-
-        if num_nodes > MAX_NODES {
-            return Err(PersistenceError::Format(format!(
-                "unreasonable node count: {}",
-                num_nodes
-            )));
-        }
-        if max_degree > MAX_DEGREE {
-            return Err(PersistenceError::Format(format!(
-                "unreasonable max degree: {}",
-                max_degree
-            )));
-        }
+        validate_header(num_nodes, max_degree)?;
 
         let header_size = 8 + 8 + 8 + 8 + 32;
-        // record_size = 4 + max_degree * 4; check for overflow.
-        let record_size = (max_degree as u64)
-            .checked_mul(4)
-            .and_then(|n| n.checked_add(4))
-            .ok_or_else(|| PersistenceError::Format("record size overflow".into()))?;
+        let record_size = record_size(max_degree)?;
+        // Reject a truncated file at open rather than on the first short read.
+        let expected_len = (num_nodes as u64)
+            .checked_mul(record_size)
+            .and_then(|n| n.checked_add(header_size))
+            .ok_or_else(|| PersistenceError::Format("graph file size overflow".into()))?;
+        let actual_len = file.metadata()?.len();
+        if actual_len < expected_len {
+            return Err(PersistenceError::Format(format!(
+                "truncated DiskANN graph file: expected at least {} bytes, got {}",
+                expected_len, actual_len
+            )));
+        }
 
         Ok(Self {
-            storage: DiskGraphStorage::File(file),
+            file: CachedFile::new(file, cache)?,
             read_buf: Vec::new(),
             num_nodes,
             max_degree,
@@ -176,52 +165,18 @@ impl DiskGraphReader {
         })
     }
 
-    /// Open a graph file through a read-only memory map.
+    /// Same as [`Self::open`]. vicinity no longer memory-maps index files.
+    #[deprecated(
+        since = "0.12.0",
+        note = "use `DiskGraphReader::open`; vicinity no longer memory-maps"
+    )]
     pub fn open_mmap(path: &Path) -> PersistenceResult<Self> {
-        let mapped = MappedFile::open(path, AccessPattern::Random)
-            .map_err(|e| PersistenceError::Io(std::io::Error::other(e.to_string())))?;
-        let bytes = mapped.as_slice();
-        if bytes.len() < 64 {
-            return Err(PersistenceError::Format(
-                "DiskANN graph file is too short".into(),
-            ));
-        }
-        if &bytes[0..8] != GRAPH_MAGIC {
-            return Err(PersistenceError::Format(
-                "Invalid DiskANN graph file".to_string(),
-            ));
-        }
+        Self::open(path)
+    }
 
-        let num_nodes = read_u64_at(bytes, 8)? as usize;
-        let max_degree = read_u64_at(bytes, 16)? as usize;
-        let start_node = read_u64_at(bytes, 24)? as u32;
-
-        validate_header(num_nodes, max_degree)?;
-
-        let header_size = 8 + 8 + 8 + 8 + 32;
-        let record_size = record_size(max_degree)?;
-        let expected_len = header_size as usize
-            + (num_nodes as u64)
-                .checked_mul(record_size)
-                .ok_or_else(|| PersistenceError::Format("graph file size overflow".into()))?
-                as usize;
-        if bytes.len() < expected_len {
-            return Err(PersistenceError::Format(format!(
-                "truncated DiskANN graph file: expected at least {} bytes, got {}",
-                expected_len,
-                bytes.len()
-            )));
-        }
-
-        Ok(Self {
-            storage: DiskGraphStorage::Mmap(Box::new(mapped)),
-            read_buf: Vec::new(),
-            num_nodes,
-            max_degree,
-            start_node,
-            header_size,
-            record_size,
-        })
+    /// Block cache counters for this reader.
+    pub fn cache_stats(&self) -> FileCacheStats {
+        self.file.stats()
     }
 
     /// Read neighbors for a node.
@@ -231,21 +186,11 @@ impl DiskGraphReader {
         }
 
         let offset = self.header_size + (node_id as u64 * self.record_size);
-        match &mut self.storage {
-            DiskGraphStorage::File(file) => {
-                Self::get_neighbors_file(file, offset, self.max_degree, &mut self.read_buf)
-            }
-            DiskGraphStorage::Mmap(mapped) => Self::get_neighbors_mmap(
-                mapped.as_slice(),
-                offset,
-                self.max_degree,
-                self.record_size,
-            ),
-        }
+        Self::get_neighbors_file(&mut self.file, offset, self.max_degree, &mut self.read_buf)
     }
 
     fn get_neighbors_file(
-        file: &mut File,
+        file: &mut CachedFile,
         offset: u64,
         max_degree: usize,
         read_buf: &mut Vec<u8>,
@@ -258,7 +203,7 @@ impl DiskGraphReader {
 
         // Safety: `&mut self` prevents concurrent calls. For parallel search,
         // create one DiskGraphReader per thread (each with its own file handle).
-        crate::file_io::read_exact_at(file, offset, read_buf)?;
+        file.read_exact_at(offset, read_buf)?;
 
         let degree =
             u32::from_le_bytes([read_buf[0], read_buf[1], read_buf[2], read_buf[3]]) as usize;
@@ -279,50 +224,6 @@ impl DiskGraphReader {
             neighbors.push(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
         }
 
-        Ok(neighbors)
-    }
-
-    fn get_neighbors_mmap(
-        bytes: &[u8],
-        offset: u64,
-        max_degree: usize,
-        record_size: u64,
-    ) -> Result<Vec<u32>, RetrieveError> {
-        let offset = usize::try_from(offset)
-            .map_err(|_| RetrieveError::FormatError("graph offset overflow".into()))?;
-        let record_end = offset
-            .checked_add(record_size as usize)
-            .ok_or_else(|| RetrieveError::FormatError("graph record end overflow".into()))?;
-        if record_end > bytes.len() {
-            return Err(RetrieveError::FormatError(
-                "graph record extends past mapped file".into(),
-            ));
-        }
-
-        let degree = u32::from_le_bytes([
-            bytes[offset],
-            bytes[offset + 1],
-            bytes[offset + 2],
-            bytes[offset + 3],
-        ]) as usize;
-        if degree > max_degree {
-            return Err(RetrieveError::FormatError(
-                "invalid node degree in graph file".into(),
-            ));
-        }
-
-        let neighbors_start = offset + 4;
-        let neighbors_end = neighbors_start + degree * 4;
-        if neighbors_end > record_end {
-            return Err(RetrieveError::FormatError(
-                "graph neighbor list extends past record".into(),
-            ));
-        }
-
-        let mut neighbors = Vec::with_capacity(degree);
-        for chunk in bytes[neighbors_start..neighbors_end].as_chunks::<4>().0 {
-            neighbors.push(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
-        }
         Ok(neighbors)
     }
 }
@@ -354,18 +255,6 @@ fn record_size(max_degree: usize) -> PersistenceResult<u64> {
         .ok_or_else(|| PersistenceError::Format("record size overflow".into()))
 }
 
-fn read_u64_at(bytes: &[u8], offset: usize) -> PersistenceResult<u64> {
-    let end = offset
-        .checked_add(8)
-        .ok_or_else(|| PersistenceError::Format("offset overflow".into()))?;
-    let chunk = bytes
-        .get(offset..end)
-        .ok_or_else(|| PersistenceError::Format("truncated DiskANN graph header".into()))?;
-    Ok(u64::from_le_bytes([
-        chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
-    ]))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -385,5 +274,17 @@ mod tests {
         assert_eq!(reader.get_neighbors(0).unwrap(), vec![1, 2, 0, 2]);
         assert_eq!(reader.get_neighbors(1).unwrap(), vec![2]);
         assert!(reader.get_neighbors(2).unwrap().is_empty());
+    }
+
+    #[test]
+    fn open_rejects_file_shorter_than_its_header_claims() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.index");
+        let mut writer = DiskGraphWriter::new(&path, 3, 4, 0).unwrap();
+        writer.write_adjacency(&[1]).unwrap();
+        writer.flush().unwrap();
+
+        let err = DiskGraphReader::open(&path).err().expect("open must fail");
+        assert!(err.to_string().contains("truncated"), "{err}");
     }
 }

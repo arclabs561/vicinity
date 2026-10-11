@@ -226,6 +226,10 @@ pub(crate) mod spectral;
 // Re-exports
 pub use distance::DistanceMetric;
 pub use error::{Result, RetrieveError};
+#[cfg(any(feature = "diskann", feature = "ivf_pq", feature = "ivf_avq"))]
+pub use file_io::{
+    FileCacheConfig, FileCacheStats, DEFAULT_FILE_CACHE_BLOCK_SIZE, DEFAULT_FILE_CACHE_BYTES,
+};
 pub use memory::MemoryReport;
 
 #[cfg(feature = "benchmark")]

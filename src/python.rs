@@ -15,7 +15,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2};
-use pyo3::exceptions::{PyFileNotFoundError, PyOSError, PyRuntimeError, PyValueError};
+use pyo3::exceptions::{
+    PyDeprecationWarning, PyFileNotFoundError, PyOSError, PyRuntimeError, PyValueError,
+};
 use pyo3::prelude::*;
 
 use crate::distance::{self, DistanceMetric as RustMetric};
@@ -842,26 +844,22 @@ impl PyIVFPQFileSearcher {
     ///
     /// Args:
     ///     path: Directory written by `IVFPQIndex.save`.
-    ///     mmap: Use read-only memory maps for large byte arrays. Requires
-    ///         the Rust `persistence` feature.
+    ///     mmap: Deprecated and ignored; passing it emits a
+    ///         `DeprecationWarning`. Reads are positional and no longer
+    ///         memory-mapped.
     #[staticmethod]
-    #[pyo3(signature = (path, mmap=false))]
-    fn load(path: PathBuf, mmap: bool) -> PyResult<Self> {
-        let inner = if mmap {
-            #[cfg(feature = "persistence")]
-            {
-                RustIVFPQFileSearcher::load_mmap(path)
-            }
-            #[cfg(not(feature = "persistence"))]
-            {
-                return Err(PyValueError::new_err(
-                    "mmap=True requires pyvicinity built with the Rust persistence feature",
-                ));
-            }
-        } else {
-            RustIVFPQFileSearcher::load(path)
+    #[pyo3(signature = (path, mmap=None))]
+    fn load(py: Python<'_>, path: PathBuf, mmap: Option<bool>) -> PyResult<Self> {
+        if mmap.is_some() {
+            PyErr::warn(
+                py,
+                &py.get_type::<PyDeprecationWarning>(),
+                c"IVFPQFileSearcher.load(mmap=...) is deprecated and ignored; \
+                  vicinity no longer memory-maps index files",
+                1,
+            )?;
         }
-        .map_err(map_persistence_error)?;
+        let inner = RustIVFPQFileSearcher::load(path).map_err(map_persistence_error)?;
 
         Ok(Self {
             nprobe: inner.nprobe(),

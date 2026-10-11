@@ -295,12 +295,13 @@ class IVFPQFileSearcher:
     """File-backed IVF-PQ searcher for saved index directories."""
 
     @staticmethod
-    def load(path: str | PathLike[str], mmap: bool = False) -> IVFPQFileSearcher:
+    def load(path: str | PathLike[str], mmap: bool | None = None) -> IVFPQFileSearcher:
         """Load a file-backed searcher from a directory written by
         :meth:`IVFPQIndex.save`.
 
-        ``mmap=True`` uses read-only memory maps and requires a build with
-        the Rust ``persistence`` feature. PyPI wheels enable it.
+        ``mmap`` is deprecated and ignored; passing it emits a
+        :class:`DeprecationWarning`. Reads are positional and no longer
+        memory-mapped.
         """
 
     @staticmethod

@@ -50,8 +50,7 @@
 //! binary array files. Raw vectors are saved only when present; a compacted index
 //! reloads with approximate search available and reranked search unavailable.
 //! [`IVFPQFileSearcher`] opens the same saved format for file-backed search over
-//! persisted PQ codes. Its mmap opener requires the `persistence` feature. The
-//! current format is snapshot-compatible; a list-contiguous IVF layout remains
+//! persisted PQ codes, read with positional reads. The current format is snapshot-compatible; a list-contiguous IVF layout remains
 //! the better target for large cold-storage benchmarks.
 //!
 //! # Memory Calculation

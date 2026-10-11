@@ -4,7 +4,7 @@ use super::cluster::Cluster;
 use super::file_storage::{
     append_codes_for_ids, build_list_codes, checked_len, open_byte_storage, open_list_code_storage,
     read_code_from_storage, read_list_codes_for_cluster, read_vector_from_storage,
-    IVFPQByteStorage, IVFPQListCodeStorage,
+    IVFPQListCodeStorage,
 };
 use super::manifest::{IVFPQManifest, PersistedFilterMetadata, PersistedIVFPQParams};
 use super::opq::OptimizedProductQuantizer;
@@ -246,9 +246,9 @@ pub struct IVFPQFileSearcher {
     clusters: Vec<Cluster>,
     centroids: Vec<f32>,
     pq: Quantizer,
-    codes: IVFPQByteStorage,
+    codes: crate::file_io::CachedFile,
     list_codes: Option<IVFPQListCodeStorage>,
-    raw_vectors: Option<IVFPQByteStorage>,
+    raw_vectors: Option<crate::file_io::CachedFile>,
     code_buf: Vec<u8>,
     raw_byte_buf: Vec<u8>,
     vec_buf: Vec<f32>,
@@ -1562,14 +1562,17 @@ impl IVFPQIndex {
 impl IVFPQFileSearcher {
     /// Open an IVF-PQ snapshot for file-backed search.
     pub fn load(input_dir: impl AsRef<Path>) -> Result<Self, RetrieveError> {
-        Self::load_with_storage(input_dir.as_ref(), false)
+        Self::load_from_parts(
+            input_dir.as_ref(),
+            crate::file_io::FileCacheConfig::default(),
+        )
     }
 
     #[cfg(feature = "persistence")]
     /// Open the generation named by a root directory's `CURRENT` pointer.
     pub fn load_from_generation(root: impl AsRef<Path>) -> Result<Self, RetrieveError> {
         let directory = open_current(root)?;
-        Self::load_mmap(directory)
+        Self::load(directory)
     }
 
     /// Open the current generation and return its reader lease to retain while searching.
@@ -1578,28 +1581,47 @@ impl IVFPQFileSearcher {
         root: impl AsRef<Path>,
     ) -> Result<(Self, GenerationLease), RetrieveError> {
         let lease = open_current_pinned(root).map_err(RetrieveError::from)?;
-        let searcher = Self::load_mmap(lease.path())?;
+        let searcher = Self::load(lease.path())?;
         Ok((searcher, lease))
     }
 
-    /// Open an IVF-PQ snapshot using read-only memory maps for large byte arrays.
+    /// Same as [`Self::load`]. vicinity no longer memory-maps index files.
     #[cfg(feature = "persistence")]
+    #[deprecated(
+        since = "0.12.0",
+        note = "use `IVFPQFileSearcher::load`; vicinity no longer memory-maps"
+    )]
     pub fn load_mmap(input_dir: impl AsRef<Path>) -> Result<Self, RetrieveError> {
-        Self::load_with_storage(input_dir.as_ref(), true)
+        Self::load(input_dir)
     }
 
-    #[cfg(not(feature = "persistence"))]
-    fn load_with_storage(input_dir: &Path, mmap: bool) -> Result<Self, RetrieveError> {
-        let _ = mmap;
-        Self::load_from_parts(input_dir, false)
+    /// Open an IVF-PQ snapshot for file-backed search, reading codes and raw
+    /// vectors through a block cache over positional reads.
+    /// `cache.budget_bytes` is split across the files search reads.
+    pub fn load_with_cache(
+        input_dir: impl AsRef<Path>,
+        cache: crate::file_io::FileCacheConfig,
+    ) -> Result<Self, RetrieveError> {
+        Self::load_from_parts(input_dir.as_ref(), cache)
     }
 
-    #[cfg(feature = "persistence")]
-    fn load_with_storage(input_dir: &Path, mmap: bool) -> Result<Self, RetrieveError> {
-        Self::load_from_parts(input_dir, mmap)
+    /// Block cache counters summed over the snapshot's code and raw-vector
+    /// files.
+    pub fn cache_stats(&self) -> crate::file_io::FileCacheStats {
+        let mut stats = self.codes.stats();
+        if let Some(list_codes) = &self.list_codes {
+            stats = stats.merge(list_codes.cache_stats());
+        }
+        if let Some(raw) = &self.raw_vectors {
+            stats = stats.merge(raw.stats());
+        }
+        stats
     }
 
-    fn load_from_parts(input_dir: &Path, mmap: bool) -> Result<Self, RetrieveError> {
+    fn load_from_parts(
+        input_dir: &Path,
+        cache: crate::file_io::FileCacheConfig,
+    ) -> Result<Self, RetrieveError> {
         let manifest: IVFPQManifest = read_json(&input_dir.join("manifest.json"))?;
         validate_manifest(&manifest)?;
         manifest
@@ -1624,25 +1646,38 @@ impl IVFPQFileSearcher {
             params.num_codebooks,
             "IVF-PQ codes length overflow",
         )?;
-        let codes = open_byte_storage(&input_dir.join("codes.bin"), codes_len, mmap)?;
-        let list_codes = open_list_code_storage(input_dir, params.num_clusters, codes_len, mmap)?;
-        let raw_vectors = if manifest.raw_vectors_present {
+        // Search reads list_codes.bin when present and codes.bin otherwise,
+        // plus raw_vectors.bin for rerank; split the cache over those.
+        let has_list_codes = input_dir.join("list_codes.bin").exists();
+        let raw_bytes = if manifest.raw_vectors_present {
             let raw_floats = checked_len(
                 manifest.num_vectors,
                 manifest.dimension,
                 "IVF-PQ raw vector length overflow",
             )?;
-            Some(open_byte_storage(
-                &input_dir.join("raw_vectors.bin"),
-                checked_len(
-                    raw_floats,
-                    std::mem::size_of::<f32>(),
-                    "IVF-PQ raw vector byte length overflow",
-                )?,
-                mmap,
+            Some(checked_len(
+                raw_floats,
+                std::mem::size_of::<f32>(),
+                "IVF-PQ raw vector byte length overflow",
             )?)
         } else {
             None
+        };
+        let budgets = cache.split(&[
+            if has_list_codes { 0 } else { codes_len as u64 },
+            if has_list_codes { codes_len as u64 } else { 0 },
+            raw_bytes.unwrap_or(0) as u64,
+        ]);
+        let codes = open_byte_storage(&input_dir.join("codes.bin"), codes_len, budgets[0])?;
+        let list_codes =
+            open_list_code_storage(input_dir, params.num_clusters, codes_len, budgets[1])?;
+        let raw_vectors = match raw_bytes {
+            Some(raw_bytes) => Some(open_byte_storage(
+                &input_dir.join("raw_vectors.bin"),
+                raw_bytes,
+                budgets[2],
+            )?),
+            None => None,
         };
 
         let raw_vector_byte_len = checked_len(
@@ -1779,9 +1814,8 @@ impl IVFPQFileSearcher {
                 "search_reranked unavailable without raw_vectors.bin".into(),
             ));
         };
-        if matches!(storage, IVFPQByteStorage::File(_)) {
-            candidates.sort_unstable_by_key(|(vector_idx, _)| *vector_idx);
-        }
+        // Ascending offsets keep the positional reads close to sequential.
+        candidates.sort_unstable_by_key(|(vector_idx, _)| *vector_idx);
         for (vector_idx, _approx_dist) in candidates {
             let vector = read_vector_from_storage(
                 storage,
@@ -2842,49 +2876,6 @@ mod tests {
         assert_eq!(
             file_searcher.search(&query, 10).unwrap(),
             loaded.search(&query, 10).unwrap()
-        );
-    }
-
-    #[cfg(feature = "persistence")]
-    #[test]
-    fn mmap_searcher_matches_snapshot_loaded_search() {
-        let dim = 16;
-        let n = 240;
-        use rand::{Rng, SeedableRng};
-        let mut rng = rand::rngs::StdRng::seed_from_u64(104);
-
-        let params = IVFPQParams {
-            num_clusters: 4,
-            num_codebooks: 4,
-            codebook_size: 16,
-            nprobe: 4,
-            seed: 126,
-            ..IVFPQParams::default()
-        };
-        let mut index = IVFPQIndex::new(dim, params).unwrap();
-        for i in 0..n {
-            let vector: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
-            index.add(30_000 + i as u32, vector).unwrap();
-        }
-        index.build().unwrap();
-        #[cfg(feature = "hnsw")]
-        {
-            index.coarse_quantizer = None;
-        }
-
-        let query: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
-        let dir = tempfile::tempdir().unwrap();
-        index.save_to_dir(dir.path()).unwrap();
-        let loaded = IVFPQIndex::load_from_dir(dir.path()).unwrap();
-        let mut mmap_searcher = IVFPQFileSearcher::load_mmap(dir.path()).unwrap();
-
-        assert_eq!(
-            mmap_searcher.search(&query, 10).unwrap(),
-            loaded.search(&query, 10).unwrap()
-        );
-        assert_eq!(
-            mmap_searcher.search_reranked(&query, 10, 80).unwrap(),
-            loaded.search_reranked(&query, 10, 80).unwrap()
         );
     }
 

@@ -8,6 +8,8 @@ Run with::
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import pytest
 
@@ -681,13 +683,18 @@ def test_ivfpq_file_searcher_load_round_trip(tmp_path) -> None:
     assert "IVFPQFileSearcher(" in repr(searcher)
 
 
-def test_ivfpq_file_searcher_mmap_round_trip(tmp_path) -> None:
+def test_ivfpq_file_searcher_mmap_argument_warns_and_still_loads(tmp_path) -> None:
     index, x = _build_ivfpq(seed=13)
     path = tmp_path / "ivfpq"
     index.save(path)
 
-    searcher = IVFPQFileSearcher.load(path, mmap=True)
+    with pytest.warns(DeprecationWarning, match="mmap"):
+        searcher = IVFPQFileSearcher.load(path, mmap=True)
     ids, dists = searcher.search(x[0], k=5, nprobe=8, rerank_pool=len(x))
 
     assert ids[0] == 0
     assert abs(float(dists[0])) < 1e-4
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        IVFPQFileSearcher.load(path)

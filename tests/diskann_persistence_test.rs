@@ -163,11 +163,10 @@ fn test_diskann_save_load_roundtrip() {
 
 #[test]
 fn diskann_resave_does_not_rewrite_files_open_in_a_searcher() {
-    // A searcher keeps its graph and vector files open (positional reads or a
-    // memory map). Saving another index to the same directory must replace
-    // the files, not rewrite them in place: an in-place rewrite changes the
-    // bytes under the live searcher, and a shorter rewrite of a mapped file
-    // faults with SIGBUS.
+    // A searcher keeps its graph and vector files open for positional reads.
+    // Saving another index to the same directory must replace the files, not
+    // rewrite them in place: an in-place rewrite changes the bytes under the
+    // live searcher.
     let n = 200;
     let d = 8;
     let params = DiskANNParams {
@@ -194,17 +193,12 @@ fn diskann_resave_does_not_rewrite_files_open_in_a_searcher() {
     let index_path = temp_dir.path().join("diskann_resave");
     first.save(&index_path).expect("save first index");
     let mut searcher = DiskANNSearcher::load(&index_path).expect("load searcher");
-    let mut mmap_searcher = DiskANNSearcher::load_mmap(&index_path).expect("load mmap searcher");
     let expected = first.search(&query, 5, 30).expect("in-memory search");
 
     second.save(&index_path).expect("save second index");
 
     assert_eq!(
         searcher.search(&query, 5, 30).expect("file search"),
-        expected
-    );
-    assert_eq!(
-        mmap_searcher.search(&query, 5, 30).expect("mmap search"),
         expected
     );
     let mut reloaded = DiskANNSearcher::load(&index_path).expect("reload");
@@ -241,21 +235,13 @@ fn test_diskann_file_search_matches_in_memory_search() {
     let index_path = temp_dir.path().join("diskann_parity");
     index.save(&index_path).expect("save index");
     let mut searcher = DiskANNSearcher::load(&index_path).expect("load searcher");
-    let mut mmap_searcher = DiskANNSearcher::load_mmap(&index_path).expect("load mmap searcher");
 
     for query in &queries {
         let in_memory = index.search(query, k, ef).expect("in-memory search");
         let file_backed = searcher.search(query, k, ef).expect("file-backed search");
-        let mmap_backed = mmap_searcher
-            .search(query, k, ef)
-            .expect("mmap-backed search");
         assert_eq!(
             file_backed, in_memory,
             "file-backed search must preserve in-memory DiskANN ranking"
-        );
-        assert_eq!(
-            mmap_backed, in_memory,
-            "mmap-backed search must preserve in-memory DiskANN ranking"
         );
     }
 }

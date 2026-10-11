@@ -9,7 +9,6 @@ use rand::Rng;
 use smallvec::SmallVec;
 
 use crate::RetrieveError;
-use durability::mmap::{AccessPattern, MappedFile};
 use std::io::{BufWriter, Write};
 
 /// Unique sibling path for write-then-rename saves.
@@ -95,9 +94,10 @@ impl DiskANNIndex {
         }
 
         // Write every file to a unique sibling temp path, then rename over the
-        // target. A searcher opened on the previous save keeps reading its own
-        // (now unlinked) files instead of bytes rewritten under it; a shorter
-        // in-place rewrite of a memory-mapped file would fault with SIGBUS.
+        // target. A crash leaves either the old file or the new one, never a
+        // partial write, and a searcher opened on the previous save keeps
+        // reading its own (now unlinked) files instead of bytes rewritten under
+        // it.
         let vectors_path = output_dir.join("vectors.bin");
         let graph_path = output_dir.join("graph.index");
         let doc_ids_path = output_dir.join("doc_ids.bin");
@@ -213,9 +213,23 @@ impl DiskANNIndex {
             std::fs::create_dir_all(output_dir)?;
         }
 
+        // Write-then-rename, like `save`, so an open page searcher keeps
+        // reading the old `nodes.page` instead of bytes rewritten under it.
         let page_path = output_dir.join("nodes.page");
+        let tmp_path = temp_sibling(&page_path);
+        let result = self
+            .write_page_layout(&tmp_path)
+            .and_then(|()| Ok(std::fs::rename(&tmp_path, &page_path)?));
+        if result.is_err() {
+            let _ = std::fs::remove_file(&tmp_path);
+        }
+        result
+    }
+
+    #[cfg(any(test, feature = "benchmark"))]
+    fn write_page_layout(&self, page_path: &Path) -> Result<(), RetrieveError> {
         let mut writer = super::page_io::DiskPageWriter::create(
-            &page_path,
+            page_path,
             self.num_vectors,
             self.dimension,
             self.params.m,
@@ -240,7 +254,7 @@ pub struct DiskANNSearcher {
 
     // Components
     graph_reader: super::disk_io::DiskGraphReader,
-    vectors: VectorStorage,
+    vectors: crate::file_io::CachedFile,
     /// External doc_ids aligned with internal indices (loaded from doc_ids.bin).
     doc_ids: Vec<u32>,
     /// Reusable byte buffer for vector reads (avoids per-read allocation).
@@ -250,11 +264,6 @@ pub struct DiskANNSearcher {
     /// Dense generation-counter visited set for search.
     visited_marks: Vec<u8>,
     visited_generation: u8,
-}
-
-enum VectorStorage {
-    File(std::fs::File),
-    Mmap(Box<MappedFile>),
 }
 
 /// Per-query I/O diagnostics from [`DiskANNSearcher`].
@@ -296,18 +305,18 @@ pub struct DiskANNSearchDiagnostics {
 }
 
 impl DiskANNSearcher {
-    /// Load searcher from index directory.
+    /// Load searcher from index directory with the default block cache.
     pub fn load(index_dir: &Path) -> Result<Self, RetrieveError> {
-        Self::load_with_storage(index_dir, false)
+        Self::load_with_cache(index_dir, crate::file_io::FileCacheConfig::default())
     }
 
-    /// Load searcher from index directory using read-only memory maps for graph
-    /// and vector data.
-    pub fn load_mmap(index_dir: &Path) -> Result<Self, RetrieveError> {
-        Self::load_with_storage(index_dir, true)
-    }
-
-    fn load_with_storage(index_dir: &Path, mmap: bool) -> Result<Self, RetrieveError> {
+    /// Load searcher from index directory. Graph and vector records are read
+    /// through a block cache over positional reads; `cache.budget_bytes` is
+    /// split between `graph.index` and `vectors.bin` by file size.
+    pub fn load_with_cache(
+        index_dir: &Path,
+        cache: crate::file_io::FileCacheConfig,
+    ) -> Result<Self, RetrieveError> {
         // 1. Load Metadata
         let metadata_path = index_dir.join("metadata.json");
         let metadata_file = std::fs::File::open(&metadata_path)?;
@@ -330,31 +339,34 @@ impl DiskANNSearcher {
 
         // 2. Open Graph
         let graph_path = index_dir.join("graph.index");
-        let graph_reader_result = if mmap {
-            super::disk_io::DiskGraphReader::open_mmap(&graph_path)
-        } else {
-            super::disk_io::DiskGraphReader::open(&graph_path)
-        };
-        let graph_reader = graph_reader_result.map_err(|e| {
-            RetrieveError::Io(Arc::new(std::io::Error::other(format!(
-                "failed to open graph: {}",
-                e
-            ))))
-        })?;
+        let vectors_path = index_dir.join("vectors.bin");
+        let budgets = cache.split(&[
+            std::fs::metadata(&graph_path)?.len(),
+            std::fs::metadata(&vectors_path)?.len(),
+        ]);
+        let graph_reader =
+            super::disk_io::DiskGraphReader::open_with_cache(&graph_path, budgets[0]).map_err(
+                |e| {
+                    RetrieveError::Io(Arc::new(std::io::Error::other(format!(
+                        "failed to open graph: {}",
+                        e
+                    ))))
+                },
+            )?;
 
         // 3. Open Vectors
-        let vectors_path = index_dir.join("vectors.bin");
-        let vectors = if mmap {
-            VectorStorage::Mmap(Box::new(
-                MappedFile::open(&vectors_path, AccessPattern::Random).map_err(|e| {
-                    RetrieveError::Io(Arc::new(std::io::Error::other(format!(
-                        "failed to mmap vectors: {e}"
-                    ))))
-                })?,
-            ))
-        } else {
-            VectorStorage::File(std::fs::File::open(&vectors_path)?)
-        };
+        let vectors =
+            crate::file_io::CachedFile::new(std::fs::File::open(&vectors_path)?, budgets[1])?;
+        let expected_vector_bytes = (num_vectors as u64)
+            .checked_mul(dimension as u64 * 4)
+            .ok_or_else(|| RetrieveError::FormatError("vectors.bin size overflow".into()))?;
+        let actual_vector_bytes = vectors.len();
+        if actual_vector_bytes < expected_vector_bytes {
+            return Err(RetrieveError::FormatError(format!(
+                "vectors.bin too short: expected at least {} bytes, got {}",
+                expected_vector_bytes, actual_vector_bytes
+            )));
+        }
 
         // 4. Load doc_ids
         let doc_ids_path = index_dir.join("doc_ids.bin");
@@ -391,6 +403,20 @@ impl DiskANNSearcher {
             doc_ids,
             vectors,
         })
+    }
+
+    /// Same as [`Self::load`]. vicinity no longer memory-maps index files.
+    #[deprecated(
+        since = "0.12.0",
+        note = "use `DiskANNSearcher::load`; vicinity no longer memory-maps"
+    )]
+    pub fn load_mmap(index_dir: &Path) -> Result<Self, RetrieveError> {
+        Self::load(index_dir)
+    }
+
+    /// Block cache counters summed over the graph and vector files.
+    pub fn cache_stats(&self) -> crate::file_io::FileCacheStats {
+        self.graph_reader.cache_stats().merge(self.vectors.stats())
     }
 
     /// Search for k nearest neighbors using disk-based graph.
@@ -530,22 +556,9 @@ impl DiskANNSearcher {
     /// Read a vector from disk into the reusable buffer, returning a slice.
     fn read_vector(&mut self, idx: u32) -> Result<&[f32], RetrieveError> {
         let offset = idx as usize * self.dimension * 4;
-        match &mut self.vectors {
-            VectorStorage::File(file) => {
-                crate::file_io::read_exact_at(file, offset as u64, &mut self.read_buf)?;
-                Self::decode_vector_bytes(&self.read_buf, &mut self.vec_buf);
-            }
-            VectorStorage::Mmap(mapped) => {
-                let end = offset
-                    .checked_add(self.dimension * 4)
-                    .ok_or_else(|| RetrieveError::FormatError("vector offset overflow".into()))?;
-                let bytes = mapped.as_slice();
-                if end > bytes.len() {
-                    return Err(RetrieveError::OutOfBounds(idx as usize));
-                }
-                Self::decode_vector_bytes(&bytes[offset..end], &mut self.vec_buf);
-            }
-        }
+        self.vectors
+            .read_exact_at(offset as u64, &mut self.read_buf)?;
+        Self::decode_vector_bytes(&self.read_buf, &mut self.vec_buf);
 
         Ok(&self.vec_buf)
     }

@@ -7,15 +7,87 @@ series is unstable: minor bumps may break the public API.
 
 ## [Unreleased]
 
+### Changed
+
+- Breaking: the optional `persistence` and `store` backends require
+  `durability` 0.8, and the `store` feature requires `segstore` 0.6. The
+  `diskann` feature no longer depends on `durability`.
+- File-backed searchers no longer memory-map index files. A mapped file that
+  another process truncates raises `SIGBUS` in safe code, so every file-backed
+  searcher now uses positional reads (`pread` on Unix, `seek_read` on
+  Windows). `DiskGraphReader::open_mmap`, `DiskANNSearcher::load_mmap`,
+  `DiskANNPageSearcher::load_mmap`, `IVFPQFileSearcher::load_mmap`, and
+  `IVFAVQFileSearcher::open_mmap` are deprecated and forward to `open` or
+  `load`. Passing `mmap=` to the Python `IVFPQFileSearcher.load` emits a
+  `DeprecationWarning` and is otherwise ignored. File-backed searchers read
+  through a block cache (see Added). For indexes that fit in memory,
+  `IVFPQIndex::load_from_dir` is faster than any file-backed searcher.
+- `DiskGraphReader::open` and `DiskANNSearcher::load` reject a graph or
+  vector file shorter than its header or metadata claims at open, as the mmap
+  openers did, instead of failing on the first short read.
+- The `ann_benchmark` example and the criterion benches no longer emit `mmap`
+  storage rows (`diskann_mmap`, `diskann_page_mmap`, and the IVF-PQ and IVF-AVQ
+  `mmap` rows), `--require-complete` no longer requires them, and
+  `scripts/summarize_ann_results.py` no longer lists them as expected coverage.
+  Existing result files with `mmap` rows still load and summarize.
+- The HNSW level multiplier scales with `m` (`1/ln(M)`, from the new
+  `HNSWParams::level_multiplier`) instead of the fixed `1/ln 16`, in every
+  constructor that takes `m`, the Python constructor, and the store sidecar
+  recipe. `with_params` keeps an explicit `m_l`.
+
 ### Added
 
+- A bounded block cache for file-backed searchers. `FileCacheConfig` sets a
+  per-searcher byte budget (default `DEFAULT_FILE_CACHE_BYTES`, 64 MiB) and
+  block size (default 4 KiB); blocks are evicted with CLOCK, and a budget of
+  `0` reads the file directly. A searcher that reads several files splits the
+  budget across them by file size. `DiskGraphReader::open_with_cache`,
+  `DiskANNSearcher::load_with_cache`, `DiskANNPageSearcher::load_with_cache`,
+  `IVFPQFileSearcher::load_with_cache`, and `IVFAVQFileSearcher::open_with_cache`
+  take the config, the plain openers use the default, and `cache_stats`
+  reports hits, misses, and resident bytes.
 - Opt-in `compact-hnsw` feature and `compact_upper_layers` builder setting
   for compact storage of immutable upper graph layers, plus layer occupancy
   diagnostics.
 - Benchmark adapters for `hnsw_rs` and USearch, with explicit metric, storage,
   and construction metadata.
+- IVF-PQ and IVF-AVQ generation snapshots: `save_to_generation`,
+  `load_from_generation`, and, on the file searchers,
+  `load_from_generation_pinned`, which returns a `GenerationLease` that
+  protects the opened generation from cleanup. The Python bindings expose
+  generation save and load.
 
 ### Fixed
+
+- `store::UpdatableIndex` and `store::SnapshotIndex` return a re-added id once,
+  with its newest vector. Before, the copy sealed in an older segment stayed
+  searchable next to the new one.
+- DiskANN `save` writes new files and renames them into place, so a searcher
+  opened on the previous save keeps reading its own files instead of bytes
+  rewritten under it.
+- DiskANN RobustPrune compares `alpha^2 * d^2` with `d^2`, so `alpha = 1.2`
+  no longer prunes like `1.095`. The page-layout file reader rejects a header
+  that claims more records than the file holds.
+- HNSW k-sampled entry points and intra-category sampling use
+  `HNSWParams::seed` when it is set, so seeded searches are deterministic.
+- The SymphonyQG-VR edge term keeps its sign, preserving the order of children
+  nearer the query than their parent.
+- Distance sorts use `total_cmp`, so NaN distances no longer panic.
+- SAQ trains segment codebooks with seeded farthest-point initialization and
+  spherical k-means instead of an unseeded random codebook.
+- `ProductQuantizer::new` and the IVF-PQ constructors reject `codebook_size`
+  above 256 instead of aliasing centroids in u8 codes.
+- HNSW `add_slice` rejects NaN and infinite components, which previously
+  saved as JSON null and made the index unloadable. `save_to_file` writes to a
+  per-call temp file, so concurrent savers to one path cannot clobber each
+  other's partial file.
+- The tree JSON and LSM snapshot writers sync the parent directory after the
+  rename.
+- Generation publication is exclusive under `fs4` 0.13, which reports lock
+  contention as `Ok(false)` rather than an error.
+- Corrected arXiv IDs, authors, titles, and venues in algorithm citations, and
+  documented where FINGER, IVF-AVQ, LSH, delta-EMG, and HNSW construction
+  differ from their papers.
 
 - HNSW search fills result sets from live candidates when tombstones are present.
 - HNSW filtered, ACORN, adaptive, and projection-tree searches apply query
@@ -601,4 +673,4 @@ CI-greening commits. Earlier than 0.3 the project was pre-public; consult
 
 [v0.3.0...v0.3.6](https://github.com/arclabs561/vicinity/compare/v0.3.0...v0.3.6)
 
-[Unreleased]: https://github.com/arclabs561/vicinity/compare/v0.10.5...HEAD
+[Unreleased]: https://github.com/arclabs561/vicinity/compare/v0.11.1...HEAD

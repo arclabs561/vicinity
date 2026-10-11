@@ -924,7 +924,8 @@ def test_cli_can_emit_standard_storage_missing_rows(
     output = json.loads(capsys.readouterr().out)
     missing = {(row["algorithm"], row["storage_mode"]) for row in output}
     assert ("hnsw", "snapshot_loaded") in missing
-    assert ("diskann_mmap", "mmap") in missing
+    assert ("diskann_file", "file") in missing
+    assert ("diskann_mmap", "mmap") not in missing
     assert ("ivfpq_rerank", "file") in missing
     assert ("fresh_graph", "snapshot_loaded") in missing
     assert ("kdtree", "snapshot_loaded") in missing
@@ -964,7 +965,7 @@ def test_cli_can_scope_standard_storage_to_observed_algorithms(
     missing = {(row["algorithm"], row["storage_mode"]) for row in output}
     assert ("hnsw", "snapshot_loaded") in missing
     assert ("diskann", "in_memory") in missing
-    assert ("diskann_mmap", "mmap") in missing
+    assert ("diskann_mmap", "mmap") not in missing
     assert ("store", "segmented_store") not in missing
     assert ("ivfpq", "file") not in missing
 
@@ -1006,7 +1007,7 @@ def test_observed_storage_expectations_ignore_unscoped_current_rows(
     assert ("hnsw", "snapshot_loaded") not in missing
     assert ("ivfpq", "snapshot_loaded") in missing
     assert ("ivfpq", "file") in missing
-    assert ("ivfpq", "mmap") in missing
+    assert ("ivfpq", "mmap") not in missing
 
 
 def test_observed_lsm_churn_requires_snapshot_storage(
@@ -1053,7 +1054,7 @@ def test_standard_storage_expectations_cover_current_storage_classes() -> None:
             for storage_mode in storage_modes:
                 assert (algorithm, storage_mode) in rows
     assert ("ivf_avq", "file") in rows
-    assert ("ivf_avq", "mmap") in rows
+    assert ("ivf_avq", "mmap") not in rows
     assert set(script.DISKANN_EXPECTATION_ROWS) <= rows
     assert rows == family_rows
 

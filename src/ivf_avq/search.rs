@@ -8,8 +8,6 @@ use crate::persistence::generation::{
     open_current, open_current_pinned, GenerationLease, GenerationWriter, PublicationOutcome,
 };
 use crate::RetrieveError;
-#[cfg(feature = "persistence")]
-use durability::mmap::{AccessPattern, MappedFile};
 use serde::{Deserialize, Serialize};
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::Path;
@@ -48,8 +46,8 @@ pub struct IVFAVQFileSearcher {
     partition_locations: Vec<PartitionLocation>,
     partition_centroids: Vec<Vec<f32>>,
     quantizer: AnisotropicQuantizer,
-    partitions_storage: IVFAVQByteStorage,
-    raw_vectors_storage: IVFAVQByteStorage,
+    partitions_storage: crate::file_io::CachedFile,
+    raw_vectors_storage: crate::file_io::CachedFile,
     id_buf: Vec<u32>,
     id_byte_buf: Vec<u8>,
     code_buf: Vec<u8>,
@@ -168,12 +166,6 @@ struct PartitionLocation {
     ids_offset: u64,
     codes_len: usize,
     codes_offset: u64,
-}
-
-enum IVFAVQByteStorage {
-    File(std::fs::File),
-    #[cfg(feature = "persistence")]
-    Mmap(Box<MappedFile>),
 }
 
 impl IVFAVQIndex {
@@ -552,16 +544,34 @@ impl IVFAVQIndex {
 }
 
 impl IVFAVQFileSearcher {
-    /// Open an IVF-AVQ snapshot for direct file-backed search.
+    /// Open an IVF-AVQ snapshot for direct file-backed search with the default
+    /// block cache.
     pub fn open(input_dir: impl AsRef<Path>) -> Result<Self, RetrieveError> {
-        Self::open_with_storage(input_dir.as_ref(), false)
+        Self::open_with_cache(input_dir, crate::file_io::FileCacheConfig::default())
+    }
+
+    /// Open an IVF-AVQ snapshot for direct file-backed search, reading
+    /// partitions and raw vectors through a block cache over positional reads.
+    /// `cache.budget_bytes` is split between the two files by size.
+    pub fn open_with_cache(
+        input_dir: impl AsRef<Path>,
+        cache: crate::file_io::FileCacheConfig,
+    ) -> Result<Self, RetrieveError> {
+        Self::open_with_storage(input_dir.as_ref(), cache)
+    }
+
+    /// Block cache counters summed over the partition and raw-vector files.
+    pub fn cache_stats(&self) -> crate::file_io::FileCacheStats {
+        self.partitions_storage
+            .stats()
+            .merge(self.raw_vectors_storage.stats())
     }
 
     #[cfg(feature = "persistence")]
     /// Open the generation named by a root directory's `CURRENT` pointer.
     pub fn load_from_generation(root: impl AsRef<Path>) -> Result<Self, RetrieveError> {
         let directory = open_current(root)?;
-        Self::open_mmap(directory)
+        Self::open(directory)
     }
 
     /// Open the current generation and return its reader lease to retain while searching.
@@ -570,17 +580,24 @@ impl IVFAVQFileSearcher {
         root: impl AsRef<Path>,
     ) -> Result<(Self, GenerationLease), RetrieveError> {
         let lease = open_current_pinned(root).map_err(RetrieveError::from)?;
-        let searcher = Self::open_mmap(lease.path())?;
+        let searcher = Self::open(lease.path())?;
         Ok((searcher, lease))
     }
 
-    /// Open an IVF-AVQ snapshot with read-only mmap-backed payloads.
+    /// Same as [`Self::open`]. vicinity no longer memory-maps index files.
     #[cfg(feature = "persistence")]
+    #[deprecated(
+        since = "0.12.0",
+        note = "use `IVFAVQFileSearcher::open`; vicinity no longer memory-maps"
+    )]
     pub fn open_mmap(input_dir: impl AsRef<Path>) -> Result<Self, RetrieveError> {
-        Self::open_with_storage(input_dir.as_ref(), true)
+        Self::open(input_dir)
     }
 
-    fn open_with_storage(input_dir: &Path, mmap: bool) -> Result<Self, RetrieveError> {
+    fn open_with_storage(
+        input_dir: &Path,
+        cache: crate::file_io::FileCacheConfig,
+    ) -> Result<Self, RetrieveError> {
         let manifest: IVFAVQManifest = read_json(&input_dir.join("manifest.json"))?;
         validate_manifest(&manifest)?;
 
@@ -623,9 +640,11 @@ impl IVFAVQFileSearcher {
             raw_vector_bytes,
             "IVF-AVQ raw vector file byte length overflow",
         )?;
+        let budgets = cache.split(&[expected_partition_bytes as u64, expected_raw_bytes as u64]);
         let partitions_storage =
-            open_byte_storage(&partitions_path, expected_partition_bytes, mmap)?;
-        let raw_vectors_storage = open_byte_storage(&raw_vectors_path, expected_raw_bytes, mmap)?;
+            open_byte_storage(&partitions_path, expected_partition_bytes, budgets[0])?;
+        let raw_vectors_storage =
+            open_byte_storage(&raw_vectors_path, expected_raw_bytes, budgets[1])?;
 
         Ok(Self {
             dimension: manifest.dimension,
@@ -1083,63 +1102,21 @@ fn file_len_usize(path: &Path) -> Result<usize, RetrieveError> {
 fn open_byte_storage(
     path: &Path,
     expected_len: usize,
-    mmap: bool,
-) -> Result<IVFAVQByteStorage, RetrieveError> {
+    cache: crate::file_io::FileCacheConfig,
+) -> Result<crate::file_io::CachedFile, RetrieveError> {
     validate_file_size(path, expected_len)?;
-
-    #[cfg(feature = "persistence")]
-    if mmap {
-        let mapped = MappedFile::open(path, AccessPattern::Random).map_err(|e| {
-            RetrieveError::Io(std::sync::Arc::new(std::io::Error::other(format!(
-                "failed to mmap {}: {e}",
-                path.display()
-            ))))
-        })?;
-        if mapped.as_slice().len() != expected_len {
-            return Err(RetrieveError::FormatError(format!(
-                "{} mmap size mismatch: expected {} bytes, got {}",
-                path.display(),
-                expected_len,
-                mapped.as_slice().len()
-            )));
-        }
-        return Ok(IVFAVQByteStorage::Mmap(Box::new(mapped)));
-    }
-
-    let _ = mmap;
-    Ok(IVFAVQByteStorage::File(std::fs::File::open(path)?))
+    Ok(crate::file_io::CachedFile::new(
+        std::fs::File::open(path)?,
+        cache,
+    )?)
 }
 
 fn read_bytes_from_storage(
-    storage: &mut IVFAVQByteStorage,
+    storage: &mut crate::file_io::CachedFile,
     offset: u64,
     out: &mut [u8],
 ) -> Result<(), RetrieveError> {
-    #[cfg(feature = "persistence")]
-    let start = usize::try_from(offset)
-        .map_err(|_| RetrieveError::FormatError("IVF-AVQ byte storage offset overflow".into()))?;
-    #[cfg(feature = "persistence")]
-    let end = start
-        .checked_add(out.len())
-        .ok_or_else(|| RetrieveError::FormatError("IVF-AVQ byte storage offset overflow".into()))?;
-
-    match storage {
-        IVFAVQByteStorage::File(file) => {
-            crate::file_io::read_exact_at(file, offset, out)?;
-        }
-        #[cfg(feature = "persistence")]
-        IVFAVQByteStorage::Mmap(mapped) => {
-            let bytes = mapped.as_slice();
-            if end > bytes.len() {
-                return Err(RetrieveError::FormatError(format!(
-                    "IVF-AVQ storage read out of bounds: end {} > len {}",
-                    end,
-                    bytes.len()
-                )));
-            }
-            out.copy_from_slice(&bytes[start..end]);
-        }
-    }
+    storage.read_exact_at(offset, out)?;
     Ok(())
 }
 
@@ -1603,42 +1580,6 @@ mod tests {
         assert_eq!(
             diagnostics.raw_vector_bytes,
             diagnostics.raw_vector_reads * dim * std::mem::size_of::<f32>()
-        );
-    }
-
-    #[cfg(feature = "persistence")]
-    #[test]
-    fn mmap_searcher_matches_snapshot_loaded_search() {
-        use rand::{Rng, SeedableRng};
-
-        let dim = 8;
-        let n = 96;
-        let params = IVFAVQParams {
-            num_partitions: 4,
-            nprobe: 4,
-            num_reorder: 32,
-            num_codebooks: 4,
-            codebook_size: 16,
-            seed: 81,
-        };
-        let mut rng = rand::rngs::StdRng::seed_from_u64(81);
-        let mut index = IVFAVQIndex::new(dim, params).unwrap();
-        for i in 0..n {
-            let doc_id = 30_000 + i as u32;
-            let vector: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
-            index.add(doc_id, vector).unwrap();
-        }
-        index.build().unwrap();
-
-        let query: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
-        let dir = tempfile::tempdir().unwrap();
-        index.save_to_dir(dir.path()).unwrap();
-        let loaded = IVFAVQIndex::load_from_dir(dir.path()).unwrap();
-        let mut mmap_searcher = IVFAVQFileSearcher::open_mmap(dir.path()).unwrap();
-
-        assert_eq!(
-            mmap_searcher.search(&query, 10).unwrap(),
-            loaded.search(&query, 10).unwrap()
         );
     }
 

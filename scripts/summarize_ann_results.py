@@ -53,7 +53,7 @@ STORAGE_EXPECTATION_GROUPS = {
         "inplace_churn",
         "sparse_mips",
     ),
-    ("in_memory", "snapshot_loaded", "file", "mmap"): (
+    ("in_memory", "snapshot_loaded", "file"): (
         "ivfpq",
         "ivfpq_rerank",
         "ivf_avq",
@@ -64,7 +64,6 @@ STORAGE_EXPECTATION_GROUPS = {
 DISKANN_EXPECTATION_ROWS = (
     ("diskann", "in_memory"),
     ("diskann_file", "file"),
-    ("diskann_mmap", "mmap"),
 )
 ExpectationRow = tuple[str, str]
 ExpectationFamily = tuple[frozenset[str], tuple[ExpectationRow, ...]]

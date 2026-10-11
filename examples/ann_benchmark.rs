@@ -1556,9 +1556,6 @@ fn run_diskann(
     let file_load_start = Instant::now();
     let searcher = RefCell::new(DiskANNSearcher::load(&index_dir).unwrap());
     let file_load_time_s = file_load_start.elapsed().as_secs_f64();
-    let mmap_load_start = Instant::now();
-    let mmap_searcher = RefCell::new(DiskANNSearcher::load_mmap(&index_dir).unwrap());
-    let mmap_load_time_s = mmap_load_start.elapsed().as_secs_f64();
     #[cfg(feature = "benchmark")]
     let page_searchers = {
         index.save_page_layout(&index_dir).unwrap();
@@ -1568,16 +1565,7 @@ fn run_diskann(
         let page_file_load_start = Instant::now();
         let page_file_searcher = RefCell::new(DiskANNPageSearcher::load(&index_dir).unwrap());
         let page_file_load_time_s = page_file_load_start.elapsed().as_secs_f64();
-        let page_mmap_load_start = Instant::now();
-        let page_mmap_searcher = RefCell::new(DiskANNPageSearcher::load_mmap(&index_dir).unwrap());
-        let page_mmap_load_time_s = page_mmap_load_start.elapsed().as_secs_f64();
-        (
-            page_file_searcher,
-            page_file_load_time_s,
-            page_mmap_searcher,
-            page_mmap_load_time_s,
-            page_index_bytes,
-        )
+        (page_file_searcher, page_file_load_time_s, page_index_bytes)
     };
 
     if !cfg.json {
@@ -1593,28 +1581,15 @@ fn run_diskann(
         let result = evaluate(&|q, k| index.search(q, k, ef).unwrap(), test, neighbors, 10);
         let (file_result, file_diagnostics) =
             evaluate_diskann_searcher(&searcher, test, neighbors, 10, ef);
-        let (mmap_result, mmap_diagnostics) =
-            evaluate_diskann_searcher(&mmap_searcher, test, neighbors, 10, ef);
         #[cfg(feature = "benchmark")]
         let page_results = {
-            let (
-                page_file_searcher,
-                page_file_load_time_s,
-                page_mmap_searcher,
-                page_mmap_load_time_s,
-                page_index_bytes,
-            ) = &page_searchers;
+            let (page_file_searcher, page_file_load_time_s, page_index_bytes) = &page_searchers;
             let (page_file_result, page_file_diagnostics) =
                 evaluate_diskann_page_searcher(page_file_searcher, test, neighbors, 10, ef);
-            let (page_mmap_result, page_mmap_diagnostics) =
-                evaluate_diskann_page_searcher(page_mmap_searcher, test, neighbors, 10, ef);
             (
                 page_file_result,
                 page_file_diagnostics,
                 *page_file_load_time_s,
-                page_mmap_result,
-                page_mmap_diagnostics,
-                *page_mmap_load_time_s,
                 *page_index_bytes,
             )
         };
@@ -1659,37 +1634,12 @@ fn run_diskann(
                     },
                 ),
             );
-            let params_json = format!(
-                "{{\"m\":{},\"ef_construction\":{},\"alpha\":1.2,\"ef_search\":{},\"storage\":\"mmap\"}}",
-                cfg.m, cfg.ef_construction, ef
-            );
-            emit_result(
-                &cfg.results_path,
-                &json_line_with_storage(
-                    "diskann_mmap",
-                    &params_json,
-                    build_time_s,
-                    rss,
-                    &mmap_result,
-                    &ResultStorage {
-                        storage_mode: "mmap",
-                        cache_state: "warm_after_open",
-                        load_time_s: Some(mmap_load_time_s),
-                        index_bytes,
-                        index_bytes_kind: Some("storage_bytes"),
-                        diagnostics: Some(mmap_diagnostics),
-                    },
-                ),
-            );
             #[cfg(feature = "benchmark")]
             {
                 let (
                     page_file_result,
                     page_file_diagnostics,
                     page_file_load_time_s,
-                    page_mmap_result,
-                    page_mmap_diagnostics,
-                    page_mmap_load_time_s,
                     page_index_bytes,
                 ) = &page_results;
                 let params_json = format!(
@@ -1714,38 +1664,14 @@ fn run_diskann(
                         },
                     ),
                 );
-                let params_json = format!(
-                    "{{\"m\":{},\"ef_construction\":{},\"alpha\":1.2,\"ef_search\":{},\"storage\":\"page_mmap\"}}",
-                    cfg.m, cfg.ef_construction, ef
-                );
-                emit_result(
-                    &cfg.results_path,
-                    &json_line_with_storage(
-                        "diskann_page_mmap",
-                        &params_json,
-                        build_time_s,
-                        rss,
-                        page_mmap_result,
-                        &ResultStorage {
-                            storage_mode: "mmap",
-                            cache_state: "warm_after_open",
-                            load_time_s: Some(*page_mmap_load_time_s),
-                            index_bytes: *page_index_bytes,
-                            index_bytes_kind: Some("storage_bytes"),
-                            diagnostics: Some(*page_mmap_diagnostics),
-                        },
-                    ),
-                );
             }
         } else {
             print_row(&format!("ef={} memory", ef), &result);
             print_row(&format!("ef={} file", ef), &file_result);
-            print_row(&format!("ef={} mmap", ef), &mmap_result);
             #[cfg(feature = "benchmark")]
             {
-                let (page_file_result, _, _, page_mmap_result, _, _, _) = &page_results;
+                let (page_file_result, _, _, _) = &page_results;
                 print_row(&format!("ef={} page_file", ef), page_file_result);
-                print_row(&format!("ef={} page_mmap", ef), page_mmap_result);
             }
         }
     }

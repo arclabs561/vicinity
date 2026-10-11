@@ -1,18 +1,17 @@
 use super::cluster::Cluster;
+use crate::file_io::{CachedFile, FileCacheConfig};
 use crate::RetrieveError;
-#[cfg(feature = "persistence")]
-use durability::mmap::{AccessPattern, MappedFile};
 use std::path::Path;
-
-pub(super) enum IVFPQByteStorage {
-    File(std::fs::File),
-    #[cfg(feature = "persistence")]
-    Mmap(Box<MappedFile>),
-}
 
 pub(super) struct IVFPQListCodeStorage {
     offsets: Vec<u64>,
-    codes: IVFPQByteStorage,
+    codes: CachedFile,
+}
+
+impl IVFPQListCodeStorage {
+    pub(super) fn cache_stats(&self) -> crate::file_io::FileCacheStats {
+        self.codes.stats()
+    }
 }
 
 pub(super) fn checked_len(lhs: usize, rhs: usize, message: &str) -> Result<usize, RetrieveError> {
@@ -23,8 +22,8 @@ pub(super) fn checked_len(lhs: usize, rhs: usize, message: &str) -> Result<usize
 pub(super) fn open_byte_storage(
     path: &Path,
     expected_len: usize,
-    mmap: bool,
-) -> Result<IVFPQByteStorage, RetrieveError> {
+    cache: FileCacheConfig,
+) -> Result<CachedFile, RetrieveError> {
     let actual_len = std::fs::metadata(path)?.len() as usize;
     if actual_len != expected_len {
         return Err(RetrieveError::FormatError(format!(
@@ -34,28 +33,7 @@ pub(super) fn open_byte_storage(
             actual_len
         )));
     }
-
-    #[cfg(feature = "persistence")]
-    if mmap {
-        let mapped = MappedFile::open(path, AccessPattern::Random).map_err(|e| {
-            RetrieveError::Io(std::sync::Arc::new(std::io::Error::other(format!(
-                "failed to mmap {}: {e}",
-                path.display()
-            ))))
-        })?;
-        if mapped.as_slice().len() != expected_len {
-            return Err(RetrieveError::FormatError(format!(
-                "{} mmap size mismatch: expected {} bytes, got {}",
-                path.display(),
-                expected_len,
-                mapped.as_slice().len()
-            )));
-        }
-        return Ok(IVFPQByteStorage::Mmap(Box::new(mapped)));
-    }
-
-    let _ = mmap;
-    Ok(IVFPQByteStorage::File(std::fs::File::open(path)?))
+    Ok(CachedFile::new(std::fs::File::open(path)?, cache)?)
 }
 
 pub(super) fn build_list_codes(
@@ -96,7 +74,7 @@ pub(super) fn open_list_code_storage(
     input_dir: &Path,
     num_clusters: usize,
     expected_codes_len: usize,
-    mmap: bool,
+    cache: FileCacheConfig,
 ) -> Result<Option<IVFPQListCodeStorage>, RetrieveError> {
     let offsets_path = input_dir.join("list_offsets.bin");
     let codes_path = input_dir.join("list_codes.bin");
@@ -114,12 +92,12 @@ pub(super) fn open_list_code_storage(
 
     let offsets = read_u64_exact(&offsets_path, num_clusters + 1)?;
     validate_list_code_offsets(&offsets, expected_codes_len)?;
-    let codes = open_byte_storage(&codes_path, expected_codes_len, mmap)?;
+    let codes = open_byte_storage(&codes_path, expected_codes_len, cache)?;
     Ok(Some(IVFPQListCodeStorage { offsets, codes }))
 }
 
 pub(super) fn append_codes_for_ids(
-    storage: &mut IVFPQByteStorage,
+    storage: &mut CachedFile,
     out: &mut Vec<u8>,
     ids: &[u32],
     num_codebooks: usize,
@@ -176,7 +154,7 @@ pub(super) fn read_list_codes_for_cluster(
 }
 
 pub(super) fn read_code_from_storage<'a>(
-    storage: &mut IVFPQByteStorage,
+    storage: &mut CachedFile,
     out: &'a mut Vec<u8>,
     vector_idx: usize,
     num_codebooks: usize,
@@ -187,7 +165,7 @@ pub(super) fn read_code_from_storage<'a>(
 }
 
 pub(super) fn read_vector_from_storage<'a>(
-    storage: &mut IVFPQByteStorage,
+    storage: &mut CachedFile,
     bytes: &mut [u8],
     out: &'a mut [f32],
     vector_idx: usize,
@@ -214,31 +192,11 @@ pub(super) fn read_vector_from_storage<'a>(
 }
 
 fn read_bytes_from_storage(
-    storage: &mut IVFPQByteStorage,
+    storage: &mut CachedFile,
     offset: usize,
     out: &mut [u8],
 ) -> Result<(), RetrieveError> {
-    #[cfg(feature = "persistence")]
-    let end = offset
-        .checked_add(out.len())
-        .ok_or_else(|| RetrieveError::FormatError("IVF-PQ byte offset overflow".into()))?;
-    match storage {
-        IVFPQByteStorage::File(file) => {
-            crate::file_io::read_exact_at(file, offset as u64, out)?;
-        }
-        #[cfg(feature = "persistence")]
-        IVFPQByteStorage::Mmap(mapped) => {
-            let bytes = mapped.as_slice();
-            if end > bytes.len() {
-                return Err(RetrieveError::FormatError(format!(
-                    "IVF-PQ storage read out of bounds: end {} > len {}",
-                    end,
-                    bytes.len()
-                )));
-            }
-            out.copy_from_slice(&bytes[offset..end]);
-        }
-    }
+    storage.read_exact_at(offset as u64, out)?;
     Ok(())
 }
 

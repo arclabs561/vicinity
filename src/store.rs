@@ -17,8 +17,9 @@
 //!
 //! Each per-segment HNSW is built over that segment's *live* vectors and
 //! **cached**, rebuilt only when the index is mutated (an add that seals a
-//! segment, a delete, or a compaction), not on every query. The small unflushed
-//! buffer is built per query.
+//! segment, a re-add or delete of one of its ids, or a compaction), not on every
+//! query. A re-added id's older sealed copy is not live, so search returns only
+//! its newest vector. The small unflushed buffer is built per query.
 //!
 //! Vectors are L2-normalized on ingest so the default cosine HNSW is well-formed.
 
@@ -119,7 +120,10 @@ impl UpdatableIndex {
             )));
         }
         // A sealed add introduces a new segment id; existing segment ids stay
-        // stable, so the cache reuses them and builds only the new one.
+        // stable, so the cache reuses them and builds only the new one. A re-add
+        // supersedes the id's sealed copy, so that one segment's cached HNSW and
+        // sidecar go stale.
+        self.invalidate_live_segment_of(id);
         self.inner.add(id, distance::normalize(vector))?;
         Ok(())
     }
@@ -149,32 +153,38 @@ impl UpdatableIndex {
                 }
             })
             .collect();
-        self.inner.extend(normalized?)?;
+        let normalized = normalized?;
+        for (id, _) in &normalized {
+            self.invalidate_live_segment_of(*id);
+        }
+        self.inner.extend(normalized)?;
         Ok(())
     }
 
     /// Tombstone a vector.
     pub fn delete(&mut self, id: u32) -> PersistenceResult<()> {
+        // Look up the owning segment first: the delete clears it.
+        self.invalidate_live_segment_of(id);
         self.inner.delete(id)?;
-        // A tombstone only changes the live-set of the segment that holds `id`, so
-        // invalidate just that segment's cached HNSW -- not the whole cache -- and
-        // drop its now-stale sidecar so the next build re-persists over the live
-        // set. (The `load_sidecar` guard would reject a stale sidecar anyway; this
-        // just avoids a wasted load + rebuild on the next search.)
-        let ids = self.inner.segment_ids();
-        let mut cache = self.cache.borrow_mut();
-        for (i, seg) in self.inner.segments().iter().enumerate() {
-            if seg.iter().any(|(sid, _)| *sid == id) {
-                let seg_id = ids[i];
-                cache.by_segment_id.remove(&seg_id);
-                self.persisted.borrow_mut().remove(&seg_id);
-                let _ = self
-                    .inner
-                    .dir()
-                    .delete(&self.inner.index_name(seg_id, INDEX_KIND));
-            }
-        }
         Ok(())
+    }
+
+    /// A delete or re-add only changes the live set of the segment holding
+    /// `id`'s live sealed copy, so invalidate just that segment's cached HNSW
+    /// -- not the whole cache -- and drop its now-stale sidecar so the next
+    /// build re-persists over the live set. (The `load_sidecar` guard would
+    /// reject a stale sidecar anyway; this just avoids a wasted load + rebuild
+    /// on the next search.) Call before mutating `inner`.
+    fn invalidate_live_segment_of(&self, id: u32) {
+        let Some(seg_id) = self.inner.live_segment_of(&id) else {
+            return;
+        };
+        self.cache.borrow_mut().by_segment_id.remove(&seg_id);
+        self.persisted.borrow_mut().remove(&seg_id);
+        let _ = self
+            .inner
+            .dir()
+            .delete(&self.inner.index_name(seg_id, INDEX_KIND));
     }
 
     /// Merge segments (dropping tombstoned vectors) and persist a checkpoint.
@@ -266,11 +276,20 @@ impl UpdatableIndex {
             .retain(|id, _| current.contains(id));
     }
 
-    /// Build a per-segment HNSW over the live vectors of `batch` (None if empty
-    /// or the build fails). Vectors are stored already-normalized.
+    /// Build an HNSW over the live vectors of the unflushed buffer (None if
+    /// empty or the build fails). Vectors are stored already-normalized.
     fn build_live_index(&self, batch: &[(u32, Vec<f32>)]) -> Option<HNSWIndex> {
         Self::build_live_index_from(self.dim, self.m, self.m_max, batch, &|id| {
             self.inner.is_live(id)
+        })
+    }
+
+    /// Build segment `seg_id`'s HNSW over its live copies. Per-copy liveness
+    /// (`is_live_in`) drops a copy superseded by a later re-add, which per-id
+    /// `is_live` would keep.
+    fn build_segment_index(&self, seg: &[(u32, Vec<f32>)], seg_id: u64) -> Option<HNSWIndex> {
+        Self::build_live_index_from(self.dim, self.m, self.m_max, seg, &|id| {
+            self.inner.is_live_in(seg_id, id)
         })
     }
 
@@ -304,7 +323,7 @@ impl UpdatableIndex {
             self.persisted.borrow_mut().insert(seg_id);
             return Some(idx);
         }
-        let idx = self.build_live_index(seg)?;
+        let idx = self.build_segment_index(seg, seg_id)?;
         self.persist_sidecar(&idx, seg_id);
         Some(idx)
     }
@@ -331,7 +350,7 @@ impl UpdatableIndex {
         let idx = HNSWIndex::from_postcard(graph_bytes).ok()?;
         let mut live = HashSet::with_capacity(seg.len());
         for (id, _) in seg {
-            if self.inner.is_live(id) {
+            if self.inner.is_live_in(seg_id, id) {
                 live.insert(*id);
             }
         }
@@ -441,7 +460,7 @@ impl UpdatableIndex {
                 self.persisted.borrow_mut().insert(seg_id);
                 continue;
             }
-            if let Some(idx) = self.build_live_index(&seg[..]) {
+            if let Some(idx) = self.build_segment_index(&seg[..], seg_id) {
                 self.persist_sidecar(&idx, seg_id);
             }
         }
@@ -503,7 +522,7 @@ impl SnapshotIndex {
                         idx.search(&q, k, ef)
                             .unwrap_or_default()
                             .into_iter()
-                            .filter(|(id, _)| self.catalog.is_live(id)),
+                            .filter(|(id, _)| self.catalog.is_live_in(seg_id, id)),
                     );
                 }
             }
@@ -521,7 +540,7 @@ impl SnapshotIndex {
         let segment: Vec<(u32, Vec<f32>)> = self.catalog.read_segment(seg_id)?;
         let index =
             UpdatableIndex::build_live_index_from(self.dim, self.m, self.m_max, &segment, &|id| {
-                self.catalog.is_live(id)
+                self.catalog.is_live_in(seg_id, id)
             });
         if let Some(index) = &index {
             self.persist_sidecar(index, seg_id);
@@ -544,7 +563,11 @@ impl SnapshotIndex {
         let graph_bytes =
             UpdatableIndex::decode_sidecar_for_recipe(&self.sidecar_recipe, seg_id, &bytes)?;
         let idx = HNSWIndex::from_postcard(graph_bytes).ok()?;
-        if idx.doc_ids.iter().all(|id| self.catalog.is_live(id)) {
+        if idx
+            .doc_ids
+            .iter()
+            .all(|id| self.catalog.is_live_in(seg_id, id))
+        {
             Some(idx)
         } else {
             None
@@ -1071,6 +1094,54 @@ mod tests {
             top.contains(&1),
             "nearest live vector to the x-axis is id 1"
         );
+    }
+
+    #[test]
+    fn re_added_id_returns_once_with_its_new_vector() {
+        // Cosine distance from the query [1, 0] to the old vector [1, 0] is 0
+        // and to the new vector [-1, 0] is 2, so the distance tells the copies
+        // apart.
+        let assert_new_copy_once = |hits: &[(u32, f32)], path: &str| {
+            let d: Vec<f32> = hits
+                .iter()
+                .filter(|(id, _)| *id == 0)
+                .map(|(_, d)| *d)
+                .collect();
+            assert_eq!(d.len(), 1, "{path}: id 0 must appear once: {hits:?}");
+            assert!(
+                (d[0] - 2.0).abs() < 1e-4,
+                "{path}: id 0 must score its new vector: {hits:?}"
+            );
+        };
+        let dir = MemoryDirectory::arc();
+        let (name_a, stale_a) = {
+            let mut store = UpdatableIndex::open(dir.clone(), 2, 2, 16, 32).unwrap();
+            store.add(0, &[1.0, 0.0]).unwrap();
+            store.add(1, &[0.0, 1.0]).unwrap(); // seals segment A
+            store.checkpoint().unwrap(); // sidecar for A holds the old copy of 0
+            let name_a = store
+                .inner
+                .index_name(store.inner.segment_ids()[0], INDEX_KIND);
+            let stale_a = read_file(store.inner.dir(), &name_a);
+            let _ = store.search(&[1.0, 0.0], 3, 16); // caches A's HNSW
+
+            store.add(0, &[-1.0, 0.0]).unwrap(); // buffered re-add
+            assert_new_copy_once(&store.search(&[1.0, 0.0], 3, 16), "writer, buffered");
+
+            store.add(2, &[0.0, -1.0]).unwrap(); // seals segment B with the new 0
+            store.checkpoint().unwrap();
+            assert_new_copy_once(&store.search(&[1.0, 0.0], 3, 16), "writer, sealed");
+            (name_a, stale_a)
+        };
+        // Put A's pre-re-add sidecar back, as a crash between the re-add and
+        // the sidecar delete would leave it. Each reader must reject it.
+        dir.atomic_write(&name_a, &stale_a).unwrap();
+        let store = UpdatableIndex::open(dir.clone(), 2, 2, 16, 32).unwrap();
+        assert_new_copy_once(&store.search(&[1.0, 0.0], 3, 16), "writer, reopened");
+
+        dir.atomic_write(&name_a, &stale_a).unwrap();
+        let snapshot = SnapshotIndex::open(dir, 2, 16, 32).unwrap();
+        assert_new_copy_once(&snapshot.search(&[1.0, 0.0], 3, 16).unwrap(), "snapshot");
     }
 
     #[test]

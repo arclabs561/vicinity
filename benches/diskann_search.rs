@@ -9,6 +9,25 @@ use rand::prelude::*;
 use std::cell::RefCell;
 #[cfg(feature = "diskann")]
 use vicinity::diskann::{DiskANNIndex, DiskANNPageSearcher, DiskANNParams, DiskANNSearcher};
+#[cfg(feature = "diskann")]
+use vicinity::{FileCacheConfig, DEFAULT_FILE_CACHE_BLOCK_SIZE, DEFAULT_FILE_CACHE_BYTES};
+
+/// Cache config for a budget, with the block size overridable through
+/// `VICINITY_BENCH_CACHE_BLOCK` for block-size comparisons.
+#[cfg(feature = "diskann")]
+fn cache_config(budget_bytes: usize) -> FileCacheConfig {
+    let mut config = FileCacheConfig::with_budget(budget_bytes);
+    config.block_size = std::env::var("VICINITY_BENCH_CACHE_BLOCK")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(DEFAULT_FILE_CACHE_BLOCK_SIZE);
+    config
+}
+
+#[cfg(feature = "diskann")]
+fn file_len(path: &std::path::Path) -> usize {
+    std::fs::metadata(path).unwrap().len() as usize
+}
 
 #[cfg(feature = "diskann")]
 fn random_vectors(n: usize, dim: usize, seed: u64) -> Vec<Vec<f32>> {
@@ -103,10 +122,19 @@ fn bench_diskann_search_only(c: &mut Criterion) {
     index
         .save_page_layout(&index_dir)
         .expect("save DiskANN page layout");
-    let file_searcher = RefCell::new(DiskANNSearcher::load(&index_dir).unwrap());
-    let mmap_searcher = RefCell::new(DiskANNSearcher::load_mmap(&index_dir).unwrap());
-    let page_searcher = RefCell::new(DiskANNPageSearcher::load(&index_dir).unwrap());
-    let page_mmap_searcher = RefCell::new(DiskANNPageSearcher::load_mmap(&index_dir).unwrap());
+    let standard_bytes =
+        file_len(&index_dir.join("graph.index")) + file_len(&index_dir.join("vectors.bin"));
+    let page_bytes = file_len(&index_dir.join("nodes.page"));
+    let load = |budget| DiskANNSearcher::load_with_cache(&index_dir, cache_config(budget));
+    let load_page = |budget| DiskANNPageSearcher::load_with_cache(&index_dir, cache_config(budget));
+    let file_searcher = RefCell::new(load(DEFAULT_FILE_CACHE_BYTES).unwrap());
+    let page_searcher = RefCell::new(load_page(DEFAULT_FILE_CACHE_BYTES).unwrap());
+    // Uncached rows show the raw positional-read cost; quarter-budget rows show
+    // a cache smaller than the index.
+    let nocache_searcher = RefCell::new(load(0).unwrap());
+    let page_nocache_searcher = RefCell::new(load_page(0).unwrap());
+    let quarter_searcher = RefCell::new(load(standard_bytes / 4).unwrap());
+    let page_quarter_searcher = RefCell::new(load_page(page_bytes / 4).unwrap());
 
     group.throughput(Throughput::Elements(n_queries as u64));
     for ef_search in [50, 75, 250] {
@@ -124,22 +152,8 @@ fn bench_diskann_search_only(c: &mut Criterion) {
                         .unwrap(),
                 ),
                 (
-                    "mmap",
-                    mmap_searcher
-                        .borrow_mut()
-                        .search(query, k, ef_search)
-                        .unwrap(),
-                ),
-                (
                     "page_file",
                     page_searcher
-                        .borrow_mut()
-                        .search(query, k, ef_search)
-                        .unwrap(),
-                ),
-                (
-                    "page_mmap",
-                    page_mmap_searcher
                         .borrow_mut()
                         .search(query, k, ef_search)
                         .unwrap(),
@@ -153,7 +167,7 @@ fn bench_diskann_search_only(c: &mut Criterion) {
             }
         }
         eprintln!(
-            "diskann quality: ef={ef_search} recall@{k}={:.4} storage_parity=5 modes cache=warm",
+            "diskann quality: ef={ef_search} recall@{k}={:.4} storage_parity=3 modes cache=warm",
             hits as f64 / (n_queries * k) as f64
         );
         group.bench_function(format!("memory_ef{ef_search}"), |bench| {
@@ -178,20 +192,6 @@ fn bench_diskann_search_only(c: &mut Criterion) {
                     .sum::<usize>()
             });
         });
-        group.bench_function(format!("mmap_ef{ef_search}"), |bench| {
-            bench.iter(|| {
-                queries
-                    .iter()
-                    .map(|query| {
-                        mmap_searcher
-                            .borrow_mut()
-                            .search(black_box(query), k, ef_search)
-                            .unwrap()
-                            .len()
-                    })
-                    .sum::<usize>()
-            })
-        });
         group.bench_function(format!("page_file_ef{ef_search}"), |bench| {
             bench.iter(|| {
                 queries
@@ -206,21 +206,68 @@ fn bench_diskann_search_only(c: &mut Criterion) {
                     .sum::<usize>()
             })
         });
-        group.bench_function(format!("page_mmap_ef{ef_search}"), |bench| {
-            bench.iter(|| {
-                queries
-                    .iter()
-                    .map(|query| {
-                        page_mmap_searcher
-                            .borrow_mut()
-                            .search(black_box(query), k, ef_search)
-                            .unwrap()
-                            .len()
+        if ef_search == 50 {
+            for (name, searcher) in [
+                ("file_nocache", &nocache_searcher),
+                ("file_cache25", &quarter_searcher),
+            ] {
+                group.bench_function(format!("{name}_ef{ef_search}"), |bench| {
+                    bench.iter(|| {
+                        queries
+                            .iter()
+                            .map(|query| {
+                                searcher
+                                    .borrow_mut()
+                                    .search(black_box(query), k, ef_search)
+                                    .unwrap()
+                                    .len()
+                            })
+                            .sum::<usize>()
                     })
-                    .sum::<usize>()
-            })
-        });
+                });
+            }
+            for (name, searcher) in [
+                ("page_file_nocache", &page_nocache_searcher),
+                ("page_file_cache25", &page_quarter_searcher),
+            ] {
+                group.bench_function(format!("{name}_ef{ef_search}"), |bench| {
+                    bench.iter(|| {
+                        queries
+                            .iter()
+                            .map(|query| {
+                                searcher
+                                    .borrow_mut()
+                                    .search(black_box(query), k, ef_search)
+                                    .unwrap()
+                                    .len()
+                            })
+                            .sum::<usize>()
+                    })
+                });
+            }
+        }
     }
+
+    for (name, stats) in [
+        ("file", file_searcher.borrow().cache_stats()),
+        ("file_cache25", quarter_searcher.borrow().cache_stats()),
+        ("page_file", page_searcher.borrow().cache_stats()),
+        (
+            "page_file_cache25",
+            page_quarter_searcher.borrow().cache_stats(),
+        ),
+    ] {
+        eprintln!(
+            "diskann cache: {name} budget={} resident={} hits={} misses={} hit_rate={:.4} block={}",
+            stats.budget_bytes,
+            stats.resident_bytes,
+            stats.hits,
+            stats.misses,
+            stats.hit_rate(),
+            cache_config(0).block_size,
+        );
+    }
+    eprintln!("diskann index bytes: standard={standard_bytes} page={page_bytes}");
 
     group.finish();
 }

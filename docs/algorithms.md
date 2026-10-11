@@ -10,7 +10,7 @@ page lists the other public indexes and the feature flags that expose them.
 | HNSW | `hnsw` (default) | Default in-memory index |
 | NSW | `nsw` | Flat small-world graph |
 | Vamana | `vamana` | DiskANN-style graph construction |
-| DiskANN | `diskann` | Vamana plus file and mmap search paths; experimental |
+| DiskANN | `diskann` | Vamana plus a file-backed search path; experimental |
 | In-place HNSW | `hnsw` | In-place insert/delete graph variant |
 | LSM HNSW | `hnsw` | Tiered HNSW for streaming writes (`streaming::lsm`) |
 | Dual-branch HNSW | `hnsw` | Extra bridge edges for high-LID regions |
@@ -75,8 +75,8 @@ need `quantization` plus `rabitq` or `saq`. PQ is part of `ivf_pq`.
 | Frequent writes/deletes | Evaluate `store::UpdatableIndex` | Compare FreshGraph, in-place HNSW, and LSM HNSW on churn rows |
 | Metadata filters | HNSW with post-filtering | ACORN, Curator, and FilteredGraph need selectivity sweeps |
 | Sparse learned retrieval | SparseMIPS | Workload-specific sparse baseline |
-| File-backed graph search | Evaluate DiskANN | Promote after full-corpus mmap/file rows |
-| File-backed compressed search | IVF-PQ file or mmap searcher | Add rerank only when the raw-vector locality cost is acceptable |
+| File-backed graph search | Evaluate DiskANN | Promote after full-corpus file rows |
+| File-backed compressed search | IVF-PQ file searcher | Add rerank only when the raw-vector locality cost is acceptable |
 
 ## Experimental Status
 
@@ -90,8 +90,8 @@ These APIs are reachable but are not recommended defaults yet.
   per-query recall improvements over plain HNSW at fixed recall, plus
   build-time and memory cost. Keep a row where the variant heuristic is disabled
   so the added graph logic has a fair control.
-- **DiskANN**: file save/load, mmap search, and search diagnostics exist.
-  Promote when mmap/page-layout measurements stay competitive on a 1M-vector
+- **DiskANN**: file save/load, file-backed search, and search diagnostics exist.
+  Promote when file/page-layout measurements stay competitive on a 1M-vector
   dataset, and when the file-backed row is clearly separated from in-memory
   Vamana in the benchmark docs.
 - **Streaming and updates (FreshGraph, in-place HNSW, LSM HNSW, repair,
@@ -102,10 +102,11 @@ These APIs are reachable but are not recommended defaults yet.
   RangeFiltered)**: promote from selectivity sweeps. Report recall/QPS over at
   least low, middle, and high selectivity instead of a single QPS number.
 - **Compressed inverted files (IVF-PQ, IVF-AVQ, IVF-RaBitQ, RpQuant,
-  BinaryFlat, SQ4)**: promote per memory budget. IVF-PQ file and mmap
-  approximate search now have full-corpus GloVe-25 fixed-recall rows, so IVF-PQ
-  is the current compressed default candidate when raw vectors dominate RAM.
-  Exact rerank is still direct-file raw-vector-locality bound; use mmap or
+  BinaryFlat, SQ4)**: promote per memory budget. IVF-PQ file-backed
+  approximate search has full-corpus GloVe-25 fixed-recall rows (measured
+  before 0.12.0 removed the mmap reader), so IVF-PQ is the current compressed
+  default candidate when raw vectors dominate RAM. Exact rerank is
+  direct-file raw-vector-locality bound; use the heap-loaded snapshot or
   measure the direct-file rerank row before recommending it. The other
   compressed indexes need recall/QPS/storage rows on the datasets where their
   quantization assumptions apply.

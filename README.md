@@ -89,12 +89,12 @@ for development and comparison rather than a production dependency profile.
 | Minimal library | `--no-default-features` | Core `smallvec`, `rand`, and `thiserror`. |
 | Default HNSW | *(default)* | `hnsw` plus SIMD distance kernels from `innr`. |
 | JSON snapshots | `hnsw,serde` | `serde` and `serde_json`. |
-| Binary persistence/mmap | `persistence` | `postcard` and `durability`; this is restart/file support, not automatically crash-safe generation publication. |
+| Binary persistence | `persistence` | `postcard` and `durability`; this is restart/file support, not automatically crash-safe generation publication. |
 | Segmented mutable store | `store` | `segstore` plus persistence dependencies and HNSW. |
 | IVF-PQ/OPQ | `ivf_pq` | `clump`, `nalgebra`, and serialization support. OPQ uses the linear-algebra path. |
 | Parallel batch search | `parallel` | `rayon`. |
 | Python extension | `python` | PyO3 stable ABI (`abi3-py310`), NumPy, HNSW, IVF-PQ, and persistence. The current wheel contract targets CPython 3.10+ and does not cover free-threaded CPython builds. |
-| WASM experiment | `--no-default-features` plus the target recipe | `getrandom` uses the `wasm_js` backend on `wasm32-unknown-unknown`; file/mmap and persistence support need separate validation. |
+| WASM experiment | `--no-default-features` plus the target recipe | `getrandom` uses the `wasm_js` backend on `wasm32-unknown-unknown`; file-backed search and persistence support need separate validation. |
 
 Rust consumers should treat feature flags as part of the build contract. Python
 callers should benchmark end-to-end NumPy conversion, GIL detachment, and batch

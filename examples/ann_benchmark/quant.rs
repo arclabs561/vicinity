@@ -308,10 +308,6 @@ pub(crate) fn run_ivfpq(
         index_bytes: Option<u64>,
         file_searcher: RefCell<IVFPQFileSearcher>,
         file_load_time_s: f64,
-        #[cfg(feature = "persistence")]
-        mmap_searcher: RefCell<IVFPQFileSearcher>,
-        #[cfg(feature = "persistence")]
-        mmap_load_time_s: f64,
     }
 
     let num_clusters = cfg.pq_num_clusters.unwrap_or(256);
@@ -380,12 +376,6 @@ pub(crate) fn run_ivfpq(
         let file_load_start = Instant::now();
         let file_searcher = RefCell::new(IVFPQFileSearcher::load(temp_dir.path()).unwrap());
         let file_load_time_s = file_load_start.elapsed().as_secs_f64();
-        #[cfg(feature = "persistence")]
-        let mmap_load_start = Instant::now();
-        #[cfg(feature = "persistence")]
-        let mmap_searcher = RefCell::new(IVFPQFileSearcher::load_mmap(temp_dir.path()).unwrap());
-        #[cfg(feature = "persistence")]
-        let mmap_load_time_s = mmap_load_start.elapsed().as_secs_f64();
         Some(SnapshotIndexes {
             _temp_dir: temp_dir,
             loaded,
@@ -393,10 +383,6 @@ pub(crate) fn run_ivfpq(
             index_bytes,
             file_searcher,
             file_load_time_s,
-            #[cfg(feature = "persistence")]
-            mmap_searcher,
-            #[cfg(feature = "persistence")]
-            mmap_load_time_s,
         })
     } else {
         None
@@ -446,8 +432,6 @@ pub(crate) fn run_ivfpq(
         if let Some(snapshot) = snapshot_index.as_mut() {
             snapshot.loaded.set_nprobe(nprobe);
             snapshot.file_searcher.borrow_mut().set_nprobe(nprobe);
-            #[cfg(feature = "persistence")]
-            snapshot.mmap_searcher.borrow_mut().set_nprobe(nprobe);
             let loaded_result = evaluate(
                 &|q, k| snapshot.loaded.search(q, k).unwrap(),
                 test,
@@ -456,9 +440,6 @@ pub(crate) fn run_ivfpq(
             );
             let (file_result, file_diagnostics) =
                 evaluate_ivfpq_file_approx(&snapshot.file_searcher, test, neighbors, 10);
-            #[cfg(feature = "persistence")]
-            let (mmap_result, mmap_diagnostics) =
-                evaluate_ivfpq_file_approx(&snapshot.mmap_searcher, test, neighbors, 10);
             let params_json = ivfpq_params_json(
                 num_clusters,
                 num_codebooks,
@@ -496,28 +477,9 @@ pub(crate) fn run_ivfpq(
                         ),
                     ),
                 );
-                #[cfg(feature = "persistence")]
-                emit_result(
-                    &cfg.results_path,
-                    &json_line_with_storage(
-                        "ivfpq",
-                        &params_json,
-                        build_time_s,
-                        rss,
-                        &mmap_result,
-                        &opened_storage_with_diagnostics(
-                            "mmap",
-                            snapshot.mmap_load_time_s,
-                            snapshot.index_bytes,
-                            mmap_diagnostics,
-                        ),
-                    ),
-                );
             } else {
                 print_row(&format!("np={} snapshot_loaded", nprobe), &loaded_result);
                 print_row(&format!("np={} file", nprobe), &file_result);
-                #[cfg(feature = "persistence")]
-                print_row(&format!("np={} mmap", nprobe), &mmap_result);
             }
         }
 
@@ -562,8 +524,6 @@ pub(crate) fn run_ivfpq(
             if let Some(snapshot) = snapshot_index.as_mut() {
                 snapshot.loaded.set_nprobe(nprobe);
                 snapshot.file_searcher.borrow_mut().set_nprobe(nprobe);
-                #[cfg(feature = "persistence")]
-                snapshot.mmap_searcher.borrow_mut().set_nprobe(nprobe);
                 let loaded_result = evaluate(
                     &|q, k| snapshot.loaded.search_reranked(q, k, rerank_pool).unwrap(),
                     test,
@@ -572,14 +532,6 @@ pub(crate) fn run_ivfpq(
                 );
                 let (file_result, file_diagnostics) = evaluate_ivfpq_file_reranked(
                     &snapshot.file_searcher,
-                    test,
-                    neighbors,
-                    10,
-                    rerank_pool,
-                );
-                #[cfg(feature = "persistence")]
-                let (mmap_result, mmap_diagnostics) = evaluate_ivfpq_file_reranked(
-                    &snapshot.mmap_searcher,
                     test,
                     neighbors,
                     10,
@@ -622,23 +574,6 @@ pub(crate) fn run_ivfpq(
                             ),
                         ),
                     );
-                    #[cfg(feature = "persistence")]
-                    emit_result(
-                        &cfg.results_path,
-                        &json_line_with_storage(
-                            "ivfpq_rerank",
-                            &params_json,
-                            build_time_s,
-                            rss,
-                            &mmap_result,
-                            &opened_storage_with_diagnostics(
-                                "mmap",
-                                snapshot.mmap_load_time_s,
-                                snapshot.index_bytes,
-                                mmap_diagnostics,
-                            ),
-                        ),
-                    );
                 } else {
                     print_row(
                         &format!("np={} rr={} snapshot_loaded", nprobe, rerank_pool),
@@ -647,11 +582,6 @@ pub(crate) fn run_ivfpq(
                     print_row(
                         &format!("np={} rr={} file", nprobe, rerank_pool),
                         &file_result,
-                    );
-                    #[cfg(feature = "persistence")]
-                    print_row(
-                        &format!("np={} rr={} mmap", nprobe, rerank_pool),
-                        &mmap_result,
                     );
                 }
             }
@@ -679,10 +609,6 @@ pub(crate) fn run_ivf_avq(
         load_time_s: f64,
         file_searcher: RefCell<IVFAVQFileSearcher>,
         file_load_time_s: f64,
-        #[cfg(feature = "persistence")]
-        mmap_searcher: RefCell<IVFAVQFileSearcher>,
-        #[cfg(feature = "persistence")]
-        mmap_load_time_s: f64,
         index_bytes: Option<u64>,
     }
 
@@ -730,22 +656,12 @@ pub(crate) fn run_ivf_avq(
         let file_load_start = Instant::now();
         let file_searcher = RefCell::new(IVFAVQFileSearcher::open(temp_dir.path()).unwrap());
         let file_load_time_s = file_load_start.elapsed().as_secs_f64();
-        #[cfg(feature = "persistence")]
-        let mmap_load_start = Instant::now();
-        #[cfg(feature = "persistence")]
-        let mmap_searcher = RefCell::new(IVFAVQFileSearcher::open_mmap(temp_dir.path()).unwrap());
-        #[cfg(feature = "persistence")]
-        let mmap_load_time_s = mmap_load_start.elapsed().as_secs_f64();
         Some(SnapshotIndexes {
             _temp_dir: temp_dir,
             loaded,
             load_time_s,
             file_searcher,
             file_load_time_s,
-            #[cfg(feature = "persistence")]
-            mmap_searcher,
-            #[cfg(feature = "persistence")]
-            mmap_load_time_s,
             index_bytes,
         })
     } else {
@@ -806,18 +722,8 @@ pub(crate) fn run_ivf_avq(
                     .file_searcher
                     .borrow_mut()
                     .set_num_reorder(num_reorder);
-                #[cfg(feature = "persistence")]
-                snapshot.mmap_searcher.borrow_mut().set_nprobe(nprobe);
-                #[cfg(feature = "persistence")]
-                snapshot
-                    .mmap_searcher
-                    .borrow_mut()
-                    .set_num_reorder(num_reorder);
                 let (file_result, file_diagnostics) =
                     evaluate_ivfavq_file(&snapshot.file_searcher, test, neighbors, 10);
-                #[cfg(feature = "persistence")]
-                let (mmap_result, mmap_diagnostics) =
-                    evaluate_ivfavq_file(&snapshot.mmap_searcher, test, neighbors, 10);
                 let params_json = ivfavq_params_json(
                     num_partitions,
                     num_codebooks,
@@ -853,23 +759,6 @@ pub(crate) fn run_ivf_avq(
                             ),
                         ),
                     );
-                    #[cfg(feature = "persistence")]
-                    emit_result(
-                        &cfg.results_path,
-                        &json_line_with_storage(
-                            "ivf_avq",
-                            &params_json,
-                            build_time_s,
-                            rss,
-                            &mmap_result,
-                            &opened_storage_with_diagnostics(
-                                "mmap",
-                                snapshot.mmap_load_time_s,
-                                snapshot.index_bytes,
-                                mmap_diagnostics,
-                            ),
-                        ),
-                    );
                 } else {
                     print_row(
                         &format!("np={} reorder={} snapshot_loaded", nprobe, num_reorder),
@@ -878,11 +767,6 @@ pub(crate) fn run_ivf_avq(
                     print_row(
                         &format!("np={} reorder={} file", nprobe, num_reorder),
                         &file_result,
-                    );
-                    #[cfg(feature = "persistence")]
-                    print_row(
-                        &format!("np={} reorder={} mmap", nprobe, num_reorder),
-                        &mmap_result,
                     );
                 }
             }

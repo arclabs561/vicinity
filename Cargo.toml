@@ -74,8 +74,8 @@ postcard = { version = "1.0", optional = true, features = [
   "alloc",
   "use-std",
 ] }
-durability = { version = "0.7.2", optional = true, features = ["mmap"] }
-segstore = { version = "0.5", optional = true }
+durability = { version = "0.8", optional = true }
+segstore = { version = "0.6", optional = true }
 fs4 = { version = "0.13", optional = true }
 
 
@@ -104,7 +104,7 @@ ivf_pq = [
   "dep:serde_json",
   "smallvec/serde",
 ]
-diskann = ["dep:serde_json", "dep:durability"]
+diskann = ["dep:serde_json"]
 ivf_avq = ["dep:clump", "dep:serde", "dep:serde_json"]
 sng = ["dep:serde", "dep:serde_json"]
 fresh_graph = ["dep:serde", "dep:serde_json"]

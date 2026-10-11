@@ -4,8 +4,7 @@ use std::fs::File;
 use std::io::{BufWriter, Read, Write};
 use std::path::Path;
 
-use durability::mmap::{AccessPattern, MappedFile};
-
+use crate::file_io::{CachedFile, FileCacheConfig, FileCacheStats};
 use crate::persistence::error::{PersistenceError, PersistenceResult};
 use crate::RetrieveError;
 
@@ -131,29 +130,39 @@ pub struct DiskANNPageSearcher {
 }
 
 impl DiskANNPageSearcher {
-    /// Load a page-layout searcher from `nodes.page` using positional file reads.
+    /// Load a page-layout searcher from `nodes.page` with the default block
+    /// cache.
     pub fn load(index_dir: &Path) -> Result<Self, RetrieveError> {
-        Self::load_with_storage(index_dir, false)
+        Self::load_with_cache(index_dir, FileCacheConfig::default())
     }
 
-    /// Load a page-layout searcher from `nodes.page` using read-only mmap.
-    pub fn load_mmap(index_dir: &Path) -> Result<Self, RetrieveError> {
-        Self::load_with_storage(index_dir, true)
-    }
-
-    fn load_with_storage(index_dir: &Path, mmap: bool) -> Result<Self, RetrieveError> {
-        let page_path = index_dir.join("nodes.page");
-        let reader = if mmap {
-            DiskPageReader::open_mmap(&page_path)?
-        } else {
-            DiskPageReader::open(&page_path)?
-        };
+    /// Load a page-layout searcher from `nodes.page`, reading records through
+    /// a block cache over positional reads.
+    pub fn load_with_cache(
+        index_dir: &Path,
+        cache: FileCacheConfig,
+    ) -> Result<Self, RetrieveError> {
+        let reader = DiskPageReader::open(&index_dir.join("nodes.page"), cache)?;
         let num_nodes = reader.num_nodes;
         Ok(Self {
             reader,
             visited_marks: vec![0; num_nodes],
             visited_generation: 1,
         })
+    }
+
+    /// Same as [`Self::load`]. vicinity no longer memory-maps index files.
+    #[deprecated(
+        since = "0.12.0",
+        note = "use `DiskANNPageSearcher::load`; vicinity no longer memory-maps"
+    )]
+    pub fn load_mmap(index_dir: &Path) -> Result<Self, RetrieveError> {
+        Self::load(index_dir)
+    }
+
+    /// Block cache counters for `nodes.page`.
+    pub fn cache_stats(&self) -> FileCacheStats {
+        self.reader.file.stats()
     }
 
     /// Search for `k` approximate nearest neighbors.
@@ -329,13 +338,8 @@ impl PartialOrd for PageCandidate {
     }
 }
 
-enum PageStorage {
-    File(File),
-    Mmap(Box<MappedFile>),
-}
-
 pub(crate) struct DiskPageReader {
-    storage: PageStorage,
+    file: CachedFile,
     read_buf: Vec<u8>,
     vec_buf: Vec<f32>,
     pub(crate) num_nodes: usize,
@@ -346,31 +350,14 @@ pub(crate) struct DiskPageReader {
 }
 
 impl DiskPageReader {
-    pub(crate) fn open(path: &Path) -> PersistenceResult<Self> {
+    pub(crate) fn open(path: &Path, cache: FileCacheConfig) -> PersistenceResult<Self> {
         let mut file = File::open(path)?;
         let header = read_header_from_file(&mut file)?;
         let len = usize::try_from(file.metadata()?.len()).unwrap_or(usize::MAX);
         validate_file_len(len, &header)?;
         Ok(Self {
-            storage: PageStorage::File(file),
+            file: CachedFile::new(file, cache)?,
             read_buf: vec![0; header.record_size],
-            vec_buf: vec![0.0; header.dimension],
-            num_nodes: header.num_nodes,
-            dimension: header.dimension,
-            max_degree: header.max_degree,
-            start_node: header.start_node,
-            record_size: header.record_size,
-        })
-    }
-
-    pub(crate) fn open_mmap(path: &Path) -> PersistenceResult<Self> {
-        let mapped = MappedFile::open(path, AccessPattern::Random)
-            .map_err(|e| PersistenceError::Io(std::io::Error::other(e.to_string())))?;
-        let header = read_header_from_bytes(mapped.as_slice())?;
-        validate_file_len(mapped.as_slice().len(), &header)?;
-        Ok(Self {
-            storage: PageStorage::Mmap(Box::new(mapped)),
-            read_buf: Vec::new(),
             vec_buf: vec![0.0; header.dimension],
             num_nodes: header.num_nodes,
             dimension: header.dimension,
@@ -389,27 +376,13 @@ impl DiskPageReader {
             .checked_add(idx * self.record_size)
             .ok_or_else(|| RetrieveError::FormatError("page record offset overflow".into()))?;
 
-        match &mut self.storage {
-            PageStorage::File(file) => {
-                crate::file_io::read_exact_at(file, offset as u64, &mut self.read_buf)?;
-                decode_node(
-                    &self.read_buf,
-                    self.dimension,
-                    self.max_degree,
-                    &mut self.vec_buf,
-                )
-            }
-            PageStorage::Mmap(mapped) => {
-                let end = offset
-                    .checked_add(self.record_size)
-                    .ok_or_else(|| RetrieveError::FormatError("page record end overflow".into()))?;
-                let bytes = mapped.as_slice();
-                let record = bytes.get(offset..end).ok_or_else(|| {
-                    RetrieveError::FormatError("page record extends past mapped file".into())
-                })?;
-                decode_node(record, self.dimension, self.max_degree, &mut self.vec_buf)
-            }
-        }
+        self.file.read_exact_at(offset as u64, &mut self.read_buf)?;
+        decode_node(
+            &self.read_buf,
+            self.dimension,
+            self.max_degree,
+            &mut self.vec_buf,
+        )
     }
 }
 
@@ -597,7 +570,7 @@ mod tests {
     }
 
     #[test]
-    fn page_records_round_trip_file_and_mmap() {
+    fn page_records_round_trip_through_file_reader() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nodes.page");
         let mut writer = DiskPageWriter::create(&path, 2, 3, 4, 1).unwrap();
@@ -611,7 +584,7 @@ mod tests {
         );
         assert_eq!(HEADER_SIZE % PAGE_ALIGNMENT, 0);
 
-        let mut file_reader = DiskPageReader::open(&path).unwrap();
+        let mut file_reader = DiskPageReader::open(&path, FileCacheConfig::default()).unwrap();
         assert_eq!(file_reader.num_nodes, 2);
         assert_eq!(file_reader.dimension, 3);
         assert_eq!(file_reader.max_degree, 4);
@@ -625,9 +598,8 @@ mod tests {
             }
         );
 
-        let mut mmap_reader = DiskPageReader::open_mmap(&path).unwrap();
         assert_eq!(
-            mmap_reader.get_node(1).unwrap(),
+            file_reader.get_node(1).unwrap(),
             DiskPageNode {
                 doc_id: 11,
                 vector: vec![4.0, 5.0, 6.0],
@@ -638,9 +610,8 @@ mod tests {
 
     #[test]
     fn file_reader_rejects_header_claiming_more_records_than_the_file_holds() {
-        // A header-only file that claims 100M nodes must fail at open, as the
-        // mmap reader already does, instead of sizing per-node state from the
-        // untrusted count.
+        // A header-only file that claims 100M nodes must fail at open instead
+        // of sizing per-node state from the untrusted count.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nodes.page");
         let mut writer = DiskPageWriter::create(&path, 1, 3, 4, 0).unwrap();
@@ -651,9 +622,10 @@ mod tests {
         bytes.truncate(HEADER_SIZE);
         std::fs::write(&path, &bytes).unwrap();
 
-        let err = DiskPageReader::open(&path).err().expect("open must fail");
+        let err = DiskPageReader::open(&path, FileCacheConfig::default())
+            .err()
+            .expect("open must fail");
         assert!(err.to_string().contains("truncated"), "{err}");
-        assert!(DiskPageReader::open_mmap(&path).is_err());
     }
 
     #[test]
@@ -727,7 +699,6 @@ mod tests {
         let index_path = dir.path().join("diskann_page");
         index.save_page_layout(&index_path).unwrap();
         let mut page_searcher = DiskANNPageSearcher::load(&index_path).unwrap();
-        let mut page_mmap_searcher = DiskANNPageSearcher::load_mmap(&index_path).unwrap();
 
         for query in &queries {
             let expected = index.search(query, k, ef).unwrap();
@@ -747,9 +718,6 @@ mod tests {
             assert!(diagnostics.page_logical_bytes > 0);
             assert_eq!(diagnostics.graph_reads, 0);
             assert_eq!(diagnostics.vector_reads, 0);
-
-            let mmap_results = page_mmap_searcher.search(query, k, ef).unwrap();
-            assert_eq!(mmap_results, expected);
         }
     }
 }

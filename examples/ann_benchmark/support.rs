@@ -624,15 +624,7 @@ impl StorageExpectation {
 }
 
 fn open_storage_modes() -> &'static [&'static str] {
-    #[cfg(feature = "persistence")]
-    {
-        &["snapshot_loaded", "file", "mmap"]
-    }
-
-    #[cfg(not(feature = "persistence"))]
-    {
-        &["snapshot_loaded", "file"]
-    }
+    &["snapshot_loaded", "file"]
 }
 
 fn ef_checks(
@@ -904,11 +896,8 @@ fn diskann_checks(cfg: &Config) -> Vec<ExpectedResult> {
     const STORAGE_ROWS: &[(&str, &str, &str)] = &[
         ("diskann", "memory", "in_memory"),
         ("diskann_file", "file", "file"),
-        ("diskann_mmap", "mmap", "mmap"),
         #[cfg(feature = "benchmark")]
         ("diskann_page_file", "page_file", "file"),
-        #[cfg(feature = "benchmark")]
-        ("diskann_page_mmap", "page_mmap", "mmap"),
     ];
 
     STORAGE_ROWS
@@ -1839,7 +1828,7 @@ impl ResultStorage<'_> {
         self.index_bytes_kind.or(match self.storage_mode {
             "in_memory" => Some("heap_estimate"),
             "snapshot_loaded" => Some("snapshot_bytes"),
-            "file" | "mmap" | "segmented_store" => Some("storage_bytes"),
+            "file" | "segmented_store" => Some("storage_bytes"),
             _ => None,
         })
     }
@@ -1847,13 +1836,7 @@ impl ResultStorage<'_> {
 
 #[cfg(test)]
 fn storage_context_from_params(params: &str) -> ResultStorage<'static> {
-    if params.contains("\"storage\":\"mmap\"") {
-        ResultStorage {
-            storage_mode: "mmap",
-            cache_state: "warm_after_open",
-            ..ResultStorage::default()
-        }
-    } else if params.contains("\"storage\":\"file\"") {
+    if params.contains("\"storage\":\"file\"") {
         ResultStorage {
             storage_mode: "file",
             cache_state: "warm_after_open",
@@ -2272,7 +2255,6 @@ mod tests {
         let storage_mode = match storage {
             "memory" => "in_memory",
             "page_file" => "file",
-            "page_mmap" => "mmap",
             storage => storage,
         };
         format!(
@@ -2535,7 +2517,7 @@ mod tests {
     #[test]
     fn json_line_promotes_diskann_storage_context() {
         let storage = ResultStorage {
-            storage_mode: "mmap",
+            storage_mode: "file",
             cache_state: "warm_after_open",
             load_time_s: Some(0.125),
             index_bytes: Some(4096),
@@ -2560,15 +2542,15 @@ mod tests {
             }),
         };
         let line = json_line_with_storage(
-            "diskann_mmap",
-            "{\"storage\":\"mmap\"}",
+            "diskann_file",
+            "{\"storage\":\"file\"}",
             2.0,
             None,
             &sample_result(),
             &storage,
         );
 
-        assert!(line.contains("\"storage_mode\":\"mmap\""));
+        assert!(line.contains("\"storage_mode\":\"file\""));
         assert!(line.contains("\"index_bytes_kind\":\"storage_bytes\""));
         assert!(line.contains("\"cache_state\":\"warm_after_open\""));
         assert!(line.contains("\"load_time_s\":0.1250"));
@@ -2768,16 +2750,13 @@ mod tests {
     }
 
     #[test]
-    fn diskann_resume_requires_memory_file_and_mmap_rows() {
+    fn diskann_resume_requires_memory_and_file_rows() {
         let cfg = Config {
             ef_search_values: vec![10],
             ..Config::default()
         };
         let completed = CompletedResults {
-            lines: vec![
-                diskann_line("diskann", "memory"),
-                diskann_line("diskann_file", "file"),
-            ],
+            lines: vec![diskann_line("diskann", "memory")],
             ..CompletedResults::default()
         };
 
@@ -2793,44 +2772,15 @@ mod tests {
             ef_search_values: vec![10],
             ..Config::default()
         };
-        let base_lines = [
-            diskann_line("diskann", "memory"),
-            diskann_line("diskann_file", "file"),
-            diskann_line("diskann_mmap", "mmap"),
-        ];
         let completed_without_page_file = CompletedResults {
-            lines: base_lines
-                .iter()
-                .cloned()
-                .chain(std::iter::once(diskann_line(
-                    "diskann_page_mmap",
-                    "page_mmap",
-                )))
-                .collect(),
+            lines: vec![
+                diskann_line("diskann", "memory"),
+                diskann_line("diskann_file", "file"),
+            ],
             ..CompletedResults::default()
         };
         assert!(!request_completed(
             &completed_without_page_file,
-            "diskann",
-            &cfg,
-            25,
-            1_000,
-            100
-        ));
-
-        let completed_without_page_mmap = CompletedResults {
-            lines: base_lines
-                .iter()
-                .cloned()
-                .chain(std::iter::once(diskann_line(
-                    "diskann_page_file",
-                    "page_file",
-                )))
-                .collect(),
-            ..CompletedResults::default()
-        };
-        assert!(!request_completed(
-            &completed_without_page_mmap,
             "diskann",
             &cfg,
             25,
@@ -2849,11 +2799,8 @@ mod tests {
             lines: vec![
                 diskann_line("diskann", "memory"),
                 diskann_line("diskann_file", "file"),
-                diskann_line("diskann_mmap", "mmap"),
                 #[cfg(feature = "benchmark")]
                 diskann_line("diskann_page_file", "page_file"),
-                #[cfg(feature = "benchmark")]
-                diskann_line("diskann_page_mmap", "page_mmap"),
             ],
             ..CompletedResults::default()
         };
@@ -2873,7 +2820,6 @@ mod tests {
             lines: vec![
                 legacy_diskann_line_without_storage_mode("diskann", "memory"),
                 legacy_diskann_line_without_storage_mode("diskann_file", "file"),
-                legacy_diskann_line_without_storage_mode("diskann_mmap", "mmap"),
             ],
             ..CompletedResults::default()
         };

@@ -16,6 +16,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use vicinity::ivf_pq::IVFPQSearchProfile;
 #[cfg(feature = "ivf_pq")]
 use vicinity::ivf_pq::{IVFPQFileSearcher, IVFPQIndex, IVFPQParams};
+#[cfg(feature = "ivf_pq")]
+use vicinity::FileCacheConfig;
 
 #[cfg(all(feature = "ivf_pq", feature = "benchmark"))]
 static ALLOC_CALLS: AtomicUsize = AtomicUsize::new(0);
@@ -191,8 +193,17 @@ fn bench_ivfpq_search_only(c: &mut Criterion) {
         index.save_to_dir(snapshot_dir.path()).unwrap();
         let loaded = IVFPQIndex::load_from_dir(snapshot_dir.path()).unwrap();
         let mut file_searcher = IVFPQFileSearcher::load(snapshot_dir.path()).unwrap();
-        #[cfg(feature = "persistence")]
-        let mut mmap_searcher = IVFPQFileSearcher::load_mmap(snapshot_dir.path()).unwrap();
+        // A cache a quarter the size of the files search reads.
+        let cached_bytes: u64 = ["codes.bin", "list_codes.bin", "raw_vectors.bin"]
+            .iter()
+            .filter_map(|name| std::fs::metadata(snapshot_dir.path().join(name)).ok())
+            .map(|meta| meta.len())
+            .sum();
+        let mut quarter_searcher = IVFPQFileSearcher::load_with_cache(
+            snapshot_dir.path(),
+            FileCacheConfig::with_budget(cached_bytes as usize / 4),
+        )
+        .unwrap();
 
         #[cfg(feature = "benchmark")]
         {
@@ -228,12 +239,11 @@ fn bench_ivfpq_search_only(c: &mut Criterion) {
             });
         });
 
-        #[cfg(feature = "persistence")]
-        group.bench_function(format!("{label}_mmap_nprobe32_k10"), |bench| {
+        group.bench_function(format!("{label}_file_cache25_nprobe32_k10"), |bench| {
             bench.iter(|| {
                 queries
                     .iter()
-                    .map(|q| mmap_searcher.search(black_box(q), 10).unwrap().len())
+                    .map(|q| quarter_searcher.search(black_box(q), 10).unwrap().len())
                     .sum::<usize>()
             });
         });
@@ -273,20 +283,36 @@ fn bench_ivfpq_search_only(c: &mut Criterion) {
             });
         });
 
-        #[cfg(feature = "persistence")]
-        group.bench_function(format!("{label}_mmap_nprobe32_rerank500_k10"), |bench| {
-            bench.iter(|| {
-                queries
-                    .iter()
-                    .map(|q| {
-                        mmap_searcher
-                            .search_reranked(black_box(q), 10, 500)
-                            .unwrap()
-                            .len()
-                    })
-                    .sum::<usize>()
-            });
-        });
+        group.bench_function(
+            format!("{label}_file_cache25_nprobe32_rerank500_k10"),
+            |bench| {
+                bench.iter(|| {
+                    queries
+                        .iter()
+                        .map(|q| {
+                            quarter_searcher
+                                .search_reranked(black_box(q), 10, 500)
+                                .unwrap()
+                                .len()
+                        })
+                        .sum::<usize>()
+                });
+            },
+        );
+
+        for (name, stats) in [
+            ("file", file_searcher.cache_stats()),
+            ("file_cache25", quarter_searcher.cache_stats()),
+        ] {
+            eprintln!(
+                "ivfpq cache: {label}_{name} budget={} resident={} hits={} misses={} hit_rate={:.4} cached_file_bytes={cached_bytes}",
+                stats.budget_bytes,
+                stats.resident_bytes,
+                stats.hits,
+                stats.misses,
+                stats.hit_rate(),
+            );
+        }
     }
 
     group.finish();

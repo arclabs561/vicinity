@@ -1,4 +1,4 @@
-//! DiskANN/Vamana-style graph with file and mmap search paths.
+//! DiskANN/Vamana-style graph with a file-backed search path.
 //!
 //! This module implements an experimental Vamana-family graph index plus
 //! searchers that can read the saved graph and vector files through positional
@@ -45,13 +45,13 @@
 //! ```
 //!
 //! Large dense-vector collections do not always fit comfortably in memory.
-//! This implementation separates in-memory construction from file and mmap
-//! search rows so benchmarks can show the storage cost explicitly.
+//! This implementation separates in-memory construction from file-backed
+//! search so benchmarks can show the storage cost explicitly.
 //!
 //! # Current Storage Path
 //!
 //! Current code searches separate fixed-record graph and vector files with
-//! positional file reads or mmap-backed slices.
+//! positional file reads.
 //!
 //! # Page-Layout Target
 //!
@@ -95,7 +95,7 @@
 //!
 //! # Current Fit
 //!
-//! Use this module to evaluate Vamana-style graph construction and file or mmap
+//! Use this module to evaluate Vamana-style graph construction and file-backed
 //! search behavior. Do not read its rustdoc as a production-latency claim.
 //!
 //! # Why Single-Layer (Vamana) Instead of HNSW?
