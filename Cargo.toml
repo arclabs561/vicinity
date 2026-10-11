@@ -79,6 +79,10 @@ segstore = { version = "0.6", optional = true }
 fs4 = { version = "0.13", optional = true }
 
 
+# NEON `tbl` for the 4-bit FastScan kernel without `unsafe` in this crate.
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+pulp = { version = "0.22.3", default-features = false, features = ["std"] }
+
 # RNG backend for wasm32 (rand -> getrandom needs a JS backend on wasm).
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 getrandom = { version = "0.3", features = ["wasm_js"] }
