@@ -162,7 +162,8 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2.83.2
         with:
-          tool: cargo-semver-checks
+          # 0.51 supports Rust 1.99's rustdoc JSON format (v61).
+          tool: cargo-semver-checks@0.51.0
       - run: cargo semver-checks --default-features
   # ARM native testing (M1/M2 - tests NEON code paths)
   test-arm:

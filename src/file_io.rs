@@ -178,6 +178,7 @@ impl CachedFile {
         })
     }
 
+    #[cfg(feature = "diskann")]
     pub(crate) fn len(&self) -> u64 {
         self.len
     }
