@@ -5,6 +5,17 @@ All notable changes to this project are documented here. The format follows
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The 0.x
 series is unstable: minor bumps may break the public API.
 
+## Source history (unversioned)
+
+These source changes are not assigned to a package release here.
+
+- Gate the cached-file length accessor on its `diskann` consumer, avoiding
+  dead-code warnings in other feature combinations such as IVF-AVQ and Python.
+  ([source](https://github.com/arclabs561/vicinity/commit/2b8314b6f471e9a0ea5eb7412d2d1ffc9de79c24))
+- Pin the CI semver checker to `cargo-semver-checks` 0.51.0 for Rust 1.99
+  rustdoc JSON support. This changes CI tooling, not the public API.
+  ([source](https://github.com/arclabs561/vicinity/commit/b058fd7af7a326a94b05fbc2a43112e49f49f8f4))
+
 ## [Unreleased]
 
 ### Changed
