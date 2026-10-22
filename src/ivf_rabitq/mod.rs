@@ -373,7 +373,8 @@ impl IVFRaBitQIndex {
     ///
     /// Calling `compact()` after `build()` drops the raw f32 vectors, reducing
     /// memory by ~4*dim bytes per vector. Search results will use approximate
-    /// distances from quantized codes instead of exact reranking.
+    /// squared distances from quantized codes instead of exact cosine reranking.
+    /// Negative estimates are reported as zero after ranking and selection.
     ///
     /// # Panics
     ///
@@ -560,6 +561,15 @@ impl IVFRaBitQIndex {
 
         results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
         results.truncate(k);
+        // Keep signed edge corrections and raw estimates throughout ranking.
+        // Quantization error (compact mode) or cancellation in 1-dot (exact
+        // mode) can make a final distance negative. Bound only the reported
+        // distance after selection, preserving the raw estimates' ordering.
+        for (_, dist) in &mut results {
+            if *dist < 0.0 {
+                *dist = 0.0;
+            }
+        }
         Ok(results)
     }
 
@@ -1003,18 +1013,25 @@ mod tests {
         let mut index = IVFRaBitQIndex::new(dim, params).unwrap();
         index.add_batch(&doc_ids, &data).unwrap();
         index.build().unwrap();
-        index.compact();
-
-        let query = &data[0..dim];
-        let results = index.search(query, 5).unwrap();
-
-        assert!(!results.is_empty());
-        assert!(results.len() <= 5);
-        // Compact mode uses approximate distances, so ranking may differ.
-        // Just verify we get valid doc IDs and non-negative distances.
-        for &(id, dist) in &results {
-            assert!((id as usize) < n, "doc_id {id} out of range");
-            assert!(dist >= 0.0, "negative distance {dist}");
+        for compact in [false, true] {
+            if compact {
+                index.compact();
+            }
+            // Self queries exercise cancellation near zero in both exact
+            // cosine reranking and the approximate squared-distance output.
+            for query in data.chunks_exact(dim) {
+                let results = index.search(query, 5).unwrap();
+                assert_eq!(results.len(), 5);
+                assert!(results.windows(2).all(|w| w[0].1 <= w[1].1));
+                assert!(results.iter().any(|(_, dist)| *dist > 0.0));
+                for &(id, dist) in &results {
+                    assert!((id as usize) < n, "doc_id {id} out of range");
+                    assert!(
+                        dist.is_finite() && dist >= 0.0,
+                        "invalid distance {dist}, compact={compact}"
+                    );
+                }
+            }
         }
     }
 
