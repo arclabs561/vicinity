@@ -14,6 +14,9 @@ exclude = ["data/", "benches/", "docs/", "scripts/", ".github/"]
 
 [workspace]
 
+[patch.crates-io]
+innr = { git = "https://github.com/arclabs561/innr.git", rev = "8f6cd6974d25bcc5e4c80cd5ee6c31063f8986cf" }
+
 [lib]
 # `rlib` for normal Rust consumers; `cdylib` so maturin can build the PyO3
 # extension module. maturin does not inject the cdylib target itself (it reports
