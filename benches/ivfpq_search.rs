@@ -1,4 +1,4 @@
-#![allow(clippy::expect_used, clippy::unwrap_used, unsafe_code)]
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 //! Search-only IVF-PQ benchmarks.
 //!
 //! Keep this target separate from the ANN dataset example so profiling search
@@ -9,9 +9,9 @@ use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughpu
 #[cfg(feature = "ivf_pq")]
 use rand::prelude::*;
 #[cfg(all(feature = "ivf_pq", feature = "benchmark"))]
-use std::alloc::{GlobalAlloc, Layout, System};
+use stats_alloc::{Region, StatsAlloc, INSTRUMENTED_SYSTEM};
 #[cfg(all(feature = "ivf_pq", feature = "benchmark"))]
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::alloc::System;
 #[cfg(all(feature = "ivf_pq", feature = "benchmark"))]
 use vicinity::ivf_pq::IVFPQSearchProfile;
 #[cfg(feature = "ivf_pq")]
@@ -20,43 +20,8 @@ use vicinity::ivf_pq::{IVFPQFileSearcher, IVFPQIndex, IVFPQParams};
 use vicinity::FileCacheConfig;
 
 #[cfg(all(feature = "ivf_pq", feature = "benchmark"))]
-static ALLOC_CALLS: AtomicUsize = AtomicUsize::new(0);
-#[cfg(all(feature = "ivf_pq", feature = "benchmark"))]
-static ALLOC_BYTES: AtomicUsize = AtomicUsize::new(0);
-
-#[cfg(all(feature = "ivf_pq", feature = "benchmark"))]
-struct CountingAlloc;
-
-#[cfg(all(feature = "ivf_pq", feature = "benchmark"))]
-// SAFETY: This wrapper delegates allocation behavior to `System` unchanged and
-// only records relaxed diagnostic counters for this benchmark binary.
-unsafe impl GlobalAlloc for CountingAlloc {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOC_CALLS.fetch_add(1, Ordering::Relaxed);
-        ALLOC_BYTES.fetch_add(layout.size(), Ordering::Relaxed);
-        // SAFETY: `layout` is provided by the allocator caller and is forwarded
-        // unchanged to the system allocator.
-        unsafe { System.alloc(layout) }
-    }
-
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        // SAFETY: `ptr` and `layout` are the pair previously returned to the
-        // caller; this wrapper does not alter either value.
-        unsafe { System.dealloc(ptr, layout) }
-    }
-
-    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        ALLOC_CALLS.fetch_add(1, Ordering::Relaxed);
-        ALLOC_BYTES.fetch_add(new_size, Ordering::Relaxed);
-        // SAFETY: `ptr`, `layout`, and `new_size` are forwarded unchanged to
-        // the system allocator.
-        unsafe { System.realloc(ptr, layout, new_size) }
-    }
-}
-
-#[cfg(all(feature = "ivf_pq", feature = "benchmark"))]
 #[global_allocator]
-static GLOBAL: CountingAlloc = CountingAlloc;
+static GLOBAL: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
 
 #[cfg(feature = "ivf_pq")]
 fn random_vectors(n: usize, dim: usize, seed: u64) -> Vec<Vec<f32>> {
@@ -108,11 +73,14 @@ struct AllocationProfile {
 #[cfg(all(feature = "ivf_pq", feature = "benchmark"))]
 impl AllocationProfile {
     fn record_search<T>(f: impl FnOnce() -> T) -> (T, Self) {
-        ALLOC_CALLS.store(0, Ordering::Relaxed);
-        ALLOC_BYTES.store(0, Ordering::Relaxed);
+        // Process-wide deltas include concurrent allocations, not just this
+        // closure. Acquired bytes count allocations plus positive realloc growth,
+        // not live bytes or the old sum of full realloc destination sizes.
+        let region = Region::new(GLOBAL);
         let out = f();
-        let calls = ALLOC_CALLS.load(Ordering::Relaxed);
-        let bytes = ALLOC_BYTES.load(Ordering::Relaxed);
+        let stats = region.change();
+        let calls = stats.allocations + stats.reallocations;
+        let bytes = stats.bytes_allocated;
         (out, Self { calls, bytes })
     }
 
@@ -153,7 +121,7 @@ fn print_profile_summary(label: &str, index: &IVFPQIndex, queries: &[Vec<f32>], 
             "candidates={candidates:.1}/query ",
             "copy_bytes={copy_bytes:.1}/query ",
             "alloc_calls={alloc_calls:.1}/query ",
-            "alloc_bytes={alloc_bytes:.1}/query ",
+            "acquired_bytes={alloc_bytes:.1}/query ",
             "results={results}"
         ),
         label = label,
