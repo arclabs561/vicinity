@@ -20,6 +20,11 @@ These source changes are not assigned to a package release here.
 
 ### Changed
 
+- Require `qntz` 0.2.2 or later in the 0.2 series for its signed RaBitQ edge
+  distance correction, allowing negative edge terms in IVF-RaBitQ scoring
+  when a vector is nearer the query than its cluster centroid. IVF-RaBitQ
+  bounds negative reported distances at zero after ranking and selection,
+  in both compact and exact-reranking modes.
 - Breaking: the optional `persistence` and `store` backends require
   `durability` 0.8, and the `store` feature requires `segstore` 0.6. The
   `diskann` feature no longer depends on `durability`.
