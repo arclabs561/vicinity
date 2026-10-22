@@ -20,7 +20,8 @@ These source changes are not assigned to a package release here.
 
 ### Changed
 
-- Development-only SIMD ports use an immutable Pulp Git revision. Forbid unsafe
+- Development-only SIMD ports use an immutable Pulp Git revision and require
+  Rust 1.94 for its x86 intrinsics. Forbid unsafe
   code in all Vicinity targets, including benchmarks. Allocation diagnostics now
   use `stats_alloc`; `acquired_bytes` counts allocations plus positive realloc
   growth, rather than full realloc destination sizes. Counts remain process-wide

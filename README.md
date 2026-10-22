@@ -7,8 +7,8 @@ Approximate nearest-neighbor search.
 
 `vicinity` provides Rust indexes and Python bindings for vector search.
 
-This development branch uses Git-pinned SIMD dependencies and is not a registry
-release. The root-only Innr patch also unifies Qntz and benchmark dependencies for
+This development branch requires Rust 1.94 for its Git-pinned SIMD backend and
+is not a registry release. The root-only Innr patch also unifies Qntz and benchmark dependencies for
 development validation, not published-artifact equivalence.
 Vicinity-authored Rust forbids unsafe code across its targets. Dependencies,
 including Pulp and benchmark allocator instrumentation, use unsafe
