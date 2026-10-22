@@ -64,7 +64,7 @@ rmt = { version = "0.1.3", optional = true }
 sketchir = { version = "0.3.1", optional = true }
 
 # Vector quantization primitives (extracted from `vicinity`)
-qntz = { package = "qntz", version = "0.2.1", optional = true, features = [
+qntz = { package = "qntz", version = "0.2.2", optional = true, features = [
   "simd",
 ] }
 
