@@ -1,4 +1,4 @@
-#![allow(clippy::expect_used, clippy::unwrap_used, unsafe_code)]
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 //! Search-only HNSW benchmarks.
 //!
 //! Keep this target separate from `benches/hnsw.rs` so profiling filtered
@@ -6,8 +6,8 @@
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use rand::prelude::*;
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use stats_alloc::{Region, StatsAlloc, INSTRUMENTED_SYSTEM};
+use std::alloc::System;
 #[cfg(feature = "benchmark")]
 use vicinity::hnsw::{reset_search_counters, take_search_counters, HnswSearchCounters};
 use vicinity::hnsw::{HNSWIndex, HNSWParams};
@@ -15,36 +15,8 @@ use vicinity::hnsw::{HNSWIndex, HNSWParams};
 #[cfg(feature = "parallel")]
 use vicinity::hnsw::AdaptiveConfig;
 
-static ALLOC_CALLS: AtomicUsize = AtomicUsize::new(0);
-static ALLOC_BYTES: AtomicUsize = AtomicUsize::new(0);
-
-struct CountingAlloc;
-
-// SAFETY: This wrapper delegates allocation behavior to `System` unchanged and
-// only records relaxed diagnostic counters for this benchmark binary.
-unsafe impl GlobalAlloc for CountingAlloc {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOC_CALLS.fetch_add(1, Ordering::Relaxed);
-        ALLOC_BYTES.fetch_add(layout.size(), Ordering::Relaxed);
-        // SAFETY: `layout` is forwarded unchanged to the system allocator.
-        unsafe { System.alloc(layout) }
-    }
-
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        // SAFETY: `ptr` and `layout` are forwarded unchanged to the system allocator.
-        unsafe { System.dealloc(ptr, layout) }
-    }
-
-    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        ALLOC_CALLS.fetch_add(1, Ordering::Relaxed);
-        ALLOC_BYTES.fetch_add(new_size, Ordering::Relaxed);
-        // SAFETY: `ptr`, `layout`, and `new_size` are forwarded unchanged.
-        unsafe { System.realloc(ptr, layout, new_size) }
-    }
-}
-
 #[global_allocator]
-static GLOBAL: CountingAlloc = CountingAlloc;
+static GLOBAL: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
 
 #[derive(Clone, Copy, Debug, Default)]
 struct AllocationProfile {
@@ -54,11 +26,14 @@ struct AllocationProfile {
 
 impl AllocationProfile {
     fn record_search<T>(f: impl FnOnce() -> T) -> (T, Self) {
-        ALLOC_CALLS.store(0, Ordering::Relaxed);
-        ALLOC_BYTES.store(0, Ordering::Relaxed);
+        // Process-wide deltas include concurrent allocations, not just this
+        // closure. Acquired bytes count allocations plus positive realloc growth,
+        // not live bytes or the old sum of full realloc destination sizes.
+        let region = Region::new(GLOBAL);
         let out = f();
-        let calls = ALLOC_CALLS.load(Ordering::Relaxed);
-        let bytes = ALLOC_BYTES.load(Ordering::Relaxed);
+        let stats = region.change();
+        let calls = stats.allocations + stats.reallocations;
+        let bytes = stats.bytes_allocated;
         (out, Self { calls, bytes })
     }
 
@@ -190,7 +165,7 @@ fn print_search_summary(
         hits as f64 / (queries.len() * k) as f64,
     );
     eprintln!(
-        "hnsw alloc {label}: ef={ef} alloc_calls={:.1}/query alloc_bytes={:.1}/query results={result_count}",
+        "hnsw alloc {label}: ef={ef} alloc_calls={:.1}/query acquired_bytes={:.1}/query results={result_count}",
         alloc_total.calls as f64 / queries_len,
         alloc_total.bytes as f64 / queries_len,
     );

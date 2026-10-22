@@ -3,7 +3,7 @@ name = "vicinity"
 version = "0.11.1"
 authors = ["Arc <attobop@gmail.com>"]
 edition = "2021"
-rust-version = "1.89"
+rust-version = "1.94"
 description = "Approximate nearest-neighbor search"
 repository = "https://github.com/arclabs561/vicinity"
 documentation = "https://docs.rs/vicinity"
@@ -13,6 +13,9 @@ categories = ["algorithms", "science"]
 exclude = ["data/", "benches/", "docs/", "scripts/", ".github/"]
 
 [workspace]
+
+[patch.crates-io]
+innr = { git = "https://github.com/arclabs561/innr.git", rev = "392736772688262ce5f89f51db6b08a8167b8262" }
 
 [lib]
 # `rlib` for normal Rust consumers; `cdylib` so maturin can build the PyO3
@@ -41,7 +44,7 @@ pyo3 = { version = "0.29.0", optional = true, features = ["abi3-py310"] }
 numpy = { version = "0.29.0", optional = true }
 
 # SIMD primitives (ecosystem crate)
-innr = { version = "0.6", optional = true }
+innr = { git = "https://github.com/arclabs561/innr.git", rev = "392736772688262ce5f89f51db6b08a8167b8262", optional = true }
 
 # Linear algebra for OPQ Procrustes solver (SVD)
 nalgebra = { version = "0.33", optional = true, default-features = false, features = [
@@ -78,6 +81,10 @@ durability = { version = "0.8", optional = true }
 segstore = { version = "0.6", optional = true }
 fs4 = { version = "0.13", optional = true }
 
+
+# NEON `tbl` for the 4-bit FastScan kernel without `unsafe` in this crate.
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+pulp = { git = "https://github.com/sarah-quinones/pulp", rev = "601de0c071ba32df3fd7ff33fc4218c9bd712aba", default-features = false, features = ["std"] }
 
 # RNG backend for wasm32 (rand -> getrandom needs a JS backend on wasm).
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
@@ -149,6 +156,7 @@ qntz = ["dep:qntz"]
 binary_index = ["dep:qntz", "qntz/binary", "dep:serde", "dep:serde_json"]
 
 [dev-dependencies]
+stats_alloc = "0.1.10"
 criterion = { version = "0.5", features = ["html_reports"] }
 proptest = "1.5"
 tempfile = "3"
@@ -370,7 +378,7 @@ unexpected_cfgs = "warn"
 # Documentation lints: temporarily relaxed, enable incrementally
 # missing_docs = "warn"
 # missing_doc_code_examples = "warn"
-unsafe_code = "deny"
+unsafe_code = "forbid"
 unstable_features = "deny"
 unused_import_braces = "warn"
 # unused_qualifications = "warn"  # Relaxed: explicit paths often improve clarity
