@@ -1978,7 +1978,10 @@ impl HNSWIndex {
             self.add_intra_category_edges()?;
         }
 
-        // Compress layers if enabled
+        self.cached_entry_point = self.compute_entry_point();
+        self.reorder_for_locality();
+
+        // Compress after reordering: compressed layers cannot be remapped.
         #[cfg(feature = "id-compression")]
         {
             if let Some(method) = self.params.id_compression.clone() {
@@ -1991,8 +1994,6 @@ impl HNSWIndex {
         }
 
         self.built = true;
-        self.cached_entry_point = self.compute_entry_point();
-        self.reorder_for_locality();
 
         #[cfg(feature = "compact-hnsw")]
         if self.params.compact_upper_layers {
@@ -2033,6 +2034,9 @@ impl HNSWIndex {
             self.add_intra_category_edges()?;
         }
 
+        self.cached_entry_point = self.compute_entry_point();
+        self.reorder_for_locality();
+
         #[cfg(feature = "id-compression")]
         {
             if let Some(method) = self.params.id_compression.clone() {
@@ -2045,8 +2049,6 @@ impl HNSWIndex {
         }
 
         self.built = true;
-        self.cached_entry_point = self.compute_entry_point();
-        self.reorder_for_locality();
         #[cfg(feature = "compact-hnsw")]
         if self.params.compact_upper_layers {
             self.freeze_upper_layers()?;
@@ -2154,6 +2156,9 @@ impl HNSWIndex {
         for layer in &mut self.layers {
             layer.remap_ids(&old_to_new, n);
         }
+
+        // Tombstones set by delete() before build() hold pre-reorder IDs.
+        self.tombstones.remap(&old_to_new);
 
         // Rebuild reverse map
         self.doc_id_to_internal.clear();
