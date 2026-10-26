@@ -13,18 +13,16 @@
 //!
 //! This is O(M) per candidate, where M is the number of subquantizers.
 //!
-//! # SIMD Optimization
+//! # Kernels
 //!
-//! The naive approach loads one LUT value at a time. The standard 8-bit ADC
-//! path batches candidates and uses platform SIMD for 4-wide gathers. The
-//! 4-bit FastScan path packs 32 candidates per block and uses byte-table
-//! lookup where available.
+//! This module has no `unsafe` code.
 //!
-//! Current kernels:
-//! - aarch64 NEON: 4-wide f32 gather for 8-bit ADC (`codebook_size = 256`)
-//! - aarch64 NEON `tbl`: 32-candidate block lookup for 4-bit FastScan
-//!   (`codebook_size = 16`)
-//! - x86 AVX2/AVX-512: batched f32 gather for standard ADC
+//! - 8-bit ADC (`codebook_size = 256`): scores four candidates per step from
+//!   `[f32; 256]` table rows, so `u8` codes index without bounds checks and
+//!   the four sums run in parallel. On arm64, f32 gathers use scalar loads.
+//! - 4-bit FastScan (`codebook_size = 16`): packs 32 candidates per block.
+//!   On aarch64 NEON `tbl` does the 16-way byte lookup through `pulp`;
+//!   elsewhere a portable scalar kernel does.
 //!
 //! `codebook_size = 256` is the normal high-recall path used by current
 //! GloVe-25 benchmarks. `codebook_size = 16` enables the FastScan layout but
@@ -215,25 +213,6 @@ impl PackedLUT {
         sum
     }
 
-    /// Get a pointer to codebook data for SIMD operations.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `codebook_idx >= num_codebooks`.
-    #[inline]
-    pub fn codebook_ptr(&self, codebook_idx: usize) -> *const f32 {
-        assert!(
-            codebook_idx < self.num_codebooks,
-            "codebook_idx {} out of bounds (num_codebooks={})",
-            codebook_idx,
-            self.num_codebooks
-        );
-        debug_assert!(self.data.len() >= self.num_codebooks * self.codebook_size);
-        self.data
-            .as_ptr()
-            .wrapping_add(codebook_idx * self.codebook_size)
-    }
-
     /// Number of codebooks.
     pub fn num_codebooks(&self) -> usize {
         self.num_codebooks
@@ -267,20 +246,6 @@ pub(crate) trait PackedLUTData {
     fn data(&self) -> &[f32];
     fn num_codebooks(&self) -> usize;
     fn codebook_size(&self) -> usize;
-
-    #[inline]
-    fn codebook_ptr(&self, codebook_idx: usize) -> *const f32 {
-        assert!(
-            codebook_idx < self.num_codebooks(),
-            "codebook_idx {} out of bounds (num_codebooks={})",
-            codebook_idx,
-            self.num_codebooks()
-        );
-        debug_assert!(self.data().len() >= self.num_codebooks() * self.codebook_size());
-        self.data()
-            .as_ptr()
-            .wrapping_add(codebook_idx * self.codebook_size())
-    }
 
     #[inline]
     fn adc_distance(&self, codes: &[u8]) -> f32 {
@@ -328,414 +293,7 @@ impl PackedLUTData for PackedLUTRef<'_> {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// SIMD implementations
-// ─────────────────────────────────────────────────────────────────────────────
-
-#[cfg(target_arch = "x86_64")]
-#[allow(unsafe_code)]
-mod x86_64 {
-    //! AVX2/AVX-512 implementations of PQ distance.
-
-    use super::*;
-
-    pub(super) fn dispatch_into<L: PackedLUTData>(
-        codes_batch: &[u8],
-        num_codebooks: usize,
-        lut: &L,
-        distances: &mut Vec<f32>,
-    ) -> bool {
-        if lut.codebook_size() != 256 || lut.data().len() < num_codebooks.saturating_mul(256) {
-            return false;
-        }
-
-        let n_candidates = codes_batch.len() / num_codebooks;
-
-        if n_candidates >= 16 && std::is_x86_feature_detected!("avx512f") {
-            // SAFETY: runtime detection guarantees AVX-512F is available for this call.
-            unsafe { adc_batch_avx512_into(codes_batch, num_codebooks, lut, distances) };
-            return true;
-        }
-
-        if n_candidates >= 8 && std::is_x86_feature_detected!("avx2") {
-            // SAFETY: runtime detection guarantees AVX2 is available for this call.
-            unsafe { adc_batch_avx2_into(codes_batch, num_codebooks, lut, distances) };
-            return true;
-        }
-
-        false
-    }
-
-    /// AVX2 batch ADC into a caller-owned buffer.
-    ///
-    /// # Safety
-    ///
-    /// Requires AVX2. Caller must verify via runtime detection.
-    #[cfg(target_arch = "x86_64")]
-    #[target_feature(enable = "avx2")]
-    pub(super) unsafe fn adc_batch_avx2_into<L: PackedLUTData>(
-        codes_batch: &[u8],
-        num_codebooks: usize,
-        lut: &L,
-        distances: &mut Vec<f32>,
-    ) {
-        use std::arch::x86_64::{
-            __m256, __m256i, _mm256_add_ps, _mm256_i32gather_ps, _mm256_setzero_ps,
-            _mm256_storeu_ps,
-        };
-
-        let n_candidates = codes_batch.len() / num_codebooks;
-        distances.clear();
-        distances.resize(n_candidates, 0.0);
-
-        // Process 8 candidates at a time
-        let chunks_8 = n_candidates / 8;
-
-        for chunk in 0..chunks_8 {
-            let base_idx = chunk * 8;
-            // SAFETY: target_feature(enable = "avx2") guarantees these intrinsics are available.
-            unsafe {
-                let mut sum: __m256 = _mm256_setzero_ps();
-
-                for m in 0..num_codebooks {
-                    let mut indices = [0i32; 8];
-                    for i in 0..8 {
-                        indices[i] = codes_batch[(base_idx + i) * num_codebooks + m] as i32;
-                    }
-
-                    let indices_ptr = indices.as_ptr() as *const __m256i;
-                    let idx_vec = std::ptr::read_unaligned(indices_ptr);
-
-                    let lut_base = lut.codebook_ptr(m);
-                    let gathered = _mm256_i32gather_ps(lut_base, idx_vec, 4);
-
-                    sum = _mm256_add_ps(sum, gathered);
-                }
-
-                _mm256_storeu_ps(distances.as_mut_ptr().add(base_idx), sum);
-            }
-        }
-
-        // Handle remaining candidates
-        let tail_start = chunks_8 * 8;
-        for i in tail_start..n_candidates {
-            let codes = &codes_batch[i * num_codebooks..(i + 1) * num_codebooks];
-            distances[i] = lut.adc_distance(codes);
-        }
-    }
-
-    /// AVX-512 batch ADC into a caller-owned buffer.
-    ///
-    /// # Safety
-    ///
-    /// Requires AVX-512F. Caller must verify via runtime detection.
-    #[cfg(target_arch = "x86_64")]
-    #[target_feature(enable = "avx512f")]
-    #[allow(clippy::incompatible_msrv)] // AVX-512 intrinsics: stable since 1.89, but only reachable on avx512f hardware
-    pub(super) unsafe fn adc_batch_avx512_into<L: PackedLUTData>(
-        codes_batch: &[u8],
-        num_codebooks: usize,
-        lut: &L,
-        distances: &mut Vec<f32>,
-    ) {
-        use std::arch::x86_64::{
-            __m512, __m512i, _mm512_add_ps, _mm512_i32gather_ps, _mm512_setzero_ps,
-            _mm512_storeu_ps,
-        };
-
-        let n_candidates = codes_batch.len() / num_codebooks;
-        distances.clear();
-        distances.resize(n_candidates, 0.0);
-
-        // Process 16 candidates at a time
-        let chunks_16 = n_candidates / 16;
-
-        for chunk in 0..chunks_16 {
-            let base_idx = chunk * 16;
-            // SAFETY: target_feature(enable = "avx512f") guarantees these intrinsics are available.
-            unsafe {
-                let mut sum: __m512 = _mm512_setzero_ps();
-
-                for m in 0..num_codebooks {
-                    let mut indices = [0i32; 16];
-                    for i in 0..16 {
-                        indices[i] = codes_batch[(base_idx + i) * num_codebooks + m] as i32;
-                    }
-
-                    let indices_ptr = indices.as_ptr() as *const __m512i;
-                    let idx_vec = std::ptr::read_unaligned(indices_ptr);
-
-                    let lut_base = lut.codebook_ptr(m);
-                    let gathered = _mm512_i32gather_ps(idx_vec, lut_base, 4);
-
-                    sum = _mm512_add_ps(sum, gathered);
-                }
-
-                _mm512_storeu_ps(distances.as_mut_ptr().add(base_idx), sum);
-            }
-        }
-
-        // Handle tail
-        let tail_start = chunks_16 * 16;
-        for i in tail_start..n_candidates {
-            let codes = &codes_batch[i * num_codebooks..(i + 1) * num_codebooks];
-            distances[i] = lut.adc_distance(codes);
-        }
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-#[allow(unsafe_code)]
-mod aarch64 {
-    //! NEON implementations of PQ distance.
-
-    use super::*;
-
-    pub(super) fn dispatch_into<L: PackedLUTData>(
-        codes_batch: &[u8],
-        num_codebooks: usize,
-        lut: &L,
-        distances: &mut Vec<f32>,
-    ) -> bool {
-        let n_candidates = codes_batch.len() / num_codebooks;
-        if n_candidates < 4 {
-            return false;
-        }
-
-        if lut.codebook_size() == 256 && lut.data().len() >= num_codebooks.saturating_mul(256) {
-            // SAFETY: aarch64 has NEON, and the shape check proves the flat
-            // 256-entry LUT has enough entries for every codebook.
-            unsafe {
-                adc_batch_neon_flat_256_into(codes_batch, num_codebooks, lut.data(), distances)
-            };
-        } else {
-            // SAFETY: aarch64 has NEON. The generic kernel indexes through
-            // checked slices, so only the target-feature call is unsafe.
-            unsafe { adc_batch_neon_into(codes_batch, num_codebooks, lut, distances) };
-        }
-        true
-    }
-
-    pub(super) fn fastscan_block(
-        block_data: &[u8],
-        lut_quantized: &[u8],
-        num_codebooks: usize,
-    ) -> [u16; 32] {
-        let required_len = fastscan_bytes_per_block(num_codebooks);
-        assert!(block_data.len() >= required_len);
-        assert!(lut_quantized.len() >= required_len);
-
-        // SAFETY: aarch64 has NEON, and the checked lengths above guarantee
-        // one packed 16-byte code slice plus one LUT slice per codebook.
-        unsafe { fastscan_block_neon(block_data, lut_quantized, num_codebooks) }
-    }
-
-    /// NEON batch ADC into a caller-owned buffer.
-    ///
-    /// # Safety
-    ///
-    /// NEON is always available on aarch64.
-    #[target_feature(enable = "neon")]
-    pub(super) unsafe fn adc_batch_neon_into<L: PackedLUTData>(
-        codes_batch: &[u8],
-        num_codebooks: usize,
-        lut: &L,
-        distances: &mut Vec<f32>,
-    ) {
-        use std::arch::aarch64::{float32x4_t, vaddq_f32, vdupq_n_f32, vsetq_lane_f32, vst1q_f32};
-
-        let n_candidates = codes_batch.len() / num_codebooks;
-        distances.clear();
-        distances.resize(n_candidates, 0.0);
-
-        // Process 4 candidates at a time
-        let chunks_4 = n_candidates / 4;
-
-        for chunk in 0..chunks_4 {
-            let base_idx = chunk * 4;
-            // SAFETY: NEON is always available on aarch64.
-            unsafe {
-                let mut sum: float32x4_t = vdupq_n_f32(0.0);
-
-                for m in 0..num_codebooks {
-                    let c0 = codes_batch[base_idx * num_codebooks + m] as usize;
-                    let c1 = codes_batch[(base_idx + 1) * num_codebooks + m] as usize;
-                    let c2 = codes_batch[(base_idx + 2) * num_codebooks + m] as usize;
-                    let c3 = codes_batch[(base_idx + 3) * num_codebooks + m] as usize;
-
-                    let lut_base = m * lut.codebook_size();
-                    let lut_data = lut.data();
-                    let v0 = lut_data[lut_base + c0];
-                    let v1 = lut_data[lut_base + c1];
-                    let v2 = lut_data[lut_base + c2];
-                    let v3 = lut_data[lut_base + c3];
-
-                    let lane0 = vsetq_lane_f32(v0, vdupq_n_f32(0.0), 0);
-                    let lane01 = vsetq_lane_f32(v1, lane0, 1);
-                    let lane012 = vsetq_lane_f32(v2, lane01, 2);
-                    let gathered = vsetq_lane_f32(v3, lane012, 3);
-
-                    sum = vaddq_f32(sum, gathered);
-                }
-
-                vst1q_f32(distances.as_mut_ptr().add(base_idx), sum);
-            }
-        }
-
-        // Handle tail
-        let tail_start = chunks_4 * 4;
-        for i in tail_start..n_candidates {
-            let codes = &codes_batch[i * num_codebooks..(i + 1) * num_codebooks];
-            distances[i] = lut.adc_distance(codes);
-        }
-    }
-
-    /// NEON batch ADC specialized for flat 8-bit PQ LUTs.
-    ///
-    /// This is the hot path for IVF-PQ with 256 centroids per codebook. The
-    /// caller has already checked the LUT shape, so the inner loop can gather
-    /// through raw pointers instead of carrying a bounds-check bailout for each
-    /// codebook and candidate lane.
-    ///
-    /// # Safety
-    ///
-    /// NEON is always available on aarch64. `lut_data` must contain at least
-    /// `num_codebooks * 256` entries, and `codes_batch.len()` must be a
-    /// multiple of `num_codebooks`.
-    #[target_feature(enable = "neon")]
-    pub(super) unsafe fn adc_batch_neon_flat_256_into(
-        codes_batch: &[u8],
-        num_codebooks: usize,
-        lut_data: &[f32],
-        distances: &mut Vec<f32>,
-    ) {
-        use std::arch::aarch64::{float32x4_t, vaddq_f32, vdupq_n_f32, vsetq_lane_f32, vst1q_f32};
-
-        debug_assert_eq!(codes_batch.len() % num_codebooks, 0);
-        debug_assert!(lut_data.len() >= num_codebooks * 256);
-
-        let n_candidates = codes_batch.len() / num_codebooks;
-        distances.clear();
-        distances.resize(n_candidates, 0.0);
-
-        let codes_ptr = codes_batch.as_ptr();
-        let lut_ptr = lut_data.as_ptr();
-        let chunks_4 = n_candidates / 4;
-
-        for chunk in 0..chunks_4 {
-            let base_idx = chunk * 4;
-            // SAFETY: the caller-provided shape checks guarantee all pointer
-            // offsets below stay within the code and LUT slices. NEON is
-            // enabled by the function target feature.
-            unsafe {
-                let mut sum: float32x4_t = vdupq_n_f32(0.0);
-                let c0_ptr = codes_ptr.add(base_idx * num_codebooks);
-                let c1_ptr = c0_ptr.add(num_codebooks);
-                let c2_ptr = c1_ptr.add(num_codebooks);
-                let c3_ptr = c2_ptr.add(num_codebooks);
-
-                for m in 0..num_codebooks {
-                    let lut_base = lut_ptr.add(m * 256);
-                    let v0 = *lut_base.add(*c0_ptr.add(m) as usize);
-                    let v1 = *lut_base.add(*c1_ptr.add(m) as usize);
-                    let v2 = *lut_base.add(*c2_ptr.add(m) as usize);
-                    let v3 = *lut_base.add(*c3_ptr.add(m) as usize);
-
-                    let lane0 = vsetq_lane_f32(v0, vdupq_n_f32(0.0), 0);
-                    let lane01 = vsetq_lane_f32(v1, lane0, 1);
-                    let lane012 = vsetq_lane_f32(v2, lane01, 2);
-                    let gathered = vsetq_lane_f32(v3, lane012, 3);
-
-                    sum = vaddq_f32(sum, gathered);
-                }
-
-                vst1q_f32(distances.as_mut_ptr().add(base_idx), sum);
-            }
-        }
-
-        let tail_start = chunks_4 * 4;
-        for (i, out) in distances.iter_mut().enumerate().skip(tail_start) {
-            let code_base = i * num_codebooks;
-            let mut sum = 0.0f32;
-            // SAFETY: same slice-shape checks as above. The loop is over the
-            // remaining candidate rows and all codebooks in each row.
-            unsafe {
-                for m in 0..num_codebooks {
-                    let code = *codes_ptr.add(code_base + m) as usize;
-                    sum += *lut_ptr.add(m * 256 + code);
-                }
-            }
-            *out = sum;
-        }
-    }
-
-    /// NEON FastScan block kernel for 4-bit PQ codes.
-    ///
-    /// Processes one 32-vector packed block. Each 16-byte codebook slice stores
-    /// low-nibble codes for vectors 0..15 and high-nibble codes for vectors
-    /// 16..31. `tbl` performs the 16-way byte lookup against the quantized LUT.
-    ///
-    /// # Safety
-    ///
-    /// NEON is always available on aarch64. `block_data` and `lut_quantized`
-    /// must both contain at least `num_codebooks * 16` bytes.
-    #[target_feature(enable = "neon")]
-    pub(super) unsafe fn fastscan_block_neon(
-        block_data: &[u8],
-        lut_quantized: &[u8],
-        num_codebooks: usize,
-    ) -> [u16; 32] {
-        use std::arch::aarch64::{
-            uint16x8_t, vaddw_u8, vandq_u8, vdupq_n_u16, vdupq_n_u8, vget_high_u8, vget_low_u8,
-            vld1q_u8, vqtbl1q_u8, vshrq_n_u8, vst1q_u16,
-        };
-
-        let block_ptr = block_data.as_ptr();
-        let lut_ptr = lut_quantized.as_ptr();
-        let low_mask = vdupq_n_u8(0x0f);
-
-        let mut low_0_7: uint16x8_t = vdupq_n_u16(0);
-        let mut low_8_15: uint16x8_t = vdupq_n_u16(0);
-        let mut high_0_7: uint16x8_t = vdupq_n_u16(0);
-        let mut high_8_15: uint16x8_t = vdupq_n_u16(0);
-
-        for m in 0..num_codebooks {
-            // SAFETY: callers provide one 16-byte packed code slice and one
-            // 16-entry LUT per codebook.
-            let (packed, table) = unsafe {
-                (
-                    vld1q_u8(block_ptr.add(m * 16)),
-                    vld1q_u8(lut_ptr.add(m * 16)),
-                )
-            };
-            let low_idx = vandq_u8(packed, low_mask);
-            let high_idx = vshrq_n_u8::<4>(packed);
-
-            let low_vals = vqtbl1q_u8(table, low_idx);
-            let high_vals = vqtbl1q_u8(table, high_idx);
-
-            low_0_7 = vaddw_u8(low_0_7, vget_low_u8(low_vals));
-            low_8_15 = vaddw_u8(low_8_15, vget_high_u8(low_vals));
-            high_0_7 = vaddw_u8(high_0_7, vget_low_u8(high_vals));
-            high_8_15 = vaddw_u8(high_8_15, vget_high_u8(high_vals));
-        }
-
-        let mut accum = [0u16; 32];
-        // SAFETY: each store writes exactly 8 lanes into the corresponding
-        // segment of the 32-lane output array.
-        unsafe {
-            vst1q_u16(accum.as_mut_ptr(), low_0_7);
-            vst1q_u16(accum.as_mut_ptr().add(8), low_8_15);
-            vst1q_u16(accum.as_mut_ptr().add(16), high_0_7);
-            vst1q_u16(accum.as_mut_ptr().add(24), high_8_15);
-        }
-        accum
-    }
-}
-
 /// Auto-dispatching batch ADC computation.
-///
-/// Selects the fastest available SIMD implementation.
 pub fn adc_batch_dispatch<L: PackedLUTData>(
     codes_batch: &[u8],
     num_codebooks: usize,
@@ -747,6 +305,12 @@ pub fn adc_batch_dispatch<L: PackedLUTData>(
 }
 
 /// Auto-dispatching batch ADC computation into a caller-owned buffer.
+///
+/// 256-entry codebooks (8-bit codes) take a kernel that scores four
+/// candidates at once from fixed-size table rows, so a `u8` code indexes a
+/// `[f32; 256]` row without a bounds check and the four sums are independent.
+/// Other codebook sizes use the per-candidate loop. Both sum each candidate's
+/// codebooks in order, so they return identical results.
 pub fn adc_batch_dispatch_into<L: PackedLUTData>(
     codes_batch: &[u8],
     num_codebooks: usize,
@@ -755,22 +319,53 @@ pub fn adc_batch_dispatch_into<L: PackedLUTData>(
 ) {
     assert_packed_adc_batch_shape(codes_batch, num_codebooks, lut);
 
-    #[cfg(target_arch = "x86_64")]
-    {
-        if x86_64::dispatch_into(codes_batch, num_codebooks, lut, distances) {
-            return;
+    if lut.codebook_size() == 256 {
+        adc_batch_256_into(codes_batch, num_codebooks, lut.data(), distances);
+    } else {
+        adc_batch_distances_into(codes_batch, num_codebooks, lut, distances);
+    }
+}
+
+/// Batch ADC for flat 256-entry LUTs, four candidates per step.
+fn adc_batch_256_into(
+    codes_batch: &[u8],
+    num_codebooks: usize,
+    lut_data: &[f32],
+    distances: &mut Vec<f32>,
+) {
+    let n_candidates = codes_batch.len() / num_codebooks;
+    distances.clear();
+    distances.resize(n_candidates, 0.0);
+
+    let (tables, _) = lut_data.as_chunks::<256>();
+    let tables = &tables[..num_codebooks];
+
+    let (out_quads, out_remainder) = distances.as_chunks_mut::<4>();
+    let mut code_quads = codes_batch.chunks_exact(4 * num_codebooks);
+    for (out, quad) in out_quads.iter_mut().zip(&mut code_quads) {
+        let (r0, rest) = quad.split_at(num_codebooks);
+        let (r1, rest) = rest.split_at(num_codebooks);
+        let (r2, r3) = rest.split_at(num_codebooks);
+        let mut sums = [0.0f32; 4];
+        for ((((table, &c0), &c1), &c2), &c3) in tables.iter().zip(r0).zip(r1).zip(r2).zip(r3) {
+            sums[0] += table[c0 as usize];
+            sums[1] += table[c1 as usize];
+            sums[2] += table[c2 as usize];
+            sums[3] += table[c3 as usize];
         }
+        out.copy_from_slice(&sums);
     }
 
-    #[cfg(target_arch = "aarch64")]
+    for (out, codes) in out_remainder
+        .iter_mut()
+        .zip(code_quads.remainder().chunks_exact(num_codebooks))
     {
-        if aarch64::dispatch_into(codes_batch, num_codebooks, lut, distances) {
-            return;
+        let mut sum = 0.0f32;
+        for (table, &code) in tables.iter().zip(codes) {
+            sum += table[code as usize];
         }
+        *out = sum;
     }
-
-    // Fallback
-    adc_batch_distances_into(codes_batch, num_codebooks, lut, distances);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -784,7 +379,8 @@ pub fn adc_batch_dispatch_into<L: PackedLUTData>(
 // This module provides:
 // 1. PackedCodes4bit -- nibble-interleaved code storage for 32-vector blocks
 // 2. LUT quantization (f32 -> u8 for integer SIMD accumulation)
-// 3. Portable scalar FastScan kernel (simulates vpshufb behavior)
+// 3. Portable scalar FastScan kernel (simulates vpshufb behavior) and an
+//    aarch64 NEON `tbl` kernel
 // 4. fastscan_batch -- end-to-end integration with f32 output
 //
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1044,6 +640,44 @@ pub fn fastscan_block_portable(
     accum
 }
 
+/// FastScan block kernel for aarch64: NEON `tbl` performs the 16-way byte
+/// lookup for 16 lanes at once. The intrinsics go through `pulp`'s
+/// capability token, so this crate needs no `unsafe`.
+#[cfg(target_arch = "aarch64")]
+fn fastscan_block_neon(
+    simd: pulp::aarch64::Neon,
+    block_data: &[u8],
+    lut_quantized: &[u8],
+    num_codebooks: usize,
+) -> [u16; 32] {
+    use std::arch::aarch64::{uint16x8_t, uint8x16_t};
+
+    let required_len = fastscan_bytes_per_block(num_codebooks);
+    let (codes, _) = block_data[..required_len].as_chunks::<16>();
+    let (tables, _) = lut_quantized[..required_len].as_chunks::<16>();
+
+    let neon = simd.neon;
+    let low_mask = neon.vdupq_n_u8(0x0f);
+    let mut low_0_7: uint16x8_t = neon.vdupq_n_u16(0);
+    let mut low_8_15: uint16x8_t = neon.vdupq_n_u16(0);
+    let mut high_0_7: uint16x8_t = neon.vdupq_n_u16(0);
+    let mut high_8_15: uint16x8_t = neon.vdupq_n_u16(0);
+
+    for (packed, table) in codes.iter().zip(tables) {
+        let packed: uint8x16_t = pulp::cast(*packed);
+        let table: uint8x16_t = pulp::cast(*table);
+        let low_vals = neon.vqtbl1q_u8(table, neon.vandq_u8(packed, low_mask));
+        let high_vals = neon.vqtbl1q_u8(table, neon.vshrq_n_u8::<4>(packed));
+
+        low_0_7 = neon.vaddw_u8(low_0_7, neon.vget_low_u8(low_vals));
+        low_8_15 = neon.vaddw_u8(low_8_15, neon.vget_high_u8(low_vals));
+        high_0_7 = neon.vaddw_u8(high_0_7, neon.vget_low_u8(high_vals));
+        high_8_15 = neon.vaddw_u8(high_8_15, neon.vget_high_u8(high_vals));
+    }
+
+    pulp::cast::<[uint16x8_t; 4], [u16; 32]>([low_0_7, low_8_15, high_0_7, high_8_15])
+}
+
 /// End-to-end FastScan batch: pack codes, quantize LUT, scan all blocks,
 /// convert back to f32 distances.
 ///
@@ -1085,6 +719,8 @@ fn fastscan_batch_quantized(
     let base_offset = offset * num_codebooks as f32;
 
     let mut distances = Vec::with_capacity(packed.num_vectors);
+    #[cfg(target_arch = "aarch64")]
+    let neon = pulp::aarch64::Neon::try_new();
 
     for block_idx in 0..num_blocks {
         let block_start = block_idx * bpb;
@@ -1092,7 +728,10 @@ fn fastscan_batch_quantized(
         let block_data = &packed.data[block_start..block_end];
 
         #[cfg(target_arch = "aarch64")]
-        let accum = aarch64::fastscan_block(block_data, lut_q, num_codebooks);
+        let accum = match neon {
+            Some(simd) => fastscan_block_neon(simd, block_data, lut_q, num_codebooks),
+            None => fastscan_block_portable(block_data, lut_q, num_codebooks),
+        };
         #[cfg(not(target_arch = "aarch64"))]
         let accum = fastscan_block_portable(block_data, lut_q, num_codebooks);
 
@@ -1402,24 +1041,68 @@ mod tests {
         let _ = fastscan_block_portable(&block_data, &lut_quantized, 1);
     }
 
+    /// Naive reference: sums one candidate's codebooks in order.
+    fn naive_adc(codes: &[u8], lut: &[f32], codebook_size: usize) -> f32 {
+        let mut sum = 0.0f32;
+        for (m, &code) in codes.iter().enumerate() {
+            sum += lut[m * codebook_size + code as usize];
+        }
+        sum
+    }
+
+    /// The batch kernels must equal the naive reference exactly for every
+    /// candidate, including the ones after the last full group of four. Every
+    /// LUT entry is positive, so a dropped remainder (left at 0.0) fails.
+    #[test]
+    fn adc_batch_matches_naive_reference_at_odd_sizes() {
+        for codebook_size in [256usize, 16] {
+            for num_codebooks in [1usize, 3, 5, 25] {
+                let lut: Vec<f32> = (0..num_codebooks * codebook_size)
+                    .map(|i| 0.25 + ((i * 7919) % 1009) as f32 * 0.003)
+                    .collect();
+                let packed = PackedLUTRef::from_flat(&lut, num_codebooks, codebook_size);
+                for n_candidates in [0usize, 1, 2, 3, 4, 5, 7, 8, 9, 15, 17, 33, 257] {
+                    let codes: Vec<u8> = (0..n_candidates * num_codebooks)
+                        .map(|i| ((i * 131 + 17) % codebook_size) as u8)
+                        .collect();
+                    let got = adc_batch_dispatch(&codes, num_codebooks, &packed);
+                    let want: Vec<f32> = codes
+                        .chunks_exact(num_codebooks)
+                        .map(|row| naive_adc(row, &lut, codebook_size))
+                        .collect();
+                    assert_eq!(
+                        got, want,
+                        "codebook_size={codebook_size} m={num_codebooks} n={n_candidates}"
+                    );
+                }
+            }
+        }
+    }
+
     #[cfg(target_arch = "aarch64")]
     #[test]
-    fn test_neon_fastscan_block_matches_portable() {
-        let num_vectors = 32;
-        let num_codebooks = 7;
-        let codes: Vec<u8> = (0..num_vectors * num_codebooks)
-            .map(|i| ((i * 11 + 3) % 16) as u8)
-            .collect();
-        let packed = PackedCodes4bit::pack(&codes, num_vectors, num_codebooks);
-        let lut: Vec<f32> = (0..num_codebooks * 16)
-            .map(|i| ((i * 17 + 5) % 251) as f32 * 0.01)
-            .collect();
-        let (lut_q, _, _) = quantize_lut_flat(&lut, num_codebooks);
+    fn neon_fastscan_block_matches_portable() {
+        let simd = pulp::aarch64::Neon::try_new().expect("aarch64 has NEON");
+        for num_codebooks in [1usize, 2, 7, 25, 64] {
+            let num_vectors = 32;
+            let codes: Vec<u8> = (0..num_vectors * num_codebooks)
+                .map(|i| {
+                    let candidate = i / num_codebooks;
+                    let codebook = i % num_codebooks;
+                    // Distinguish both 8-lane groups and the low/high nibbles.
+                    ((candidate * 11 + candidate / 8 + codebook * 7 + 3) % 16) as u8
+                })
+                .collect();
+            let packed = PackedCodes4bit::pack(&codes, num_vectors, num_codebooks);
+            let lut: Vec<f32> = (0..num_codebooks * 16)
+                .map(|i| ((i * 17 + 5) % 251) as f32 * 0.01)
+                .collect();
+            let (lut_q, _, _) = quantize_lut_flat(&lut, num_codebooks);
 
-        let portable = fastscan_block_portable(packed.block_data(0), &lut_q, num_codebooks);
-        let neon = aarch64::fastscan_block(packed.block_data(0), &lut_q, num_codebooks);
-
-        assert_eq!(neon, portable);
+            let portable = fastscan_block_portable(packed.block_data(0), &lut_q, num_codebooks);
+            let neon = fastscan_block_neon(simd, packed.block_data(0), &lut_q, num_codebooks);
+            assert_eq!(neon, portable, "num_codebooks={num_codebooks}");
+        }
     }
 
     #[test]

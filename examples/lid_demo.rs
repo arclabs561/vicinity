@@ -276,7 +276,7 @@ fn generate_sphere_points(
     let mut points = Vec::with_capacity(n);
 
     // Use golden ratio based quasi-random sequence for better uniformity
-    let phi = 1.618_034_f32;
+    let phi = std::f32::consts::GOLDEN_RATIO;
 
     for i in 0..n {
         let mut point = vec![0.0f32; ambient_dim];

@@ -20,6 +20,12 @@ These source changes are not assigned to a package release here.
 
 ### Changed
 
+- Development-only SIMD ports use an immutable Pulp Git revision and require
+  Rust 1.94 for its x86 intrinsics. Forbid unsafe
+  code in all Vicinity targets, including benchmarks. Allocation diagnostics now
+  use `stats_alloc`; `acquired_bytes` counts allocations plus positive realloc
+  growth, rather than full realloc destination sizes. Counts remain process-wide
+  and are not live-byte measurements. Dependency internals may use unsafe code.
 - Require `qntz` 0.2.2 or later in the 0.2 series for its signed RaBitQ edge
   distance correction, allowing negative edge terms in IVF-RaBitQ scoring
   when a vector is nearer the query than its cluster centroid. IVF-RaBitQ
