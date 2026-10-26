@@ -147,6 +147,16 @@ impl TombstoneSet {
         set
     }
 
+    /// Move tombstones through an internal-ID permutation
+    /// (`old_to_new[old] = new`), as applied by locality reordering.
+    pub(crate) fn remap(&mut self, old_to_new: &[u32]) {
+        self.deleted = self
+            .deleted
+            .iter()
+            .map(|&old| old_to_new[old] as usize)
+            .collect();
+    }
+
     /// Clear all tombstones (call after compaction).
     pub fn clear(&mut self) {
         self.deleted.clear();

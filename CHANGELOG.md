@@ -112,6 +112,12 @@ These source changes are not assigned to a package release here.
   differ from their papers.
 
 - HNSW search fills result sets from live candidates when tombstones are present.
+- HNSW `delete` before `build` now removes the requested document. Locality
+  reordering moves tombstones with their documents instead of leaving them on
+  the old insertion-order slot, which hid a different document.
+- HNSW `build` with `id-compression` reorders the graph before compressing it.
+  Compressed neighbor lists previously kept pre-reorder IDs, so edges pointed
+  at the wrong vectors.
 - HNSW filtered, ACORN, adaptive, and projection-tree searches apply query
   normalization consistently when `auto_normalize` is enabled.
 - HNSW flat batch search rejects incomplete query rows and dimension mismatches.

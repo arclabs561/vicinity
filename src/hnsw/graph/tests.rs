@@ -1003,6 +1003,57 @@ fn test_num_active() {
     assert_eq!(index.num_active(), total - 2);
 }
 
+/// Deterministic L2-normalized vectors, same LCG as `build_test_index`.
+fn lcg_unit_vectors(n: usize, dim: usize) -> Vec<Vec<f32>> {
+    let mut seed: u64 = 42;
+    let mut next = || -> f32 {
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+        ((seed >> 33) as f32) / (u32::MAX as f32) - 0.5
+    };
+    (0..n)
+        .map(|_| {
+            let mut v: Vec<f32> = (0..dim).map(|_| next()).collect();
+            let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+            v.iter_mut().for_each(|x| *x /= norm);
+            v
+        })
+        .collect()
+}
+
+#[test]
+fn delete_before_build_survives_locality_reorder() {
+    // build() BFS-reorders internal IDs; a tombstone set before build must
+    // follow its document, not stay on the old insertion-order slot.
+    let vectors = lcg_unit_vectors(200, 32);
+    let mut index = HNSWIndex::new(32, 16, 32).unwrap();
+    for (i, v) in vectors.iter().enumerate() {
+        index.add(i as u32, v.clone()).unwrap();
+    }
+    let deleted = 57u32;
+    index.delete(deleted).unwrap();
+    index.build().unwrap();
+
+    assert!(index.is_deleted(deleted));
+    assert_eq!(index.num_active(), 199);
+
+    let results = index.search(&vectors[deleted as usize], 10, 64).unwrap();
+    assert!(
+        results.iter().all(|&(id, _)| id != deleted),
+        "deleted doc {deleted} returned: {results:?}"
+    );
+    for (doc, v) in vectors.iter().enumerate() {
+        if doc as u32 == deleted {
+            continue;
+        }
+        assert!(!index.is_deleted(doc as u32), "doc {doc} wrongly deleted");
+        let top = index.search(v, 1, 64).unwrap();
+        assert_eq!(
+            top[0].0, doc as u32,
+            "doc {doc} not found by its own vector"
+        );
+    }
+}
+
 #[test]
 fn test_builder_produces_working_index() {
     let mut index = HNSWIndex::builder(4)
@@ -1070,6 +1121,61 @@ fn compression_threshold_preserves_small_neighbor_lists() {
 
     assert_eq!(layer.get_neighbors(0).as_ref(), neighbors[0].as_slice());
     assert_eq!(layer.get_neighbors(1).as_ref(), neighbors[1].as_slice());
+}
+
+#[cfg(feature = "id-compression")]
+#[test]
+fn id_compression_preserves_graph_after_locality_reorder() {
+    // Same seed and data with and without compression must give the same
+    // graph in doc-id space; compressed layers must not miss the reorder.
+    let vectors = lcg_unit_vectors(300, 16);
+    let build = |compression: Option<crate::compression::IdCompressionMethod>| {
+        let params = HNSWParams {
+            m: 8,
+            m_max: 16,
+            seed: Some(7),
+            id_compression: compression,
+            compression_threshold: 4,
+            ..Default::default()
+        };
+        let mut index = HNSWIndex::with_params(16, params).unwrap();
+        for (i, v) in vectors.iter().enumerate() {
+            index.add(i as u32, v.clone()).unwrap();
+        }
+        index.build().unwrap();
+        index
+    };
+    let plain = build(None);
+    let compressed = build(Some(crate::compression::IdCompressionMethod::DeltaVarint));
+
+    let doc_graph = |index: &HNSWIndex| -> Vec<std::collections::BTreeMap<u32, Vec<u32>>> {
+        index
+            .layers
+            .iter()
+            .map(|layer| {
+                (0..index.num_vectors)
+                    .map(|node| {
+                        let mut nbs: Vec<u32> = layer
+                            .get_neighbors(node as u32)
+                            .iter()
+                            .map(|&nb| index.doc_ids[nb as usize])
+                            .collect();
+                        nbs.sort_unstable();
+                        (index.doc_ids[node], nbs)
+                    })
+                    .collect()
+            })
+            .collect()
+    };
+    assert_eq!(doc_graph(&plain), doc_graph(&compressed));
+
+    for (doc, v) in vectors.iter().enumerate() {
+        let top = compressed.search(v, 1, 64).unwrap();
+        assert_eq!(
+            top[0].0, doc as u32,
+            "doc {doc} not found by its own vector"
+        );
+    }
 }
 
 #[test]
