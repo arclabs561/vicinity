@@ -275,7 +275,10 @@ impl FreshGraphIndex {
         let mut inbound_count = std::mem::take(&mut self.inbound_count);
         for i in 0..n {
             let vi = self.get_vector(i).to_vec();
-            let candidates = self.beam_search_internal(&vi, self.params.ef_construction, None);
+            // The search finds node i itself at distance 0; prune without it
+            // (FreshDiskANN Alg. 3 removes p from the candidate set).
+            let mut candidates = self.beam_search_internal(&vi, self.params.ef_construction, None);
+            candidates.retain(|&(id, _)| id as usize != i);
             let selected = self.rng_prune(&vi, &candidates);
 
             // Replacing self.neighbors[i] mutates the inbound counts of the
@@ -434,6 +437,10 @@ impl FreshGraphIndex {
     /// Uses beam search from the entry point to find the best neighborhood,
     /// applies RNG pruning, inserts bidirectional edges, and updates the entry
     /// point if the new vector is a better medoid.
+    ///
+    /// If `doc_id` is already live, this is an update: the old copy is
+    /// tombstoned (as by [`delete`](Self::delete)) so the id keeps a single
+    /// live vector.
     pub fn insert(&mut self, doc_id: u32, vector: &[f32]) -> Result<(), RetrieveError> {
         if !self.built {
             return Err(RetrieveError::InvalidParameter(
@@ -446,6 +453,10 @@ impl FreshGraphIndex {
                 doc_dim: self.dimension,
             });
         }
+
+        // Tombstone any live copy first; otherwise `delete(doc_id)` would
+        // later remove only one of two live copies.
+        self.delete(doc_id)?;
 
         self.store_normalized(vector);
         let new_id = self.num_vectors as u32;

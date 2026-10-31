@@ -24,6 +24,23 @@ These source changes are not assigned to a package release here.
   `search_with_distance` closure receives, BFS-reordered after `build`) to the
   doc id passed to `add`, so closures can look up per-document data by doc id.
 
+### Fixed
+
+- NSG, FINGER, FreshGraph and FilteredGraph drop the node being linked from
+  its own prune candidates. It came back from the build search at distance 0
+  and occluded every other candidate, collapsing out-lists toward self-loops
+  (recall@10 0.05 to 0.30; now 0.98 to 1.0). Rebuild indexes saved by older
+  versions to get the repaired graphs; the file format is unchanged.
+- `ensure_connectivity` repairs reachability from the entry point along
+  out-edges, which is what search follows, instead of undirected connectivity.
+- Ball-tree cosine search compares its L2 ball bound against `sqrt(2c)`, the L2
+  distance equivalent to cosine distance `c` for unit vectors; exact-search
+  recall@10 was 0.24.
+- SNG search runs a best-first beam of width `max(k, 100)` instead of returning
+  after `k` pops; with `k = 1` it returned the best entry-scan vector.
+- FreshGraph `insert` of a live id tombstones the existing copy first, so a
+  later `delete` removes the id.
+
 ### Changed
 
 - Development-only SIMD ports use an immutable Pulp Git revision and require
