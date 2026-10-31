@@ -86,6 +86,7 @@ jobs:
           --test correctness_regression
           --test recall_ground_truth
           --test diskann_persistence_test
+          --test search_regressions
         env:
           RUSTFLAGS: ""
       # nextest does not support doctests yet (nextest-rs/nextest#16).

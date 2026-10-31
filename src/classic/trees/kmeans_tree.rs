@@ -442,8 +442,29 @@ impl KMeansTreeIndex {
     }
 
     /// Search for k nearest neighbors.
+    ///
+    /// Visits leaf clusters best-first by center distance (FLANN's priority
+    /// search, Muja & Lowe 2009 §3.2) until at least `k` points have been
+    /// examined, so it returns `min(k, len)` results. Use
+    /// [`Self::search_with_leaf_budget`] to examine more leaves for recall.
     pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, RetrieveError> {
-        self.search_with_branch_budget(query, k, 1)
+        if !self.built {
+            return Err(RetrieveError::InvalidParameter(
+                "Index must be built before search".to_string(),
+            ));
+        }
+        if query.len() != self.dimension {
+            return Err(RetrieveError::InvalidParameter(format!(
+                "Query dimension {} != {}",
+                query.len(),
+                self.dimension
+            )));
+        }
+
+        let root = self.root.as_ref().ok_or(RetrieveError::EmptyIndex)?;
+        let mut candidates = Vec::new();
+        self.search_node_best_first(root, query, 1, k, &mut candidates);
+        Ok(self.rank_candidates(query, k, &candidates))
     }
 
     /// Search for k nearest neighbors while visiting multiple child clusters per internal node.
@@ -512,7 +533,7 @@ impl KMeansTreeIndex {
 
         let root = self.root.as_ref().ok_or(RetrieveError::EmptyIndex)?;
         let mut candidates = Vec::new();
-        self.search_node_with_leaf_budget(root, query, leaf_budget, &mut candidates);
+        self.search_node_best_first(root, query, leaf_budget, 0, &mut candidates);
         Ok(self.rank_candidates(query, k, &candidates))
     }
 
@@ -594,11 +615,14 @@ impl KMeansTreeIndex {
         }
     }
 
-    fn search_node_with_leaf_budget(
+    /// Visit leaves best-first until `leaf_budget` leaves have been visited
+    /// and at least `min_candidates` points collected (or the tree runs out).
+    fn search_node_best_first(
         &self,
         root: &KMeansNode,
         query: &[f32],
         leaf_budget: usize,
+        min_candidates: usize,
         candidates: &mut Vec<u32>,
     ) {
         let mut frontier = BinaryHeap::new();
@@ -610,7 +634,7 @@ impl KMeansTreeIndex {
 
         let mut sequence = 1;
         let mut leaves_visited = 0;
-        while leaves_visited < leaf_budget {
+        while leaves_visited < leaf_budget || candidates.len() < min_candidates {
             let Some(Reverse(entry)) = frontier.pop() else {
                 break;
             };
@@ -771,13 +795,27 @@ mod tests {
     }
 
     #[test]
-    fn branch_budget_one_matches_default_search() {
-        let tree = build_index();
-        let query = vec![50.0, 100.0, 150.0];
-        assert_eq!(
-            tree.search(&query, 8).unwrap(),
-            tree.search_with_branch_budget(&query, 8, 1).unwrap()
-        );
+    fn default_search_returns_k_when_leaves_are_smaller_than_k() {
+        // Leaves of at most 2 points: one leaf cannot supply k = 8 results.
+        let mut tree = KMeansTreeIndex::new(
+            2,
+            KMeansTreeParams {
+                num_clusters: 4,
+                max_leaf_size: 2,
+                ..KMeansTreeParams::default()
+            },
+        )
+        .unwrap();
+        for i in 0..40u32 {
+            let x = i as f32;
+            tree.add(i, vec![x, (x * 0.37).sin()]).unwrap();
+        }
+        tree.build().unwrap();
+        let query = vec![20.0, 0.0];
+        let got = tree.search(&query, 8).unwrap();
+        assert_eq!(got.len(), 8, "{got:?}");
+        // Every returned point is ranked by its true distance.
+        assert!(got.windows(2).all(|w| w[0].1 <= w[1].1));
     }
 
     #[test]

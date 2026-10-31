@@ -283,6 +283,7 @@ pub fn estimate_twonn(mu_ratios: &[f32], discard_fraction: f32) -> f32 {
     }
 
     sorted.sort_unstable_by(|a, b| a.total_cmp(b));
+    let n_total = sorted.len();
 
     // Discard largest ratios (boundary effects / outliers)
     let keep_count = ((sorted.len() as f32) * (1.0 - discard_fraction)).max(2.0) as usize;
@@ -293,19 +294,21 @@ pub fn estimate_twonn(mu_ratios: &[f32], discard_fraction: f32) -> f32 {
         return f32::NAN;
     }
 
-    // Empirical CDF: F_emp(μ_i) = i / n_kept
+    // Empirical CDF: F_emp(μ_i) = i / N
     // We fit: -log(1 - F_emp) = d * log(μ)
     // Using simple least squares with intercept forced to 0
     //
-    // Note: We use n_kept (trimmed count) for proper CDF normalization,
-    // matching scikit-dimension's approach after discarding outliers.
+    // N is the count before discarding: the kept ratios are the lower part of
+    // the full sample, so their CDF values stop at n_kept / N. This matches
+    // scikit-dimension (`Femp = arange(1, n_keep + 1) / N`); normalizing by
+    // n_kept would push F_emp to 1 at the cut and overestimate d.
 
     let mut sum_xy = 0.0f64; // Use f64 for accumulation precision
     let mut sum_xx = 0.0f64;
     let mut valid_count = 0usize;
 
     for (i, &mu) in sorted.iter().enumerate() {
-        let f_emp = (i + 1) as f64 / n_kept as f64;
+        let f_emp = (i + 1) as f64 / n_total as f64;
 
         // Skip if F_emp ≈ 1 (would cause -log(0))
         // Skip if μ ≈ 1 (would cause log(1) = 0, degenerate - equidistant neighbors)
@@ -353,12 +356,17 @@ pub struct TwoNNResult {
 ///
 /// # Theory
 ///
-/// The TwoNN estimator in MLE form is:
+/// Under the TwoNN model log(μ) is exponential with rate d. Discarding the
+/// largest ratios censors that sample, so the MLE keeps the discarded ratios
+/// as observations known to exceed the largest kept ratio μ₍ₖ₎ (type II
+/// censoring):
 /// ```text
-/// d̂ = n / Σᵢ log(μᵢ)
+/// d̂ = k / (Σᵢ₌₁ᵏ log μ₍ᵢ₎ + (N − k) log μ₍ₖ₎)
 /// ```
 ///
-/// With asymptotic variance approximately d²/n, giving standard error d/√n.
+/// where N is the number of valid ratios and k the number kept. With no
+/// discarding this is `N / Σ log μ`. The asymptotic variance is about d²/k,
+/// giving standard error d/√k.
 ///
 /// # Arguments
 ///
@@ -384,14 +392,11 @@ pub fn estimate_twonn_with_ci(mu_ratios: &[f32], discard_fraction: f32) -> TwoNN
     }
 
     sorted.sort_unstable_by(|a, b| a.total_cmp(b));
+    let n_total = sorted.len();
 
     let keep_count = ((sorted.len() as f32) * (1.0 - discard_fraction)).max(2.0) as usize;
     let sorted = &sorted[..keep_count.min(sorted.len())];
-
-    // MLE formulation: d̂ = n / Σᵢ log(μᵢ)
-    // Filter out μ ≈ 1 to avoid log(1) = 0
-    let valid_ratios: Vec<f32> = sorted.iter().filter(|&&mu| mu > 1.0001).copied().collect();
-    let n = valid_ratios.len();
+    let n = sorted.len();
 
     if n < 2 {
         return TwoNNResult {
@@ -403,7 +408,10 @@ pub fn estimate_twonn_with_ci(mu_ratios: &[f32], discard_fraction: f32) -> TwoNN
         };
     }
 
-    let sum_log_mu: f64 = valid_ratios.iter().map(|&mu| (mu as f64).ln()).sum();
+    // Censored MLE: each discarded ratio contributes log μ₍ₖ₎.
+    let log_mu_k = (sorted[n - 1] as f64).ln();
+    let sum_log_mu: f64 =
+        sorted.iter().map(|&mu| (mu as f64).ln()).sum::<f64>() + (n_total - n) as f64 * log_mu_k;
 
     if sum_log_mu.abs() < 1e-12 {
         return TwoNNResult {

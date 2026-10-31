@@ -17,7 +17,8 @@
 //! # Key Features
 //!
 //! - **Adaptive edge counts**: More edges in sparse regions, fewer in dense
-//! - **Density-aware navigation**: Uses local density for search decisions
+//! - **Density-aware construction**: Local density sets each node's edge budget;
+//!   search is a standard best-first beam search over the resulting graph
 //! - **Efficient updates**: Dynamic edge maintenance without full rebuild
 //! - **Hybrid search**: Combines graph navigation with density estimation
 //!
@@ -352,7 +353,7 @@ impl DEGIndex {
         }
     }
 
-    /// Search for k nearest neighbors with density-aware navigation.
+    /// Search for k nearest neighbors with the configured `ef_search` beam width.
     pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, RetrieveError> {
         self.search_with_ef(query, k, self.config.ef_search)
     }
@@ -377,7 +378,10 @@ impl DEGIndex {
 
         let entry = self.entry_point.unwrap_or(0);
 
-        // Greedy search with density-aware expansion
+        // Beam search over the best `width` nodes seen so far (HNSW's ef). The
+        // `ef_search` argument sets the width; the stop rule compares the
+        // closest unexpanded candidate with the width-th best result.
+        let width = k.max(ef_search);
         let mut visited: HashSet<u32> = HashSet::new();
         let mut candidates: BinaryHeap<Candidate> = BinaryHeap::new();
         let mut results: BinaryHeap<Candidate> = BinaryHeap::new();
@@ -404,49 +408,31 @@ impl DEGIndex {
             // Get worst result distance
             let worst_result = results.peek().map(|c| c.distance).unwrap_or(f32::INFINITY);
 
-            if current_dist > worst_result && results.len() >= k {
+            if current_dist > worst_result && results.len() >= width {
                 break;
             }
-
-            // Get local density for adaptive exploration
-            let local_density = self.density[current as usize].density;
-            let expansion = if local_density < 0.5 {
-                2 // Sparse region: explore more
-            } else {
-                1 // Dense region: normal exploration
-            };
 
             // Expand neighbors
             for &neighbor in &self.edges[current as usize] {
                 if visited.insert(neighbor) {
                     let dist = self.query_distance(neighbor, query);
+                    let worst_result = results.peek().map(|c| c.distance).unwrap_or(f32::INFINITY);
 
-                    // Add to results
-                    if results.len() < k || dist < worst_result {
+                    if results.len() < width || dist < worst_result {
                         insert_bounded_result(
                             &mut results,
-                            k,
+                            width,
                             Candidate {
                                 id: neighbor,
                                 distance: dist,
                             },
                         );
-                    }
-
-                    // Add to candidates (with expansion factor)
-                    for _ in 0..expansion {
-                        if candidates.len() < ef_search {
-                            candidates.push(Candidate {
-                                id: neighbor,
-                                distance: -dist,
-                            });
-                        }
+                        candidates.push(Candidate {
+                            id: neighbor,
+                            distance: -dist,
+                        });
                     }
                 }
-            }
-
-            if visited.len() >= self.config.ef_search {
-                break;
             }
         }
 

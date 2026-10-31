@@ -342,6 +342,14 @@ impl FilteredGraphIndex {
         let doc_ids = read_u32_exact(&input_dir.join("doc_ids.bin"), manifest.num_vectors)?;
         let neighbors = read_neighbors(&input_dir.join("neighbors.bin"), manifest.num_vectors)?;
 
+        // Snapshots written before `sort_order` existed may hold mixed-type
+        // attribute lists in an inconsistent order; restore the order that
+        // `inverted_eq` binary-searches.
+        let mut inverted = manifest.inverted;
+        for entries in inverted.values_mut() {
+            entries.sort_by(|(a, _), (b, _)| sort_order(a, b));
+        }
+
         Ok(Self {
             dimension: manifest.dimension,
             params: manifest.params.into_params(),
@@ -352,7 +360,7 @@ impl FilteredGraphIndex {
             staging_attrs: Vec::new(),
             neighbors,
             medoid: manifest.medoid,
-            inverted: manifest.inverted,
+            inverted,
         })
     }
 
@@ -557,8 +565,7 @@ impl FilteredGraphIndex {
             return HashSet::new();
         };
         // Binary search for matching value.
-        let pos = entries
-            .partition_point(|(v, _)| compare_attr(v, val).is_none_or(|o| o == Ordering::Less));
+        let pos = entries.partition_point(|(v, _)| sort_order(v, val) == Ordering::Less);
         let mut result = HashSet::new();
         for (v, ids) in &entries[pos..] {
             if compare_attr(v, val) != Some(Ordering::Equal) {
@@ -773,7 +780,7 @@ impl FilteredGraphIndex {
         // Group by value: for each attribute, build sorted list of (value, ids).
         for (attr, mut pairs) in raw {
             // Sort by value for binary-searchable range lookups.
-            pairs.sort_unstable_by(|(a, _), (b, _)| compare_attr(a, b).unwrap_or(Ordering::Equal));
+            pairs.sort_unstable_by(|(a, _), (b, _)| sort_order(a, b));
 
             // Collapse consecutive equal values into one entry.
             let mut entries: Vec<(AttrValue, Vec<u32>)> = Vec::new();
@@ -865,6 +872,27 @@ fn compare_attr(a: &AttrValue, b: &AttrValue) -> Option<Ordering> {
         (AttrValue::String(x), AttrValue::String(y)) => Some(x.cmp(y)),
         (AttrValue::Bool(x), AttrValue::Bool(y)) => Some(x.cmp(y)),
         _ => None,
+    }
+}
+
+/// Total order over [`AttrValue`]s used to sort and binary-search the inverted
+/// index. Values group by variant first, so an attribute that mixes `Int` and
+/// `Float` values (common for JSON input) still sorts consistently; within a
+/// variant it agrees with [`compare_attr`], with NaN placed by `total_cmp`.
+fn sort_order(a: &AttrValue, b: &AttrValue) -> Ordering {
+    fn rank(v: &AttrValue) -> u8 {
+        match v {
+            AttrValue::Int(_) => 0,
+            AttrValue::Float(_) => 1,
+            AttrValue::String(_) => 2,
+            AttrValue::Bool(_) => 3,
+        }
+    }
+    match (a, b) {
+        (AttrValue::Float(x), AttrValue::Float(y)) => {
+            x.partial_cmp(y).unwrap_or_else(|| x.total_cmp(y))
+        }
+        _ => compare_attr(a, b).unwrap_or_else(|| rank(a).cmp(&rank(b))),
     }
 }
 

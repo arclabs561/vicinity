@@ -23,6 +23,10 @@ These source changes are not assigned to a package release here.
 - `HNSWIndex::doc_id` maps an internal node id (the id a
   `search_with_distance` closure receives, BFS-reordered after `build`) to the
   doc id passed to `add`, so closures can look up per-document data by doc id.
+- `persistence::wal::WalWriter::open` and `WalWriter::resume` continue an
+  existing WAL after a restart; a writer from `WalWriter::new` refuses appends
+  once segments exist. `WalWriter::flush_and_sync` fsyncs the current segment
+  and its directory; `flush` does not.
 
 ### Fixed
 
@@ -50,6 +54,46 @@ These source changes are not assigned to a package release here.
   after `k` pops; with `k = 1` it returned the best entry-scan vector.
 - FreshGraph `insert` of a live id tombstones the existing copy first, so a
   later `delete` removes the id.
+- ACORN search keeps `max(k, ef_search)` results and prunes against the worst
+  of them with plain comparisons. The old `2x` admission and `1.5x` stop
+  margins assumed non-negative distances; with the crate's `-dot`
+  inner-product distance they stopped the frontier as soon as `k` results
+  existed (recall 0.14 where `1 - dot` gave 0.37 on the same graph).
+- `InPlaceIndex` and DEG search run a best-first beam over `max(k, beam)`
+  results. InPlaceIndex bounded the result heap at `k` and dropped frontier
+  entries once `beam_width` were queued (recall@10 0.44); DEG ignored the `ef`
+  passed to `search_with_ef` and stopped after `ef_search` scored neighbors
+  (recall@10 0.16 at any ef; now 0.99). InPlaceIndex no longer returns a
+  deleted entry point.
+- FilteredGraph sorts each attribute's inverted list with a total order that
+  groups values by type, so `Eq` finds every match when an attribute mixes
+  `Int` and `Float` values (it missed 13 of 20). Lists in saved indexes are
+  re-sorted on load.
+- HNSW `add_metadata` updates the filter category of a vector already added,
+  so `search_with_filter` sees metadata attached after `add` or after loading
+  a saved index. Intra-category edges still come from metadata present at
+  `build`.
+- The k-means tree's default `search` visits leaves best-first until it has
+  examined at least `k` points. It descended to one leaf, so queries whose
+  leaf held fewer than `k` points got short results (53 of 100 at
+  `k = 10`).
+- SparseMIPS search stops when the closest frontier node is worse than the
+  `ef`-th candidate. The `1.5x` margin on `-dot` distances stopped the search
+  once `ef` candidates were seen.
+- `HNSWIndex::search_prt` converts the worst result's distance to the
+  projected squared L2 scale before the routing test. It compared squared
+  projected L2 against the unsquared metric distance, so L2 recall depended on
+  the data's scale (0.68 at x1, 0.34 at x30); with inner product every
+  neighbor was skipped once the beam filled (0.34). Inner product now scores
+  every candidate; cosine results are unchanged.
+- A `search_with_distance` closure can run another HNSW search on the same
+  thread. The thread-local visited set was borrowed across the closure call,
+  so the nested search panicked with "already borrowed".
+- TwoNN's linear estimator normalizes the empirical CDF by the full sample
+  size, as scikit-dimension does; normalizing by the trimmed count
+  overestimated d by about 45% (2.90 for d = 2). `estimate_twonn_with_ci`
+  treats discarded ratios as censored at the largest kept ratio, so its
+  interval covers the true dimension (it gave 6.71 [6.62, 6.81] for d = 5).
 
 ### Changed
 

@@ -389,6 +389,10 @@ impl InPlaceIndex {
             return Ok(Vec::new());
         }
 
+        // Beam search keeps the best `width` nodes seen so far (HNSW's ef):
+        // the stop and admission bounds come from the width-th best distance,
+        // not the k-th, so a small k does not shrink the search.
+        let width = k.max(beam_width);
         let mut visited: HashSet<u32> = HashSet::new();
         let mut candidates: BinaryHeap<Candidate> = BinaryHeap::new();
         let mut results: BinaryHeap<Candidate> = BinaryHeap::new();
@@ -399,10 +403,12 @@ impl InPlaceIndex {
             id: entry,
             distance: -entry_dist,
         }); // Min-heap
-        results.push(Candidate {
-            id: entry,
-            distance: entry_dist,
-        });
+        if !matches!(self.nodes.get(entry as usize), Some(Some(n)) if n.is_deleted()) {
+            results.push(Candidate {
+                id: entry,
+                distance: entry_dist,
+            });
+        }
         visited.insert(entry);
 
         while let Some(Candidate {
@@ -413,7 +419,7 @@ impl InPlaceIndex {
             let current_dist = -neg_dist;
 
             let worst = results.peek().map(|c| c.distance).unwrap_or(f32::INFINITY);
-            if current_dist > worst && results.len() >= k {
+            if current_dist > worst && results.len() >= width {
                 break;
             }
 
@@ -431,19 +437,17 @@ impl InPlaceIndex {
                             }
 
                             let dist = self.distance_to_vector(neighbor, query);
+                            let worst = results.peek().map(|c| c.distance).unwrap_or(f32::INFINITY);
 
-                            if results.len() < k || dist < worst {
+                            if results.len() < width || dist < worst {
                                 insert_bounded_result(
                                     &mut results,
-                                    k,
+                                    width,
                                     Candidate {
                                         id: neighbor,
                                         distance: dist,
                                     },
                                 );
-                            }
-
-                            if candidates.len() < beam_width {
                                 candidates.push(Candidate {
                                     id: neighbor,
                                     distance: -dist,

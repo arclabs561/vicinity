@@ -304,14 +304,19 @@ impl SearchScratch {
 
 /// Borrow the thread-local visited set, prepared for `num_nodes`.
 /// The closure receives a mutable reference to the reused set.
+///
+/// If the set is already borrowed on this thread (a caller-supplied distance
+/// closure started another search), the closure gets a fresh set instead.
 pub(crate) fn with_visited_set<F, R>(num_nodes: usize, capacity_hint: usize, f: F) -> R
 where
     F: FnOnce(&mut VisitedSet) -> R,
 {
-    THREAD_VISITED.with(|cell| {
-        let mut visited = cell.borrow_mut();
-        visited.prepare(num_nodes, capacity_hint);
-        f(&mut visited)
+    THREAD_VISITED.with(|cell| match cell.try_borrow_mut() {
+        Ok(mut visited) => {
+            visited.prepare(num_nodes, capacity_hint);
+            f(&mut visited)
+        }
+        Err(_) => f(&mut VisitedSet::new(num_nodes, capacity_hint)),
     })
 }
 
@@ -1025,6 +1030,10 @@ fn get_vector(vectors: &[f32], dimension: usize, idx: usize) -> &[f32] {
 /// exceeds the current worst result (scaled by the TFB ratio) are skipped
 /// entirely, saving the full distance computation.
 ///
+/// `proj_threshold` maps the worst result's metric distance to the expected
+/// squared projected distance of a point at that distance, or `None` when the
+/// metric has no such mapping (the candidate is then always scored).
+///
 /// Returns `(results, full_distance_count)`.
 #[cfg(feature = "hnsw")]
 pub fn greedy_search_layer_prt(
@@ -1037,6 +1046,7 @@ pub fn greedy_search_layer_prt(
     dist_fn: fn(&[f32], &[f32]) -> f32,
     prt: &crate::prt::ProbabilisticRoutingTest,
     query_proj: &[f32],
+    proj_threshold: &dyn Fn(f32) -> Option<f32>,
     tfb: &mut crate::prt::TestFeedbackBuffer,
 ) -> (Vec<(u32, f32)>, usize) {
     let num_vectors = vectors.len() / dimension;
@@ -1083,10 +1093,17 @@ pub fn greedy_search_layer_prt(
                 // PRT pre-filter: skip candidates whose projected distance
                 // exceeds the worst result distance (scaled by TFB ratio).
                 let worst_dist = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
-                if results.len() >= ef
-                    && !prt.should_compute_full_distance(query_proj, neighbor_id, worst_dist, tfb)
-                {
-                    continue;
+                if results.len() >= ef {
+                    if let Some(threshold) = proj_threshold(worst_dist) {
+                        if !prt.should_compute_full_distance(
+                            query_proj,
+                            neighbor_id,
+                            threshold,
+                            tfb,
+                        ) {
+                            continue;
+                        }
+                    }
                 }
 
                 // Full distance computation.
