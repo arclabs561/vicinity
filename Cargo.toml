@@ -323,6 +323,11 @@ harness = false
 required-features = ["hnsw"]
 
 [[bench]]
+name = "hnsw_vs_usearch"
+harness = false
+required-features = ["hnsw"]
+
+[[bench]]
 name = "acorn_search"
 harness = false
 required-features = ["hnsw"]
