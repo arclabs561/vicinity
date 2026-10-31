@@ -135,6 +135,11 @@ benchmark = []
 # RP-forest vs Annoy parity test. Pulls in the `rptree` family it compares against.
 # Never enabled by `default`, so the shipped library build is unaffected.
 annoy-bench = ["rptree", "dep:annoy-sys"]
+# Counts distance computations in a process-global atomic so benchmarks can
+# report dists/query (hardware-independent cost signal, cf. Aumüller &
+# Ceccarello 2023). Non-default: the atomics slow the distance loops down, and
+# the default build must stay free of them. See `distance_stats`.
+distance-stats = []
 innr = ["dep:innr"]
 parallel = ["dep:rayon"]
 python = ["dep:pyo3", "dep:numpy", "hnsw", "ivf_pq", "persistence", "serde"]
