@@ -24,10 +24,31 @@ use crate::classic::trees::persistence::{read_json, validate_vector_shape, write
 use crate::simd;
 use crate::RetrieveError;
 use serde::{Deserialize, Serialize};
+use std::collections::BinaryHeap;
 use std::path::Path;
 
 const RPTREE_FORMAT_VERSION: u32 = 1;
 const DEFAULT_RPTREE_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
+
+/// Candidate ordered so `BinaryHeap` keeps the worst distance on top.
+#[derive(Clone, Copy, PartialEq)]
+struct Candidate(f32, u32);
+
+impl Eq for Candidate {}
+
+impl Ord for Candidate {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0
+            .total_cmp(&other.0)
+            .then_with(|| other.1.cmp(&self.1))
+    }
+}
+
+impl PartialOrd for Candidate {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
 
 /// Random Projection Tree index.
 ///
@@ -315,36 +336,48 @@ impl RPTreeIndex {
             .as_ref()
             .ok_or_else(|| RetrieveError::InvalidParameter("Tree not built".to_string()))?;
 
-        // Collect candidates from tree traversal
-        let mut candidates = Vec::new();
-        self.search_recursive(root, query, &mut candidates)?;
+        let mut heap = BinaryHeap::with_capacity(k.max(1));
+        self.search_pruned(root, query, k, &mut heap)?;
 
-        // Compute distances and sort
-        let mut results: Vec<(u32, f32)> = candidates
-            .iter()
-            .map(|&idx| {
-                let vec = self.get_vector(idx as usize);
-                let dist = crate::distance::cosine_distance_normalized(query, vec);
-                (self.doc_ids[idx as usize], dist)
-            })
+        let mut results: Vec<(u32, f32)> = heap
+            .into_iter()
+            .map(|candidate| (candidate.1, candidate.0))
             .collect();
-
         results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
-        results.truncate(k);
-
         Ok(results)
     }
 
-    /// Search recursively.
-    fn search_recursive(
+    /// Search with k-th-distance pruning.
+    ///
+    /// A random-projection split is a hyperplane with unit normal `w`, so for
+    /// unit vectors (`cos_dist = ||q-p||^2 / 2`) any point on the far side
+    /// satisfies `cos_dist(q, p) >= (w·q - t)^2 / 2`. Once `k` candidates are
+    /// held, a far subtree whose bound exceeds the current worst is skipped:
+    /// the traversal is exact, only the visit count changes.
+    fn search_pruned(
         &self,
         node: &RPNode,
         query: &[f32],
-        candidates: &mut Vec<u32>,
+        k: usize,
+        heap: &mut BinaryHeap<Candidate>,
     ) -> Result<(), RetrieveError> {
         match node {
             RPNode::Leaf { indices } => {
-                candidates.extend_from_slice(indices);
+                for &idx in indices {
+                    let distance = crate::distance::cosine_distance_normalized(
+                        query,
+                        self.get_vector(idx as usize),
+                    );
+                    let candidate = Candidate(distance, self.doc_ids[idx as usize]);
+                    if heap.len() < k {
+                        heap.push(candidate);
+                    } else if let Some(worst) = heap.peek() {
+                        if candidate < *worst {
+                            heap.pop();
+                            heap.push(candidate);
+                        }
+                    }
+                }
             }
             RPNode::Internal {
                 hyperplane,
@@ -353,18 +386,20 @@ impl RPTreeIndex {
                 right,
             } => {
                 let projection = simd::dot(query, hyperplane);
-
-                // Traverse both subtrees (pruning could be added)
-                if projection < *threshold {
-                    self.search_recursive(left, query, candidates)?;
-                    self.search_recursive(right, query, candidates)?;
+                let (near, far, margin) = if projection < *threshold {
+                    (left, right, *threshold - projection)
                 } else {
-                    self.search_recursive(right, query, candidates)?;
-                    self.search_recursive(left, query, candidates)?;
+                    (right, left, projection - *threshold)
+                };
+                self.search_pruned(near, query, k, heap)?;
+                let bound = margin * margin * 0.5;
+                let worst = heap.peek().map(|c| c.0);
+                let visit_far = heap.len() < k || worst.is_some_and(|worst| bound <= worst);
+                if visit_far {
+                    self.search_pruned(far, query, k, heap)?;
                 }
             }
         }
-
         Ok(())
     }
 
@@ -448,5 +483,58 @@ mod tests {
             index.search(&query, 8).unwrap(),
             loaded.search(&query, 8).unwrap()
         );
+    }
+
+    /// Pruning must not change results: the k-th-distance bound is exact for
+    /// unit vectors, so the pruned walk has to match brute force bit for bit,
+    /// including the (distance, doc_id) tie order.
+    #[test]
+    fn pruned_search_matches_brute_force() {
+        let dim = 8;
+        let n = 500u32;
+        let mut seed = 987_654_321u64;
+        let mut vectors = Vec::with_capacity(n as usize * dim);
+        for _ in 0..n as usize * dim {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            vectors.push(((seed >> 33) as f32 / (1u64 << 31) as f32) - 1.0);
+        }
+        // The tree's metric assumes unit vectors (cos_dist = ||q-p||^2 / 2),
+        // which is also the precondition for the pruning bound.
+        for chunk in vectors.chunks_mut(dim) {
+            let norm = chunk.iter().map(|v| v * v).sum::<f32>().sqrt();
+            for value in chunk.iter_mut() {
+                *value /= norm;
+            }
+        }
+        let mut index = RPTreeIndex::new(dim, RPTreeParams::default()).unwrap();
+        for id in 0..n {
+            let start = id as usize * dim;
+            index.add(id, vectors[start..start + dim].to_vec()).unwrap();
+        }
+        index.build().unwrap();
+
+        for q in 0..20u32 {
+            let start = (q as usize * 37) % (n as usize - dim);
+            let query: Vec<f32> = vectors[start..start + dim]
+                .iter()
+                .map(|v| v * 0.5)
+                .collect();
+            let query: Vec<f32> = {
+                let norm = query.iter().map(|v| v * v).sum::<f32>().sqrt();
+                query.iter().map(|v| v / norm).collect()
+            };
+            let mut brute: Vec<(u32, f32)> = (0..n)
+                .map(|id| {
+                    let s = id as usize * dim;
+                    (
+                        id,
+                        crate::distance::cosine_distance_normalized(&query, &vectors[s..s + dim]),
+                    )
+                })
+                .collect();
+            brute.sort_unstable_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+            brute.truncate(10);
+            assert_eq!(index.search(&query, 10).unwrap(), brute, "query {q}");
+        }
     }
 }
