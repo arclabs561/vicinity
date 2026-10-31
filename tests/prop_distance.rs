@@ -345,7 +345,15 @@ mod metric_space_props {
             let dot_b_c: f32 = b.iter().zip(c.iter()).map(|(x, y)| x * y).sum();
 
             let expected = dot_a_c + dot_b_c;
-            let tolerance = expected.abs() * 1e-4 + 1e-4;
+            // Float summation error scales with the magnitude of the terms,
+            // not of the result, which can cancel to near zero.
+            let magnitude: f32 = a
+                .iter()
+                .zip(b.iter())
+                .zip(c.iter())
+                .map(|((x, y), z)| (x * z).abs() + (y * z).abs())
+                .sum();
+            let tolerance = magnitude * 1e-5 + 1e-4;
 
             prop_assert!(
                 (dot_ab_c - expected).abs() < tolerance,
