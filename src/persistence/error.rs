@@ -16,6 +16,15 @@ pub enum PersistenceError {
     #[error("format error: {0}")]
     Format(String),
 
+    /// The file's leading magic bytes did not match the expected format.
+    #[error("bad magic: expected {expected}, found {found}")]
+    BadMagic {
+        /// Expected magic bytes, rendered as text.
+        expected: String,
+        /// Bytes actually found, rendered as text or hex.
+        found: String,
+    },
+
     /// Serialization error (postcard, serde)
     #[error("serialization error: {0}")]
     Serialization(String),
@@ -75,8 +84,10 @@ impl From<crate::RetrieveError> for PersistenceError {
 impl From<PersistenceError> for crate::RetrieveError {
     fn from(e: PersistenceError) -> Self {
         match e {
-            PersistenceError::Io(e) => Self::Other(format!("persistence I/O: {e}")),
+            // Keep the I/O kind inspectable instead of flattening it into a string.
+            PersistenceError::Io(e) => Self::Io(std::sync::Arc::new(e)),
             PersistenceError::Format(s) => Self::FormatError(s),
+            PersistenceError::BadMagic { expected, found } => Self::BadMagic { expected, found },
             PersistenceError::Serialization(s) => Self::Serialization(s),
             PersistenceError::Deserialization(s) => Self::FormatError(s),
             _ => Self::Other(e.to_string()),

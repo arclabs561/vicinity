@@ -122,14 +122,16 @@ impl FingerIndex {
     /// Create a new FINGER index for vectors of `dimension` dimensions.
     pub fn new(dimension: usize, params: FingerParams) -> Result<Self, RetrieveError> {
         if dimension == 0 {
-            return Err(RetrieveError::InvalidParameter(
-                "dimension must be > 0".into(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "dimension",
+                expected: "must be greater than 0",
+            });
         }
         if params.alpha < 1.0 {
-            return Err(RetrieveError::InvalidParameter(
-                "alpha must be >= 1.0".into(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "alpha",
+                expected: "must be at least 1.0",
+            });
         }
         Ok(Self {
             dimension,
@@ -153,9 +155,10 @@ impl FingerIndex {
     /// Add a vector from a slice.
     pub fn add_slice(&mut self, doc_id: u32, vector: &[f32]) -> Result<(), RetrieveError> {
         if self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "cannot add after build".into(),
-            ));
+            return Err(RetrieveError::AlreadyBuilt {
+                component: "FINGER index",
+                operation: "add vectors",
+            });
         }
         if vector.len() != self.dimension {
             return Err(RetrieveError::DimensionMismatch {
@@ -262,9 +265,10 @@ impl FingerIndex {
     /// graph directly and rebuilds deterministic projection data from vectors.
     pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<(), RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "cannot save unbuilt FINGER index".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "FINGER index",
+                operation: "save",
+            });
         }
         let output_dir = output_dir.as_ref();
         std::fs::create_dir_all(output_dir)?;
@@ -354,9 +358,10 @@ impl FingerIndex {
     /// Returns `(doc_id, distance)` pairs sorted by ascending distance.
     pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "index must be built before search".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "FINGER index",
+                operation: "search",
+            });
         }
         if query.len() != self.dimension {
             return Err(RetrieveError::DimensionMismatch {
@@ -398,9 +403,10 @@ impl FingerIndex {
         ef_search: usize,
     ) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "index must be built before search".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "FINGER index",
+                operation: "search",
+            });
         }
         if query.len() != self.dimension {
             return Err(RetrieveError::DimensionMismatch {

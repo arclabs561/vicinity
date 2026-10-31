@@ -27,9 +27,10 @@ impl KMeans {
     /// Create new k-means with k clusters.
     pub fn new(dimension: usize, k: usize) -> Result<Self, RetrieveError> {
         if dimension == 0 || k == 0 {
-            return Err(RetrieveError::InvalidParameter(
-                "Dimension and k must be greater than 0".to_string(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "dimension and k",
+                expected: "must both be greater than 0",
+            });
         }
 
         Ok(Self {
@@ -132,9 +133,10 @@ pub(crate) struct KMeansEuclidean {
 impl KMeansEuclidean {
     pub(crate) fn new(dimension: usize, k: usize) -> Result<Self, RetrieveError> {
         if dimension == 0 || k == 0 {
-            return Err(RetrieveError::InvalidParameter(
-                "Dimension and k must be greater than 0".to_string(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "dimension and k",
+                expected: "must both be greater than 0",
+            });
         }
         Ok(Self {
             dimension,

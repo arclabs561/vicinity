@@ -64,9 +64,10 @@ impl SNGIndex {
     /// Create a new OPT-SNG index.
     pub fn new(dimension: usize, params: SNGParams) -> Result<Self, RetrieveError> {
         if dimension == 0 {
-            return Err(RetrieveError::InvalidParameter(
-                "dimension must be greater than 0".to_string(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "dimension",
+                expected: "must be greater than 0",
+            });
         }
 
         Ok(Self {
@@ -84,9 +85,10 @@ impl SNGIndex {
     /// Add a vector to the index.
     pub fn add(&mut self, doc_id: u32, vector: Vec<f32>) -> Result<(), RetrieveError> {
         if self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "cannot add vectors after index is built".into(),
-            ));
+            return Err(RetrieveError::AlreadyBuilt {
+                component: "SNG index",
+                operation: "add vectors",
+            });
         }
 
         if vector.len() != self.dimension {
@@ -137,9 +139,10 @@ impl SNGIndex {
     /// Save a built SNG index to a directory.
     pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<(), RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "cannot save unbuilt SNG index".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "SNG index",
+                operation: "save",
+            });
         }
         let output_dir = output_dir.as_ref();
         std::fs::create_dir_all(output_dir)?;
@@ -219,9 +222,10 @@ impl SNGIndex {
     /// Search for k nearest neighbors.
     pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "index must be built before search".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "SNG index",
+                operation: "search",
+            });
         }
 
         if query.len() != self.dimension {

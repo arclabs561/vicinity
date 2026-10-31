@@ -69,7 +69,11 @@ fn add_rejects_non_finite_components() {
             assert!(
                 matches!(
                     index.add_slice(7, &[bad, 0.0]),
-                    Err(RetrieveError::InvalidParameter(_))
+                    Err(RetrieveError::NonFiniteInput {
+                        doc_id: 7,
+                        component: 0,
+                        ..
+                    })
                 ),
                 "{metric:?} accepted {bad}"
             );
@@ -534,7 +538,13 @@ fn test_search_acorn_requires_filtering_metadata() {
         .search_acorn(&q, 5, &crate::hnsw::AcornConfig::default(), &filter)
         .unwrap_err();
 
-    assert!(matches!(err, RetrieveError::InvalidParameter(_)));
+    assert!(matches!(
+        err,
+        RetrieveError::Unsupported {
+            feature: "filtered search",
+            ..
+        }
+    ));
 }
 
 #[cfg(feature = "serde")]
@@ -2016,4 +2026,162 @@ fn test_delete_with_repair_recall_vs_tombstone() {
         repair_results.len(),
         tombstone_results.len(),
     );
+}
+
+#[test]
+fn search_before_build_returns_not_built() {
+    let index = HNSWIndex::new(4, 8, 16).unwrap();
+    let error = index.search(&[0.0, 0.0, 0.0, 0.0], 5, 10).unwrap_err();
+    assert!(
+        matches!(
+            error,
+            RetrieveError::NotBuilt {
+                component: "HNSW index",
+                operation: "search"
+            }
+        ),
+        "expected NotBuilt, got {error:?}"
+    );
+    let message = error.to_string();
+    assert!(message.contains("HNSW index"), "{message}");
+    assert!(message.contains("call build()"), "{message}");
+}
+
+#[test]
+fn add_after_build_returns_already_built() {
+    let (mut index, query) = build_test_index();
+    let error = index.add(9_999, query).unwrap_err();
+    assert!(
+        matches!(
+            error,
+            RetrieveError::AlreadyBuilt {
+                component: "HNSW index",
+                ..
+            }
+        ),
+        "expected AlreadyBuilt, got {error:?}"
+    );
+    assert!(error.to_string().contains("insert()"));
+}
+
+#[test]
+fn zero_dimension_returns_invalid_config() {
+    let error = HNSWIndex::new(0, 8, 16).unwrap_err();
+    assert!(
+        matches!(
+            error,
+            RetrieveError::InvalidConfig {
+                field: "dimension",
+                ..
+            }
+        ),
+        "expected InvalidConfig for dimension, got {error:?}"
+    );
+    assert!(error.to_string().contains("dimension"));
+}
+
+#[test]
+fn filtered_search_without_filtering_returns_unsupported() {
+    let (index, query) = build_test_index();
+    let error = index
+        .search_with_filter(
+            &query,
+            5,
+            32,
+            &crate::filtering::MetadataFilter::equals("group", 0_u32),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            RetrieveError::Unsupported {
+                feature: "filtered search",
+                ..
+            }
+        ),
+        "expected Unsupported, got {error:?}"
+    );
+    assert!(error.to_string().contains("with_filtering()"));
+}
+
+#[test]
+fn non_finite_component_returns_non_finite_input() {
+    let mut index = HNSWIndex::new(4, 8, 16).unwrap();
+    let error = index.add(42, vec![0.0, f32::NAN, 0.0, 0.0]).unwrap_err();
+    match error {
+        RetrieveError::NonFiniteInput {
+            doc_id,
+            component,
+            value,
+        } => {
+            assert_eq!(doc_id, 42);
+            assert_eq!(component, 1);
+            assert!(value.is_nan());
+        }
+        other => panic!("expected NonFiniteInput, got {other:?}"),
+    }
+    assert_eq!(index.num_vectors, 0, "rejected vector must not be stored");
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn load_from_file_missing_path_reports_io_with_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("absent.json");
+    let error = HNSWIndex::load_from_file(&path).unwrap_err();
+    match error {
+        RetrieveError::IoAt {
+            path: reported,
+            source,
+        } => {
+            assert_eq!(reported, path);
+            assert_eq!(source.kind(), std::io::ErrorKind::NotFound);
+        }
+        other => panic!("expected IoAt, got {other:?}"),
+    }
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn load_from_file_foreign_bytes_reports_serialization_with_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("foreign.json");
+    std::fs::write(&path, b"\x89PNG\r\n\x1a\n not an index").unwrap();
+    let error = HNSWIndex::load_from_file(&path).unwrap_err();
+    match error {
+        RetrieveError::SerializationAt {
+            path: reported,
+            message,
+        } => {
+            assert_eq!(reported, path);
+            assert!(!message.is_empty());
+        }
+        other => panic!("expected SerializationAt, got {other:?}"),
+    }
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn load_from_file_truncated_reports_serialization_with_path() {
+    let (index, _) = build_test_index();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("truncated.json");
+    index.save_to_file(&path).unwrap();
+    let bytes = std::fs::read(&path).unwrap();
+    std::fs::write(&path, &bytes[..bytes.len() / 2]).unwrap();
+
+    let error = HNSWIndex::load_from_file(&path).unwrap_err();
+    match error {
+        RetrieveError::SerializationAt {
+            path: reported,
+            message,
+        } => {
+            assert_eq!(reported, path);
+            assert!(
+                message.contains("EOF") || message.contains("line"),
+                "{message}"
+            );
+        }
+        other => panic!("expected SerializationAt, got {other:?}"),
+    }
 }

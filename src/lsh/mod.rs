@@ -79,19 +79,22 @@ impl CrossPolytopeLSHIndex {
     /// Create a new cross-polytope LSH index.
     pub fn new(dimension: usize, params: LSHParams) -> Result<Self, RetrieveError> {
         if dimension == 0 {
-            return Err(RetrieveError::InvalidParameter(
-                "dimension must be > 0".into(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "dimension",
+                expected: "must be greater than 0",
+            });
         }
         if params.num_tables == 0 {
-            return Err(RetrieveError::InvalidParameter(
-                "num_tables must be > 0".into(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "num_tables",
+                expected: "must be greater than 0",
+            });
         }
         if params.num_probes == 0 {
-            return Err(RetrieveError::InvalidParameter(
-                "num_probes must be > 0".into(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "num_probes",
+                expected: "must be greater than 0",
+            });
         }
 
         Ok(Self {
@@ -193,7 +196,10 @@ impl CrossPolytopeLSHIndex {
     /// behavior for deterministic `sketchir` hash generation.
     pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<(), RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter("index not built".into()));
+            return Err(RetrieveError::NotBuilt {
+                component: "LSH index",
+                operation: "save",
+            });
         }
         let output_dir = output_dir.as_ref();
         std::fs::create_dir_all(output_dir)?;
@@ -253,7 +259,10 @@ impl CrossPolytopeLSHIndex {
     /// Returns up to k results as `(vector_index, distance)` pairs, sorted by distance.
     pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter("index not built".into()));
+            return Err(RetrieveError::NotBuilt {
+                component: "LSH index",
+                operation: "search",
+            });
         }
         if query.len() != self.dimension {
             return Err(RetrieveError::DimensionMismatch {
