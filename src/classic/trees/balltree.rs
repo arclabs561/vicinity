@@ -368,8 +368,9 @@ impl BallTreeIndex {
 
     /// Search with radius-based pruning.
     ///
-    /// Pruning rule: if `dist(query, center) - radius > best_dist`, the ball
-    /// cannot contain any point closer than our current k-th best, so skip it.
+    /// Pruning rule: if `dist(query, center) - radius` exceeds the L2 distance
+    /// equivalent of the current k-th best cosine distance, the ball cannot
+    /// contain a closer point, so skip it.
     fn search_recursive_pruned(
         &self,
         node: &BallNode,
@@ -388,7 +389,7 @@ impl BallTreeIndex {
                 let dist_to_center = crate::distance::l2_distance(query, center);
                 let min_possible_dist = (dist_to_center - radius).max(0.0);
 
-                if min_possible_dist > *best_dist {
+                if min_possible_dist > l2_bound_for_cosine(*best_dist) {
                     // This leaf can't have better results, skip it
                     return Ok(());
                 }
@@ -438,7 +439,7 @@ impl BallTreeIndex {
                 // Pruning: minimum possible distance to any point in this ball
                 let min_possible_dist = (dist_to_center - radius).max(0.0);
 
-                if min_possible_dist > *best_dist {
+                if min_possible_dist > l2_bound_for_cosine(*best_dist) {
                     // This entire subtree can be pruned
                     return Ok(());
                 }
@@ -502,6 +503,18 @@ impl BallNode {
             }
         }
     }
+}
+
+/// L2 distance equivalent to a cosine distance between unit vectors.
+///
+/// Ball radii and center distances are L2, while results are ranked by
+/// cosine distance `c = 1 - dot`. For unit vectors `||q - x||^2 = 2c`, so a
+/// ball whose minimum L2 distance exceeds `sqrt(2c)` cannot beat `c`.
+/// Comparing the L2 bound to `c` directly pruned balls holding true
+/// neighbors.
+#[inline]
+fn l2_bound_for_cosine(cosine_dist: f32) -> f32 {
+    (2.0 * cosine_dist.max(0.0)).sqrt()
 }
 
 fn boxed_node_bytes(node: &BallNode) -> usize {
