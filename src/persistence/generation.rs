@@ -204,6 +204,17 @@ pub fn open_current(root: impl AsRef<Path>) -> PersistenceResult<PathBuf> {
     Ok(path)
 }
 
+/// Resolve `CURRENT` when `root` holds a generation layout, or return `root`
+/// itself for a directory written in an older flat layout.
+#[cfg(feature = "diskann")]
+pub(crate) fn open_current_or_flat(root: &Path) -> PersistenceResult<PathBuf> {
+    match std::fs::symlink_metadata(root.join(CURRENT_FILE)) {
+        Ok(_) => open_current(root),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(root.to_path_buf()),
+        Err(error) => Err(error.into()),
+    }
+}
+
 /// A kernel-held shared lease protecting a generation from future cleanup.
 ///
 /// The lease is advisory and only has meaning for cleanup code that acquires

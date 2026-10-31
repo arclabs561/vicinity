@@ -111,7 +111,7 @@ ivf_pq = [
   "dep:serde_json",
   "smallvec/serde",
 ]
-diskann = ["dep:serde_json"]
+diskann = ["dep:serde", "dep:serde_json", "dep:fs4"]
 ivf_avq = ["dep:clump", "dep:serde", "dep:serde_json"]
 sng = ["dep:serde", "dep:serde_json"]
 fresh_graph = ["dep:serde", "dep:serde_json"]

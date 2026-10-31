@@ -1,7 +1,9 @@
 //! DiskANN graph structure and Vamana construction.
 
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(any(test, feature = "benchmark"))]
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use rand::seq::SliceRandom;
@@ -12,6 +14,7 @@ use crate::RetrieveError;
 use std::io::{BufWriter, Write};
 
 /// Unique sibling path for write-then-rename saves.
+#[cfg(any(test, feature = "benchmark"))]
 fn temp_sibling(path: &Path) -> PathBuf {
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -76,12 +79,24 @@ impl DiskANNIndex {
             + self.doc_ids.len() * std::mem::size_of::<u32>()
     }
 
-    /// Save the built index to disk.
+    /// Save the built index to disk as one published generation.
     ///
     /// Saves:
     /// - Graph structure (adjacency list) using DiskGraphWriter
     /// - Vectors (flat binary format)
     /// - Metadata (JSON)
+    ///
+    /// The files are written to a new directory under
+    /// `output_dir/generations/`, synced, and then made current by atomically
+    /// replacing `output_dir/CURRENT` (see [`crate::persistence::generation`]).
+    /// A crash or error before that replacement leaves the previous save
+    /// current, so a reader never pairs one save's vectors with another
+    /// save's graph. A searcher opened on an earlier save keeps reading that
+    /// save's files. Previous generations are not deleted.
+    ///
+    /// An error is also returned when `CURRENT` was replaced but syncing
+    /// `output_dir` failed; the new save may then be visible without being
+    /// durable.
     pub fn save(&self, output_dir: &Path) -> Result<(), RetrieveError> {
         if !self.built {
             return Err(RetrieveError::InvalidParameter(
@@ -89,38 +104,28 @@ impl DiskANNIndex {
             ));
         }
 
-        if !output_dir.exists() {
-            std::fs::create_dir_all(output_dir)?;
-        }
-
-        // Write every file to a unique sibling temp path, then rename over the
-        // target. A crash leaves either the old file or the new one, never a
-        // partial write, and a searcher opened on the previous save keeps
-        // reading its own (now unlinked) files instead of bytes rewritten under
-        // it.
-        let vectors_path = output_dir.join("vectors.bin");
-        let graph_path = output_dir.join("graph.index");
-        let doc_ids_path = output_dir.join("doc_ids.bin");
-        let metadata_path = output_dir.join("metadata.json");
-        let files = [
-            (temp_sibling(&vectors_path), vectors_path),
-            (temp_sibling(&graph_path), graph_path),
-            (temp_sibling(&doc_ids_path), doc_ids_path),
-            (temp_sibling(&metadata_path), metadata_path),
-        ];
-        let result = self.write_index_files(&files[0].0, &files[1].0, &files[2].0, &files[3].0);
-        let result = result.and_then(|()| {
-            for (tmp, target) in &files {
-                std::fs::rename(tmp, target)?;
+        let writer = crate::persistence::generation::GenerationWriter::create(output_dir)?;
+        let written = (|| {
+            self.write_index_files(
+                &writer.path("vectors.bin")?,
+                &writer.path("graph.index")?,
+                &writer.path("doc_ids.bin")?,
+                &writer.path("metadata.json")?,
+            )?;
+            #[cfg(test)]
+            if let Some(error) = take_injected_save_failure(output_dir) {
+                return Err(error);
             }
-            Ok(())
-        });
-        if result.is_err() {
-            for (tmp, _) in &files {
-                let _ = std::fs::remove_file(tmp);
-            }
+            Ok::<(), RetrieveError>(())
+        })();
+        if let Err(error) = written {
+            // Nothing refers to the unpublished staging directory, and partial
+            // component files are not useful for recovery.
+            let _ = std::fs::remove_dir_all(writer.directory());
+            return Err(error);
         }
-        result
+        writer.publish()?;
+        Ok(())
     }
 
     fn write_index_files(
@@ -317,6 +322,12 @@ impl DiskANNSearcher {
         index_dir: &Path,
         cache: crate::file_io::FileCacheConfig,
     ) -> Result<Self, RetrieveError> {
+        // Indexes saved before generation publication keep their component
+        // files directly in `index_dir`; newer saves name a generation in
+        // `CURRENT`.
+        let index_dir = crate::persistence::generation::open_current_or_flat(index_dir)?;
+        let index_dir = index_dir.as_path();
+
         // 1. Load Metadata
         let metadata_path = index_dir.join("metadata.json");
         let metadata_file = std::fs::File::open(&metadata_path)?;
@@ -1196,10 +1207,113 @@ impl DiskANNIndex {
 }
 
 #[cfg(test)]
+static INJECTED_SAVE_FAILURES: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+/// Fail one save to `output_dir` after its component files are written and
+/// before the generation is published.
+#[cfg(test)]
+fn take_injected_save_failure(output_dir: &Path) -> Option<RetrieveError> {
+    let mut failures = INJECTED_SAVE_FAILURES.lock().unwrap();
+    let index = failures.iter().position(|root| root == output_dir)?;
+    failures.remove(index);
+    Some(RetrieveError::Io(Arc::new(std::io::Error::other(
+        "injected save interruption",
+    ))))
+}
+
+#[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::error::RetrieveError;
+
+    fn built_index(id_offset: u32, scale: f32) -> DiskANNIndex {
+        let params = DiskANNParams {
+            m: 4,
+            ef_construction: 20,
+            alpha: 1.2,
+            ef_search: 20,
+            seed: Some(1),
+            ..DiskANNParams::default()
+        };
+        let mut index = DiskANNIndex::new(4, params).unwrap();
+        for i in 0..24u32 {
+            let x = i as f32 * scale;
+            index
+                .add(id_offset + i, vec![x, x * 0.5, 1.0, 0.0])
+                .unwrap();
+        }
+        index.build().unwrap();
+        index
+    }
+
+    #[test]
+    fn save_interrupted_before_publication_keeps_previous_save_loadable() {
+        let root = tempfile::tempdir().unwrap();
+        let first = built_index(0, 1.0);
+        let second = built_index(1_000, -2.0);
+        let query = [3.0, 1.5, 1.0, 0.0];
+        first.save(root.path()).unwrap();
+
+        INJECTED_SAVE_FAILURES
+            .lock()
+            .unwrap()
+            .push(root.path().to_path_buf());
+        let error = second.save(root.path()).unwrap_err();
+        assert!(error.to_string().contains("injected save interruption"));
+
+        let mut searcher = DiskANNSearcher::load(root.path()).unwrap();
+        assert_eq!(
+            searcher.search(&query, 3, 20).unwrap(),
+            first.search(&query, 3, 20).unwrap()
+        );
+        let staging_left = std::fs::read_dir(root.path().join("generations"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|entry| entry.file_name().to_string_lossy().starts_with(".staging-"));
+        assert!(
+            !staging_left,
+            "failed save must remove its staging directory"
+        );
+
+        second.save(root.path()).unwrap();
+        let mut searcher = DiskANNSearcher::load(root.path()).unwrap();
+        assert_eq!(
+            searcher.search(&query, 3, 20).unwrap(),
+            second.search(&query, 3, 20).unwrap()
+        );
+    }
+
+    #[test]
+    fn save_publishes_a_verifiable_generation() {
+        let root = tempfile::tempdir().unwrap();
+        built_index(0, 1.0).save(root.path()).unwrap();
+        let generation = crate::persistence::generation::verify_current(root.path()).unwrap();
+        for file in ["vectors.bin", "graph.index", "doc_ids.bin", "metadata.json"] {
+            assert!(generation.join(file).is_file(), "{file} missing");
+            assert!(!root.path().join(file).exists(), "{file} written flat");
+        }
+    }
+
+    #[test]
+    fn searcher_loads_flat_layout_written_by_earlier_versions() {
+        let root = tempfile::tempdir().unwrap();
+        let index = built_index(7, 1.0);
+        index
+            .write_index_files(
+                &root.path().join("vectors.bin"),
+                &root.path().join("graph.index"),
+                &root.path().join("doc_ids.bin"),
+                &root.path().join("metadata.json"),
+            )
+            .unwrap();
+        let query = [3.0, 1.5, 1.0, 0.0];
+        let mut searcher = DiskANNSearcher::load(root.path()).unwrap();
+        assert_eq!(
+            searcher.search(&query, 3, 20).unwrap(),
+            index.search(&query, 3, 20).unwrap()
+        );
+    }
 
     #[test]
     fn test_create_index() {

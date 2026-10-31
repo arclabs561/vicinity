@@ -99,7 +99,7 @@ must be part of the benchmark row.
 | --- | --- | --- | --- | --- | --- |
 | HNSW | JSON via `serde`; binary segments via `persistence` | Yes | No | Tombstones and repair in memory; `store` for durable segments | Keep JSON and binary segment paths. HNSW snapshots preserve tombstone flags for restart parity. Use `store` when the workload needs WAL-backed segmented durability, checkpoint/reopen, and compaction. |
 | `store::UpdatableIndex` | Open/checkpoint/reopen via `segstore` + HNSW sidecars | Segment sidecars loaded into memory | No | Add/delete/compact/checkpoint | Keep on `segstore`; this is the segmented-HNSW path. Benchmark both live post-checkpoint search and reopened `SnapshotIndex` search when validating restart behavior. |
-| DiskANN | Yes, graph + vector files | Yes | Yes | Build-once | Save writes the current graph/vector files directly. File searchers read those files through the block cache. Page/co-location layout remains next. Do not route through `segstore`. |
+| DiskANN | Yes, graph + vector files | Yes | Yes | Build-once | Save writes the graph/vector files into a new generation directory, syncs it, and publishes it by replacing `CURRENT`; file searchers resolve `CURRENT` (or read an older flat-layout directory directly) and read through the block cache. Old generations are not deleted. Page/co-location layout remains next. Do not route through `segstore`. |
 | NSW / SNG / Vamana / NSG / FINGER / PiPNN / EMG / LSH | Yes, directory format | Yes | No | Build-once | Persists the built in-memory graph state and restores it directly. This is snapshot-memory persistence, not file-backed search. |
 | DualBranch / DEG | Yes, JSON via `serde` | Yes | No | Build-once | These are HNSW-family experimental variants. Their benchmark snapshot rows require the `serde` feature and reload into memory. DEG dense benchmark rows cap indexed vectors at 10,000 because construction is O(n^2). |
 | HNSW quantized variants | Yes, for SQ4/SQ8 and non-compacted SymphonyQG | Yes | No | Build-once | SQ variants persist the underlying HNSW and rebuild quantization. SymphonyQG persists the underlying HNSW and RaBitQ manifest, then rebuilds quantized state on load. SymphonyQG-VR compacted snapshots are rejected because current search still needs raw parent vectors. |
@@ -122,8 +122,9 @@ must be part of the benchmark row.
 
 Round-trip correctness is not crash consistency. Current multi-file directory
 snapshots are not uniformly published as one atomic generation: the shared graph
-snapshot writer replaces component files independently, and DiskANN writes its
-final component paths directly. Do not overwrite a snapshot directory being
+snapshot writer replaces component files independently. DiskANN, IVF-PQ
+generation saves, and IVF-AVQ generation saves publish through
+`persistence::generation`. For the other formats, do not overwrite a snapshot directory being
 served. Writing to a new destination avoids mixing it with an older snapshot,
 but does not by itself guarantee survival of power loss.
 

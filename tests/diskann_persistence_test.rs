@@ -5,6 +5,7 @@
 //! Tests the full cycle: build -> save -> load -> search
 
 use vicinity::diskann::{DiskANNIndex, DiskANNParams, DiskANNSearcher};
+use vicinity::persistence::generation::open_current;
 
 /// Generate random vectors for testing.
 fn generate_vectors(n: usize, d: usize, seed: u64) -> Vec<Vec<f32>> {
@@ -83,21 +84,22 @@ fn test_diskann_save_load_roundtrip() {
 
     index.save(&index_path).expect("Failed to save index");
 
-    // Verify files exist
+    // Verify the published generation holds every component file
+    let generation = open_current(&index_path).expect("CURRENT names a generation");
     assert!(
-        index_path.join("vectors.bin").exists(),
+        generation.join("vectors.bin").exists(),
         "vectors.bin missing"
     );
     assert!(
-        index_path.join("graph.index").exists(),
+        generation.join("graph.index").exists(),
         "graph.index missing"
     );
     assert!(
-        index_path.join("metadata.json").exists(),
+        generation.join("metadata.json").exists(),
         "metadata.json missing"
     );
     assert!(
-        index_path.join("doc_ids.bin").exists(),
+        generation.join("doc_ids.bin").exists(),
         "doc_ids.bin missing"
     );
 
@@ -278,7 +280,9 @@ fn test_diskann_metadata_roundtrip() {
     index.save(&index_path).expect("Failed to save index");
 
     // Load and verify metadata
-    let metadata_path = index_path.join("metadata.json");
+    let metadata_path = open_current(&index_path)
+        .expect("CURRENT names a generation")
+        .join("metadata.json");
     let metadata: serde_json::Value = serde_json::from_reader(
         std::fs::File::open(&metadata_path).expect("Failed to open metadata"),
     )
@@ -291,4 +295,62 @@ fn test_diskann_metadata_roundtrip() {
         metadata["params"]["ef_construction"],
         params.ef_construction
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn diskann_interrupted_resave_never_pairs_components_from_two_saves() {
+    // Interrupt a second save part-way through its component writes and check
+    // that the directory still loads as exactly one saved index. The
+    // interruption is an obstacle (a non-empty directory) at the flat
+    // `doc_ids.bin` path: a save that replaces flat component files one at a
+    // time has already replaced `vectors.bin` and `graph.index` when it hits
+    // the obstacle, leaving the first save's metadata beside the second
+    // save's graph and vectors.
+    let n = 120;
+    let d = 8;
+    let params = DiskANNParams {
+        m: 8,
+        ef_construction: 30,
+        alpha: 1.2,
+        ef_search: 30,
+        seed: Some(5),
+        ..DiskANNParams::default()
+    };
+    let build = |seed: u64, id_offset: u32| {
+        let mut index = DiskANNIndex::new(d, params.clone()).expect("create index");
+        for (i, vec) in generate_vectors(n, d, seed).iter().enumerate() {
+            index
+                .add(id_offset + i as u32, vec.clone())
+                .expect("add vector");
+        }
+        index.build().expect("build index");
+        index
+    };
+    let first = build(21, 0);
+    let second = build(22, 10_000);
+    let query = generate_vectors(1, d, 23).remove(0);
+    let first_results = first.search(&query, 5, 30).expect("first search");
+    let second_results = second.search(&query, 5, 30).expect("second search");
+    assert_ne!(first_results, second_results);
+
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let index_path = temp_dir.path().join("diskann_interrupted");
+    first.save(&index_path).expect("save first index");
+
+    let obstacle = index_path.join("doc_ids.bin");
+    let _ = std::fs::remove_file(&obstacle);
+    std::fs::create_dir_all(obstacle.join("block")).expect("create obstacle");
+    let _ = second.save(&index_path);
+    std::fs::remove_dir_all(&obstacle).expect("remove obstacle");
+
+    let loaded =
+        DiskANNSearcher::load(&index_path).and_then(|mut searcher| searcher.search(&query, 5, 30));
+    match loaded {
+        Ok(results) => assert!(
+            results == first_results || results == second_results,
+            "loaded index mixes components from two saves: {results:?}"
+        ),
+        Err(error) => panic!("index directory no longer loads after interrupted save: {error}"),
+    }
 }

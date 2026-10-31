@@ -97,6 +97,18 @@ These source changes are not assigned to a package release here.
 
 ### Changed
 
+- On-disk layout: `DiskANNIndex::save` writes its graph, vector, doc-id, and
+  metadata files into a new directory under `generations/`, syncs them, and
+  publishes the save by atomically replacing a `CURRENT` pointer in the output
+  directory. A crash or error part-way through a save leaves the previous save
+  current, so a searcher can no longer load one save's vectors with another
+  save's graph. `DiskANNSearcher::load` reads the generation named by
+  `CURRENT` and still reads directories written in the earlier flat layout.
+  Older vicinity releases cannot read the new layout, and tools that open
+  `vectors.bin` or `graph.index` directly must resolve `CURRENT` first
+  (`persistence::generation::open_current`). Previous generations are not
+  deleted. The `diskann` feature now enables `persistence::generation` and
+  the optional `serde` and `fs4` dependencies.
 - Development-only SIMD ports use an immutable Pulp Git revision and require
   Rust 1.94 for its x86 intrinsics. Forbid unsafe
   code in all Vicinity targets, including benchmarks. Allocation diagnostics now
