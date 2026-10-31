@@ -13,6 +13,8 @@
   and analysis across datasets.
 - [datasets.md](datasets.md): ANN benchmark datasets, download
   instructions, and the format spec.
+- [benchmark-coverage-matrix.md](benchmark-coverage-matrix.md): which
+  registry selections the benchmark harness covers, and what it does not prove.
 
 Benchmark results are stored as JSONL. `examples/ann_benchmark.rs` writes one
 `_meta` line per run, then one measurement line per algorithm/config/storage
@@ -80,3 +82,5 @@ at least the same train limit.
   to run tests per module.
 - [review-status.md](review-status.md): current review queue for
   benchmarks, persistence, Python bindings, and performance work.
+- [generation-publication.md](generation-publication.md): staged generation
+  directories and the atomic `CURRENT` pointer for multi-file snapshots.
