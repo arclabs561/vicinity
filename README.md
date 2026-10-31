@@ -7,9 +7,14 @@ Approximate nearest-neighbor search.
 
 `vicinity` provides Rust indexes and Python bindings for vector search.
 
-This development branch requires Rust 1.94 for its Git-pinned SIMD backend and
-is not a registry release. The root-only Innr patch also unifies Qntz and benchmark dependencies for
-development validation, not published-artifact equivalence.
+This README describes the development branch; the registry release lags it.
+The install snippet below pins the version that carries the documented
+behaviour — `HNSWIndex::doc_id`, the persistence fixes and the `delete` API —
+which is also the version `precinct` 0.10.1 requires. Anything newer than that
+snippet is development-only until it is released. The branch requires Rust 1.94
+for its Git-pinned SIMD backend. The root-only Innr patch unifies Qntz and
+benchmark dependencies for development validation, not published-artifact
+equivalence.
 Vicinity-authored Rust forbids unsafe code across its targets. Dependencies,
 including Pulp and benchmark allocator instrumentation, use unsafe
 internally. This is not a transitive unsafe-free guarantee.
@@ -18,7 +23,7 @@ internally. This is not a transitive unsafe-free guarantee.
 
 ```toml
 [dependencies]
-vicinity = { version = "0.11.1", features = ["hnsw"] }
+vicinity = { version = "0.11.2", features = ["hnsw"] }
 ```
 
 HNSW is the default in-memory index for dense vectors. For cosine distance,
