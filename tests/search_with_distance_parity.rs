@@ -201,4 +201,43 @@ mod test {
             &r4[..5]
         );
     }
+
+    /// The closure receives internal ids; `doc_id` maps them back to the ids
+    /// given to `add`, so a closure scoring per-document data by doc id
+    /// returns each document's own distance. Doc ids are offset from
+    /// insertion order so an identity mapping would also fail.
+    #[test]
+    fn doc_id_maps_closure_ids_to_added_ids() {
+        let dim = 8;
+        let n = 400;
+        let train = random_vectors(n, dim, 7);
+        let params = HNSWParams {
+            metric: DistanceMetric::L2,
+            seed: Some(42),
+            ..Default::default()
+        };
+        let mut index = HNSWIndex::with_params(dim, params).unwrap();
+        let ids: Vec<u32> = (0..n as u32).map(|i| 1000 + 3 * i).collect();
+        index.add_batch(&ids, &train).unwrap();
+        index.build().unwrap();
+
+        let by_doc = |doc: u32| {
+            let pos = ((doc - 1000) / 3) as usize;
+            &train[pos * dim..(pos + 1) * dim]
+        };
+        let query = random_vectors(1, dim, 11);
+        let got = index
+            .search_with_distance(&query, 10, 100, &|q, internal| {
+                l2_distance(q, by_doc(index.doc_id(internal).unwrap()))
+            })
+            .unwrap();
+        assert!(!got.is_empty());
+        for (doc, d) in got {
+            assert!(
+                (l2_distance(&query, by_doc(doc)) - d).abs() < 1e-4,
+                "doc {doc}"
+            );
+        }
+        assert_eq!(index.doc_id(n as u32), None);
+    }
 }

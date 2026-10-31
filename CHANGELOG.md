@@ -18,6 +18,12 @@ These source changes are not assigned to a package release here.
 
 ## [Unreleased]
 
+### Added
+
+- `HNSWIndex::doc_id` maps an internal node id (the id a
+  `search_with_distance` closure receives, BFS-reordered after `build`) to the
+  doc id passed to `add`, so closures can look up per-document data by doc id.
+
 ### Changed
 
 - Development-only SIMD ports use an immutable Pulp Git revision and require
