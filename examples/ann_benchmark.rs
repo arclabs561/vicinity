@@ -1552,7 +1552,9 @@ fn run_diskann(
     let temp_dir = tempfile::tempdir().expect("create temp dir for DiskANN file-backed benchmark");
     let index_dir = temp_dir.path().join("diskann");
     index.save(&index_dir).unwrap();
-    let index_bytes = dir_size_bytes(&index_dir).ok();
+    let index_bytes = vicinity::persistence::generation::open_current(&index_dir)
+        .ok()
+        .and_then(|generation| dir_size_bytes(&generation).ok());
     let file_load_start = Instant::now();
     let searcher = RefCell::new(DiskANNSearcher::load(&index_dir).unwrap());
     let file_load_time_s = file_load_start.elapsed().as_secs_f64();

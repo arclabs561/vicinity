@@ -36,7 +36,7 @@
 pub mod directory;
 pub mod error;
 
-#[cfg(feature = "persistence")]
+#[cfg(any(feature = "persistence", feature = "diskann"))]
 pub mod generation;
 
 #[cfg(feature = "persistence")]

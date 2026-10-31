@@ -122,8 +122,10 @@ fn bench_diskann_search_only(c: &mut Criterion) {
     index
         .save_page_layout(&index_dir)
         .expect("save DiskANN page layout");
+    let generation = vicinity::persistence::generation::open_current(&index_dir)
+        .expect("saved DiskANN generation");
     let standard_bytes =
-        file_len(&index_dir.join("graph.index")) + file_len(&index_dir.join("vectors.bin"));
+        file_len(&generation.join("graph.index")) + file_len(&generation.join("vectors.bin"));
     let page_bytes = file_len(&index_dir.join("nodes.page"));
     let load = |budget| DiskANNSearcher::load_with_cache(&index_dir, cache_config(budget));
     let load_page = |budget| DiskANNPageSearcher::load_with_cache(&index_dir, cache_config(budget));
