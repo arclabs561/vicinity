@@ -51,8 +51,11 @@ jobs:
             echo "Tag v${VERSION} already exists; skipping"
           else
             git tag "v${VERSION}"
-            git push origin "v${VERSION}"
+            # checkout runs with persist-credentials: false, so push with the job token.
+            git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "v${VERSION}"
           fi
+        env:
+          GH_TOKEN: ${{ github.token }}
 
       - name: cargo-semver-checks
         uses: obi1kenobi/cargo-semver-checks-action@6b69fcf40e9b5fb17adeb57e4b6ecd020649a239 # v2.9
