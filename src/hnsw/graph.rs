@@ -1780,6 +1780,11 @@ impl HNSWIndex {
     }
 
     /// Add metadata for a document (required for filtering).
+    ///
+    /// May be called before or after [`Self::add`] for the same `doc_id`, and
+    /// after loading a saved index. Metadata added after [`Self::build`] is
+    /// seen by [`Self::search_with_filter`], but the intra-category edges that
+    /// `build` adds only cover metadata present at build time.
     pub fn add_metadata(
         &mut self,
         doc_id: u32,
@@ -1787,6 +1792,16 @@ impl HNSWIndex {
     ) -> Result<(), RetrieveError> {
         if let Some(ref mut store) = self.metadata {
             store.add(doc_id, metadata);
+            // Refresh the category snapshot `add` took for an existing vector.
+            if let (Some(field), Some(&internal)) =
+                (&self.filter_field, self.doc_id_to_internal.get(&doc_id))
+            {
+                let category = store.get(doc_id).and_then(|m| m.get(field).cloned());
+                if self.category_assignments.len() < self.num_vectors {
+                    self.category_assignments.resize(self.num_vectors, None);
+                }
+                self.category_assignments[internal as usize] = category;
+            }
             Ok(())
         } else {
             Err(RetrieveError::InvalidParameter(
@@ -3220,7 +3235,31 @@ impl HNSWIndex {
             return Ok((Vec::new(), 0));
         }
 
-        let query_proj = prt.project_query(query);
+        // The projected squared L2 distance estimates
+        // `num_projections / dimension * ||q - x||^2`, so the pruning
+        // threshold is the worst result's distance converted to squared L2 in
+        // the same units. Cosine and angular distances convert through unit
+        // vectors (`||q - x||^2 = 2 * (1 - cos)`), so the query projection is
+        // normalized. Inner product has no conversion without the stored
+        // vector norms, so every candidate is scored.
+        let mut query_proj = prt.project_query(query);
+        let metric = self.params.metric;
+        if matches!(metric, DistanceMetric::Cosine | DistanceMetric::Angular) {
+            let norm = query.iter().map(|x| x * x).sum::<f32>().sqrt();
+            if norm > 0.0 {
+                query_proj.iter_mut().for_each(|x| *x /= norm);
+            }
+        }
+        let proj_scale = prt.num_projections() as f32 / self.dimension as f32;
+        let proj_threshold = move |worst: f32| -> Option<f32> {
+            let l2_sq = match metric {
+                DistanceMetric::L2 => worst * worst,
+                DistanceMetric::Cosine => 2.0 * worst,
+                DistanceMetric::Angular => 2.0 * (1.0 - (std::f32::consts::PI * worst).cos()),
+                DistanceMetric::InnerProduct => return None,
+            };
+            Some(proj_scale * l2_sq)
+        };
         let mut tfb = crate::prt::TestFeedbackBuffer::new(initial_ratio, decay);
         let dist_fn = self.dist_fn();
 
@@ -3234,6 +3273,7 @@ impl HNSWIndex {
             dist_fn,
             prt,
             &query_proj,
+            &proj_threshold,
             &mut tfb,
         );
 

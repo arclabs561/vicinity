@@ -539,10 +539,11 @@ impl SparseMipsIndex {
 
         while let Some(std::cmp::Reverse((FloatOrd(current_dist), current_id))) = frontier.pop() {
             // Early termination: if the frontier's best is worse than the ef-th
-            // result by a margin, further expansion cannot improve the top-ef.
+            // result, further expansion cannot improve the top-ef. Distances
+            // are `-dot` and usually negative, so no multiplicative margin.
             if candidates.len() >= ef {
                 candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
-                if current_dist > candidates[ef - 1].1 * 1.5 {
+                if current_dist > candidates[ef - 1].1 {
                     break;
                 }
             }

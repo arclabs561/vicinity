@@ -401,7 +401,9 @@ where
     G: AsRef<[u32]>,
     D: Fn(u32) -> f32,
 {
-    // Result candidates (filtered nodes only)
+    // Result candidates (filtered nodes only), kept to the search width so
+    // the pruning bound below is the width-th best distance, as in HNSW.
+    let width = k.max(config.ef_search);
     let mut results: BinaryHeap<Candidate> = BinaryHeap::new();
 
     // Search frontier
@@ -430,9 +432,11 @@ where
     while let Some(current) = frontier.pop() {
         let current_dist = -current.distance; // Un-negate
 
-        // Early termination: only if we have enough results AND frontier is worse
-        // Be more conservative about stopping when filter is selective
-        let can_stop = results.len() >= k && current_dist > worst_result_dist * 1.5; // 50% margin
+        // Early termination: only if the result list is full AND the closest
+        // frontier node is worse than its worst entry. Comparisons are
+        // additive-offset invariant, so distances may be negative (`-dot`).
+        // Be more conservative about stopping when filter is selective.
+        let can_stop = results.len() >= width && current_dist > worst_result_dist;
         if can_stop && state.filter_ratio() > 0.3 {
             break;
         }
@@ -453,7 +457,7 @@ where
             if neighbor_passes {
                 insert_bounded_result(
                     &mut results,
-                    k,
+                    width,
                     Candidate {
                         node_id: neighbor,
                         distance: dist,
@@ -468,7 +472,7 @@ where
 
             // Add to frontier for exploration (even if doesn't pass filter)
             // This is critical: we need to navigate through non-matching nodes
-            if dist < worst_result_dist * 2.0 || results.len() < k {
+            if results.len() < width || dist < worst_result_dist {
                 frontier.push(Candidate {
                     node_id: neighbor,
                     distance: -dist,
@@ -500,7 +504,7 @@ where
                     if two_hop_passes {
                         insert_bounded_result(
                             &mut results,
-                            k,
+                            width,
                             Candidate {
                                 node_id: two_hop,
                                 distance: two_hop_dist,
@@ -513,7 +517,7 @@ where
                     }
 
                     // Also add two-hop to frontier
-                    if two_hop_dist < worst_result_dist * 2.0 || results.len() < k {
+                    if results.len() < width || two_hop_dist < worst_result_dist {
                         frontier.push(Candidate {
                             node_id: two_hop,
                             distance: -two_hop_dist,

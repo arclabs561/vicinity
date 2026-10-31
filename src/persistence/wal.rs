@@ -86,15 +86,42 @@ pub struct WalWriter {
     inner: durability::walog::WalWriter<WalEntry>,
 }
 
+fn adapt(directory: impl Into<Arc<dyn vicinity_dir::Directory>>) -> Arc<dyn durability::Directory> {
+    Arc::new(DirAdapter {
+        inner: directory.into(),
+    })
+}
+
 impl WalWriter {
-    /// Create a new WAL writer.
+    /// Create a writer for a new, empty WAL.
+    ///
+    /// Appends fail if the directory already holds WAL segments; use
+    /// [`Self::open`] or [`Self::resume`] to continue an existing WAL after a
+    /// restart.
     pub fn new(directory: impl Into<Arc<dyn vicinity_dir::Directory>>) -> Self {
-        let inner_dir: Arc<dyn durability::Directory> = Arc::new(DirAdapter {
-            inner: directory.into(),
-        });
         Self {
-            inner: durability::walog::WalWriter::new(inner_dir),
+            inner: durability::walog::WalWriter::new(adapt(directory)),
         }
+    }
+
+    /// Open the WAL in `directory`: resume it if segments exist, otherwise
+    /// start a new one.
+    pub fn open(directory: impl Into<Arc<dyn vicinity_dir::Directory>>) -> PersistenceResult<Self> {
+        Ok(Self {
+            inner: durability::walog::WalWriter::open(adapt(directory))
+                .map_err(PersistenceError::from)?,
+        })
+    }
+
+    /// Resume appending to the existing WAL in `directory`, continuing its
+    /// entry ids. Equivalent to [`Self::new`] when no segments exist.
+    pub fn resume(
+        directory: impl Into<Arc<dyn vicinity_dir::Directory>>,
+    ) -> PersistenceResult<Self> {
+        Ok(Self {
+            inner: durability::walog::WalWriter::resume(adapt(directory))
+                .map_err(PersistenceError::from)?,
+        })
     }
 
     /// Append an entry to the WAL, returning its assigned entry id.
@@ -102,9 +129,17 @@ impl WalWriter {
         self.inner.append(&entry).map_err(PersistenceError::from)
     }
 
-    /// Flush buffered bytes (if any).
+    /// Flush buffered bytes (if any) to the OS. This does not fsync; use
+    /// [`Self::flush_and_sync`] for durability across power loss.
     pub fn flush(&mut self) -> PersistenceResult<()> {
         self.inner.flush().map_err(PersistenceError::from)
+    }
+
+    /// Flush buffered bytes and fsync the current segment and its directory.
+    ///
+    /// If the sync fails the writer is poisoned and later appends fail.
+    pub fn flush_and_sync(&mut self) -> PersistenceResult<()> {
+        self.inner.flush_and_sync().map_err(PersistenceError::from)
     }
 }
 
@@ -116,11 +151,8 @@ pub struct WalReader {
 impl WalReader {
     /// Create a new WAL reader.
     pub fn new(directory: impl Into<Arc<dyn vicinity_dir::Directory>>) -> Self {
-        let inner_dir: Arc<dyn durability::Directory> = Arc::new(DirAdapter {
-            inner: directory.into(),
-        });
         Self {
-            inner: durability::walog::WalReader::new(inner_dir),
+            inner: durability::walog::WalReader::new(adapt(directory)),
         }
     }
 
