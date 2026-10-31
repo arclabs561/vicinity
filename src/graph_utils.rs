@@ -1,7 +1,7 @@
 //! Shared graph construction utilities used by multiple ANN index modules.
 //!
 //! - [`build_knn_graph_nndescent`]: NN-descent (Dong et al., 2011) kNN graph construction.
-//! - [`ensure_connectivity`]: O(n * k) graph connectivity repair via union-find.
+//! - [`ensure_connectivity`]: repair so every node is reachable from the entry point.
 //!
 //! Both functions are conditionally used depending on which algorithm features
 //! are enabled. Allow dead_code at the module level to avoid per-feature-combo lint noise.
@@ -113,12 +113,17 @@ where
         .collect()
 }
 
-/// Ensure the graph rooted at `entry_point` is fully connected.
+/// Ensure every node is reachable from `entry_point` along directed edges.
 ///
-/// Uses union-find to identify connected components, then bridges each isolated
-/// component to the main component via beam search on the existing graph.
-/// Complexity: O(n * k) where k is average neighbor degree, vs O(n^2) for
-/// the brute-force approach.
+/// Graph search starts at `entry_point` and only follows out-edges, so the
+/// guarantee that matters is directed reachability, not undirected
+/// connectivity (a node with only out-edges is connected but never visited).
+/// This marks the nodes reachable from the entry, then, for each unreached
+/// node, adds an out-edge from a nearby reached node (NSG, Fu et al. 2019,
+/// Alg. 2: DFS from the navigating node and link unreached nodes into the
+/// tree) and marks everything that edge makes reachable.
+/// Bridge candidates come from a local neighborhood scan (O(k^2) per bridge)
+/// rather than an O(n) brute-force search.
 ///
 /// # Arguments
 /// - `neighbors`: mutable neighbor adjacency lists
@@ -134,102 +139,67 @@ where
         return;
     }
 
-    // Union-Find with path compression and union by rank.
-    let mut parent: Vec<u32> = (0..n as u32).collect();
-    let mut rank: Vec<u8> = vec![0; n];
-
-    fn find(parent: &mut [u32], x: u32) -> u32 {
-        let mut r = x;
-        while parent[r as usize] != r {
-            parent[r as usize] = parent[parent[r as usize] as usize]; // path halving
-            r = parent[r as usize];
-        }
-        r
-    }
-
-    fn union(parent: &mut [u32], rank: &mut [u8], a: u32, b: u32) {
-        let ra = find(parent, a);
-        let rb = find(parent, b);
-        if ra == rb {
+    // Mark every node reachable from `start` along out-edges.
+    fn mark_reachable<A: Array<Item = u32>>(
+        neighbors: &[SmallVec<A>],
+        reached: &mut [bool],
+        start: u32,
+    ) {
+        if reached[start as usize] {
             return;
         }
-        if rank[ra as usize] < rank[rb as usize] {
-            parent[ra as usize] = rb;
-        } else if rank[ra as usize] > rank[rb as usize] {
-            parent[rb as usize] = ra;
-        } else {
-            parent[rb as usize] = ra;
-            rank[ra as usize] += 1;
+        reached[start as usize] = true;
+        let mut stack = vec![start];
+        while let Some(u) = stack.pop() {
+            for &v in &neighbors[u as usize] {
+                if !reached[v as usize] {
+                    reached[v as usize] = true;
+                    stack.push(v);
+                }
+            }
         }
     }
 
-    // Build union-find from existing edges.
-    for (i, nbrs) in neighbors.iter().enumerate() {
-        for &nb in nbrs {
-            union(&mut parent, &mut rank, i as u32, nb);
-        }
-    }
+    let mut reached = vec![false; n];
+    mark_reachable(neighbors, &mut reached, entry_point);
 
-    let entry_root = find(&mut parent, entry_point);
-
-    // Collect one representative per non-entry component.
-    // For each isolated node, find its closest reachable neighbor via a local
-    // neighborhood scan (check neighbors-of-neighbors) instead of O(n) brute force.
     for i in 0..n {
-        if find(&mut parent, i as u32) == entry_root {
+        if reached[i] {
             continue;
         }
 
-        // Strategy: scan all neighbors of our own neighbors to find one in the
-        // entry component. If that fails, fall back to scanning the entry point's
-        // neighborhood. This is O(k^2) per isolated node instead of O(n).
+        // Pick the closest reached node among a few cheap candidate sets:
+        // i's two-hop out-neighborhood, the entry point's neighbors, and
+        // their neighbors. The entry point itself is the fallback.
         let mut best_id = entry_point;
         let mut best_dist = dist_fn(i, entry_point as usize);
-
-        // Check neighbors-of-neighbors for a bridge.
-        let my_neighbors: SmallVec<A> = neighbors[i].clone();
-        for &nb in &my_neighbors {
-            let nb_neighbors: SmallVec<A> = neighbors[nb as usize].clone();
-            for &nb2 in &nb_neighbors {
-                if find(&mut parent, nb2) == entry_root {
-                    let d = dist_fn(i, nb2 as usize);
-                    if d < best_dist {
-                        best_dist = d;
-                        best_id = nb2;
-                    }
+        let consider = |c: u32, best_id: &mut u32, best_dist: &mut f32| {
+            if reached[c as usize] {
+                let d = dist_fn(i, c as usize);
+                if d < *best_dist {
+                    *best_dist = d;
+                    *best_id = c;
                 }
             }
-        }
+        };
 
-        // Scan entry point's neighbors (guaranteed reachable).
-        let entry_neighbors: SmallVec<A> = neighbors[entry_point as usize].clone();
-        for &nb in &entry_neighbors {
-            let d = dist_fn(i, nb as usize);
-            if d < best_dist {
-                best_dist = d;
-                best_id = nb;
+        for &nb in &neighbors[i] {
+            for &nb2 in &neighbors[nb as usize] {
+                consider(nb2, &mut best_id, &mut best_dist);
+            }
+        }
+        for &enb in &neighbors[entry_point as usize] {
+            consider(enb, &mut best_id, &mut best_dist);
+            for &enb2 in &neighbors[enb as usize] {
+                consider(enb2, &mut best_id, &mut best_dist);
             }
         }
 
-        // Two-hop: scan entry neighbors' neighbors for better bridge candidates.
-        // Costs O(k^2) per isolated node but covers a much larger neighborhood.
-        for &enb in &entry_neighbors {
-            let enb_neighbors: SmallVec<A> = neighbors[enb as usize].clone();
-            for &enb2 in &enb_neighbors {
-                if find(&mut parent, enb2) == entry_root {
-                    let d = dist_fn(i, enb2 as usize);
-                    if d < best_dist {
-                        best_dist = d;
-                        best_id = enb2;
-                    }
-                }
-            }
-        }
-
-        // Bridge the components.
-        neighbors[i].push(best_id);
+        // The edge best_id -> i is what makes i reachable; the reverse edge
+        // keeps the bridge usable from i's side as well.
         neighbors[best_id as usize].push(i as u32);
-        union(&mut parent, &mut rank, i as u32, best_id);
+        neighbors[i].push(best_id);
+        mark_reachable(neighbors, &mut reached, i as u32);
     }
 }
 
@@ -298,5 +268,22 @@ mod tests {
             }
         }
         assert!(visited.iter().all(|&v| v), "All nodes should be reachable");
+    }
+
+    #[test]
+    fn test_ensure_connectivity_uses_edge_direction() {
+        // Node 2 points at 0 but nothing points at 2: undirected-connected,
+        // yet unreachable from entry 0 along out-edges.
+        let mut neighbors: Vec<SmallVec<[u32; 16]>> = vec![
+            SmallVec::from_slice(&[1]),
+            SmallVec::from_slice(&[0]),
+            SmallVec::from_slice(&[0]),
+        ];
+        let dist_fn = |i: usize, j: usize| (i as f32 - j as f32).abs();
+        ensure_connectivity(&mut neighbors, 0, dist_fn);
+        assert!(
+            neighbors[0].contains(&2) || neighbors[1].contains(&2),
+            "node 2 must get an in-edge from a reachable node: {neighbors:?}"
+        );
     }
 }
