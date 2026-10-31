@@ -304,6 +304,37 @@ name = "sparse_mips_benchmark"
 path = "examples/sparse_mips_benchmark.rs"
 required-features = ["sparse_mips"]
 
+# Every index family on one protocol.
+[[example]]
+name = "all_families"
+path = "examples/all_families.rs"
+required-features = [
+  "hnsw",
+  "nsw",
+  "nsg",
+  "finger",
+  "fresh_graph",
+  "filtered_graph",
+  "vamana",
+  "diskann",
+  "ivf_pq",
+  "ivf_avq",
+  "ivf_rabitq",
+  "emg",
+  "curator",
+  "lsh",
+  "pipnn",
+  "rp_quant",
+  "sq4",
+  "binary_index",
+  "sng",
+  "range_filtered",
+  "kdtree",
+  "balltree",
+  "kmeans_tree",
+  "rptree",
+]
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
