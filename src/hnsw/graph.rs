@@ -2536,6 +2536,17 @@ impl HNSWIndex {
         }
     }
 
+    /// Search using the index's configured `ef_search`.
+    ///
+    /// This is the form most callers want: the builder's `ef_search` is the
+    /// tuned default, and `search(query, k, ef)` exists for per-query overrides.
+    /// Before this existed, a value set with `.ef_search(..)` on the builder was
+    /// silently ignored by the three-argument `search`, so recall stayed at
+    /// whatever the caller passed.
+    pub fn search_knn(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, RetrieveError> {
+        self.search(query, k, self.params.ef_search)
+    }
+
     /// Search with a caller-provided distance function.
     ///
     /// The graph structure (built with center-to-center distance) is used for

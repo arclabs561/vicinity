@@ -19,11 +19,16 @@ Vicinity-authored Rust forbids unsafe code across its targets. Dependencies,
 including Pulp and benchmark allocator instrumentation, use unsafe
 internally. This is not a transitive unsafe-free guarantee.
 
+Saving and loading live behind the `serde` feature: without it,
+`save_to_file`/`load_from_file` do not exist and the compiler names no feature.
+For a per-query override use `search_knn(query, k)`; it applies the builder's
+`ef_search`, while `search(query, k, ef)` is the explicit override.
+
 ## Rust
 
 ```toml
 [dependencies]
-vicinity = { version = "0.11.2", features = ["hnsw"] }
+vicinity = { version = "0.11.2", features = ["hnsw", "serde"] }   # serde adds save_to_file/load_from_file
 ```
 
 HNSW is the default in-memory index for dense vectors. For cosine distance,

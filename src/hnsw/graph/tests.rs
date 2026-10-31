@@ -2017,3 +2017,28 @@ fn test_delete_with_repair_recall_vs_tombstone() {
         tombstone_results.len(),
     );
 }
+
+/// The builder's `ef_search` must be the default the convenience search uses;
+/// before `search_knn` existed, a tuned builder value was silently ignored by
+/// the three-argument `search`.
+#[test]
+fn search_knn_uses_the_builder_ef() {
+    let dim = 8;
+    let mut index = HNSWIndex::builder(dim)
+        .auto_normalize(true)
+        .ef_search(64)
+        .build()
+        .unwrap();
+    for i in 0..200u32 {
+        let v: Vec<f32> = (0..dim)
+            .map(|d| ((i * 31 + d as u32 * 7) % 100) as f32 / 100.0)
+            .collect();
+        index.add_slice(i, &v).unwrap();
+    }
+    index.build().unwrap();
+    let query: Vec<f32> = (0..dim).map(|d| (d as f32) / 8.0).collect();
+    assert_eq!(
+        index.search_knn(&query, 5).unwrap(),
+        index.search(&query, 5, 64).unwrap()
+    );
+}
