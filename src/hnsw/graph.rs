@@ -936,6 +936,17 @@ impl HNSWIndex {
         &self.vectors
     }
 
+    /// External doc id stored at an internal node id.
+    ///
+    /// Internal ids index [`Self::raw_vectors`] and are what the
+    /// [`Self::search_with_distance`] closure receives; after [`Self::build`]
+    /// they are BFS-reordered. Use this to map them back to the ids passed to
+    /// `add`. Returns `None` for an id past the last node.
+    #[must_use]
+    pub fn doc_id(&self, internal_id: u32) -> Option<u32> {
+        self.doc_ids.get(internal_id as usize).copied()
+    }
+
     /// Return the maximum neighbor count across all nodes and layers.
     ///
     /// Useful for verifying the graph respects the degree bound after construction.
