@@ -20,6 +20,16 @@ These source changes are not assigned to a package release here.
 
 ### Fixed
 
+- `LsmIndex` treats inserting an existing ID as an update. Updating an ID
+  still in L0 put it into the compaction merge twice; the level's HNSW
+  rejected the duplicate, `compact()` (or the `insert` that triggered it)
+  failed after draining L0, and every buffered vector was lost. An update
+  whose old copy was already compacted could return the stale vector, and
+  `delete` followed by `insert` brought the deleted copy back. The index now
+  overwrites buffered copies in place, tracks the level of each ID's newest
+  copy, hides older copies from search and drops them at the next
+  compaction. A failed compaction leaves L0 in place, and `len()` counts each
+  live ID once.
 - NSG, FINGER, FreshGraph and FilteredGraph drop the node being linked from
   its own prune candidates. It came back from the build search at distance 0
   and occluded every other candidate, collapsing out-lists toward self-loops
