@@ -19,12 +19,65 @@
 //! let n = norm(&a);
 //! ```
 
+// The backend is always reached through a `pub use` below, so enabling
+// `distance-stats` can swap in counting wrappers without touching call sites.
 #[cfg(feature = "innr")]
-#[allow(unused_imports)] // Subsets used depending on feature combination
-pub use innr::{cosine, dot, l2_distance, l2_distance_squared, norm};
+mod backend {
+    #[allow(unused_imports)] // Subsets used depending on feature combination
+    pub use innr::{cosine, dot, l2_distance, l2_distance_squared, norm};
+}
 
 #[cfg(not(feature = "innr"))]
-pub use fallback::*;
+mod backend {
+    pub use super::fallback::*;
+}
+
+/// Counting wrappers for the `distance_stats` feature.
+///
+/// One distance computation is one vector-pair comparison, so each wrapper
+/// records exactly one. `norm` is intentionally absent: a norm is not a
+/// distance. The fallback backend is wrapped too, so the count is the same
+/// with and without SIMD.
+#[cfg(feature = "distance-stats")]
+mod counted {
+    #[inline]
+    #[must_use]
+    pub fn dot(a: &[f32], b: &[f32]) -> f32 {
+        crate::distance_stats::note_distance();
+        super::backend::dot(a, b)
+    }
+
+    /// Cosine similarity. Counted once even though it reads both vectors'
+    /// norms internally.
+    #[inline]
+    #[must_use]
+    pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
+        crate::distance_stats::note_distance();
+        super::backend::cosine(a, b)
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn l2_distance(a: &[f32], b: &[f32]) -> f32 {
+        crate::distance_stats::note_distance();
+        super::backend::l2_distance(a, b)
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn l2_distance_squared(a: &[f32], b: &[f32]) -> f32 {
+        crate::distance_stats::note_distance();
+        super::backend::l2_distance_squared(a, b)
+    }
+
+    pub use super::backend::norm;
+}
+
+#[cfg(feature = "distance-stats")]
+pub use counted::*;
+
+#[cfg(not(feature = "distance-stats"))]
+pub use backend::*;
 
 #[cfg(not(feature = "innr"))]
 mod fallback {
