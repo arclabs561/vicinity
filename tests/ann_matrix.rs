@@ -46,7 +46,7 @@ fn dataset(case: &Case, seed: u64) -> Vec<Vec<f32>> {
         .collect()
 }
 
-fn truth(queries: &[Vec<f32>], db: &[Vec<f32>], k: usize) -> Vec<HashSet<u32>> {
+fn truth(queries: &[Vec<f32>], db: &[Vec<f32>], k: usize) -> Vec<Vec<(u32, f32)>> {
     queries
         .iter()
         .map(|q| {
@@ -56,24 +56,51 @@ fn truth(queries: &[Vec<f32>], db: &[Vec<f32>], k: usize) -> Vec<HashSet<u32>> {
                 .map(|(i, v)| (i as u32, cosine_distance(q, v)))
                 .collect();
             scored.sort_by(|a, b| a.1.total_cmp(&b.1));
-            scored.into_iter().take(k).map(|(i, _)| i).collect()
+            scored.into_iter().take(k).collect()
         })
         .collect()
 }
 
-fn score(name: &str, truth: &[HashSet<u32>], queries: &[Vec<f32>], search: impl Fn(&[f32]) -> Vec<u32>) {
+fn score(
+    name: &str,
+    truth: &[Vec<(u32, f32)>],
+    queries: &[Vec<f32>],
+    db: &[Vec<f32>],
+    search: impl Fn(&[f32]) -> Vec<u32>,
+) {
     let k = truth[0].len();
-    let started = Instant::now();
+    let mut latencies = Vec::with_capacity(queries.len());
     let mut hit = 0usize;
+    let mut ratio = 0.0f64;
     for (q, expected) in queries.iter().zip(truth) {
-        let got: HashSet<u32> = search(q).into_iter().take(k).collect();
-        hit += expected.intersection(&got).count();
+        let started = Instant::now();
+        let got = search(q);
+        latencies.push(started.elapsed().as_secs_f64());
+        let expected_ids: HashSet<u32> = expected.iter().map(|(i, _)| *i).collect();
+        let returned: HashSet<u32> = got.iter().take(k).copied().collect();
+        hit += expected_ids.intersection(&returned).count();
+        // 1/Ratio@k: true distance mass over retrieved distance mass, averaged
+        // over queries. Judge-free and computable from the same ground truth.
+        let true_mass: f32 = expected.iter().map(|(_, d)| d).sum();
+        let got_mass: f32 = got
+            .iter()
+            .take(k)
+            .map(|id| cosine_distance(q, &db[*id as usize]))
+            .sum();
+        if got_mass > 0.0 {
+            ratio += f64::from(true_mass / got_mass);
+        }
     }
-    let elapsed = started.elapsed().as_secs_f64();
+    latencies.sort_by(|a, b| a.total_cmp(b));
+    let pct = |p: f64| latencies[((latencies.len() as f64 * p) as usize).min(latencies.len() - 1)];
     println!(
-        "{name:34} recall@{k}={:.3} qps={:.0}",
+        "{name:34} recall@{k}={:.3} 1/ratio={:.3} p50={:.0}us p95={:.0}us p99={:.0}us qps={:.0}",
         hit as f32 / (queries.len() * k) as f32,
-        queries.len() as f64 / elapsed
+        ratio / queries.len() as f64,
+        pct(0.50) * 1e6,
+        pct(0.95) * 1e6,
+        pct(0.99) * 1e6,
+        queries.len() as f64 / latencies.iter().sum::<f64>(),
     );
 }
 
@@ -82,6 +109,7 @@ fn tier(name: &str) -> usize {
         "10k" => 10_000,
         "100k" => 100_000,
         "1m" => 1_000_000,
+        "10m" => 10_000_000,
         _ => 0,
     }
 }
@@ -98,7 +126,14 @@ fn ann_matrix() {
         })
         .collect();
     for n in tiers {
-        for dim in [96usize, 128] {
+        // Dimension scales down as n grows: 10M x 96 f32 is ~3.8 GB before the
+        // index, and mega tiers exist to test scale behaviour, not width.
+        let dims: Vec<usize> = if n >= 10_000_000 {
+            vec![32, 96]
+        } else {
+            vec![96, 128]
+        };
+        for dim in dims {
             for shape in [Shape::Uniform, Shape::Clustered] {
                 let case = Case { n, dim, shape };
                 let db = dataset(&case, 11);
@@ -122,6 +157,7 @@ fn ann_matrix() {
                         &format!("vicinity {label} ef={ef}"),
                         &expected,
                         &queries,
+                        &db,
                         |q| index.search(q, 10, ef).unwrap().into_iter().map(|(i, _)| i).collect(),
                     );
                 }
@@ -144,6 +180,7 @@ fn ann_matrix() {
                         &format!("usearch  {label} ef={ef}"),
                         &expected,
                         &queries,
+                        &db,
                         |q| uindex.search(q, 10).unwrap().keys.iter().map(|k| *k as u32).collect(),
                     );
                 }
