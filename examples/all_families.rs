@@ -117,6 +117,8 @@ struct Row {
     p99: f64,
     qps: f64,
     build_s: f64,
+    /// Resident-set growth across the build, in MiB (0 when unavailable).
+    mem_mib: f64,
     errors: usize,
     first_error: Option<String>,
 }
@@ -360,24 +362,61 @@ fn percentile(samples: &mut [f64], p: f64) -> f64 {
     samples[rank.saturating_sub(1).min(samples.len() - 1)]
 }
 
+/// Resident-set size of this process in MiB, measured with `ps` so it works on
+/// macOS and Linux without a libc dependency.
+fn rss_mib() -> Option<f64> {
+    let pid = std::process::id().to_string();
+    let output = std::process::Command::new("ps")
+        .args(["-o", "rss=", "-p", &pid])
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let kib: f64 = text.trim().parse().ok()?;
+    Some(kib / 1024.0)
+}
+
 fn run_family(family: &Family, dataset: &Dataset) -> Result<Vec<Row>, String> {
     let mut rows = Vec::new();
 
     if family.rebuild {
         for &knob in family.values {
+            let rss_before = rss_mib();
             let build_start = Instant::now();
             let mut index = (family.build)(&dataset.base, DIM, knob)
                 .map_err(|e| format!("build failed at {}={knob}: {e}", family.knob))?;
             let build_s = build_start.elapsed().as_secs_f64();
-            rows.push(row_for(family, dataset, knob, build_s, &mut *index));
+            let mem_mib = match (rss_before, rss_mib()) {
+                (Some(before), Some(after)) => (after - before).max(0.0),
+                _ => 0.0,
+            };
+            rows.push(row_for(
+                family,
+                dataset,
+                knob,
+                build_s,
+                mem_mib,
+                &mut *index,
+            ));
         }
     } else {
+        let rss_before = rss_mib();
         let build_start = Instant::now();
         let mut index = (family.build)(&dataset.base, DIM, family.values[0])
             .map_err(|e| format!("build failed: {e}"))?;
         let build_s = build_start.elapsed().as_secs_f64();
+        let mem_mib = match (rss_before, rss_mib()) {
+            (Some(before), Some(after)) => (after - before).max(0.0),
+            _ => 0.0,
+        };
         for &knob in family.values {
-            rows.push(row_for(family, dataset, knob, build_s, &mut *index));
+            rows.push(row_for(
+                family,
+                dataset,
+                knob,
+                build_s,
+                mem_mib,
+                &mut *index,
+            ));
         }
     }
 
@@ -389,6 +428,7 @@ fn row_for(
     dataset: &Dataset,
     knob: usize,
     build_s: f64,
+    mem_mib: f64,
     index: &mut dyn Searcher,
 ) -> Row {
     let stats = evaluate(index, dataset, knob);
@@ -404,6 +444,7 @@ fn row_for(
         p99: stats.p99,
         qps: stats.qps,
         build_s,
+        mem_mib,
         errors: stats.errors,
         first_error: stats.first_error,
     }
@@ -418,12 +459,12 @@ fn print_rows(rows: &[Row]) {
         println!("## {dataset}");
         println!();
         println!(
-            "| family | knob | recall@10 | 1/ratio@10 | p50 us | p95 us | p99 us | QPS | build s |"
+            "| family | knob | recall@10 | 1/ratio@10 | p50 us | p95 us | p99 us | QPS | build s | mem MiB |"
         );
-        println!("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |");
+        println!("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |");
         for row in rows.iter().filter(|r| r.dataset == dataset) {
             println!(
-                "| {} | {}={} | {:.3} | {:.2} | {:.1} | {:.1} | {:.1} | {:.0} | {:.2} |",
+                "| {} | {}={} | {:.3} | {:.2} | {:.1} | {:.1} | {:.1} | {:.0} | {:.2} | {:.1} |",
                 row.family,
                 row.knob,
                 row.knob_value,
@@ -433,11 +474,12 @@ fn print_rows(rows: &[Row]) {
                 row.p95,
                 row.p99,
                 row.qps,
-                row.build_s
+                row.build_s,
+                row.mem_mib
             );
             if row.errors > 0 {
                 println!(
-                    "| ^ {} query errors: {} | | | | | | | | |",
+                    "| ^ {} query errors: {} | | | | | | | | | |",
                     row.errors,
                     row.first_error.as_deref().unwrap_or("unknown")
                 );
