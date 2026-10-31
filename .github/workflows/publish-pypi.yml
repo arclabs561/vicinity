@@ -72,7 +72,7 @@ jobs:
             target: aarch64-unknown-linux-gnu
             manylinux: "musllinux_1_2"
             artifact-suffix: musllinux-aarch64
-          - os: macos-14
+          - os: macos-15
             target: aarch64-apple-darwin
             manylinux: "auto"
             artifact-suffix: macos-arm64
