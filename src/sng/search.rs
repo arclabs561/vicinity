@@ -3,7 +3,12 @@
 use crate::simd;
 use crate::sng::graph::SNGIndex;
 use crate::RetrieveError;
+use std::cmp::Reverse;
 use std::collections::BinaryHeap;
+
+/// Beam width for search; matches the `ef_search` default of the other
+/// single-layer graph indexes (NSG, PiPNN).
+const SEARCH_EF: usize = 100;
 
 /// Candidate during search.
 #[derive(Clone, PartialEq)]
@@ -84,14 +89,23 @@ pub fn search_sng(
             }
         };
 
-        // Greedy search with early termination
+        // Best-first beam search. The beam width is independent of k (for
+        // k <= SEARCH_EF), so the top-1 of a k=1 query matches the top-1 of
+        // a k=10 query. Stopping after k pops, as before, returned the best
+        // entry-scan vector with no traversal when k = 1.
+        let ef = k.max(SEARCH_EF);
         let mut candidates = BinaryHeap::new();
-        let mut results = Vec::new();
+        // Max-heap on distance: the worst kept result is on top.
+        let mut results: BinaryHeap<Reverse<SearchCandidate>> = BinaryHeap::new();
 
         candidates.push(SearchCandidate {
             id: current,
             distance: current_dist,
         });
+        results.push(Reverse(SearchCandidate {
+            id: current,
+            distance: current_dist,
+        }));
         visited_insert(current);
 
         // Search with O(log n) guarantee
@@ -99,10 +113,8 @@ pub fn search_sng(
         let mut iterations = 0;
 
         while let Some(candidate) = candidates.pop() {
-            // All candidates in the heap were already marked visited when pushed.
-            results.push((candidate.id, candidate.distance));
-
-            if results.len() >= k {
+            let worst = results.peek().map_or(f32::INFINITY, |r| r.0.distance);
+            if results.len() >= ef && candidate.distance > worst {
                 break;
             }
 
@@ -130,13 +142,26 @@ pub fn search_sng(
 
                     let neighbor_vec = index.get_vector(neighbor_id as usize);
                     let dist = 1.0 - simd::dot(query, neighbor_vec);
-                    candidates.push(SearchCandidate {
-                        id: neighbor_id,
-                        distance: dist,
-                    });
+                    let worst = results.peek().map_or(f32::INFINITY, |r| r.0.distance);
+                    if results.len() < ef || dist < worst {
+                        let c = SearchCandidate {
+                            id: neighbor_id,
+                            distance: dist,
+                        };
+                        candidates.push(c.clone());
+                        results.push(Reverse(c));
+                        if results.len() > ef {
+                            results.pop();
+                        }
+                    }
                 }
             }
         }
+
+        let mut results: Vec<(u32, f32)> = results
+            .into_iter()
+            .map(|Reverse(c)| (c.id, c.distance))
+            .collect();
 
         // Sort by distance and return top k
         results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));

@@ -204,8 +204,10 @@ impl FingerIndex {
         for i in 0..n {
             let vi = self.get_vector(i).to_vec();
 
-            // Beam search for a richer candidate set.
-            let candidates = self.beam_search_internal(&vi, self.params.ef_construction);
+            // Beam search for a richer candidate set. It finds node i itself
+            // at distance 0; prune without it (FreshDiskANN Alg. 3 removes p).
+            let mut candidates = self.beam_search_internal(&vi, self.params.ef_construction);
+            candidates.retain(|&(id, _)| id as usize != i);
 
             // RNG pruning with alpha.
             let selected = self.rng_prune(&vi, &candidates);

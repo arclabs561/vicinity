@@ -677,7 +677,10 @@ impl FilteredGraphIndex {
 
         for i in 0..n {
             let vi = self.get_vector(i).to_vec();
-            let candidates = self.beam_search(&vi, ef);
+            // The search finds node i itself at distance 0; prune without it
+            // (FreshDiskANN Alg. 3 removes p from the candidate set).
+            let mut candidates = self.beam_search(&vi, ef);
+            candidates.retain(|&(id, _)| id as usize != i);
             let selected = self.rng_prune(&vi, &candidates);
 
             let old = std::mem::replace(

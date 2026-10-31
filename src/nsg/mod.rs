@@ -242,8 +242,11 @@ impl NsgIndex {
         for i in 0..n {
             let vi = self.get_vector(i).to_vec();
 
-            // Beam search from medoid to find candidate neighbors
-            let candidates = self.beam_search(&vi, self.params.pool_size);
+            // Beam search from medoid to find candidate neighbors. Node i is
+            // in the index, so the search returns it at distance 0; prune
+            // without it (NSG Alg. 2 prunes p's candidates excluding p).
+            let mut candidates = self.beam_search(&vi, self.params.pool_size);
+            candidates.retain(|&(id, _)| id as usize != i);
 
             // MRNG pruning (same as RND: keep candidate if no existing neighbor
             // is closer to it than the candidate is to the query node)
