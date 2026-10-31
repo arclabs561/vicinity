@@ -377,12 +377,15 @@ impl RpForestIndex {
             TreeNode::Leaf { indices } => candidates.extend(indices.iter().copied()),
             TreeNode::Internal {
                 hyperplane,
-                threshold: _,
+                threshold,
                 left,
                 right,
             } => {
                 let projection = simd::dot(query, hyperplane);
-                if projection < 0.0 {
+                // Build splits on the median projection; comparing against zero
+                // instead sends roughly half of all queries down the wrong
+                // branch, which is why this family never reached usable recall.
+                if projection < *threshold {
                     self.collect_leaf_candidates(left, query, candidates);
                 } else {
                     self.collect_leaf_candidates(right, query, candidates);
