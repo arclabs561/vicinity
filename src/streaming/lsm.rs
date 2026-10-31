@@ -37,6 +37,12 @@
 //! is filtered from all search results across all levels. Tombstones are garbage-
 //! collected when they reach the deepest level.
 //!
+//! # Updates
+//!
+//! Inserting an ID that is already present replaces it: the index tracks the
+//! level holding each ID's newest copy, older copies in deeper levels are
+//! filtered from search and dropped at the next compaction that touches them.
+//!
 //! # References
 //!
 //! - Inspired by LSM-VEC (2025, arXiv:2505.17152)
@@ -46,7 +52,7 @@ use crate::distance::DistanceMetric;
 use crate::error::{Result, RetrieveError};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 #[cfg(feature = "serde")]
 use std::io::{BufReader, BufWriter, Write};
 #[cfg(feature = "serde")]
@@ -229,13 +235,13 @@ impl Level {
         query: &[f32],
         k: usize,
         dimension: usize,
-        tombstones: &HashSet<u32>,
+        keep: impl Fn(u32) -> bool,
         metric: DistanceMetric,
     ) -> Vec<(u32, f32)> {
         let mut results: Vec<(u32, f32)> = (0..self.count)
             .filter_map(|i| {
                 let doc_id = self.doc_ids[i];
-                if tombstones.contains(&doc_id) {
+                if !keep(doc_id) {
                     return None;
                 }
                 let start = i * dimension;
@@ -260,6 +266,9 @@ pub struct LsmIndex {
     levels: Vec<Level>,
     /// Global tombstone set (filtered from all search results).
     tombstones: HashSet<u32>,
+    /// Level holding the newest copy of each live ID. Copies of an ID in any
+    /// other level are stale (superseded by an update, or deleted).
+    live_level: HashMap<u32, usize>,
     /// Total vectors inserted (including deleted).
     total_inserts: u64,
     /// Total deletes.
@@ -277,6 +286,7 @@ impl LsmIndex {
             config,
             levels,
             tombstones: HashSet::new(),
+            live_level: HashMap::new(),
             total_inserts: 0,
             total_deletes: 0,
             total_compactions: 0,
@@ -378,10 +388,12 @@ impl LsmIndex {
             )?);
         }
 
+        let live_level = live_levels(&levels, &tombstones);
         Ok(Self {
             config,
             levels,
             tombstones,
+            live_level,
             total_inserts: manifest.total_inserts,
             total_deletes: manifest.total_deletes,
             total_compactions: manifest.total_compactions,
@@ -481,6 +493,7 @@ impl LsmIndex {
     /// Insert a vector.
     ///
     /// Appends to L0. When L0 exceeds `buffer_capacity`, triggers compaction.
+    /// Inserting an ID that is already present replaces its vector.
     pub fn insert(&mut self, doc_id: u32, vector: Vec<f32>) -> Result<()> {
         self.insert_slice(doc_id, &vector)
     }
@@ -494,13 +507,23 @@ impl LsmIndex {
             });
         }
 
-        // Remove from tombstones if re-inserting a deleted ID
+        // Remove from tombstones if re-inserting a deleted ID. Copies of the
+        // deleted ID in compacted levels stay hidden: `live_level` points at L0.
         self.tombstones.remove(&doc_id);
 
         let stored = self.prepare_vector(vector);
-        self.levels[0].vectors.extend_from_slice(&stored);
-        self.levels[0].doc_ids.push(doc_id);
-        self.levels[0].count += 1;
+        let dim = self.config.dimension;
+        let l0 = &mut self.levels[0];
+        if let Some(pos) = l0.doc_ids.iter().position(|&id| id == doc_id) {
+            // Update of a buffered ID: overwrite in place so L0 never holds
+            // two copies of one ID.
+            l0.vectors[pos * dim..(pos + 1) * dim].copy_from_slice(&stored);
+        } else {
+            l0.vectors.extend_from_slice(&stored);
+            l0.doc_ids.push(doc_id);
+            l0.count += 1;
+        }
+        self.live_level.insert(doc_id, 0);
         self.total_inserts += 1;
 
         // Auto-compact if L0 is full
@@ -514,7 +537,30 @@ impl LsmIndex {
     /// Mark a vector for deletion.
     pub fn delete(&mut self, doc_id: u32) {
         self.tombstones.insert(doc_id);
+        self.live_level.remove(&doc_id);
+        self.remove_from_l0(doc_id);
         self.total_deletes += 1;
+    }
+
+    /// Drop a buffered copy of `doc_id` from L0, if any.
+    fn remove_from_l0(&mut self, doc_id: u32) {
+        let dim = self.config.dimension;
+        let l0 = &mut self.levels[0];
+        if let Some(pos) = l0.doc_ids.iter().position(|&id| id == doc_id) {
+            let last = l0.count - 1;
+            l0.doc_ids.swap_remove(pos);
+            if pos != last {
+                l0.vectors
+                    .copy_within(last * dim..(last + 1) * dim, pos * dim);
+            }
+            l0.vectors.truncate(last * dim);
+            l0.count = last;
+        }
+    }
+
+    /// Whether the copy of `doc_id` stored in `level_idx` is its live copy.
+    fn is_live_at(&self, doc_id: u32, level_idx: usize) -> bool {
+        self.live_level.get(&doc_id) == Some(&level_idx)
     }
 
     fn prepare_vector(&self, vector: &[f32]) -> Vec<f32> {
@@ -565,13 +611,14 @@ impl LsmIndex {
                 continue;
             }
 
+            let keep = |id: u32| self.is_live_at(id, level_idx);
             let level_results = if level_idx == 0 {
                 // L0: brute-force
                 level.brute_force_search(
                     query,
                     k,
                     self.config.dimension,
-                    &self.tombstones,
+                    keep,
                     self.config.distance_metric,
                 )
             } else {
@@ -581,10 +628,9 @@ impl LsmIndex {
                     if let Some(ref hnsw) = level.hnsw {
                         let ef = ef_search.max(k);
                         match hnsw.search(query, k, ef) {
-                            Ok(results) => results
-                                .into_iter()
-                                .filter(|(id, _)| !self.tombstones.contains(id))
-                                .collect(),
+                            Ok(results) => {
+                                results.into_iter().filter(|(id, _)| keep(*id)).collect()
+                            }
                             Err(_) => Vec::new(),
                         }
                     } else {
@@ -593,7 +639,7 @@ impl LsmIndex {
                             query,
                             k,
                             self.config.dimension,
-                            &self.tombstones,
+                            keep,
                             self.config.distance_metric,
                         )
                     }
@@ -604,7 +650,7 @@ impl LsmIndex {
                         query,
                         k,
                         self.config.dimension,
-                        &self.tombstones,
+                        keep,
                         self.config.distance_metric,
                     )
                 }
@@ -613,7 +659,8 @@ impl LsmIndex {
             all_results.extend(level_results);
         }
 
-        // Deduplicate (keep lowest distance per ID)
+        // Deduplicate (keep lowest distance per ID). Each ID is live in one
+        // level, so this only matters if a level returned it twice.
         let mut seen = HashSet::new();
         all_results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
         all_results.retain(|(id, _)| seen.insert(*id));
@@ -625,22 +672,21 @@ impl LsmIndex {
     /// Trigger compaction: merge L0 into L1, and cascade if needed.
     ///
     /// Compaction builds an HNSW graph from the merged vectors and replaces
-    /// the target level. Tombstoned vectors are excluded during the merge.
+    /// the target level. Tombstoned and superseded vectors are excluded during
+    /// the merge. If building the merged level fails, L0 is left in place.
     pub fn compact(&mut self) -> Result<()> {
         if self.levels[0].is_empty() {
             return Ok(());
         }
-
-        // Drain L0
-        let l0 = std::mem::replace(&mut self.levels[0], Level::new());
 
         // Ensure L1 exists
         if self.levels.len() < 2 {
             self.levels.push(Level::new());
         }
 
-        // Merge L0 vectors (excluding tombstones) into L1
-        self.merge_into_level(l0, 1)?;
+        // Merge L0 vectors (excluding tombstones) into L1, then drain L0.
+        self.merge_into_level(0, 1)?;
+        self.levels[0] = Level::new();
 
         // Cascade: check if L1 should merge into L2, etc.
         self.cascade_compact(1)?;
@@ -650,7 +696,12 @@ impl LsmIndex {
     }
 
     /// Merge a source level's vectors into target level, rebuilding the HNSW graph.
-    fn merge_into_level(&mut self, source: Level, target_idx: usize) -> Result<()> {
+    ///
+    /// Only live copies are kept (`live_level` points at the copy's level), so
+    /// an ID updated after it reached the target appears once, with its newest
+    /// vector. The source level is left unchanged; the caller drains it after
+    /// this succeeds.
+    fn merge_into_level(&mut self, source_idx: usize, target_idx: usize) -> Result<()> {
         let dim = self.config.dimension;
 
         // Collect all vectors for the new level (target + source, minus tombstones)
@@ -662,7 +713,7 @@ impl LsmIndex {
             let target = &self.levels[target_idx];
             for i in 0..target.count {
                 let doc_id = target.doc_ids[i];
-                if !self.tombstones.contains(&doc_id) {
+                if self.is_live_at(doc_id, target_idx) {
                     let start = i * dim;
                     merged_vectors.extend_from_slice(&target.vectors[start..start + dim]);
                     merged_ids.push(doc_id);
@@ -671,9 +722,10 @@ impl LsmIndex {
         }
 
         // Add source vectors
+        let source = &self.levels[source_idx];
         for i in 0..source.count {
             let doc_id = source.doc_ids[i];
-            if !self.tombstones.contains(&doc_id) {
+            if self.is_live_at(doc_id, source_idx) {
                 let start = i * dim;
                 merged_vectors.extend_from_slice(&source.vectors[start..start + dim]);
                 merged_ids.push(doc_id);
@@ -705,6 +757,9 @@ impl LsmIndex {
         while self.levels.len() <= target_idx {
             self.levels.push(Level::new());
         }
+        for &doc_id in &merged_ids {
+            self.live_level.insert(doc_id, target_idx);
+        }
         self.levels[target_idx] = Level {
             vectors: merged_vectors,
             doc_ids: merged_ids,
@@ -734,15 +789,13 @@ impl LsmIndex {
         };
 
         if should_compact {
-            // Drain current level
-            let source = std::mem::replace(&mut self.levels[level_idx], Level::new());
-
             // Ensure next level exists
             while self.levels.len() <= level_idx + 1 {
                 self.levels.push(Level::new());
             }
 
-            self.merge_into_level(source, level_idx + 1)?;
+            self.merge_into_level(level_idx, level_idx + 1)?;
+            self.levels[level_idx] = Level::new();
 
             // Continue cascading
             self.cascade_compact(level_idx + 1)?;
@@ -751,11 +804,10 @@ impl LsmIndex {
         Ok(())
     }
 
-    /// Number of active (non-tombstoned) vectors across all levels.
+    /// Number of live IDs: inserted, not deleted, each counted once however
+    /// many times it was updated.
     pub fn len(&self) -> usize {
-        let total: usize = self.levels.iter().map(|l| l.count).sum();
-        // Approximate: subtract tombstones (may overcount if tombstone not in any level)
-        total.saturating_sub(self.tombstones.len())
+        self.live_level.len()
     }
 
     /// Whether the index has no active vectors.
@@ -792,7 +844,9 @@ impl LsmIndex {
             graph_bytes: 0,
             quantized_bytes: 0,
             metadata_bytes: self.levels.capacity() * std::mem::size_of::<Level>()
-                + self.tombstones.capacity() * std::mem::size_of::<u32>(),
+                + self.tombstones.capacity() * std::mem::size_of::<u32>()
+                + self.live_level.capacity()
+                    * (std::mem::size_of::<u32>() + std::mem::size_of::<usize>()),
         };
 
         for level in &self.levels {
@@ -819,10 +873,10 @@ impl LsmIndex {
         let mut all_vectors: Vec<f32> = Vec::new();
         let mut all_ids: Vec<u32> = Vec::new();
 
-        for level in &self.levels {
+        for (level_idx, level) in self.levels.iter().enumerate() {
             for i in 0..level.count {
                 let doc_id = level.doc_ids[i];
-                if !self.tombstones.contains(&doc_id) {
+                if self.is_live_at(doc_id, level_idx) {
                     let start = i * dim;
                     all_vectors.extend_from_slice(&level.vectors[start..start + dim]);
                     all_ids.push(doc_id);
@@ -856,6 +910,9 @@ impl LsmIndex {
             Some(hnsw)
         };
 
+        for &doc_id in &all_ids {
+            self.live_level.insert(doc_id, 1);
+        }
         self.levels.push(Level {
             vectors: all_vectors,
             doc_ids: all_ids,
@@ -869,6 +926,21 @@ impl LsmIndex {
 
         Ok(())
     }
+}
+
+/// Level of each ID's newest copy: the shallowest level holding it (L0 is the
+/// newest). Tombstoned IDs are not live.
+#[cfg(feature = "serde")]
+fn live_levels(levels: &[Level], tombstones: &HashSet<u32>) -> HashMap<u32, usize> {
+    let mut live = HashMap::new();
+    for (level_idx, level) in levels.iter().enumerate().rev() {
+        for &doc_id in &level.doc_ids {
+            if !tombstones.contains(&doc_id) {
+                live.insert(doc_id, level_idx);
+            }
+        }
+    }
+    live
 }
 
 /// Statistics for the LSM index.
@@ -1181,6 +1253,134 @@ mod tests {
 
         let results = index.search(&make_vector(8, 100), 1).unwrap();
         assert_eq!(results[0].0, 0);
+    }
+
+    fn update_config() -> LsmConfig {
+        LsmConfig {
+            dimension: 4,
+            buffer_capacity: 100,
+            distance_metric: DistanceMetric::L2,
+            ..Default::default()
+        }
+    }
+
+    fn filler(index: &mut LsmIndex, base: u32, n: u32) {
+        for i in 0..n {
+            let t = (base + i) as f32;
+            index
+                .insert(base + i, vec![10.0 + t, 5.0, -3.0, t * 0.1])
+                .unwrap();
+        }
+    }
+
+    // Updating an id whose old copy is still in L0 must not put the id into
+    // the compaction merge twice: the level's HNSW rejects duplicate ids, so
+    // compaction failed after draining L0 and lost every buffered vector.
+    #[test]
+    fn update_in_buffer_then_compact_keeps_data() {
+        let mut index = LsmIndex::new(update_config());
+        filler(&mut index, 100, 10);
+        index.insert(1, vec![1.0, 0.0, 0.0, 0.0]).unwrap();
+        index.insert(1, vec![0.0, 1.0, 0.0, 0.0]).unwrap();
+        assert_eq!(index.len(), 11);
+        index.compact().unwrap();
+        assert_eq!(index.len(), 11);
+        let got = index.search(&[115.0, 5.0, -3.0, 10.5], 1).unwrap();
+        assert_eq!(got[0].0, 105);
+        let got = index.search(&[0.0, 1.0, 0.0, 0.0], 1).unwrap();
+        assert_eq!(got[0], (1, 0.0));
+    }
+
+    // Same, triggered by the insert that fills L0 and auto-compacts.
+    #[test]
+    fn update_via_autocompact_keeps_data() {
+        let mut index = LsmIndex::new(update_config());
+        index.insert(1, vec![1.0, 0.0, 0.0, 0.0]).unwrap();
+        index.insert(1, vec![0.0, 1.0, 0.0, 0.0]).unwrap();
+        for i in 0..99u32 {
+            let t = (100 + i) as f32;
+            index
+                .insert(100 + i, vec![10.0 + t, 5.0, -3.0, t * 0.1])
+                .unwrap();
+        }
+        assert_eq!(index.stats().total_compactions, 1);
+        assert_eq!(index.len(), 100);
+        let got = index.search(&[1.0, 0.0, 0.0, 0.0], 1).unwrap();
+        assert_eq!(got[0].0, 1);
+        assert!((got[0].1 - 2.0f32.sqrt()).abs() < 1e-5, "{got:?}");
+    }
+
+    // An update whose old copy sits in a compacted level must shadow it, even
+    // when the old copy is nearer to the query.
+    #[test]
+    fn update_after_compaction_returns_newest_vector() {
+        let mut index = LsmIndex::new(update_config());
+        filler(&mut index, 100, 20);
+        index.insert(1, vec![1.0, 0.0, 0.0, 0.0]).unwrap();
+        index.compact().unwrap();
+        index.insert(1, vec![0.0, 1.0, 0.0, 0.0]).unwrap();
+        assert_eq!(index.len(), 21);
+        let got = index.search(&[1.0, 0.0, 0.0, 0.0], 1).unwrap();
+        // Newest vector for id 1 is [0, 1, 0, 0], at L2 distance sqrt(2).
+        assert_eq!(got[0].0, 1);
+        assert!((got[0].1 - 2.0f32.sqrt()).abs() < 1e-5, "{got:?}");
+
+        // The next compaction keeps only the newest copy.
+        index.compact().unwrap();
+        assert_eq!(index.level_sizes().iter().sum::<usize>(), 21);
+        let got = index.search(&[1.0, 0.0, 0.0, 0.0], 1).unwrap();
+        assert!((got[0].1 - 2.0f32.sqrt()).abs() < 1e-5, "{got:?}");
+    }
+
+    // delete(1) then insert(1, new) must not bring back the deleted copy that
+    // sits in L1.
+    #[test]
+    fn delete_then_reinsert_does_not_resurrect_old_copy() {
+        let mut index = LsmIndex::new(update_config());
+        filler(&mut index, 100, 20);
+        index.insert(1, vec![1.0, 0.0, 0.0, 0.0]).unwrap();
+        index.compact().unwrap();
+        index.delete(1);
+        assert_eq!(index.len(), 20);
+        index.insert(1, vec![0.0, 0.0, 1.0, 0.0]).unwrap();
+        assert_eq!(index.len(), 21);
+        let got = index.search(&[1.0, 0.0, 0.0, 0.0], 1).unwrap();
+        assert_eq!(got[0].0, 1);
+        assert!((got[0].1 - 2.0f32.sqrt()).abs() < 1e-5, "{got:?}");
+    }
+
+    // A snapshot taken between an update and the next compaction holds both
+    // copies; loading it must keep the newer (shallower) one live.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn snapshot_roundtrip_keeps_newest_copy_of_updated_id() {
+        let mut index = LsmIndex::new(update_config());
+        filler(&mut index, 100, 20);
+        index.insert(1, vec![1.0, 0.0, 0.0, 0.0]).unwrap();
+        index.compact().unwrap();
+        index.insert(1, vec![0.0, 1.0, 0.0, 0.0]).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        index.save_to_dir(dir.path()).unwrap();
+        let loaded = LsmIndex::load_from_dir(dir.path()).unwrap();
+        assert_eq!(loaded.len(), 21);
+        let got = loaded.search(&[1.0, 0.0, 0.0, 0.0], 1).unwrap();
+        assert_eq!(got[0].0, 1);
+        assert!((got[0].1 - 2.0f32.sqrt()).abs() < 1e-5, "{got:?}");
+    }
+
+    // Deleting an id that is still in L0 and inserting it again must not
+    // leave the deleted L0 copy searchable.
+    #[test]
+    fn delete_then_reinsert_in_buffer_returns_new_vector() {
+        let mut index = LsmIndex::new(update_config());
+        filler(&mut index, 100, 5);
+        index.insert(1, vec![1.0, 0.0, 0.0, 0.0]).unwrap();
+        index.delete(1);
+        index.insert(1, vec![0.0, 0.0, 1.0, 0.0]).unwrap();
+        assert_eq!(index.len(), 6);
+        let got = index.search(&[1.0, 0.0, 0.0, 0.0], 1).unwrap();
+        assert_eq!(got[0].0, 1);
+        assert!((got[0].1 - 2.0f32.sqrt()).abs() < 1e-5, "{got:?}");
     }
 
     #[cfg(feature = "serde")]
