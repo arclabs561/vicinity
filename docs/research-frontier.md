@@ -129,8 +129,10 @@ results, all from 2026, and they change what a filtered benchmark should compare
 - **REACH** ([2610.34109](https://arxiv.org/abs/2610.34109)): geo-filtered search
   on a single proximity graph, after showing that a disk filter breaks greedy
   routing on selective disks.
-- **UNIFY** ([2412.02448](https://arxiv.org/abs/2412.02448)): one index that
-  serves range-filtered search without a per-range build.
+- **UNIFY** ([2412.02448](https://arxiv.org/abs/2412.02448)): a segmented inclusive
+  graph built so that the subgraph for any combination of attribute segments is
+  contained in the whole, which lets pre-, post- and hybrid filtering all run on
+  one index instead of one index per range strategy.
 - **BOA** ([2609.16175](https://arxiv.org/abs/2609.16175)): online beamwidth
   adaptation across a GPU query batch, exploiting the finding that more than half
   of queries are solved by a beam of 50 or less while a fixed-beam system pays 500
