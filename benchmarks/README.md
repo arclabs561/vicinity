@@ -279,6 +279,76 @@ Loading an angular dataset (GloVe, deep-image) reproduces the ann-benchmarks
 ranking; rows are L2-normalised, so a Euclidean dataset such as SIFT is ranked by
 cosine instead of L2.
 
+## Above 10M: the large-scale tier
+
+`examples/all_families.rs` holds the corpus in memory, computes exact ground
+truth for every domain on every run, and measures every family. None of that
+survives at 10M+. `examples/large_scale.rs` is a deliberate sibling rather than a
+mode of it: the dataset is generated **to disk in bounded chunks** and mapped
+(`memmap2`), ground truth covers a **sampled query set** (200-1000 queries) and is
+computed once by a **parallel shard scan** (`rayon`, k-way merge) then cached, and
+every phase has a guardrail (`--max-points`, `--budget-seconds`) that refuses
+instead of OOMing or running for hours.
+
+```sh
+# 100k: affordable anywhere, and the tier where ground truth is cross-checked.
+cargo run --release --example large_scale --features "large-scale,hnsw" -- --points 100k
+
+# Ground truth only, so a 100M run does not rescan for every family invocation.
+cargo run --release --example large_scale --features "large-scale,hnsw" -- \
+  --points 100m --max-points 100m --gt-only
+
+# Resumable generation and cache round-trip, checked without a large run.
+cargo run --release --example large_scale --features "large-scale,hnsw" -- --self-test
+```
+
+Data lives under `ANN_DATA_ROOT`, else `$REBUILDABLE_ROOT/vicinity-data`, else a
+temp directory. The dataset format is self-describing (`b"VICDS01\0"`, `dim: u32`,
+`count: u64`, then row-major `f32`), generation resumes by row index, and the
+ground-truth cache key is `(domain, count, dim, k, query count, FNV-1a of the
+query bytes)` — a key mismatch in the file header is an error, never a silent
+reuse. `--verify-gt` cross-checks a sample against both an f32 and an f64 brute
+force scan and prints the top-10 overlap; it is on by default.
+
+### The tier ladder
+
+| Tier | Proves | Rough cost |
+| --- | --- | --- |
+| 10k | correctness and ranking across every family | seconds |
+| 100k | the same families still hold at a size where the index dwarfs the corpus | seconds to a minute |
+| 1M | build cost and RSS become the interesting numbers | minutes |
+| 10M | the 10k ranking is not a small-n artifact; recall loss appears | tens of minutes |
+| 100M | memory layout and disk-resident behaviour decide the result | hours |
+| 1B | only with an SSD-resident index; not attempted here | days |
+
+What each tier cannot prove: 10k-1M say nothing about a corpus that does not fit
+in RAM, and 100M still says nothing about a single-machine index above 1B. A
+family that wins at 10k and loses at 100M has not been measured at 10k to a
+useful depth.
+
+Families that are only meaningful above 100M — SSD-resident DiskANN, RaBitQ at a
+fixed memory budget, streaming/updatable indexes — are **not measured by this
+harness yet**. Only HNSW is wired, because it is the family whose build and
+search path can consume a mapped, streamed corpus (`add_slice`). Claiming a
+large-scale ranking for the others would be a claim about code that cannot run
+at that tier.
+
+### Measured, 2026-11-01, `clustered` at 100k
+
+`n = 100_000`, `d = 96`, `k = 10`, 500 sampled queries, HNSW `m = 16`,
+`ef_construction = 200`, 16 cores, macOS aarch64. Rows in
+[`large-scale-100k.jsonl`](large-scale-100k.jsonl).
+
+| family | knob | recall@10 | 1/ratio@10 | p50 µs | p95 | p99 | QPS | build s | RSS MiB | index MiB |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| hnsw | ef=50 | 0.838 | 6.67 | 112.1 | 134.2 | 165.3 | 8848 | 2.48 | 300.7 | 46.3 |
+| hnsw | ef=100 | 0.946 | 4.79 | 156.3 | 205.5 | 264.6 | 6345 | 2.48 | 300.7 | 46.3 |
+| hnsw | ef=200 | 0.991 | 2.98 | 251.1 | 305.2 | 360.2 | 3995 | 2.48 | 300.7 | 46.3 |
+
+Exact linear-scan p50 at this size was 747.9 µs/query, so `1/ratio` is the speed
+of the exact scan over the ANN query: higher is better. Dataset 36.6 MiB, index
+46.3 MiB, whole run 3.1 s wall clock after the build was warm.
+
 ## Rules
 
 - A family is only listed once it has a measured row in a run.

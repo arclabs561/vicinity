@@ -36,12 +36,24 @@ def tail_ratio(row):
     return p99 / p50
 
 def load(path):
+    """Read a rows file, skipping the `_meta` header and normalising recall.
+
+    Every harness writes a `_meta` object as the first line and spells the
+    metric `recall_at_10`; reading rows blindly made this script crash on the
+    committed baseline as well as on any fresh run.
+    """
     rows = []
     with open(path, encoding="utf-8") as fh:
         for line in fh:
             line = line.strip()
-            if line:
-                rows.append(json.loads(line))
+            if not line:
+                continue
+            row = json.loads(line)
+            if row.get("_meta"):
+                continue
+            if "recall" not in row and "recall_at_10" in row:
+                row["recall"] = row["recall_at_10"]
+            rows.append(row)
     return rows
 
 def best_per_family(rows):

@@ -57,6 +57,11 @@ nalgebra = { version = "0.33", optional = true, default-features = false, featur
 # Parallel batch search (feature-gated)
 rayon = { version = "1.10", optional = true }
 
+# Memory-mapped dataset access for the large-scale benchmark harness
+# (`examples/large_scale.rs`). Never enabled by default: the library itself
+# never maps files, and the example opts in through `large-scale`.
+memmap2 = { version = "0.9", optional = true }
+
 # ID compression primitives (ecosystem crate)
 cnk = { version = "0.2.0", optional = true }
 
@@ -131,6 +136,12 @@ pipnn = ["dep:serde", "dep:serde_json"]
 vamana = ["hnsw", "dep:serde", "dep:serde_json"]
 quantization = ["qntz"]
 benchmark = []
+# Large-scale benchmark harness (`examples/large_scale.rs`): memory-mapped
+# datasets, parallel ground-truth shards, and a persisted index so a run above
+# 10M points does not repeat work. Pulls the persistence stack only because the
+# harness writes a compact postcard index to measure its on-disk size; the
+# library's own default build is unchanged.
+large-scale = ["dep:memmap2", "dep:rayon", "parallel", "persistence"]
 # Counts distance computations in a process-global atomic so benchmarks can
 # report dists/query (hardware-independent cost signal, cf. Aumüller &
 # Ceccarello 2023). Non-default: the atomics slow the distance loops down, and
@@ -365,6 +376,14 @@ name = "rp_forest_search_k"
 path = "examples/rp_forest_search_k.rs"
 required-features = ["rptree"]
 
+# Large-scale tier harness. Deliberately a sibling of `all_families`, not a
+# mode of it: above 10M points the dataset must live on disk, ground truth is
+# cached rather than recomputed, and the run needs resource guardrails.
+[[example]]
+name = "large_scale"
+path = "examples/large_scale.rs"
+required-features = ["large-scale", "hnsw"]
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
@@ -444,7 +463,11 @@ unexpected_cfgs = "warn"
 # Documentation lints: temporarily relaxed, enable incrementally
 # missing_docs = "warn"
 # missing_doc_code_examples = "warn"
-unsafe_code = "forbid"
+# The library keeps an even stronger `#![forbid(unsafe_code)]` in `src/lib.rs`.
+# The package-level lint is `deny` rather than `forbid` so one example can opt
+# in explicitly: `memmap2` only exposes file mapping through an `unsafe` call,
+# and the large-scale harness contains that call in one documented block.
+unsafe_code = "deny"
 unstable_features = "deny"
 unused_import_braces = "warn"
 # unused_qualifications = "warn"  # Relaxed: explicit paths often improve clarity
