@@ -27,9 +27,19 @@ These source changes are not assigned to a package release here.
   existing WAL after a restart; a writer from `WalWriter::new` refuses appends
   once segments exist. `WalWriter::flush_and_sync` fsyncs the current segment
   and its directory; `flush` does not.
+- `IVFPQIndex::reconstruct` decodes a stored PQ code plus its inverted-list
+  centroid back into a vector, matching FAISS `IndexIVFPQ::reconstruct`. It
+  works after `compact()`.
 
 ### Fixed
 
+- IVF-PQ picks the probed inverted lists with an exact scan over every centroid,
+  as FAISS `IndexIVF::quantizer->search` does. The default `hnsw` feature built
+  an HNSW coarse quantizer and searched it with `ef = 2 * nprobe`, which
+  overlapped the exact top-`nprobe` lists by 34% at `nprobe = 1` and 84% at
+  `nprobe = 8` on a 1024-centroid index. Recall@10 on the seeded 10k/96-d set
+  moves from 0.032/0.079/0.098/0.100/0.132 to 0.032/0.078/0.100/0.103/0.134 at
+  nprobe 1/4/8/16/32.
 - `LsmIndex` treats inserting an existing ID as an update. Updating an ID
   still in L0 put it into the compaction merge twice; the level's HNSW
   rejected the duplicate, `compact()` (or the `insert` that triggered it)
