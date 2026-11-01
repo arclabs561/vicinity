@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, dead_code)]
+
 //! Recall@10 at N=5000, D=128 for NSG, FINGER and FreshGraph.
 //!
 //! The existing suite runs at N=300, D=32; the bug hunt reports 0.05-0.10 for
@@ -55,6 +57,15 @@ fn recall(
 fn recall_at_scale() {
     let db = dataset(N, 42);
     let queries = dataset(NQ, 1230);
+
+    // Runs with or without a graph family enabled, so the file is never a test
+    // suite that compiles to nothing when the features are off.
+    let truth = ground_truth(&queries[0], &db);
+    assert_eq!(truth.len(), K, "brute force must return k neighbours");
+    assert!(
+        truth.iter().all(|id| (*id as usize) < N),
+        "ground truth ids must be in range"
+    );
 
     #[cfg(feature = "nsg")]
     {
