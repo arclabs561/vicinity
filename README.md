@@ -1,38 +1,22 @@
 # vicinity
 
-[![crates.io](https://img.shields.io/crates/v/vicinity.svg)](https://crates.io/crates/vicinity)
-[![docs.rs](https://docs.rs/vicinity/badge.svg)](https://docs.rs/vicinity)
+Approximate nearest-neighbour search in Rust, with Python bindings.
 
-Approximate nearest-neighbor search.
+HNSW is the default. Behind feature flags sit compression families (IVF-PQ,
+IVF-AVQ, RaBitQ), graph builders (Vamana, DiskANN), the NSW line (NSG, NSW, SNG),
+random-projection trees, ball and k-d trees, LSH, and binary or 4-bit codes.
 
-`vicinity` provides Rust indexes and Python bindings for vector search.
+Two paths cover what plain HNSW cannot. A filtered graph answers predicate
+queries without leaving the graph, and an in-place index takes updates without a
+rebuild.
 
-This README describes the development branch; the registry release lags it.
-The install snippet below pins the version that carries the documented
-behaviour — `HNSWIndex::doc_id`, the persistence fixes and the `delete` API —
-which is also the version `precinct` 0.10.1 requires. Anything newer than that
-snippet is development-only until it is released. The branch requires Rust 1.94
-for its Git-pinned SIMD backend. The root-only Innr patch unifies Qntz and
-benchmark dependencies for development validation, not published-artifact
-equivalence.
-Vicinity-authored Rust forbids unsafe code across its targets. Dependencies,
-including Pulp and benchmark allocator instrumentation, use unsafe
-internally. This is not a transitive unsafe-free guarantee.
-
-Saving and loading live behind the `serde` feature: without it,
-`save_to_file`/`load_from_file` do not exist and the compiler names no feature.
-For a per-query override use `search_knn(query, k)`; it applies the builder's
-`ef_search`, while `search(query, k, ef)` is the explicit override.
-
-## Rust
+One protocol measures all of them at the same sizes, so comparisons are between
+families rather than between benchmarks.
 
 ```toml
 [dependencies]
 vicinity = { version = "0.11.2", features = ["hnsw", "serde"] }   # serde adds save_to_file/load_from_file
 ```
-
-HNSW is the default in-memory index for dense vectors. For cosine distance,
-pass unit-norm vectors or set `auto_normalize(true)`.
 
 ```rust
 use vicinity::hnsw::HNSWIndex;
@@ -61,15 +45,93 @@ fn main() -> vicinity::Result<()> {
 8: 0.0299
 ```
 
-Results contain the IDs supplied on insert and distances; lower is closer.
-Use `distance::DistanceMetric` to select L2, angular, or inner-product distance.
+Results carry the IDs you supplied and the distance; lower is closer.
+`distance::DistanceMetric` selects L2, angular or inner product. Cosine assumes
+unit-norm vectors unless you set `auto_normalize(true)`.
+
+## What it does that the usual answer does not
+
+**Filtered search stays on the graph.** `hnsw::search_acorn` expands two hops
+through a predicate instead of filtering after the fact, and
+`filtered_graph::search_filtered` picks between a beam and an exact scan of the
+inverted list depending on selectivity.
+
+On 20k random points at 20% selectivity, recall@10 is 1.000 for a pre-filtered
+exact scan (91 µs), 1.000 for post-filtering an HNSW beam (602 µs), 1.000 through
+the filtered graph and 0.583 for the ACORN-style two-hop walk (2.1 ms).
+
+The gap opens at the other end. At 0.1% selectivity post-filtering collapses to
+**0.158** recall while the inverted-list path still returns 1.000.
+`tests/filtered_recall.rs` prints the whole sweep.
+
+**Updates do not force a rebuild.** `InPlaceIndex` inserts and deletes in place;
+`HNSWIndex::delete` leaves tombstones that are excluded from results and repaired
+on demand. Deleting 10% of a 5k index used to cost most of the recall because
+tombstones consumed the `ef` budget. That is fixed: at `ef=10` the same sweep
+returns 0.978 instead of 0.090.
+
+**It reads from disk if you want.** `diskann::DiskANNSearcher::load` queries
+`graph.index` and `vectors.bin` through a block cache instead of holding the
+index in the heap. At 1M points that costs 2.1–3.3× the resident p50 latency with
+an 81% cache hit rate.
+
+## Measured
+
+`examples/large_scale.rs`, 16-core aarch64, macOS, 2026-11-01. Corpus generated
+to disk and memory-mapped, ground truth exact over 500 sampled queries, all rows
+committed under [`benchmarks/`](benchmarks/).
+
+| n | domain | ef | recall@10 | p50 | build | index on disk | peak RSS |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 100k | clustered | 200 | 0.991 | 303 µs | 5.6 s | 46 MiB | 246 MiB |
+| 1M | clustered | 200 | 0.807 | 440 µs | 109 s | 470 MiB | 2.0 GiB |
+| 1M | uniform | 200 | 0.294 | 922 µs | 164 s | 470 MiB | 2.0 GiB |
+| 3M | uniform | 6400 | 0.926 | 16.4 ms | 353 s | 1.4 GiB | 5.8 GiB |
+
+Distance counts are in [`benchmarks/large-scale-100k-dists.jsonl`](benchmarks/large-scale-100k-dists.jsonl):
+1411 / 2268 / 3442 / 5782 at ef 50 / 100 / 200 / 800 on 100k clustered.
+
+Full-corpus GloVe-100/200 and GloVe-25 numbers, with parameters and repeat
+spread, are in [benchmark results](docs/benchmark-results.md).
+
+## What it costs
+
+| at d=96, m=16 | per point |
+| --- | ---: |
+| vectors, f32 | 384 B |
+| layer-0 adjacency, 32 neighbours | ~136 B |
+| ids, reverse map, level | ~17 B |
+| **steady state** | **~0.5 KiB** |
+| measured build peak at 1M | ~2.0 KiB |
+
+Two consequences. First, the build is in memory: there is no out-of-core
+construction, so a 100M index would need roughly 199 GiB of RAM at this layout
+and refuses rather than swapping. DiskANN and SPANN solve that by keeping
+compressed vectors in RAM and the graph on SSD, and by building the graph in
+shards; neither path is implemented here. Second, the build peak is not all data: a
+1M build costs ~2.0 KiB/point at its peak, and the reorder that permutes the index
+for locality used to account for ~0.5 KiB of that by copying the corpus. It
+permutes in place now, which is a transient either way, not a requirement.
+
+## Limits
+
+Recall is not tier-invariant, and this is the number most likely to be quoted
+wrong. On uniform random data at `ef=200`, recall@10 is 0.981 at 10k, 0.705 at
+100k and 0.294 at 1M. The recall is recoverable: `ef=4800` reaches 0.973 at 1M.
+But at 1M that is 1.45× **slower** than the exact scan it is meant to replace.
+Uniform data in 96 dimensions is close to the worst case; clustered data holds
+0.991 → 0.807 over the same range.
+
+DiskANN, several tree and quantisation families are experimental: they are
+measured on the same protocol but their persistence and update paths are not
+covered to the same depth. The Python wheel exposes HNSW only; IVF-PQ bindings
+exist in the repository and stay out of the wheel until their persistence
+contract settles. No GPU path: graph traversal does not port without a second,
+CAGRA-shaped index.
 
 ## Python
 
-The Python package is named `pyvicinity` because the bare `vicinity` name is
-held by an unrelated PyPI project. The published wrapper exposes HNSW; the
-repository also contains IVF-PQ bindings that remain outside the published
-wheel until their benchmark and persistence contracts are settled.
+The package is `pyvicinity` because `vicinity` on PyPI is an unrelated project.
 
 ```bash
 pip install pyvicinity
@@ -88,72 +150,43 @@ ids, distances = index.search(vectors[0], k=2)
 print(ids.tolist())
 ```
 
-```text
-[0, 1]
-```
-
 [`examples/python/02_batch_and_recall.py`](examples/python/02_batch_and_recall.py)
 shows batch search and recall measurement.
 
-## Feature and dependency footprints
+## Features
 
-Choose the smallest feature set that matches the workload. Optional algorithm
-families do not belong in the default build, and `--all-features` is intended
-for development and comparison rather than a production dependency profile.
+Features are the build contract: an algorithm family you do not enable is not
+compiled. `--all-features` is for comparison work, not for a shipped profile.
 
-| Use case | Cargo features | Adds |
+| Use case | Features | Adds |
 | --- | --- | --- |
-| Minimal library | `--no-default-features` | Core `smallvec`, `rand`, and `thiserror`. |
-| Default HNSW | *(default)* | `hnsw` plus SIMD distance kernels from `innr`. |
-| JSON snapshots | `hnsw,serde` | `serde` and `serde_json`. |
-| Binary persistence | `persistence` | `postcard` and `durability`; this is restart/file support, not automatically crash-safe generation publication. |
-| Segmented mutable store | `store` | `segstore` plus persistence dependencies and HNSW. |
-| IVF-PQ/OPQ | `ivf_pq` | `clump`, `nalgebra`, and serialization support. OPQ uses the linear-algebra path. |
-| Parallel batch search | `parallel` | `rayon`. |
-| Python extension | `python` | PyO3 stable ABI (`abi3-py310`), NumPy, HNSW, IVF-PQ, and persistence. The current wheel contract targets CPython 3.10+ and does not cover free-threaded CPython builds. |
-| WASM experiment | `--no-default-features` plus the target recipe | `getrandom` uses the `wasm_js` backend on `wasm32-unknown-unknown`; file-backed search and persistence support need separate validation. |
+| Minimal | `--no-default-features` | `smallvec`, `rand`, `thiserror` |
+| HNSW | *(default)* | `hnsw`, SIMD distance kernels from `innr` |
+| JSON snapshots | `hnsw,serde` | `save_to_file` / `load_from_file` |
+| Binary segments | `persistence` | `postcard` + `durability`; restart support, generation publication is separate |
+| Segmented mutable store | `store` | `segstore`, persistence, HNSW |
+| IVF-PQ / OPQ | `ivf_pq` | `clump`, `nalgebra` |
+| Parallel batch search | `parallel` | `rayon` |
+| Python | `python` | PyO3 `abi3-py310`, NumPy, HNSW, IVF-PQ, persistence |
+| Large-scale harness | `large-scale` | `memmap2`; the example maps files, the library never does |
 
-Rust consumers should treat feature flags as part of the build contract. Python
-callers should benchmark end-to-end NumPy conversion, GIL detachment, and batch
-overhead, not only the native search loop. See the reproducible
-`scripts/benchmark_python_wrapper.py` harness.
-
-## Indexes and persistence
+Where each path lives:
 
 | Need | Use | Feature |
 | --- | --- | --- |
-| Dense vectors in memory | HNSW | `hnsw` (default) |
-| Lower vector memory use | IVF-PQ, with recall tradeoffs | `ivf_pq` |
-| HNSW JSON save/load | `save_to_file` / `load_from_file` | `serde` |
-| HNSW binary segments | `persistence::hnsw` | `persistence` |
+| Dense vectors in memory | `HNSWIndex` | `hnsw` |
+| Lower memory, recall tradeoff | `IVFPQIndex` | `ivf_pq` |
+| Updates without rebuild | `InPlaceIndex` | `hnsw` |
+| Query from disk | `DiskANNSearcher` | `diskann` |
+| Filtered search | `search_acorn`, `search_filtered` | `hnsw`, `filtered_graph` |
 
-IVF-PQ's `search()` uses compressed PQ distances. `search_reranked()` retains
-raw vectors and reranks candidates with exact cosine distance. See the runnable
-[`examples/ivf_pq_demo.rs`](examples/ivf_pq_demo.rs). Other indexes are
-feature-gated; their status and tradeoffs are in the
-[algorithm catalog](docs/algorithms.md).
+Other families and their status are in the [algorithm catalogue](docs/algorithms.md).
 
-## Benchmarks
+## Status
 
-Selected HNSW measurements use the full corpus, 1,000 queries, and the median
-of three isolated runs on an Apple M3 Max with Rust 1.97.1. QPS measures
-sequential single-query throughput; index sizes are heap estimates.
-
-| Dataset | Vectors | `ef_search` | Recall@10 | QPS | Index size |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| GloVe-100 cosine | 1,183,514 | 1600 | 91.51% | 742 | 1.50 GB |
-| SIFT-128 L2 | 1,000,000 | 200 | 98.20% | 3,836 | 1.38 GB |
-
-Results depend on the dataset and search settings. See
-[benchmark results](docs/benchmark-results.md#current-full-corpus-compressed-search-comparison)
-for parameters, repeat spread, compressed indexes, and reproduction commands.
-
-## Limits
-
-Search is approximate. Increase `ef_search` for higher HNSW recall at the cost
-of query time. Build the index before searching; the default HNSW index does
-not accept new vectors after build. DiskANN and several other indexes are
-experimental; see the [algorithm catalog](docs/algorithms.md) before choosing them.
+Latest release: 0.11.2 (2026-10-31, crates.io). MSRV 1.94. The crate's own code
+is `#![forbid(unsafe_code)]`; dependencies including Pulp and the benchmark
+allocator are not, so this is not a transitive guarantee.
 
 ## Documentation
 
