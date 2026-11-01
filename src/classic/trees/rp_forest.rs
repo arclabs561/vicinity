@@ -31,9 +31,14 @@ use crate::classic::trees::persistence::{read_json, validate_vector_shape, write
 use crate::simd;
 use crate::RetrieveError;
 use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashSet};
 use std::path::Path;
 
 const RP_FOREST_FORMAT_VERSION: u32 = 1;
+
+/// Largest frontier reservation per query; see `search_with_budget_stats`.
+const FRONTIER_RESERVE: usize = 4_096;
 const DEFAULT_RP_FOREST_SEED: u64 = 0xA24B_AED4_963E_E407;
 
 /// Random Projection Tree Forest index.
@@ -52,6 +57,18 @@ pub struct RpForestIndex {
 
     /// Forest of random projection trees
     pub(crate) trees: Vec<RPTree>,
+
+    /// Largest squared L2 norm among the indexed vectors.
+    ///
+    /// Search derives its traversal bound from this (see
+    /// [`RpForestIndex::search_with_budget`]), so it is recomputed from
+    /// `vectors` on [`RpForestIndex::build`] and
+    /// [`RpForestIndex::load_from_dir`] and never trusted from disk: a stale
+    /// value would make the bound optimistic. The fallback is the family's
+    /// documented contract (unit-normalised vectors); a `Deserialize` that
+    /// bypasses `load_from_dir` inherits it.
+    #[serde(skip, default = "unit_norm_bound")]
+    pub(crate) max_sq_norm: f32,
 }
 
 /// Random Projection Tree Forest parameters.
@@ -86,9 +103,8 @@ enum TreeNode {
         indices: Vec<u32>,
     },
     Internal {
-        hyperplane: Vec<f32>, // Random hyperplane
-        #[allow(dead_code)]
-        threshold: f32, // Reserved for non-zero split thresholds
+        hyperplane: Vec<f32>, // Random hyperplane (unit normal)
+        threshold: f32,       // Projection value the split sits on
         left: Box<TreeNode>,
         right: Box<TreeNode>,
     },
@@ -130,6 +146,7 @@ impl RpForestIndex {
             params,
             built: false,
             trees: Vec::new(),
+            max_sq_norm: unit_norm_bound(),
         })
     }
 
@@ -171,6 +188,7 @@ impl RpForestIndex {
             self.trees.push(tree);
         }
 
+        self.refresh_norm_bound();
         self.built = true;
         Ok(())
     }
@@ -215,6 +233,8 @@ impl RpForestIndex {
                 "RP-forest snapshot is not built".into(),
             ));
         }
+        let mut index = index;
+        index.refresh_norm_bound();
         Ok(index)
     }
 
@@ -227,6 +247,7 @@ impl RpForestIndex {
             params: self.params.clone(),
             built: self.built,
             trees: self.trees.clone(),
+            max_sq_norm: self.max_sq_norm,
         }
     }
 
@@ -325,7 +346,49 @@ impl RpForestIndex {
     }
 
     /// Search for k nearest neighbors.
+    ///
+    /// Uses Annoy's default candidate budget, `k * num_trees`. Call
+    /// [`Self::search_with_budget`] to trade recall for latency explicitly.
     pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, RetrieveError> {
+        self.search_with_budget(query, k, k.saturating_mul(self.params.num_trees))
+    }
+
+    /// Search for k nearest neighbors with an explicit candidate budget.
+    ///
+    /// The traversal is Annoy's: one global max-heap over
+    /// `(bound, node)` entries, every tree root pushed with `+inf` so the
+    /// forest interleaves instead of descending tree by tree, and the loop
+    /// stopping once `search_k` distinct candidate ids are held. A leaf
+    /// contributes all of its ids at once, so the collected count overshoots
+    /// `search_k` by at most `max_leaf_size - 1`.
+    ///
+    /// Both children of every split are pushed unconditionally. The child the
+    /// query falls into keeps the parent's bound; the other one is pushed with
+    /// a strictly smaller bound, which makes near-before-far a consequence of
+    /// heap order rather than an `if`. See `far_child_dot_bound` for the
+    /// derivation, and `TraversalEntry` for how the margin Annoy pushes is
+    /// retired to a tie-break so that the ordering stays conservative.
+    pub fn search_with_budget(
+        &self,
+        query: &[f32],
+        k: usize,
+        search_k: usize,
+    ) -> Result<Vec<(u32, f32)>, RetrieveError> {
+        self.search_with_budget_stats(query, k, search_k)
+            .map(|(results, _)| results)
+    }
+
+    /// [`Self::search_with_budget`] plus the traversal counters.
+    ///
+    /// The counters exist because the budget is spent per leaf, not per id:
+    /// `candidates` is how many ids were actually scored, which is what
+    /// `search_k` is really parameterising.
+    pub fn search_with_budget_stats(
+        &self,
+        query: &[f32],
+        k: usize,
+        search_k: usize,
+    ) -> Result<(Vec<(u32, f32)>, RpForestSearchStats), RetrieveError> {
         if !self.built {
             return Err(RetrieveError::InvalidParameter(
                 "Index must be built before search".to_string(),
@@ -339,22 +402,106 @@ impl RpForestIndex {
             });
         }
 
-        // Search all trees and collect candidate internal IDs. Preallocating
-        // and inserting the leaf slices directly avoids one heap allocation
-        // per tree while preserving the old duplicate-removal strategy.
-        let mut candidate_set = std::collections::HashSet::with_capacity(
-            self.params.num_trees * self.params.tree_params.max_leaf_size,
+        let mut stats = RpForestSearchStats::default();
+        if k == 0 || search_k == 0 {
+            return Ok((Vec::new(), stats));
+        }
+
+        // Largest dot product any indexed vector can reach against this query.
+        // Everything below tightens this; it is the bound inherited by the
+        // child the query falls into.
+        let query_norm_sq = simd::dot(query, query);
+        let query_norm = query_norm_sq.max(0.0).sqrt();
+        let radius_sq = self.max_sq_norm.max(0.0);
+        let radius = radius_sq.sqrt();
+        let max_dot = radius * query_norm;
+
+        // One internal node in, one net entry out, so the frontier ends up about
+        // as wide as the number of splits visited; reserving that keeps `push`
+        // from reallocating a dozen times per query. Capped, because a budget of
+        // `n` must not reserve a frontier the size of the index.
+        let mut heap: BinaryHeap<TraversalEntry<'_>> = BinaryHeap::with_capacity(
+            search_k
+                .min(FRONTIER_RESERVE)
+                .saturating_add(self.trees.len()),
         );
         for tree in &self.trees {
-            if let Some(ref root) = tree.root {
-                self.collect_leaf_candidates(root, query, &mut candidate_set);
+            if let Some(root) = tree.root.as_ref() {
+                heap.push(TraversalEntry {
+                    bound: f32::INFINITY,
+                    margin: f32::INFINITY,
+                    node: root,
+                });
             }
         }
 
-        // Compute exact distances for candidates
-        let mut results: Vec<(u32, f32)> = candidate_set
-            .iter()
-            .map(|&idx| {
+        let leaf_size = self.params.tree_params.max_leaf_size;
+        let room = search_k.saturating_add(leaf_size);
+        let mut candidates: Vec<u32> = Vec::with_capacity(room);
+        let mut seen: HashSet<u32> = HashSet::with_capacity(room);
+
+        while candidates.len() < search_k {
+            let Some(entry) = heap.pop() else { break };
+            stats.nodes_expanded += 1;
+            match entry.node {
+                TreeNode::Leaf { indices } => {
+                    stats.leaves_visited += 1;
+                    for &idx in indices {
+                        if seen.insert(idx) {
+                            candidates.push(idx);
+                        }
+                    }
+                }
+                TreeNode::Internal {
+                    hyperplane,
+                    threshold,
+                    left,
+                    right,
+                } => {
+                    let projection = simd::dot(query, hyperplane);
+                    // Same routing rule as the build.
+                    let near_is_left = projection < *threshold;
+                    let bound = entry.bound.min(max_dot);
+                    let near_margin = entry.margin.min(projection.abs());
+                    let (near, far, far_is_upper) = if near_is_left {
+                        (left.as_ref(), right.as_ref(), true)
+                    } else {
+                        (right.as_ref(), left.as_ref(), false)
+                    };
+                    let far_bound = far_child_dot_bound(
+                        projection,
+                        *threshold,
+                        radius,
+                        radius_sq,
+                        query_norm,
+                        query_norm_sq,
+                        far_is_upper,
+                    )
+                    .min(bound);
+                    heap.push(TraversalEntry {
+                        bound,
+                        margin: near_margin,
+                        node: near,
+                    });
+                    heap.push(TraversalEntry {
+                        bound: far_bound,
+                        // Annoy's key for the far child, sign flipped: it settles
+                        // the ties the bound cannot separate, e.g. a query
+                        // sitting on the split plane.
+                        margin: entry.margin.min(-projection.abs()),
+                        node: far,
+                    });
+                }
+            }
+        }
+        stats.candidates = candidates.len();
+
+        // Compute exact distances for candidates. Annoy sorts ids and skips
+        // repeats here; the set above already removed them, and the ordering
+        // that matters is the final sort, so both reduce to the same thing.
+        let mut results: Vec<(u32, f32)> = candidates
+            .into_iter()
+            .map(|idx| {
                 let vec = self.get_vector(idx as usize);
                 let dist = 1.0 - simd::dot(query, vec);
                 (self.doc_ids[idx as usize], dist)
@@ -363,32 +510,19 @@ impl RpForestIndex {
 
         // Sort and return top k
         results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
-        Ok(results.into_iter().take(k).collect())
+        Ok((results.into_iter().take(k).collect(), stats))
     }
 
-    /// Search a single tree and append the leaf's candidate IDs.
-    fn collect_leaf_candidates(
-        &self,
-        node: &TreeNode,
-        query: &[f32],
-        candidates: &mut std::collections::HashSet<u32>,
-    ) {
-        match node {
-            TreeNode::Leaf { indices } => candidates.extend(indices.iter().copied()),
-            TreeNode::Internal {
-                hyperplane,
-                threshold: _,
-                left,
-                right,
-            } => {
-                let projection = simd::dot(query, hyperplane);
-                if projection < 0.0 {
-                    self.collect_leaf_candidates(left, query, candidates);
-                } else {
-                    self.collect_leaf_candidates(right, query, candidates);
-                }
+    /// Recompute the largest squared norm in the index.
+    fn refresh_norm_bound(&mut self) {
+        let mut max_sq = 0.0f32;
+        for vector in self.vectors.chunks_exact(self.dimension) {
+            let sq = simd::dot(vector, vector);
+            if sq.is_finite() && sq > max_sq {
+                max_sq = sq;
             }
         }
+        self.max_sq_norm = max_sq;
     }
 
     /// Get vector from SoA storage.
@@ -397,6 +531,123 @@ impl RpForestIndex {
         let end = start + self.dimension;
         &self.vectors[start..end]
     }
+}
+
+/// Traversal counters for one [`RpForestIndex::search_with_budget_stats`] call.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RpForestSearchStats {
+    /// Distinct candidate ids collected and scored.
+    pub candidates: usize,
+    /// Leaf nodes popped, each contributing all of its ids.
+    pub leaves_visited: usize,
+    /// Heap pops, leaves and internal nodes together.
+    pub nodes_expanded: usize,
+}
+
+/// One entry of the global traversal heap.
+///
+/// `bound` is a conservative upper bound on `query · v` over every vector in
+/// the subtree, so the heap is an A\* frontier: it only expands a subtree with
+/// a lower bound after every subtree that can do at least as well.
+///
+/// `margin` is Annoy's key: `min` over the path of `query · hyperplane`, negated
+/// for the far child. On this family it is *not* an upper bound (the cap a split
+/// carves out always contains directions arbitrarily close to the query), so it
+/// cannot order the traversal on its own without deferring subtrees that hold
+/// true neighbours. It is kept as a tie-break: among subtrees whose bounds are
+/// equal it reproduces Annoy's ordering, and that is exactly the case that the
+/// bound cannot separate, because the query lies inside the child it descends
+/// into.
+struct TraversalEntry<'a> {
+    bound: f32,
+    margin: f32,
+    node: &'a TreeNode,
+}
+
+impl PartialEq for TraversalEntry<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for TraversalEntry<'_> {}
+
+impl PartialOrd for TraversalEntry<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for TraversalEntry<'_> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.bound
+            .total_cmp(&other.bound)
+            .then_with(|| self.margin.total_cmp(&other.margin))
+    }
+}
+
+/// Conservative upper bound on `query · u` for the half of a split the query
+/// does not fall into.
+///
+/// Derivation, with `h` the split's unit normal, `t` its threshold, `R` the
+/// largest vector norm in the index, `Q = |query|`, `beta = query · h`, and
+/// `alpha = u · h`:
+///
+/// * Write `u = alpha h + u_perp` and `query = beta h + q_perp`. Then
+///   `query · u = alpha beta + q_perp · u_perp`, and by Cauchy-Schwarz
+///   `q_perp · u_perp <= |u_perp| |q_perp|`, with `|u_perp| <= sqrt(R^2 -
+///   alpha^2)` and `|q_perp| = sqrt(Q^2 - beta^2)`. So
+///   `query · u <= g(alpha) = alpha beta + sqrt((R^2 - alpha^2)(Q^2 - beta^2))`.
+/// * The far half is `alpha >= t` or `alpha <= t`, a half-line in `alpha`
+///   because the split is a hyperplane. `g` is unimodal on `[-R, R]` with its
+///   peak at `alpha* = beta R / Q` (the direction of the query), so its
+///   supremum over the far half is `g(alpha* clamped onto that half)`.
+///
+/// Every branch of the tree therefore has a bound that is at least the true
+/// best dot inside it, and taking `min` with the parent's bound keeps the
+/// sequence non-increasing down a path without losing that property (the
+/// subtree's supremum cannot exceed its parent's). At any budget, nothing that
+/// the traversal defers can hold a vector that it should have scored first.
+///
+/// For unit-normalised data (`R = Q = 1`) this reduces to
+/// `t beta + sqrt((1 - t^2)(1 - beta^2))`. With `t = 0`, which is what this
+/// build currently stores, that is the sine of the angle between the query and
+/// the split normal, and it goes negative once the query and the far side are
+/// more than a right angle apart.
+fn far_child_dot_bound(
+    beta: f32,
+    threshold: f32,
+    radius: f32,
+    radius_sq: f32,
+    query_norm: f32,
+    query_norm_sq: f32,
+    far_is_upper_side: bool,
+) -> f32 {
+    if radius <= 0.0 || query_norm <= 0.0 {
+        // Zero-length vectors (or query): every dot is zero, and the ordering
+        // falls back to the margin tie-break.
+        return 0.0;
+    }
+    if !radius.is_finite() || !query_norm.is_finite() {
+        // Non-finite inputs (a NaN also lands here, since it compares false to
+        // zero): give up on pruning rather than emit an unsound bound.
+        return f32::INFINITY;
+    }
+    let threshold = threshold.clamp(-radius, radius);
+    let peak = (beta * radius / query_norm).clamp(-radius, radius);
+    let alpha = if far_is_upper_side {
+        peak.max(threshold)
+    } else {
+        peak.min(threshold)
+    };
+    let perp_vectors = (radius_sq - alpha * alpha).max(0.0);
+    let perp_query = (query_norm_sq - beta * beta).max(0.0);
+    alpha * beta + (perp_vectors * perp_query).sqrt()
+}
+
+/// Norm bound assumed when the index has not been built or loaded yet.
+fn unit_norm_bound() -> f32 {
+    1.0
 }
 
 impl RPTree {
@@ -604,5 +855,324 @@ mod tests {
         index.build().unwrap();
         let results = index.search(&[1.0, 0.0, 0.0, 0.0], 5).unwrap();
         assert!(!results.is_empty());
+    }
+
+    // -- budgeted traversal ---------------------------------------------------
+
+    use rand::rngs::StdRng;
+    use rand::{Rng, SeedableRng};
+
+    fn seeded_unit_vectors(n: usize, dim: usize, seed: u64) -> Vec<Vec<f32>> {
+        let mut rng = StdRng::seed_from_u64(seed);
+        (0..n)
+            .map(|_| {
+                let mut v: Vec<f32> = (0..dim).map(|_| rng.random::<f32>() * 2.0 - 1.0).collect();
+                let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+                for x in &mut v {
+                    *x /= norm;
+                }
+                v
+            })
+            .collect()
+    }
+
+    fn forest(vectors: &[Vec<f32>], dim: usize, num_trees: usize, leaf: usize) -> RpForestIndex {
+        let params = RpForestParams {
+            num_trees,
+            tree_params: RPTreeParams {
+                max_leaf_size: leaf,
+            },
+        };
+        let mut index = RpForestIndex::new(dim, params).unwrap();
+        for (i, v) in vectors.iter().enumerate() {
+            index.add(i as u32, v.clone()).unwrap();
+        }
+        index.build().unwrap();
+        index
+    }
+
+    fn brute_force(vectors: &[Vec<f32>], query: &[f32], k: usize) -> Vec<(u32, f32)> {
+        let mut scored: Vec<(u32, f32)> = vectors
+            .iter()
+            .enumerate()
+            .map(|(i, v)| (i as u32, 1.0 - simd::dot(query, v)))
+            .collect();
+        scored.sort_unstable_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+        scored.truncate(k);
+        scored
+    }
+
+    fn recall_of(vectors: &[Vec<f32>], got: &[(u32, f32)], query: &[f32], k: usize) -> f32 {
+        let gt = brute_force(vectors, query, k);
+        let hits = got
+            .iter()
+            .filter(|(id, _)| gt.iter().any(|(g, _)| g == id))
+            .count();
+        hits as f32 / gt.len() as f32
+    }
+
+    #[test]
+    fn full_budget_matches_brute_force() {
+        // A budget that can reach every leaf must reproduce exhaustive search
+        // exactly, including the (distance, doc_id) tie order.
+        let n = 2_000;
+        let dim = 32;
+        let k = 10;
+        let vectors = seeded_unit_vectors(n, dim, 11);
+        let index = forest(&vectors, dim, 6, 12);
+        let queries = seeded_unit_vectors(8, dim, 22);
+        for (qi, query) in queries.iter().enumerate() {
+            let approx = index.search_with_budget(query, k, n).unwrap();
+            let exact = brute_force(&vectors, query, k);
+            assert_eq!(approx, exact, "query {qi} diverged from brute force");
+        }
+    }
+
+    #[test]
+    fn recall_is_monotone_in_the_budget() {
+        let n = 2_000;
+        let dim = 24;
+        let k = 10;
+        let vectors = seeded_unit_vectors(n, dim, 3);
+        let index = forest(&vectors, dim, 10, 10);
+        let queries = seeded_unit_vectors(20, dim, 4);
+        let mut previous = -1.0f32;
+        for budget in [50usize, 100, 200, 400, 800, 1_600, n] {
+            let mut recall = 0.0f32;
+            for query in &queries {
+                let got = index.search_with_budget(query, k, budget).unwrap();
+                recall += recall_of(&vectors, &got, query, k);
+            }
+            recall /= queries.len() as f32;
+            assert!(
+                recall >= previous - 1e-6,
+                "recall fell from {previous:.3} to {recall:.3} at search_k={budget}"
+            );
+            previous = recall;
+        }
+        assert!(
+            (previous - 1.0).abs() < 1e-6,
+            "full budget recall {previous:.3} != 1.0"
+        );
+    }
+
+    #[test]
+    fn budget_overshoot_stays_within_one_leaf() {
+        // Annoy checks the id count between pops, so the last leaf can push the
+        // count past search_k: by at most its own size, never more.
+        let n = 2_000;
+        let dim = 24;
+        let k = 10;
+        let leaf = 16;
+        let vectors = seeded_unit_vectors(n, dim, 5);
+        let index = forest(&vectors, dim, 6, leaf);
+        for budget in [10usize, 50, 99, 100, 333, 700] {
+            for query in seeded_unit_vectors(4, dim, 6).iter() {
+                let (_, stats) = index.search_with_budget_stats(query, k, budget).unwrap();
+                assert!(
+                    stats.candidates >= budget,
+                    "search_k={budget} collected only {} ids",
+                    stats.candidates
+                );
+                assert!(
+                    stats.candidates < budget + leaf,
+                    "search_k={budget} collected {} ids, more than one leaf of overshoot",
+                    stats.candidates
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn far_child_bound_covers_its_half_space() {
+        // Sample the attaining point as well as random ones: the bound must sit
+        // on top of the cap's supremum, not merely above an arbitrary sample.
+        let dim = 8;
+        let mut rng = StdRng::seed_from_u64(99);
+        for _ in 0..100 {
+            let mut h: Vec<f32> = (0..dim).map(|_| rng.random::<f32>() * 2.0 - 1.0).collect();
+            let norm = h.iter().map(|x| x * x).sum::<f32>().sqrt();
+            for x in &mut h {
+                *x /= norm;
+            }
+            // Orthonormal helper directions e1, e2 spanning the plane around h.
+            let (e1, e2) = orthonormal_pair(&h);
+            let beta = rng.random::<f32>() * 1.6 - 0.8;
+            let q_perp = (1.0 - beta * beta).max(0.0).sqrt();
+            let phi_q = rng.random::<f32>() * std::f32::consts::TAU;
+            let query: Vec<f32> = (0..dim)
+                .map(|d| beta * h[d] + q_perp * (phi_q.cos() * e1[d] + phi_q.sin() * e2[d]))
+                .collect();
+            let query_norm_sq = simd::dot(&query, &query);
+            for &threshold in &[-0.6f32, -0.2, 0.0, 0.3, 0.75] {
+                for &far_is_upper in &[true, false] {
+                    let bound = far_child_dot_bound(
+                        beta,
+                        threshold,
+                        1.0,
+                        1.0,
+                        query_norm_sq.sqrt(),
+                        query_norm_sq,
+                        far_is_upper,
+                    );
+                    // Points in the far cap, phase-aligned with the query (the
+                    // worst case) and randomly rotated.
+                    for &alpha in &[-0.99f32, -0.5, 0.0, 0.4, 0.9] {
+                        if (far_is_upper && alpha < threshold)
+                            || (!far_is_upper && alpha > threshold)
+                        {
+                            continue;
+                        }
+                        let u_perp = (1.0 - alpha * alpha).max(0.0).sqrt();
+                        for &phi in &[
+                            phi_q,
+                            phi_q + 0.7,
+                            rng.random::<f32>() * std::f32::consts::TAU,
+                        ] {
+                            let u: Vec<f32> = (0..dim)
+                                .map(|d| {
+                                    alpha * h[d] + u_perp * (phi.cos() * e1[d] + phi.sin() * e2[d])
+                                })
+                                .collect();
+                            let dot = simd::dot(&query, &u);
+                            assert!(
+                                dot <= bound + 1e-4,
+                                "dot {dot} exceeded bound {bound} (alpha={alpha}, t={threshold})"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn far_child_bound_holds_for_non_unit_norms() {
+        // Same bound with unnormalised data: the index radius and the query
+        // norm are what keep it an upper bound once |u| != 1.
+        let dim = 6;
+        let radius = 1.7f32;
+        let mut rng = StdRng::seed_from_u64(1234);
+        for _ in 0..100 {
+            let mut h: Vec<f32> = (0..dim).map(|_| rng.random::<f32>() * 2.0 - 1.0).collect();
+            let norm = h.iter().map(|x| x * x).sum::<f32>().sqrt();
+            for x in &mut h {
+                *x /= norm;
+            }
+            let (e1, e2) = orthonormal_pair(&h);
+            let query_scale = rng.random::<f32>() * 3.0 + 0.1;
+            let b = rng.random::<f32>() * 1.8 - 0.9;
+            let q_perp = (1.0 - b * b).max(0.0).sqrt();
+            let phi_q = rng.random::<f32>() * std::f32::consts::TAU;
+            let query: Vec<f32> = (0..dim)
+                .map(|d| {
+                    query_scale * (b * h[d] + q_perp * (phi_q.cos() * e1[d] + phi_q.sin() * e2[d]))
+                })
+                .collect();
+            let query_norm_sq = simd::dot(&query, &query);
+            let query_norm = query_norm_sq.sqrt();
+            let beta = simd::dot(&query, &h);
+            for &threshold in &[-1.2f32, -0.4, 0.0, 0.7, 1.5] {
+                for &far_is_upper in &[true, false] {
+                    let bound = far_child_dot_bound(
+                        beta,
+                        threshold,
+                        radius,
+                        radius * radius,
+                        query_norm,
+                        query_norm_sq,
+                        far_is_upper,
+                    );
+                    for &scale in &[0.2f32, 0.9, radius] {
+                        for &a in &[-0.95f32, -0.3, 0.0, 0.5, 0.95] {
+                            let projection = scale * a;
+                            if (far_is_upper && projection < threshold)
+                                || (!far_is_upper && projection > threshold)
+                            {
+                                continue;
+                            }
+                            let u_perp = (1.0 - a * a).max(0.0).sqrt() * scale;
+                            for &phi in &[phi_q, phi_q + 1.1] {
+                                let u: Vec<f32> = (0..dim)
+                                    .map(|d| {
+                                        scale * a * h[d]
+                                            + u_perp * (phi.cos() * e1[d] + phi.sin() * e2[d])
+                                    })
+                                    .collect();
+                                let dot = simd::dot(&query, &u);
+                                assert!(
+                                    dot <= bound + 1e-3,
+                                    "dot {dot} exceeded bound {bound} (|u|={scale}, t={threshold})"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Orthonormal `(e1, e2)` completing `h` to a basis, so tests can place
+    /// points at a chosen projection `alpha` and phase `phi` around `h`.
+    fn orthonormal_pair(h: &[f32]) -> (Vec<f32>, Vec<f32>) {
+        let mut axes: Vec<usize> = (0..h.len()).collect();
+        axes.sort_by(|&a, &b| h[a].abs().total_cmp(&h[b].abs()));
+        let e1 = orthogonalize(axis(h.len(), axes[0]), &[h]);
+        let e2 = orthogonalize(axis(h.len(), axes[1]), &[h, &e1]);
+        (e1, e2)
+    }
+
+    fn axis(dim: usize, at: usize) -> Vec<f32> {
+        let mut v = vec![0.0f32; dim];
+        v[at] = 1.0;
+        v
+    }
+
+    fn orthogonalize(mut v: Vec<f32>, basis: &[&[f32]]) -> Vec<f32> {
+        for b in basis {
+            let projection: f32 = v.iter().zip(*b).map(|(a, c)| a * c).sum();
+            for (x, c) in v.iter_mut().zip(*b) {
+                *x -= projection * c;
+            }
+        }
+        let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        for x in &mut v {
+            *x /= norm;
+        }
+        v
+    }
+
+    #[test]
+    fn search_routes_on_the_stored_threshold() {
+        // Two one-point leaves on opposite sides of a plane whose threshold is
+        // not zero. A budget of one leaf exposes which child the query took.
+        let mut index = RpForestIndex::new(2, RpForestParams::default()).unwrap();
+        index.add(0, vec![-1.0, 0.0]).unwrap();
+        index.add(1, vec![0.0, 1.0]).unwrap();
+        index.build().unwrap();
+        index.trees = vec![RPTree {
+            root: Some(TreeNode::Internal {
+                hyperplane: vec![1.0, 0.0],
+                threshold: 0.5,
+                left: Box::new(TreeNode::Leaf { indices: vec![0] }),
+                right: Box::new(TreeNode::Leaf { indices: vec![1] }),
+            }),
+        }];
+        index.max_sq_norm = 1.0;
+        // projection = 0.2, below the 0.5 threshold: the left leaf is near.
+        let query = [0.2f32, 0.98];
+        let split = index.search_with_budget(&query, 1, 1).unwrap();
+        assert_eq!(
+            split.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            vec![0],
+            "routed on 0.0 instead of the stored 0.5 threshold"
+        );
+        assert!((split[0].1 - 1.2).abs() < 1e-5);
+        // Same tree, threshold moved to zero: the right leaf is now near.
+        if let Some(TreeNode::Internal { threshold, .. }) = index.trees[0].root.as_mut() {
+            *threshold = 0.0;
+        }
+        let zero = index.search_with_budget(&query, 1, 1).unwrap();
+        assert_eq!(zero.iter().map(|(id, _)| *id).collect::<Vec<_>>(), vec![1]);
     }
 }

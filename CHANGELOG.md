@@ -20,6 +20,11 @@ These source changes are not assigned to a package release here.
 
 ### Added
 
+- `RpForestIndex` search walks the forest from one global best-bound frontier
+  instead of descending to one leaf per tree, and stops on a candidate-id
+  budget: `search_with_budget` takes it explicitly, `search_with_budget_stats`
+  reports the counters (`search_k` is spent per leaf, so the id count
+  overshoots by up to one leaf), and `search` uses Annoy's `k * num_trees`.
 - `HNSWIndex::doc_id` maps an internal node id (the id a
   `search_with_distance` closure receives, BFS-reordered after `build`) to the
   doc id passed to `add`, so closures can look up per-document data by doc id.
