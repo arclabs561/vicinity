@@ -18,7 +18,7 @@
 //!
 //! `trunc_dim` is the largest power of two not exceeding the input
 //! dimension; `padded_dim` is the input dimension rounded up to a multiple of
-//! 32 (and at least [`MIN_PADDED_DIM`]). The transform is orthogonal, so
+//! 32 (and at least `MIN_PADDED_DIM`, 64). The transform is orthogonal, so
 //! un-rotating is exact up to floating-point rounding: quantized residuals can
 //! be decoded back into the original coordinate system.
 //!
