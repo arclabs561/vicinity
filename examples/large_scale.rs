@@ -198,7 +198,7 @@ fn run() -> Res<()> {
         args.k,
         args.gt_queries,
         args.ef,
-        args.batch
+        effective_batch(&args)
     );
     println!("data root: {}", root.display());
     println!(
@@ -294,9 +294,10 @@ fn run() -> Res<()> {
 
     let mut rows: Vec<Row> = Vec::new();
     let rss_before = rss_mib();
-    let index_path = index_path(&root, args.domain, args.points, args.dim, args.batch);
+    let batch = effective_batch(&args);
+    let index_path = index_path(&root, args.domain, args.points, args.dim, batch);
     let build_start = Instant::now();
-    let index = build_hnsw(&dataset_path, args.points, args.dim, args.batch)?;
+    let index = build_hnsw(&dataset_path, args.points, args.dim, batch)?;
     let build_s = build_start.elapsed().as_secs_f64();
     let rss_after = rss_mib();
     let mem_mib = match (rss_before, rss_after) {
@@ -319,16 +320,20 @@ fn run() -> Res<()> {
             Some(index_path),
         )
     } else {
-        (bytes_to_mib(index.memory_usage().total() as u64), 0.0, None)
+        println!(
+            "index not persisted (--no-persist); resident-size estimate {:.1} MiB \
+             (not an on-disk measurement)",
+            bytes_to_mib(index.memory_usage().total() as u64)
+        );
+        // No file was written, so the on-disk size is unmeasured. Emitting the
+        // resident estimate under this column would read as a disk measurement.
+        (f64::NAN, 0.0, None)
     };
-    match &index_path {
-        Some(path) => println!(
+    if let Some(path) = &index_path {
+        println!(
             "index persisted: {} ({index_disk_mib:.1} MiB) in {persist_s:.1}s",
             path.display()
-        ),
-        None => println!(
-            "index not persisted (--no-persist); resident-size estimate {index_disk_mib:.1} MiB"
-        ),
+        );
     }
 
     let exact_timed = exact_p50.max(f64::MIN_POSITIVE);
@@ -376,6 +381,14 @@ fn run() -> Res<()> {
         bytes_to_mib(generation.bytes) + index_disk_mib
     );
     Ok(())
+}
+
+fn effective_batch(args: &Args) -> usize {
+    // A parallel batch is inserted without its members seeing each other, so a
+    // batch that is a large share of the set builds a poor graph. 4096 is the
+    // library default and right at 100k+, but a 10k tier would otherwise get a
+    // 40%-of-set first batch and lose recall. Cap at one eighth of the tier.
+    args.batch.min((args.points / 8).max(1) as usize)
 }
 
 fn validate(args: &Args) -> Res<()> {
@@ -1593,9 +1606,14 @@ fn print_rows(rows: &[Row], count: u64, dim: usize, queries: usize) {
         "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
     );
     for row in rows {
+        let disk = if row.index_disk_mib.is_finite() {
+            format!("{:.1}", row.index_disk_mib)
+        } else {
+            "-".to_string()
+        };
         println!(
             "| {} | {}={} | {:.3} | {:.2} | {:.1} | {:.1} | {:.1} | {:.0} | {:.2} | {:.1} | \
-             {:.1} | {} |",
+             {} | {} |",
             row.family,
             row.knob,
             row.knob_value,
@@ -1607,7 +1625,7 @@ fn print_rows(rows: &[Row], count: u64, dim: usize, queries: usize) {
             row.qps,
             row.build_s,
             row.mem_mib,
-            row.index_disk_mib,
+            disk,
             if cfg!(feature = "distance-stats") {
                 format!("{:.0}", row.dists_per_query)
             } else {
@@ -1647,7 +1665,7 @@ fn write_jsonl(path: &Path, rows: &[Row], args: &Args, gt_cache: &Path, dataset:
         args.gt_queries,
         args.domain.name(),
         tier_label(args.points),
-        args.batch,
+        effective_batch(args),
         cfg!(feature = "distance-stats"),
         args.max_points,
         json_num(args.budget_seconds, 1),
