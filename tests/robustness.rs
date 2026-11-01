@@ -279,8 +279,8 @@ fn add_after_build_rejected() {
 
     let result = index.add_slice(1, &normalize(&[0.0, 1.0, 0.0, 0.0]));
     assert!(
-        matches!(result, Err(RetrieveError::InvalidParameter(_))),
-        "adding vectors after build should return InvalidParameter, got {result:?}"
+        matches!(result, Err(RetrieveError::AlreadyBuilt { .. })),
+        "adding vectors after build should return AlreadyBuilt, got {result:?}"
     );
 }
 

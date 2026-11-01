@@ -231,14 +231,16 @@ impl HNSWSegmentReader {
             // We read one more byte for the is_built flag.
             //
             // NOTE: If this produces unreasonable values (caught below by the size guards),
-            // we propagate a Format error rather than guessing further.
+            // the bytes were not a v0 header either: report the magic mismatch instead of
+            // pretending the file claimed an absurd index size.
             let dim_bytes: [u8; 4] = [magic_buf[0], magic_buf[1], magic_buf[2], magic_buf[3]];
             let num_vec_bytes: [u8; 4] = [magic_buf[4], magic_buf[5], magic_buf[6], magic_buf[7]];
             let mut built_byte = [0u8; 1];
             if metadata_file.read_exact(&mut built_byte).is_err() {
-                return Err(crate::persistence::error::PersistenceError::Format(
-                    "bad magic and legacy decode failed: file too short for v0 header".into(),
-                ));
+                return Err(crate::persistence::error::PersistenceError::BadMagic {
+                    expected: crate::RetrieveError::describe_magic(&HNSW_SEGMENT_MAGIC),
+                    found: crate::RetrieveError::describe_magic(&magic_buf),
+                });
             }
             (
                 u32::from_le_bytes(dim_bytes) as usize,
@@ -253,6 +255,15 @@ impl HNSWSegmentReader {
         const MAX_ALLOC_BYTES: usize = 8 * 1024 * 1024 * 1024; // 8 GB
 
         if num_vectors > MAX_VECTORS || dimension > MAX_DIMENSION {
+            // A v1 file that passes the magic check can legitimately hit this guard
+            // only when its own header is corrupt; a file that failed the magic check
+            // is simply not an HNSW segment.
+            if magic_buf != HNSW_SEGMENT_MAGIC {
+                return Err(crate::persistence::error::PersistenceError::BadMagic {
+                    expected: crate::RetrieveError::describe_magic(&HNSW_SEGMENT_MAGIC),
+                    found: crate::RetrieveError::describe_magic(&magic_buf),
+                });
+            }
             return Err(crate::persistence::error::PersistenceError::Format(
                 format!(
                     "unreasonable index size: {} vectors x {} dimensions",
@@ -490,6 +501,56 @@ impl HNSWSegmentReader {
 mod tests {
     use super::*;
     use crate::persistence::directory::MemoryDirectory;
+    use crate::persistence::error::PersistenceError;
+
+    fn write_metadata(mem: &MemoryDirectory, bytes: &[u8]) {
+        mem.atomic_write("segments/segment_hnsw_0/metadata.bin", bytes)
+            .expect("write metadata");
+    }
+
+    #[test]
+    fn foreign_metadata_reports_bad_magic() {
+        let mem = MemoryDirectory::new();
+        // A JSON file (or any non-v0, non-HNSW file): the magic does not match and
+        // the legacy-v0 decode does not produce a plausible header either.
+        write_metadata(&mem, br#"{"vectors":[1.0,0.0],"dimension":2}"#);
+
+        let error = HNSWSegmentReader::load(Box::new(mem.clone()), 0)
+            .err()
+            .expect("foreign metadata must fail");
+        match error {
+            PersistenceError::BadMagic { expected, found } => {
+                assert!(expected.contains("56 43 4e 48 4e 53 57 01"), "{expected}");
+                assert!(found.contains("vector"), "{found}");
+            }
+            other => panic!("expected BadMagic, got {other:?}"),
+        }
+
+        // The retrievable error keeps the same typed cause.
+        let typed: crate::RetrieveError = HNSWSegmentReader::load(Box::new(mem), 0)
+            .err()
+            .expect("foreign metadata must fail")
+            .into();
+        assert!(
+            matches!(typed, crate::RetrieveError::BadMagic { .. }),
+            "expected RetrieveError::BadMagic, got {typed:?}"
+        );
+    }
+
+    #[test]
+    fn truncated_v0_header_reports_bad_magic() {
+        let mem = MemoryDirectory::new();
+        // Bad magic and too short for the v0 header byte.
+        write_metadata(&mem, b"BADMAGIC");
+
+        let error = HNSWSegmentReader::load(Box::new(mem), 0)
+            .err()
+            .expect("truncated v0 header must fail");
+        assert!(
+            matches!(error, PersistenceError::BadMagic { .. }),
+            "expected BadMagic, got {error:?}"
+        );
+    }
 
     #[test]
     fn test_hnsw_segment_write_read() {

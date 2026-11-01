@@ -128,15 +128,17 @@ impl KMeansTreeIndex {
     /// Create new K-Means Tree index.
     pub fn new(dimension: usize, params: KMeansTreeParams) -> Result<Self, RetrieveError> {
         if dimension == 0 {
-            return Err(RetrieveError::InvalidParameter(
-                "Dimension must be greater than 0".to_string(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "dimension",
+                expected: "must be greater than 0",
+            });
         }
 
         if params.num_clusters == 0 {
-            return Err(RetrieveError::InvalidParameter(
-                "Number of clusters must be greater than 0".to_string(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "num_clusters",
+                expected: "must be greater than 0",
+            });
         }
 
         Ok(Self {
@@ -153,17 +155,17 @@ impl KMeansTreeIndex {
     /// Add a vector to the index.
     pub fn add(&mut self, doc_id: u32, embedding: Vec<f32>) -> Result<(), RetrieveError> {
         if embedding.len() != self.dimension {
-            return Err(RetrieveError::InvalidParameter(format!(
-                "Embedding dimension {} != {}",
-                embedding.len(),
-                self.dimension
-            )));
+            return Err(RetrieveError::DimensionMismatch {
+                query_dim: embedding.len(),
+                doc_dim: self.dimension,
+            });
         }
 
         if self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "Cannot add vectors after build".to_string(),
-            ));
+            return Err(RetrieveError::AlreadyBuilt {
+                component: "K-means tree index",
+                operation: "add vectors",
+            });
         }
 
         self.vectors.extend_from_slice(&embedding);
@@ -192,9 +194,10 @@ impl KMeansTreeIndex {
     /// Save a built K-means tree index to a directory.
     pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<(), RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "cannot save unbuilt K-means tree index".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "K-means tree index",
+                operation: "save",
+            });
         }
         let output_dir = output_dir.as_ref();
         std::fs::create_dir_all(output_dir)?;
@@ -449,16 +452,16 @@ impl KMeansTreeIndex {
     /// [`Self::search_with_leaf_budget`] to examine more leaves for recall.
     pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "Index must be built before search".to_string(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "K-means tree index",
+                operation: "search",
+            });
         }
         if query.len() != self.dimension {
-            return Err(RetrieveError::InvalidParameter(format!(
-                "Query dimension {} != {}",
-                query.len(),
-                self.dimension
-            )));
+            return Err(RetrieveError::DimensionMismatch {
+                query_dim: query.len(),
+                doc_dim: self.dimension,
+            });
         }
 
         let root = self.root.as_ref().ok_or(RetrieveError::EmptyIndex)?;
@@ -475,22 +478,23 @@ impl KMeansTreeIndex {
         branch_budget: usize,
     ) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "Index must be built before search".to_string(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "K-means tree index",
+                operation: "search",
+            });
         }
         if branch_budget == 0 {
-            return Err(RetrieveError::InvalidParameter(
-                "branch_budget must be greater than 0".to_string(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "branch_budget",
+                expected: "must be greater than 0",
+            });
         }
 
         if query.len() != self.dimension {
-            return Err(RetrieveError::InvalidParameter(format!(
-                "Query dimension {} != {}",
-                query.len(),
-                self.dimension
-            )));
+            return Err(RetrieveError::DimensionMismatch {
+                query_dim: query.len(),
+                doc_dim: self.dimension,
+            });
         }
 
         let root = self.root.as_ref().ok_or(RetrieveError::EmptyIndex)?;
@@ -513,22 +517,23 @@ impl KMeansTreeIndex {
         leaf_budget: usize,
     ) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "Index must be built before search".to_string(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "K-means tree index",
+                operation: "search",
+            });
         }
         if leaf_budget == 0 {
-            return Err(RetrieveError::InvalidParameter(
-                "leaf_budget must be greater than 0".to_string(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "leaf_budget",
+                expected: "must be greater than 0",
+            });
         }
 
         if query.len() != self.dimension {
-            return Err(RetrieveError::InvalidParameter(format!(
-                "Query dimension {} != {}",
-                query.len(),
-                self.dimension
-            )));
+            return Err(RetrieveError::DimensionMismatch {
+                query_dim: query.len(),
+                doc_dim: self.dimension,
+            });
         }
 
         let root = self.root.as_ref().ok_or(RetrieveError::EmptyIndex)?;
@@ -824,7 +829,14 @@ mod tests {
         let err = tree
             .search_with_branch_budget(&[50.0, 100.0, 150.0], 8, 0)
             .unwrap_err();
-        assert!(matches!(err, RetrieveError::InvalidParameter(_)));
+        assert!(matches!(
+            err,
+            RetrieveError::InvalidConfig {
+                field: "branch_budget",
+                ..
+            }
+        ));
+        assert!(err.to_string().contains("branch_budget"));
     }
 
     #[test]
@@ -833,7 +845,14 @@ mod tests {
         let err = tree
             .search_with_leaf_budget(&[50.0, 100.0, 150.0], 8, 0)
             .unwrap_err();
-        assert!(matches!(err, RetrieveError::InvalidParameter(_)));
+        assert!(matches!(
+            err,
+            RetrieveError::InvalidConfig {
+                field: "leaf_budget",
+                ..
+            }
+        ));
+        assert!(err.to_string().contains("leaf_budget"));
     }
 
     #[test]

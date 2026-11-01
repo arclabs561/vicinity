@@ -102,14 +102,16 @@ impl BinaryFlatIndex {
     /// If `params.projected_dim` is 0, it is set to `dimension`.
     pub fn new(dimension: usize, mut params: BinaryFlatParams) -> Result<Self, RetrieveError> {
         if dimension == 0 {
-            return Err(RetrieveError::InvalidParameter(
-                "dimension must be > 0".into(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "dimension",
+                expected: "must be greater than 0",
+            });
         }
         if params.rerank_factor == 0 {
-            return Err(RetrieveError::InvalidParameter(
-                "rerank_factor must be > 0".into(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "rerank_factor",
+                expected: "must be greater than 0",
+            });
         }
         if params.projected_dim == 0 {
             params.projected_dim = dimension;
@@ -130,9 +132,10 @@ impl BinaryFlatIndex {
     /// Add a vector by slice.
     pub fn add_slice(&mut self, id: u32, vector: &[f32]) -> Result<(), RetrieveError> {
         if self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "cannot add after build".into(),
-            ));
+            return Err(RetrieveError::AlreadyBuilt {
+                component: "binary index",
+                operation: "add vectors",
+            });
         }
         if vector.len() != self.dimension {
             return Err(RetrieveError::DimensionMismatch {
@@ -180,9 +183,10 @@ impl BinaryFlatIndex {
     /// rebuilds the quantizer and binary codes.
     pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<(), RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "cannot save unbuilt BinaryFlat index".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "BinaryFlat index",
+                operation: "save",
+            });
         }
         let output_dir = output_dir.as_ref();
         std::fs::create_dir_all(output_dir)?;
@@ -247,9 +251,10 @@ impl BinaryFlatIndex {
     /// Returns `(doc_id, distance)` pairs sorted by ascending cosine distance.
     pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "index must be built before search".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "binary index",
+                operation: "search",
+            });
         }
         if query.is_empty() {
             return Err(RetrieveError::EmptyQuery);
@@ -264,10 +269,10 @@ impl BinaryFlatIndex {
             return Ok(Vec::new());
         }
 
-        let q = self
-            .quantizer
-            .as_ref()
-            .ok_or_else(|| RetrieveError::InvalidParameter("quantizer not initialized".into()))?;
+        let q = self.quantizer.as_ref().ok_or(RetrieveError::NotBuilt {
+            component: "BinaryFlat quantizer",
+            operation: "search",
+        })?;
         let n = self.num_vectors;
 
         // Scan all codes with asymmetric distance.

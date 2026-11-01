@@ -45,14 +45,29 @@ fn map_persistence_error(error: crate::RetrieveError) -> PyErr {
                 PyOSError::new_err(error.to_string())
             }
         }
-        crate::RetrieveError::InvalidParameter(message) => PyValueError::new_err(message),
-        crate::RetrieveError::FormatError(message)
-        | crate::RetrieveError::Serialization(message) => PyRuntimeError::new_err(message),
-        // Generation persistence currently wraps its I/O errors through the
-        // persistence layer before returning `RetrieveError::Other`.
-        crate::RetrieveError::Other(message) if message.starts_with("persistence I/O:") => {
-            PyOSError::new_err(message)
+        crate::RetrieveError::IoAt { path, source } => {
+            let message = format!("{}: {source}", path.display());
+            if source.kind() == std::io::ErrorKind::NotFound {
+                PyFileNotFoundError::new_err(message)
+            } else {
+                PyOSError::new_err(message)
+            }
         }
+        // Invalid input and invalid index state stay `ValueError`, but the
+        // message names the field/component so Python callers can act on it.
+        crate::RetrieveError::InvalidParameter(_)
+        | crate::RetrieveError::InvalidConfig { .. }
+        | crate::RetrieveError::NotBuilt { .. }
+        | crate::RetrieveError::AlreadyBuilt { .. }
+        | crate::RetrieveError::Unsupported { .. }
+        | crate::RetrieveError::NonFiniteInput { .. }
+        | crate::RetrieveError::DimensionMismatch { .. } => {
+            PyValueError::new_err(error.to_string())
+        }
+        crate::RetrieveError::FormatError(_)
+        | crate::RetrieveError::Serialization(_)
+        | crate::RetrieveError::SerializationAt { .. }
+        | crate::RetrieveError::BadMagic { .. } => PyRuntimeError::new_err(error.to_string()),
         other => PyRuntimeError::new_err(other.to_string()),
     }
 }

@@ -82,14 +82,16 @@ impl NSWIndex {
     /// Create a new NSW index.
     pub fn new(dimension: usize, m: usize, m_max: usize) -> Result<Self, RetrieveError> {
         if dimension == 0 {
-            return Err(RetrieveError::InvalidParameter(
-                "dimension must be greater than 0".to_string(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "dimension",
+                expected: "must be greater than 0",
+            });
         }
         if m == 0 || m_max == 0 {
-            return Err(RetrieveError::InvalidParameter(
-                "m and m_max must be greater than 0".into(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "m and m_max",
+                expected: "must both be greater than 0",
+            });
         }
 
         Ok(Self {
@@ -112,14 +114,16 @@ impl NSWIndex {
     /// Create with custom parameters.
     pub fn with_params(dimension: usize, params: NSWParams) -> Result<Self, RetrieveError> {
         if dimension == 0 {
-            return Err(RetrieveError::InvalidParameter(
-                "dimension must be greater than 0".to_string(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "dimension",
+                expected: "must be greater than 0",
+            });
         }
         if params.m == 0 || params.m_max == 0 {
-            return Err(RetrieveError::InvalidParameter(
-                "m and m_max must be greater than 0".into(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "m and m_max",
+                expected: "must both be greater than 0",
+            });
         }
 
         Ok(Self {
@@ -146,9 +150,10 @@ impl NSWIndex {
     /// - `doc_id` is stored and mapped back in search results.
     pub fn add_slice(&mut self, doc_id: u32, vector: &[f32]) -> Result<(), RetrieveError> {
         if self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "cannot add vectors after index is built".into(),
-            ));
+            return Err(RetrieveError::AlreadyBuilt {
+                component: "NSW index",
+                operation: "add vectors",
+            });
         }
 
         if vector.len() != self.dimension {
@@ -219,9 +224,10 @@ impl NSWIndex {
             RetrieveError::InvalidParameter("cannot save NSW index without entry point".into())
         })?;
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "cannot save unbuilt NSW index".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "NSW index",
+                operation: "save",
+            });
         }
         let output_dir = output_dir.as_ref();
         std::fs::create_dir_all(output_dir)?;
@@ -306,9 +312,10 @@ impl NSWIndex {
         ef: usize,
     ) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "index must be built before search".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "NSW index",
+                operation: "search",
+            });
         }
 
         if query.len() != self.dimension {
@@ -404,8 +411,10 @@ mod tests {
         let result = NSWIndex::new(0, 8, 8);
         assert!(result.is_err());
         match result.unwrap_err() {
-            RetrieveError::InvalidParameter(_) => {}
-            other => panic!("Expected InvalidParameter, got {:?}", other),
+            RetrieveError::InvalidConfig {
+                field: "dimension", ..
+            } => {}
+            other => panic!("Expected InvalidConfig for dimension, got {other:?}"),
         }
     }
 
