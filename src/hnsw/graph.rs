@@ -2514,27 +2514,11 @@ impl HNSWIndex {
                         }
                     }
 
-                    // Use the standard beam search from the best entry point
-                    crate::hnsw::search::greedy_search_layer(
-                        query,
-                        best_entry,
-                        &self.layers[0],
-                        &self.vectors,
-                        self.dimension,
-                        ef.max(k),
-                        self.dist_fn(),
-                    )
+                    // Use the standard beam search from the best entry point.
+                    self.search_base_layer(query, best_entry, ef.max(k))
                 } else {
                     // Default: Use greedy search from entry point
-                    crate::hnsw::search::greedy_search_layer(
-                        query,
-                        current_closest,
-                        &self.layers[0],
-                        &self.vectors,
-                        self.dimension,
-                        ef.max(k),
-                        self.dist_fn(),
-                    )
+                    self.search_base_layer(query, current_closest, ef.max(k))
                 };
 
             // Clear decompression caches after search
@@ -2624,7 +2608,7 @@ impl HNSWIndex {
 
         // Fine search in base layer with custom distance
         if !self.layers.is_empty() {
-            let base_results = crate::hnsw::search::greedy_search_layer_custom(
+            let base_results = crate::hnsw::search::greedy_search_layer_custom_live(
                 query,
                 current_closest,
                 &self.layers[0],
@@ -2632,6 +2616,7 @@ impl HNSWIndex {
                 self.dimension,
                 ef.max(k),
                 dist_fn,
+                |id| !self.tombstones.is_deleted(id as usize),
             );
 
             let results = base_results
@@ -2840,7 +2825,7 @@ impl HNSWIndex {
             let base_results = if self.layers.is_empty() {
                 Vec::new()
             } else if chain_pos == 0 {
-                crate::hnsw::search::greedy_search_layer(
+                crate::hnsw::search::greedy_search_layer_live(
                     query,
                     current_closest,
                     &self.layers[0],
@@ -2848,6 +2833,7 @@ impl HNSWIndex {
                     self.dimension,
                     ef_search.max(k),
                     dist_fn,
+                    |id| !self.tombstones.is_deleted(id as usize),
                 )
             } else {
                 let parent_best = best_internal_for_chain[chain_pos - 1];
@@ -2866,6 +2852,7 @@ impl HNSWIndex {
                     self.dimension,
                     ef_search.max(k),
                     dist_fn,
+                    |id| !self.tombstones.is_deleted(id as usize),
                 )
             };
 
@@ -2986,7 +2973,13 @@ impl HNSWIndex {
         let start_dist = dist_fn(query, start_vec);
         candidates.push(std::cmp::Reverse((FloatOrd(start_dist), start_point)));
 
-        // Greedy search in base layer, only exploring filtered neighbors
+        // Greedy search in base layer, only exploring filtered neighbors.
+        //
+        // The budget is counted in live results, not visited nodes: hnswlib's
+        // `isIdAllowed` path only admits allowed points to `top_candidates`
+        // (`hnswalg.h:432-441`), so tombstones must not let the traversal stop
+        // while fewer than `ef` usable members have been found.
+        let mut live_matches = 0usize;
         while let Some(std::cmp::Reverse((FloatOrd(_dist), vector_id))) = candidates.pop() {
             if visited.contains(&vector_id) {
                 continue;
@@ -3001,6 +2994,10 @@ impl HNSWIndex {
                 != desired_category.as_ref()
             {
                 continue;
+            }
+
+            if !self.tombstones.is_deleted(vector_id as usize) {
+                live_matches += 1;
             }
 
             // Explore neighbors that match filter
@@ -3025,7 +3022,7 @@ impl HNSWIndex {
                 candidates.push(std::cmp::Reverse((FloatOrd(neighbor_dist), neighbor_id)));
             }
 
-            if visited.len() >= ef.max(k) {
+            if live_matches >= ef.max(k) {
                 break;
             }
         }
@@ -3205,6 +3202,7 @@ impl HNSWIndex {
                 k,
                 config,
                 self.dist_fn(),
+                |id| !self.tombstones.is_deleted(id as usize),
             );
             num_evaluated = evaluated;
 
@@ -3322,6 +3320,7 @@ impl HNSWIndex {
             &query_proj,
             &proj_threshold,
             &mut tfb,
+            |id| !self.tombstones.is_deleted(id as usize),
         );
 
         let results = base_results
@@ -3445,6 +3444,38 @@ impl HNSWIndex {
             return Some(ep);
         }
         self.compute_entry_point()
+    }
+
+    /// Base-layer beam search for `query`.
+    ///
+    /// Without tombstones this is the plain beam search with no per-candidate
+    /// eligibility check. With tombstones, the search uses hnswlib's general
+    /// path semantics: deleted nodes remain traversable but never take one of
+    /// the `ef` result slots, so `ef` counts live results and the output is not
+    /// truncated to fewer than `k` live neighbours.
+    fn search_base_layer(&self, query: &[f32], entry_point: u32, ef: usize) -> Vec<(u32, f32)> {
+        if self.tombstones.is_empty() {
+            crate::hnsw::search::greedy_search_layer(
+                query,
+                entry_point,
+                &self.layers[0],
+                &self.vectors,
+                self.dimension,
+                ef,
+                self.dist_fn(),
+            )
+        } else {
+            crate::hnsw::search::greedy_search_layer_live(
+                query,
+                entry_point,
+                &self.layers[0],
+                &self.vectors,
+                self.dimension,
+                ef,
+                self.dist_fn(),
+                |id| !self.tombstones.is_deleted(id as usize),
+            )
+        }
     }
 
     /// Descend from `entry_point` at `entry_layer` through upper layers to layer 1,
