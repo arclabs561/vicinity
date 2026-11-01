@@ -94,9 +94,10 @@ impl VamanaIndex {
     /// Create a new Vamana index.
     pub fn new(dimension: usize, params: VamanaParams) -> Result<Self, RetrieveError> {
         if dimension == 0 {
-            return Err(RetrieveError::InvalidParameter(
-                "dimension must be > 0".into(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "dimension",
+                expected: "must be greater than 0",
+            });
         }
 
         Ok(Self {
@@ -114,9 +115,10 @@ impl VamanaIndex {
     /// Add a vector to the index.
     pub fn add(&mut self, id: u32, vector: Vec<f32>) -> Result<(), RetrieveError> {
         if self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "cannot add vectors after build".into(),
-            ));
+            return Err(RetrieveError::AlreadyBuilt {
+                component: "Vamana index",
+                operation: "add vectors",
+            });
         }
 
         if vector.len() != self.dimension {
@@ -147,9 +149,10 @@ impl VamanaIndex {
         }
 
         if self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "index already built".into(),
-            ));
+            return Err(RetrieveError::AlreadyBuilt {
+                component: "Vamana index",
+                operation: "build",
+            });
         }
 
         // Two-pass construction: RRND + RND
@@ -166,9 +169,10 @@ impl VamanaIndex {
     /// Loading restores that graph directly; it does not rebuild.
     pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<(), RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "cannot save unbuilt Vamana index".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "Vamana index",
+                operation: "save",
+            });
         }
         let output_dir = output_dir.as_ref();
         std::fs::create_dir_all(output_dir)?;
@@ -245,9 +249,10 @@ impl VamanaIndex {
             return Err(RetrieveError::EmptyIndex);
         }
         if self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "index already built".into(),
-            ));
+            return Err(RetrieveError::AlreadyBuilt {
+                component: "Vamana index",
+                operation: "build",
+            });
         }
         super::construction::construct_graph_parallel(self, batch_size)?;
         self.built = true;
@@ -342,9 +347,10 @@ impl VamanaIndex {
         ef: usize,
     ) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "index must be built before search".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "Vamana index",
+                operation: "search",
+            });
         }
 
         // Normalize query for cosine distance
@@ -369,9 +375,10 @@ impl VamanaIndex {
         dist_fn: &F,
     ) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "index must be built before search".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "Vamana index",
+                operation: "search",
+            });
         }
         super::search::search_with_distance(self, query, k, ef, dist_fn)
     }

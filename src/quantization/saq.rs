@@ -37,15 +37,17 @@ impl SAQQuantizer {
         total_bits: usize,
     ) -> Result<Self, RetrieveError> {
         if dimension == 0 || num_segments == 0 || total_bits == 0 {
-            return Err(RetrieveError::InvalidParameter(
-                "All parameters must be greater than 0".to_string(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "dimension, num_segments, total_bits",
+                expected: "must all be greater than 0",
+            });
         }
 
         if !dimension.is_multiple_of(num_segments) {
-            return Err(RetrieveError::InvalidParameter(
-                "Dimension must be divisible by num_segments".to_string(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "dimension",
+                expected: "must be divisible by num_segments",
+            });
         }
 
         // Initial bit allocation (will be optimized)

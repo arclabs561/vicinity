@@ -200,7 +200,10 @@ impl DualBranchHNSW {
     #[cfg(feature = "serde")]
     pub fn save_to_file<P: AsRef<std::path::Path>>(&self, path: P) -> Result<(), RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter("index not built".into()));
+            return Err(RetrieveError::NotBuilt {
+                component: "Dual-Branch HNSW index",
+                operation: "save",
+            });
         }
 
         let file = std::fs::File::create(path.as_ref())?;
@@ -393,12 +396,10 @@ impl DualBranchHNSW {
 
     /// Enhance high-LID nodes with additional edges.
     fn enhance_high_lid_nodes(&mut self, _rng: &mut dyn RngCore) -> Result<(), RetrieveError> {
-        let stats = self
-            .lid_stats
-            .as_ref()
-            .ok_or(RetrieveError::InvalidParameter(
-                "LID stats not computed".into(),
-            ))?;
+        let stats = self.lid_stats.as_ref().ok_or(RetrieveError::NotBuilt {
+            component: "LID statistics",
+            operation: "enhance high-LID nodes",
+        })?;
 
         let threshold = stats.median + self.config.lid_threshold_sigma * stats.std_dev;
 
@@ -449,12 +450,10 @@ impl DualBranchHNSW {
         self.skip_bridges.clear();
         self.skip_adjacency = vec![Vec::new(); self.num_vectors];
 
-        let stats = self
-            .lid_stats
-            .as_ref()
-            .ok_or(RetrieveError::InvalidParameter(
-                "LID stats not computed".into(),
-            ))?;
+        let stats = self.lid_stats.as_ref().ok_or(RetrieveError::NotBuilt {
+            component: "LID statistics",
+            operation: "enhance high-LID nodes",
+        })?;
 
         let threshold = stats.median + self.config.lid_threshold_sigma * stats.std_dev;
 
@@ -538,7 +537,10 @@ impl DualBranchHNSW {
         ef_search: usize,
     ) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter("index not built".into()));
+            return Err(RetrieveError::NotBuilt {
+                component: "Dual-Branch HNSW index",
+                operation: "search",
+            });
         }
 
         if query.len() != self.dimension {

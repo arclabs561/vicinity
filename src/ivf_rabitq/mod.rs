@@ -189,9 +189,10 @@ impl IVFRaBitQIndex {
     /// Create a new IVF-RaBitQ index.
     pub fn new(dimension: usize, params: IVFRaBitQParams) -> Result<Self, RetrieveError> {
         if dimension == 0 {
-            return Err(RetrieveError::InvalidParameter(
-                "dimension must be > 0".into(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "dimension",
+                expected: "must be greater than 0",
+            });
         }
 
         let config = RaBitQConfig {
@@ -230,9 +231,10 @@ impl IVFRaBitQIndex {
     /// Add a vector from a borrowed slice.
     pub fn add_slice(&mut self, doc_id: u32, vector: &[f32]) -> Result<(), RetrieveError> {
         if self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "cannot add vectors after index is built".into(),
-            ));
+            return Err(RetrieveError::AlreadyBuilt {
+                component: "IVF-RaBitQ index",
+                operation: "add vectors",
+            });
         }
         if vector.len() != self.dimension {
             return Err(RetrieveError::DimensionMismatch {
@@ -400,15 +402,17 @@ impl IVFRaBitQIndex {
     /// cannot be reconstructed from fields outside `qntz`.
     pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<(), RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "cannot save unbuilt IVF-RaBitQ index".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "IVF-RaBitQ index",
+                operation: "save",
+            });
         }
         let expected_vector_len = checked_batch_len(self.num_vectors, self.dimension)?;
         if self.compacted || self.vectors.len() != expected_vector_len {
-            return Err(RetrieveError::InvalidParameter(
-                "cannot save compacted IVF-RaBitQ index".into(),
-            ));
+            return Err(RetrieveError::Unsupported {
+                feature: "saving a compacted IVF-RaBitQ index",
+                hint: "save before compact(), or rebuild the index",
+            });
         }
 
         let output_dir = output_dir.as_ref();
@@ -470,9 +474,10 @@ impl IVFRaBitQIndex {
         nprobe: usize,
     ) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "index must be built before search".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "IVF-RaBitQ index",
+                operation: "search",
+            });
         }
         if query.len() != self.dimension {
             return Err(RetrieveError::DimensionMismatch {

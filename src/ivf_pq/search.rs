@@ -331,10 +331,10 @@ impl Default for IVFPQParams {
 /// PQ codes are stored as `u8`, so a codebook holds at most 256 entries.
 fn validate_codebook_size(codebook_size: usize) -> Result<(), RetrieveError> {
     if codebook_size > 256 {
-        return Err(RetrieveError::InvalidParameter(format!(
-            "codebook_size must be <= 256 (PQ codes are stored as u8), got {}",
-            codebook_size
-        )));
+        return Err(RetrieveError::InvalidConfig {
+            field: "codebook_size",
+            expected: "must be at most 256 because PQ codes are stored as u8",
+        });
     }
     Ok(())
 }
@@ -381,9 +381,10 @@ impl IVFPQIndex {
     /// Create a new IVF-PQ index.
     pub fn new(dimension: usize, params: IVFPQParams) -> Result<Self, RetrieveError> {
         if dimension == 0 {
-            return Err(RetrieveError::InvalidParameter(
-                "dimension must be > 0".into(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "dimension",
+                expected: "must be greater than 0",
+            });
         }
         validate_codebook_size(params.codebook_size)?;
 
@@ -466,9 +467,10 @@ impl IVFPQIndex {
             store.add(doc_id, metadata);
             Ok(())
         } else {
-            Err(RetrieveError::InvalidParameter(
-                "filtering not enabled; use IVFPQIndex::with_filtering()".into(),
-            ))
+            Err(RetrieveError::Unsupported {
+                feature: "filtered search",
+                hint: "rebuild the index with IVFPQIndex::with_filtering()",
+            })
         }
     }
 
@@ -485,9 +487,10 @@ impl IVFPQIndex {
     /// - Vectors are L2-normalized on insertion (cosine similarity index).
     pub fn add_slice(&mut self, doc_id: u32, vector: &[f32]) -> Result<(), RetrieveError> {
         if self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "cannot add vectors after index is built".into(),
-            ));
+            return Err(RetrieveError::AlreadyBuilt {
+                component: "IVF-PQ index",
+                operation: "add vectors",
+            });
         }
 
         if vector.len() != self.dimension {
@@ -566,9 +569,10 @@ impl IVFPQIndex {
         }
 
         if training.kmeans_max_iter == 0 {
-            return Err(RetrieveError::InvalidParameter(
-                "kmeans_max_iter must be greater than 0".into(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "kmeans_max_iter",
+                expected: "must be greater than 0",
+            });
         }
 
         let training_indices = self.training_indices(training.sample_size)?;
@@ -791,9 +795,10 @@ impl IVFPQIndex {
         };
 
         if sample_size == 0 {
-            return Err(RetrieveError::InvalidParameter(
-                "training_sample_size must be greater than 0".into(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "training_sample_size",
+                expected: "must be greater than 0",
+            });
         }
 
         if sample_size >= self.num_vectors {
@@ -943,19 +948,21 @@ impl IVFPQIndex {
         include_generation_components: bool,
     ) -> Result<(), RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "cannot save unbuilt IVF-PQ index".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "IVF-PQ index",
+                operation: "save",
+            });
         }
         if self.metadata.is_some() && self.filter_field.is_none() {
-            return Err(RetrieveError::InvalidParameter(
-                "IVF-PQ filter metadata requires a filter field".into(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "filter_field",
+                expected: "must be set before enabling filter metadata",
+            });
         }
-        let pq = self
-            .pq
-            .clone()
-            .ok_or_else(|| RetrieveError::InvalidParameter("missing IVF-PQ quantizer".into()))?;
+        let pq = self.pq.clone().ok_or(RetrieveError::NotBuilt {
+            component: "IVF-PQ quantizer",
+            operation: "save",
+        })?;
         std::fs::create_dir_all(output_dir)?;
 
         let raw_vectors_present = self.vectors.len() == self.num_vectors * self.dimension;
@@ -1114,9 +1121,10 @@ impl IVFPQIndex {
         candidate_pool: usize,
     ) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "index must be built before search".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "IVF-PQ index",
+                operation: "search",
+            });
         }
 
         if query.len() != self.dimension {
@@ -1127,9 +1135,10 @@ impl IVFPQIndex {
         }
 
         if self.vectors.is_empty() {
-            return Err(RetrieveError::InvalidParameter(
-                "search_reranked unavailable after compact()".into(),
-            ));
+            return Err(RetrieveError::Unsupported {
+                feature: "search_reranked after compact()",
+                hint: "use search() instead, or keep raw vectors when compacting",
+            });
         }
 
         let pool = candidate_pool.max(k);
@@ -1170,9 +1179,10 @@ impl IVFPQIndex {
         #[cfg(feature = "benchmark")] mut profile: Option<&mut IVFPQSearchProfile>,
     ) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "index must be built before search".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "IVF-PQ index",
+                operation: "search",
+            });
         }
 
         if query.len() != self.dimension {
@@ -1182,10 +1192,10 @@ impl IVFPQIndex {
             });
         }
 
-        let pq = self
-            .pq
-            .as_ref()
-            .ok_or(RetrieveError::InvalidParameter("PQ not initialized".into()))?;
+        let pq = self.pq.as_ref().ok_or(RetrieveError::NotBuilt {
+            component: "IVF-PQ product quantizer",
+            operation: "search",
+        })?;
 
         // Normalize query (index operates on unit-length vectors)
         #[cfg(feature = "benchmark")]
@@ -1397,9 +1407,10 @@ impl IVFPQIndex {
         filter: &crate::filtering::MetadataFilter,
     ) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "index must be built before search".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "IVF-PQ index",
+                operation: "search",
+            });
         }
 
         if query.len() != self.dimension {
@@ -1434,9 +1445,10 @@ impl IVFPQIndex {
                 }
             }
             _ => {
-                return Err(RetrieveError::InvalidParameter(
-                    "only equality filters on filter_field are supported".into(),
-                ));
+                return Err(RetrieveError::Unsupported {
+                    feature: "non-equality predicates on filter_field",
+                    hint: "use only equality predicates on the configured filter_field",
+                });
             }
         };
 
@@ -1459,10 +1471,10 @@ impl IVFPQIndex {
         let mut query_residual = vec![0.0f32; self.dimension];
         let mut adc_table = Vec::new();
 
-        let pq = self
-            .pq
-            .as_ref()
-            .ok_or(RetrieveError::InvalidParameter("PQ not initialized".into()))?;
+        let pq = self.pq.as_ref().ok_or(RetrieveError::NotBuilt {
+            component: "IVF-PQ product quantizer",
+            operation: "search",
+        })?;
 
         for (cluster_idx, _) in &cluster_distances {
             let cluster = &self.clusters[*cluster_idx];
@@ -1495,9 +1507,10 @@ impl IVFPQIndex {
                     }
                 }
             } else {
-                return Err(RetrieveError::InvalidParameter(
-                    "metadata store not initialized".into(),
-                ));
+                return Err(RetrieveError::NotBuilt {
+                    component: "filter metadata store",
+                    operation: "search",
+                });
             }
         }
 
@@ -1795,9 +1808,11 @@ impl IVFPQFileSearcher {
         candidate_pool: usize,
     ) -> Result<(Vec<(u32, f32)>, IVFPQFileSearchDiagnostics), RetrieveError> {
         if self.raw_vectors.is_none() {
-            return Err(RetrieveError::InvalidParameter(
-                "search_reranked unavailable without raw_vectors.bin".into(),
-            ));
+            return Err(RetrieveError::Unsupported {
+                feature: "search_reranked without raw vectors",
+                hint:
+                    "save raw vectors or rebuild with raw vectors retained, or use search() instead",
+            });
         }
         if query.len() != self.dimension {
             return Err(RetrieveError::DimensionMismatch {
@@ -1824,9 +1839,11 @@ impl IVFPQFileSearcher {
         let query_normalized = normalize_query(query);
         let mut reranked = Vec::with_capacity(candidates.len());
         let Some(storage) = self.raw_vectors.as_mut() else {
-            return Err(RetrieveError::InvalidParameter(
-                "search_reranked unavailable without raw_vectors.bin".into(),
-            ));
+            return Err(RetrieveError::Unsupported {
+                feature: "search_reranked without raw vectors",
+                hint:
+                    "save raw vectors or rebuild with raw vectors retained, or use search() instead",
+            });
         };
         // Ascending offsets keep the positional reads close to sequential.
         candidates.sort_unstable_by_key(|(vector_idx, _)| *vector_idx);
@@ -2027,11 +2044,11 @@ mod tests {
         };
         assert!(matches!(
             IVFPQIndex::new(16, params.clone()),
-            Err(RetrieveError::InvalidParameter(_))
+            Err(RetrieveError::InvalidConfig { .. })
         ));
         assert!(matches!(
             IVFPQIndex::with_filtering(16, params, "category"),
-            Err(RetrieveError::InvalidParameter(_))
+            Err(RetrieveError::InvalidConfig { .. })
         ));
     }
 
@@ -2431,9 +2448,13 @@ mod tests {
 
         let query: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
         let err = index.search_reranked(&query, 5, 50).unwrap_err();
+        // Assert the cause, not the prose: the message is allowed to improve.
         assert!(
-            err.to_string().contains("search_reranked unavailable"),
-            "unexpected error: {err}"
+            matches!(
+                err,
+                RetrieveError::Unsupported { feature, .. } if feature.contains("search_reranked")
+            ),
+            "expected Unsupported(search_reranked), got {err:?}"
         );
     }
 
@@ -2902,16 +2923,18 @@ mod tests {
         assert_eq!(loaded.search(&query, 10).unwrap(), approx_before);
         let err = loaded.search_reranked(&query, 10, 80).unwrap_err();
         assert!(
-            err.to_string().contains("search_reranked unavailable"),
-            "unexpected error: {err}"
+            matches!(
+                err,
+                RetrieveError::Unsupported { feature, .. } if feature.contains("search_reranked")
+            ),
+            "expected Unsupported(search_reranked), got {err:?}"
         );
 
         let mut file_searcher = IVFPQFileSearcher::load(dir.path()).unwrap();
         assert_eq!(file_searcher.search(&query, 10).unwrap(), approx_before);
         let err = file_searcher.search_reranked(&query, 10, 80).unwrap_err();
         assert!(
-            err.to_string()
-                .contains("search_reranked unavailable without raw_vectors.bin"),
+            err.to_string().contains("search_reranked"),
             "unexpected error: {err}"
         );
     }
