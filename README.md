@@ -10,8 +10,8 @@ Two paths cover what plain HNSW cannot. A filtered graph answers predicate
 queries without leaving the graph, and an in-place index takes updates without a
 rebuild.
 
-One protocol measures all of them at the same sizes, so comparisons are between
-families rather than between benchmarks.
+One [protocol](docs/benchmark-atlas.md#protocol) measures all of them at the
+same sizes, so comparisons are between families rather than between benchmarks.
 
 ```toml
 [dependencies]
@@ -61,19 +61,27 @@ exact scan (91 µs), 1.000 for post-filtering an HNSW beam (602 µs), 1.000 thro
 the filtered graph and 0.583 for the ACORN-style two-hop walk (2.1 ms).
 
 The gap opens at the other end. At 0.1% selectivity post-filtering collapses to
-**0.158** recall while the inverted-list path still returns 1.000.
-`tests/filtered_recall.rs` prints the whole sweep.
+**0.158** recall while the inverted-list path still returns 1.000. Both tables
+print in [`tests/filtered_recall/`](tests/filtered_recall/tests_feature_gated.rs),
+which writes no rows; the test output is the record.
 
 **Updates do not force a rebuild.** `InPlaceIndex` inserts and deletes in place;
 `HNSWIndex::delete` leaves tombstones that are excluded from results and repaired
-on demand. Deleting 10% of a 5k index used to cost most of the recall because
-tombstones consumed the `ef` budget. That is fixed: at `ef=10` the same sweep
-returns 0.978 instead of 0.090.
+on demand.
+
+A tombstone stays reachable but never takes one of the `ef` result slots, so a
+deleted point cannot displace a live one
+([`src/hnsw/search.rs`](src/hnsw/search.rs)). No row carries an update rate yet;
+churn is on the atlas's list of what has no plot. The guard is
+[`tests/prop_deletion/`](tests/prop_deletion/tests_feature_gated.rs): no deleted
+id is returned, and recall@10 against an exact oracle stays above 0.5 after
+deleting 10% to 39% of a small index.
 
 **It reads from disk if you want.** `diskann::DiskANNSearcher::load` queries
 `graph.index` and `vectors.bin` through a block cache instead of holding the
-index in the heap. At 1M points that costs 2.1–3.3× the resident p50 latency with
-an 81% cache hit rate.
+index in the heap. At 1M points that costs 2.1× to 3.3× the resident p50
+([rows](benchmarks/large-scale-1m-clustered.jsonl)) at an 81.1% cache hit rate
+([storage audit](docs/storage-audit.md)).
 
 ## Measured
 
@@ -81,12 +89,12 @@ an 81% cache hit rate.
 to disk and memory-mapped, ground truth exact over 500 sampled queries, all rows
 committed under [`benchmarks/`](benchmarks/).
 
-| n | domain | ef | recall@10 | p50 | build | index on disk | peak RSS |
-| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 100k | clustered | 200 | 0.991 | 303 µs | 5.6 s | 46 MiB | 246 MiB |
-| 1M | clustered | 200 | 0.807 | 440 µs | 109 s | 470 MiB | 2.0 GiB |
-| 1M | uniform | 200 | 0.294 | 922 µs | 164 s | 470 MiB | 2.0 GiB |
-| 3M | uniform | 6400 | 0.926 | 16.4 ms | 353 s | 1.4 GiB | 5.8 GiB |
+| n | domain | ef | recall@10 | p50 | build | index on disk | peak RSS | rows |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 100k | clustered | 200 | 0.991 | 303 µs | 5.6 s | 46 MiB | 246 MiB | [100k.jsonl](benchmarks/large-scale-100k.jsonl) |
+| 1M | clustered | 200 | 0.807 | 440 µs | 109 s | 470 MiB | 2.0 GiB | [1m-clustered.jsonl](benchmarks/large-scale-1m-clustered.jsonl) |
+| 1M | uniform | 200 | 0.294 | 922 µs | 164 s | 470 MiB | 2.0 GiB | [1m-uniform.jsonl](benchmarks/large-scale-1m-uniform.jsonl) |
+| 3M | uniform | 6400 | 0.926 | 16.4 ms | 353 s | 1.4 GiB | 5.8 GiB | [3m-uniform.jsonl](benchmarks/large-scale-3m-uniform.jsonl) |
 
 Distance counts are in [`benchmarks/large-scale-100k-dists.jsonl`](benchmarks/large-scale-100k-dists.jsonl):
 1411 / 2268 / 3442 / 5782 at ef 50 / 100 / 200 / 800 on 100k clustered.
@@ -101,26 +109,62 @@ spread, are in [benchmark results](docs/benchmark-results.md).
 | vectors, f32 | 384 B |
 | layer-0 adjacency, 32 neighbours | ~136 B |
 | ids, reverse map, level | ~17 B |
-| **steady state** | **~0.5 KiB** |
-| measured build peak at 1M | ~2.0 KiB |
+| measured resident at 1M | [**1.26 KiB**](benchmarks/large-scale-1m-clustered.jsonl) |
+| serialized at 1M | [0.48 KiB](benchmarks/large-scale-1m-clustered.jsonl) |
+| measured build peak at 1M | [~2.1 KiB](benchmarks/large-scale-1m-uniform.jsonl) |
+
+The 537 B above is the layout, not the bill. Resident is 2.6× serialized because
+every node in every layer gets 32 inline neighbour slots and only the few percent
+of nodes above layer 0 can fill them; the
+[storage audit](docs/storage-audit.md) puts that slack at ~60% of resident memory
+and ranks a sparse upper-layer layout first.
 
 Two consequences. First, the build is in memory: there is no out-of-core
-construction, so a 100M index would need roughly 199 GiB of RAM at this layout
-and refuses rather than swapping. DiskANN and SPANN solve that by keeping
-compressed vectors in RAM and the graph on SSD, and by building the graph in
-shards; neither path is implemented here. Second, the build peak is not all data: a
-1M build costs ~2.0 KiB/point at its peak, and the reorder that permutes the index
-for locality used to account for ~0.5 KiB of that by copying the corpus. It
-permutes in place now, which is a transient either way, not a requirement.
+construction, so a 100M index needs roughly 200 GiB of RAM at this peak. DiskANN
+and SPANN solve that by keeping compressed vectors in RAM and the graph on SSD,
+and by building the graph in shards; neither path is implemented here. Second,
+the build peak is not all data: a 1M build costs ~2.1 KiB/point at its peak, and
+the reorder that permutes the index for locality used to account for ~0.5 KiB of
+that by copying the corpus. It permutes in place now, which is a transient either
+way, not a requirement.
+
+## Benchmarks
+
+One protocol covers every family: exact top-10 ground truth computed before any
+index is built, 500 sampled queries on the large-scale tiers, one query at a time
+on one thread, and each run committed as a JSONL row under
+[`benchmarks/`](benchmarks/) or `docs/*.jsonl`. Thirteen
+[figures](docs/plots/atlas/) carry the coverage. Twenty-four families appear at
+10k on uniform and clustered data, with recall against `ef_search` and build and
+memory against the best recall that family reaches. Distance counts are at 100k;
+the tiers covered are 100k, 1M and 3M, with index cost plotted against `n`.
+Storage appears as resident against file-backed DiskANN. Three public sets are
+measured (GloVe-25, SIFT-128, GIST-960), alongside seed variance and a
+metric-coverage heatmap.
+
+Three caveats apply before any of it is quoted. Equal `ef` is not equal recall:
+0.981 at 10k and 0.294 at 1M are the same knob. QPS is host-sensitive and
+single-threaded: one exact scan here measured 8.6 ms to 26.8 ms an hour apart, so
+quote latency with its host. And a row measures one storage mode: resident and
+file-backed DiskANN are separate rows, 2.1× to 3.3× apart.
+
+[Atlas](docs/benchmark-atlas.md) · [Storage audit](docs/storage-audit.md) ·
+[Full results](docs/benchmark-results.md) · [Ratchet](benchmarks/README.md)
 
 ## Limits
 
 Recall is not tier-invariant, and this is the number most likely to be quoted
-wrong. On uniform random data at `ef=200`, recall@10 is 0.981 at 10k, 0.705 at
-100k and 0.294 at 1M. The recall is recoverable: `ef=4800` reaches 0.973 at 1M.
-But at 1M that is 1.45× **slower** than the exact scan it is meant to replace.
-Uniform data in 96 dimensions is close to the worst case; clustered data holds
-0.991 → 0.807 over the same range.
+wrong. On uniform random data at `ef=200`, recall@10 is
+[0.981](benchmarks/baseline.jsonl) at 10k,
+[0.705](benchmarks/large-scale-100k-uniform.jsonl) at 100k and
+[0.294](benchmarks/large-scale-1m-uniform.jsonl) at 1M. The recall is
+recoverable: `ef=4800` reaches 0.973 at 1M. But at 1M that is 1.45× **slower**
+than the exact scan it is meant to replace. Uniform data in 96 dimensions is
+close to the worst case; clustered data holds
+[0.991](benchmarks/large-scale-100k.jsonl) →
+[0.807](benchmarks/large-scale-1m-clustered.jsonl) over the same range.
+[One figure](docs/plots/atlas/tiers-recall-vs-ef-uniform.svg) shows the uniform
+tiers on one axis.
 
 DiskANN, several tree and quantisation families are experimental: they are
 measured on the same protocol but their persistence and update paths are not
@@ -191,8 +235,8 @@ allocator are not, so this is not a transitive guarantee.
 ## Documentation
 
 [User guide](docs/GUIDE.md) · [API](https://docs.rs/vicinity) ·
-[Algorithms](docs/algorithms.md) · [Datasets](docs/datasets.md) ·
-[References](docs/references.md)
+[Benchmarks](docs/benchmark-atlas.md) · [Algorithms](docs/algorithms.md) ·
+[Datasets](docs/datasets.md) · [References](docs/references.md)
 
 ## License
 
