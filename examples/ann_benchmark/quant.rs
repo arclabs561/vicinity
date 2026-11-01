@@ -802,6 +802,7 @@ pub(crate) fn run_ivf_rabitq(
         nprobe: 10,
         total_bits: 4,
         seed: cfg.seed,
+        ..IVFRaBitQParams::default()
     };
 
     let build_start = Instant::now();

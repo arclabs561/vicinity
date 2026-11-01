@@ -171,6 +171,7 @@ pub(crate) mod pq_simd;
 pub mod prt;
 
 pub mod distance;
+pub mod distance_stats;
 #[cfg(any(feature = "diskann", feature = "ivf_pq", feature = "ivf_avq"))]
 pub(crate) mod file_io;
 pub mod filtering;

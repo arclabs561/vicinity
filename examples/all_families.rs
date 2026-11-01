@@ -128,6 +128,8 @@ struct Row {
     p95: f64,
     p99: f64,
     qps: f64,
+    /// Distance computations per query (0 when `distance-stats` is off).
+    dists_per_query: f64,
     build_s: f64,
     /// Resident-set growth across the build, in MiB (0 when unavailable).
     mem_mib: f64,
@@ -141,6 +143,7 @@ struct Stats {
     p95: f64,
     p99: f64,
     qps: f64,
+    dists_per_query: f64,
     errors: usize,
     first_error: Option<String>,
 }
@@ -283,7 +286,7 @@ const DOMAINS: &[Domain] = &[
         generate: generate_uniform,
     },
     Domain {
-        name: "clustered16",
+        name: "clustered",
         description: "16 uniform centres, sigma=0.25: few strong clusters, mild LID",
         generate: generate_clustered16,
     },
@@ -404,7 +407,7 @@ fn assemble(domain: &'static Domain, generated: Generated) -> Dataset {
 // Domains
 // ---------------------------------------------------------------------------
 
-/// `uniform` and `clustered16` share one generator so the two original datasets
+/// `uniform` and `clustered` share one generator so the two original datasets
 /// stay bit-identical to the pre-domain harness (same draws, same order).
 fn generate_uniform() -> Generated {
     generate_blobs(SEED, None)
@@ -998,6 +1001,7 @@ fn evaluate(index: &mut dyn Searcher, dataset: &Dataset, knob: usize) -> Stats {
     let mut errors = 0usize;
     let mut first_error = None;
 
+    vicinity::distance_stats::reset_distance_count();
     let loop_start = Instant::now();
     for (query, truth) in dataset.queries.iter().zip(dataset.truth.iter()) {
         let start = Instant::now();
@@ -1015,6 +1019,7 @@ fn evaluate(index: &mut dyn Searcher, dataset: &Dataset, knob: usize) -> Stats {
         lat.push(start.elapsed().as_secs_f64() * 1e6);
     }
     let total_s = loop_start.elapsed().as_secs_f64();
+    let dists = vicinity::distance_stats::take_distance_count();
 
     let denominator = (dataset.queries.len() * K) as f64;
     Stats {
@@ -1023,6 +1028,11 @@ fn evaluate(index: &mut dyn Searcher, dataset: &Dataset, knob: usize) -> Stats {
         p95: percentile(&mut lat.clone(), 95.0),
         p99: percentile(&mut lat.clone(), 99.0),
         qps: dataset.queries.len() as f64 / total_s.max(f64::EPSILON),
+        dists_per_query: if cfg!(feature = "distance-stats") {
+            dists as f64 / dataset.queries.len() as f64
+        } else {
+            0.0
+        },
         errors,
         first_error,
     }
@@ -1126,6 +1136,7 @@ fn row_for(
         p95: stats.p95,
         p99: stats.p99,
         qps: stats.qps,
+        dists_per_query: stats.dists_per_query,
         build_s,
         mem_mib,
         errors: stats.errors,
@@ -1137,23 +1148,34 @@ fn row_for(
 // Reporting
 // ---------------------------------------------------------------------------
 
+/// `dists/q` cell: a number under `distance-stats`, `-` otherwise (the counter
+/// reports 0 when it is compiled out, which would read as a real measurement).
+fn dists_cell(row: &Row) -> String {
+    if cfg!(feature = "distance-stats") {
+        format!("{:.0}", row.dists_per_query)
+    } else {
+        "-".to_string()
+    }
+}
+
 fn print_rows(rows: &[Row], datasets: &[Dataset]) {
     for dataset in datasets {
         println!("## {}", dataset.name);
         println!();
         println!(
-            "| family | knob | recall@10 | 1/ratio@10 | p50 us | p95 us | p99 us | QPS | build s | mem MiB |"
+            "| family | knob | recall@10 | 1/ratio@10 | p50 us | dists/q | p95 us | p99 us | QPS | build s | mem MiB |"
         );
-        println!("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |");
+        println!("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |");
         for row in rows.iter().filter(|r| r.dataset == dataset.name) {
             println!(
-                "| {} | {}={} | {:.3} | {:.2} | {:.1} | {:.1} | {:.1} | {:.0} | {:.2} | {:.1} |",
+                "| {} | {}={} | {:.3} | {:.2} | {:.1} | {} | {:.1} | {:.1} | {:.0} | {:.2} | {:.1} |",
                 row.family,
                 row.knob,
                 row.knob_value,
                 row.recall,
                 row.ratio,
                 row.p50,
+                dists_cell(row),
                 row.p95,
                 row.p99,
                 row.qps,
@@ -1162,7 +1184,7 @@ fn print_rows(rows: &[Row], datasets: &[Dataset]) {
             );
             if row.errors > 0 {
                 println!(
-                    "| ^ {} query errors: {} | | | | | | | | | |",
+                    "| ^ {} query errors: {} | | | | | | | | | | |",
                     row.errors,
                     row.first_error.as_deref().unwrap_or("unknown")
                 );
@@ -1310,7 +1332,7 @@ fn write_jsonl(path: &str, rows: &[Row], datasets: &[Dataset]) {
             out,
             "{{\"family\":\"{}\",\"dataset\":\"{}\",\"knob\":\"{}\",\"knob_value\":{},\
              \"recall\":{},\"p50_us\":{},\"p95_us\":{},\"p99_us\":{},\
-             \"qps\":{},\"build_s\":{},\"mem_mib\":{},\
+             \"qps\":{},\"dists_per_query\":{},\"build_s\":{},\"mem_mib\":{},\
              \"ratio\":{},\"dim\":{},\"lid\":{}}}",
             row.family,
             row.dataset,
@@ -1321,6 +1343,7 @@ fn write_jsonl(path: &str, rows: &[Row], datasets: &[Dataset]) {
             num(row.p95, 1),
             num(row.p99, 1),
             num(row.qps, 1),
+            num(row.dists_per_query, 1),
             num(row.build_s, 4),
             num(row.mem_mib, 1),
             num(row.ratio, 4),
@@ -1895,6 +1918,7 @@ fn build_ivf_rabitq(
         nprobe: 4,
         total_bits: 4,
         seed: 42,
+        ..IVFRaBitQParams::default()
     };
     let mut index = IVFRaBitQIndex::new(dim, params).map_err(to_string_err)?;
     for (i, vector) in vectors.iter().enumerate() {

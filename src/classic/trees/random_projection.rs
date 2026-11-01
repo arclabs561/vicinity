@@ -30,7 +30,19 @@ use std::path::Path;
 const RPTREE_FORMAT_VERSION: u32 = 1;
 const DEFAULT_RPTREE_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
 
+/// Tolerance on `|‖v‖² - 1|` for treating a vector as unit norm.
+///
+/// The k-th-distance bound relies on `1 - q·p = ‖q - p‖² / 2`, which only
+/// holds for unit vectors. Pruning is gated on that precondition, and the
+/// bound is loosened by this tolerance so it stays a lower bound for data
+/// that is unit norm only to within floating-point error.
+const UNIT_NORM_TOLERANCE: f32 = 1e-5;
+
 /// Candidate ordered so `BinaryHeap` keeps the worst distance on top.
+///
+/// "Worst" breaks exact distance ties by the *larger* `doc_id`, because the
+/// result order prefers the smaller one: the heap must evict the larger id so
+/// the k-th-boundary survivor matches brute force.
 #[derive(Clone, Copy, PartialEq)]
 struct Candidate(f32, u32);
 
@@ -40,7 +52,7 @@ impl Ord for Candidate {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.0
             .total_cmp(&other.0)
-            .then_with(|| other.1.cmp(&self.1))
+            .then_with(|| self.1.cmp(&other.1))
     }
 }
 
@@ -62,6 +74,12 @@ pub struct RPTreeIndex {
     params: RPTreeParams,
     built: bool,
     root: Option<RPNode>,
+    /// Every stored vector is unit norm within [`UNIT_NORM_TOLERANCE`].
+    ///
+    /// Set by [`RPTreeIndex::build`] and recomputed on load. When `false` the
+    /// k-th-distance bound is unavailable and search traverses the whole tree.
+    #[serde(default)]
+    unit_norm_vectors: bool,
 }
 
 /// Random Projection Tree parameters.
@@ -121,6 +139,7 @@ impl RPTreeIndex {
             params,
             built: false,
             root: None,
+            unit_norm_vectors: false,
         })
     }
 
@@ -156,6 +175,7 @@ impl RPTreeIndex {
             return Err(RetrieveError::EmptyIndex);
         }
 
+        self.unit_norm_vectors = self.all_unit_norm();
         let indices: Vec<u32> = (0..self.num_vectors as u32).collect();
         self.root = Some(self.build_tree(&indices, 0, DEFAULT_RPTREE_SEED)?);
 
@@ -191,7 +211,7 @@ impl RPTreeIndex {
                 snapshot.version
             )));
         }
-        let index = snapshot.index;
+        let mut index = snapshot.index;
         validate_vector_shape(
             "random-projection tree",
             index.dimension,
@@ -204,7 +224,14 @@ impl RPTreeIndex {
                 "random-projection tree snapshot is not built".into(),
             ));
         }
+        // Recompute rather than trust the snapshot: the flag decides whether
+        // the bound may be used, so it must describe the vectors actually loaded.
+        index.unit_norm_vectors = index.all_unit_norm();
         Ok(index)
+    }
+
+    fn all_unit_norm(&self) -> bool {
+        (0..self.num_vectors).all(|idx| is_unit_norm(self.get_vector(idx)))
     }
 
     fn clone_for_snapshot(&self) -> Self {
@@ -216,6 +243,7 @@ impl RPTreeIndex {
             params: self.params.clone(),
             built: self.built,
             root: self.root.clone(),
+            unit_norm_vectors: self.unit_norm_vectors,
         }
     }
 
@@ -338,8 +366,13 @@ impl RPTreeIndex {
             operation: "search",
         })?;
 
+        // The bound assumes both the data and the query are unit vectors. It
+        // is not a lower bound of `1 - q·p` otherwise (e.g. a long vector in
+        // the query direction scores below 0), so any other input takes the
+        // exhaustive walk.
+        let prune = self.unit_norm_vectors && is_unit_norm(query);
         let mut heap = BinaryHeap::with_capacity(k.max(1));
-        self.search_pruned(root, query, k, &mut heap)?;
+        self.search_pruned(root, query, k, &mut heap, prune)?;
 
         let mut results: Vec<(u32, f32)> = heap
             .into_iter()
@@ -352,16 +385,22 @@ impl RPTreeIndex {
     /// Search with k-th-distance pruning.
     ///
     /// A random-projection split is a hyperplane with unit normal `w`, so for
-    /// unit vectors (`cos_dist = ||q-p||^2 / 2`) any point on the far side
-    /// satisfies `cos_dist(q, p) >= (w·q - t)^2 / 2`. Once `k` candidates are
-    /// held, a far subtree whose bound exceeds the current worst is skipped:
-    /// the traversal is exact, only the visit count changes.
+    /// **unit** vectors (`cos_dist = ‖q-p‖² / 2`) any point on the far side
+    /// satisfies `cos_dist(q, p) >= margin² / 2`, where `margin` is the query's
+    /// distance from the split plane. Once `k` candidates are held, a far
+    /// subtree whose bound exceeds the current worst is skipped.
+    ///
+    /// `prune` is the precondition check: it is only `true` when every stored
+    /// vector and the query are unit norm, in which case the traversal is exact
+    /// and only the visit count changes. With `prune == false` both children are
+    /// always visited, which is exact for the raw `1 - q·p` scoring used here.
     fn search_pruned(
         &self,
         node: &RPNode,
         query: &[f32],
         k: usize,
         heap: &mut BinaryHeap<Candidate>,
+        prune: bool,
     ) -> Result<(), RetrieveError> {
         match node {
             RPNode::Leaf { indices } => {
@@ -393,12 +432,17 @@ impl RPTreeIndex {
                 } else {
                     (right, left, projection - *threshold)
                 };
-                self.search_pruned(near, query, k, heap)?;
-                let bound = margin * margin * 0.5;
-                let worst = heap.peek().map(|c| c.0);
-                let visit_far = heap.len() < k || worst.is_some_and(|worst| bound <= worst);
+                self.search_pruned(near, query, k, heap, prune)?;
+                let visit_far = if prune {
+                    // `1 - q·p = ‖q-p‖²/2 - (‖q‖²-1 + ‖p‖²-1)/2`, so the
+                    // tolerance tightens the bound into a true lower bound.
+                    let bound = margin * margin * 0.5 - UNIT_NORM_TOLERANCE;
+                    heap.len() < k || heap.peek().is_some_and(|worst| bound <= worst.0)
+                } else {
+                    true
+                };
                 if visit_far {
-                    self.search_pruned(far, query, k, heap)?;
+                    self.search_pruned(far, query, k, heap, prune)?;
                 }
             }
         }
@@ -435,6 +479,11 @@ fn boxed_node_bytes(node: &RPNode) -> usize {
     std::mem::size_of::<RPNode>() + node.owned_bytes()
 }
 
+/// `true` when `vector` is unit norm within [`UNIT_NORM_TOLERANCE`].
+fn is_unit_norm(vector: &[f32]) -> bool {
+    (simd::dot(vector, vector) - 1.0).abs() <= UNIT_NORM_TOLERANCE
+}
+
 fn child_seed(seed: u64, branch: u64) -> u64 {
     seed.wrapping_mul(6_364_136_223_846_793_005)
         .wrapping_add(1_442_695_040_888_963_407 ^ branch)
@@ -444,6 +493,7 @@ fn child_seed(seed: u64, branch: u64) -> u64 {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     fn build_index() -> RPTreeIndex {
         let mut index = RPTreeIndex::new(4, RPTreeParams::default()).unwrap();
@@ -514,6 +564,10 @@ mod tests {
             index.add(id, vectors[start..start + dim].to_vec()).unwrap();
         }
         index.build().unwrap();
+        assert!(
+            index.unit_norm_vectors,
+            "normalized data must keep k-th-distance pruning enabled"
+        );
 
         for q in 0..20u32 {
             let start = (q as usize * 37) % (n as usize - dim);
@@ -537,6 +591,141 @@ mod tests {
             brute.sort_unstable_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
             brute.truncate(10);
             assert_eq!(index.search(&query, 10).unwrap(), brute, "query {q}");
+        }
+    }
+
+    /// Regression for the shrinker's counterexample: the k-th-distance bound is
+    /// only sound for unit vectors, so it must not be applied to raw input.
+    ///
+    /// For this input the query norm is 1.128 and stored norms span
+    /// 0.676..1.569. The far subtree holding doc `5005` was skipped because its
+    /// `margin²/2 = 0.098` exceeded the current worst -0.272, although `5005`
+    /// scores -0.604 (its `‖q-p‖²/2` is 0.263, so the bound was never a bound
+    /// on `1 - q·p`). `search` returned `5010` at -0.272 instead.
+    #[test]
+    fn non_unit_input_does_not_prune_away_the_neighbour() {
+        let (dim, n, seed, k) = (3usize, 22usize, 2_060_225_295_894_311_425u64, 1usize);
+        let mut state = seed | 1;
+        let data: Vec<Vec<f32>> = (0..n).map(|_| random_vector(dim, &mut state)).collect();
+        let doc_ids: Vec<u32> = (0..n).map(|i| 5_000 + (n - 1 - i) as u32).collect();
+        let mut index = RPTreeIndex::new(
+            dim,
+            RPTreeParams {
+                max_leaf_size: 1,
+                max_depth: 2,
+            },
+        )
+        .unwrap();
+        for (vector, &doc_id) in data.iter().zip(&doc_ids) {
+            index.add(doc_id, vector.clone()).unwrap();
+        }
+        index.build().unwrap();
+        assert!(
+            !index.unit_norm_vectors,
+            "raw vectors must report that the bound is unavailable"
+        );
+
+        let query = data[(seed as usize) % n].clone();
+        let expected = vec![(5_005u32, -0.604_336_6f32)];
+        assert_eq!(brute_force_top_k(&data, &doc_ids, &query, k), expected);
+        assert_eq!(index.search(&query, k).unwrap(), expected);
+    }
+
+    // ── Property: pruning must never change the exact top-k ──────────────────
+
+    /// Brute-force top-k scored exactly like `search`: cosine distance over the
+    /// unnormalized query, ties broken by ascending doc_id.
+    fn brute_force_top_k(
+        data: &[Vec<f32>],
+        doc_ids: &[u32],
+        query: &[f32],
+        k: usize,
+    ) -> Vec<(u32, f32)> {
+        let mut scored: Vec<(u32, f32)> = data
+            .iter()
+            .zip(doc_ids)
+            .map(|(vector, &doc_id)| {
+                (
+                    doc_id,
+                    crate::distance::cosine_distance_normalized(query, vector),
+                )
+            })
+            .collect();
+        scored.sort_unstable_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+        scored.truncate(k);
+        scored
+    }
+
+    /// Deterministic pseudo-random vector with components in `[-1, 1)`.
+    fn random_vector(dim: usize, state: &mut u64) -> Vec<f32> {
+        (0..dim)
+            .map(|_| {
+                *state = state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1);
+                ((*state >> 33) as f32 / (1u64 << 31) as f32) - 1.0
+            })
+            .collect()
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(128))]
+
+        /// Whatever bound the traversal prunes with must be exact:
+        /// `search(q, k)` equals brute force over the same scoring for every
+        /// `k` in 1..=20, including the `(distance, doc_id)` tie order. A bound
+        /// that drops a candidate whose distance is <= the current k-th
+        /// distance fails here, and so does a split that misroutes data points.
+        #[test]
+        fn search_equals_brute_force_for_every_k(
+            dim in 1usize..=8,
+            n in 1usize..=60,
+            max_leaf_size in 1usize..=8,
+            max_depth in 1usize..=10,
+            seed in any::<u64>(),
+            duplicate_last in any::<bool>(),
+            query_from_data in any::<bool>(),
+            k in 1usize..=20,
+        ) {
+            let mut state = seed | 1;
+            let mut data: Vec<Vec<f32>> =
+                (0..n).map(|_| random_vector(dim, &mut state)).collect();
+            if duplicate_last && n > 1 {
+                // Exact distance ties: tie order must fall back to doc_id.
+                data[n - 1] = data[0].clone();
+            }
+            // Reversed doc_ids: tie order cannot fall out of insertion order.
+            let doc_ids: Vec<u32> = (0..n).map(|i| 5_000 + (n - 1 - i) as u32).collect();
+
+            let mut index =
+                RPTreeIndex::new(dim, RPTreeParams { max_leaf_size, max_depth }).unwrap();
+            for (vector, &doc_id) in data.iter().zip(&doc_ids) {
+                index.add(doc_id, vector.clone()).unwrap();
+            }
+            index.build().unwrap();
+
+            let query = if query_from_data {
+                // A stored point: distance 0, so it must come first.
+                data[(seed as usize) % n].clone()
+            } else {
+                let mut query = random_vector(dim, &mut state);
+                query[0] += 1.0; // never the all-zero query
+                query
+            };
+
+            let expected = brute_force_top_k(&data, &doc_ids, &query, k);
+            let actual = index.search(&query, k).unwrap();
+            prop_assert_eq!(
+                &actual,
+                &expected,
+                "search(q, {}) disagreed with brute force (n={}, dim={}, \
+                 max_leaf_size={}, max_depth={})",
+                k,
+                n,
+                dim,
+                max_leaf_size,
+                max_depth
+            );
         }
     }
 }

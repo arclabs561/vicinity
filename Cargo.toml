@@ -10,7 +10,7 @@ documentation = "https://docs.rs/vicinity"
 license = "MIT OR Apache-2.0"
 keywords = ["ann", "hnsw", "vector-search", "similarity", "nearest-neighbor"]
 categories = ["algorithms", "science"]
-exclude = ["data/", "benches/", "docs/", "scripts/", ".github/"]
+exclude = ["data/", "benches/", "benchmarks/", "docs/", "scripts/", ".github/"]
 
 [workspace]
 # `tools/annoy-sys` is a self-contained benchmark shim with its own workspace
@@ -131,6 +131,11 @@ pipnn = ["dep:serde", "dep:serde_json"]
 vamana = ["hnsw", "dep:serde", "dep:serde_json"]
 quantization = ["qntz"]
 benchmark = []
+# Counts distance computations in a process-global atomic so benchmarks can
+# report dists/query (hardware-independent cost signal, cf. Aumüller &
+# Ceccarello 2023). Non-default: the atomics slow the distance loops down, and
+# the default build must stay free of them. See `distance_stats`.
+distance-stats = []
 # Benchmark-only: build the real C++ Annoy (dev-dependency `annoy-sys`) for the
 # RP-forest vs Annoy parity test. Pulls in the `rptree` family it compares against.
 # Never enabled by `default`, so the shipped library build is unaffected.
@@ -192,6 +197,11 @@ required-features = ["ivf_pq"]
 name = "rabitq_demo"
 path = "examples/rabitq_demo.rs"
 required-features = ["rabitq", "hnsw", "quantization"]
+
+[[example]]
+name = "rabitq_rotation_ablation"
+path = "examples/rabitq_rotation_ablation.rs"
+required-features = ["ivf_rabitq"]
 
 [[example]]
 name = "symphonyqg_demo"
@@ -317,11 +327,9 @@ name = "sparse_mips_benchmark"
 path = "examples/sparse_mips_benchmark.rs"
 required-features = ["sparse_mips"]
 
-[[example]]
-name = "rp_forest_search_k"
-path = "examples/rp_forest_search_k.rs"
-required-features = ["rptree"]
-# Every index family on one protocol.
+# Every index family on one protocol. `required-features` lists every family
+# the harness can drive; run it with `--features distance-stats` too when the
+# baseline should carry `dists_per_query` (see `benchmarks/README.md`).
 [[example]]
 name = "all_families"
 path = "examples/all_families.rs"
@@ -351,6 +359,11 @@ required-features = [
   "kmeans_tree",
   "rptree",
 ]
+
+[[example]]
+name = "rp_forest_search_k"
+path = "examples/rp_forest_search_k.rs"
+required-features = ["rptree"]
 
 [profile.release]
 lto = "thin"

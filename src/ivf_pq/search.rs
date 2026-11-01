@@ -1231,6 +1231,10 @@ impl IVFPQIndex {
         for (cluster_idx, _) in &cluster_distances {
             let cluster = &self.clusters[*cluster_idx];
             let ids = cluster.get_ids_ref();
+            // Every id below gets exactly one ADC distance in every branch
+            // (FastScan, batched ADC, scalar), so count them here once.
+            #[cfg(feature = "distance-stats")]
+            crate::distance_stats::note_distances(ids.len() as u64);
 
             // Compute query residual in-place (no allocation)
             #[cfg(feature = "benchmark")]
@@ -1502,6 +1506,8 @@ impl IVFPQIndex {
                         let end = start + self.params.num_codebooks;
                         let codes = &self.quantized_codes[start..end];
 
+                        #[cfg(feature = "distance-stats")]
+                        crate::distance_stats::note_distance();
                         let dist = pq.distance_with_table(&adc_table, codes);
                         candidates.push((actual_doc_id, dist));
                     }
@@ -1904,6 +1910,8 @@ impl IVFPQFileSearcher {
             let cluster = &self.clusters[*cluster_idx];
             let ids = cluster.get_ids_ref();
             diagnostics.scanned_vectors += ids.len();
+            #[cfg(feature = "distance-stats")]
+            crate::distance_stats::note_distances(ids.len() as u64);
             let code_bytes = checked_len(
                 ids.len(),
                 self.params.num_codebooks,
