@@ -391,11 +391,46 @@ fn insert_result_if_accepted(
     true
 }
 
+/// Admission test for the result heap and candidate frontier.
+///
+/// hnswlib's general path (`searchBaseLayerST<false>`, used whenever there are
+/// deletions or an `isIdAllowed` filter) makes eligibility and heap membership
+/// two separate decisions (`hnswalg.h:432-441`): an ineligible point still
+/// enters the candidate frontier when the heap is short or it beats the worst
+/// result, but it never occupies one of the `ef` result slots. The stop
+/// condition (`top_candidates.size() == ef`, `:379`) is then counted in
+/// eligible results, so tombstones or a filter cannot end the search while the
+/// caller has fewer than `ef` usable points.
+///
+/// Returns `true` when the point should also become a search candidate.
+#[inline]
+fn admit_candidate(
+    results: &mut BinaryHeap<MaxResult>,
+    ef: usize,
+    id: u32,
+    distance: f32,
+    live: bool,
+) -> bool {
+    if live {
+        return insert_result_if_accepted(results, ef, id, distance);
+    }
+
+    let Some(worst) = results.peek() else {
+        return true;
+    };
+    let rejected = results.len() >= ef && distance >= worst.distance;
+    #[cfg(feature = "benchmark")]
+    if rejected {
+        record_result_rejection();
+    }
+    !rejected
+}
+
 /// Process a batch of neighbor distance computations.
 /// Computes distances for all batch entries, then inserts qualifying results
 /// into the candidate and result heaps.
 #[inline]
-fn flush_batch(
+fn flush_batch<L: Fn(u32) -> bool>(
     query: &[f32],
     batch_ids: &[u32; DISTANCE_BATCH_SIZE],
     count: usize,
@@ -405,6 +440,7 @@ fn flush_batch(
     candidates: &mut std::collections::BinaryHeap<MinCandidate>,
     results: &mut std::collections::BinaryHeap<MaxResult>,
     ef: usize,
+    live: &L,
 ) {
     // Compute all distances first (enables ILP -- CPU can overlap independent FP pipelines).
     let mut dists = [0.0f32; DISTANCE_BATCH_SIZE];
@@ -417,7 +453,7 @@ fn flush_batch(
 
     if ef < CACHED_WORST_MIN_EF {
         for i in 0..count {
-            if insert_result_if_accepted(results, ef, batch_ids[i], dists[i]) {
+            if admit_candidate(results, ef, batch_ids[i], dists[i], live(batch_ids[i])) {
                 candidates.push(MinCandidate {
                     id: batch_ids[i],
                     distance: dists[i],
@@ -439,7 +475,7 @@ fn flush_batch(
     };
     for i in 0..count {
         if results.len() < ef || dists[i] < worst_dist {
-            if insert_result_if_accepted(results, ef, batch_ids[i], dists[i]) {
+            if admit_candidate(results, ef, batch_ids[i], dists[i], live(batch_ids[i])) {
                 candidates.push(MinCandidate {
                     id: batch_ids[i],
                     distance: dists[i],
@@ -461,7 +497,7 @@ fn flush_batch(
 
 /// Same as [`flush_batch`] but for custom distance functions.
 #[inline]
-fn flush_batch_custom<F: Fn(&[f32], u32) -> f32>(
+fn flush_batch_custom<F: Fn(&[f32], u32) -> f32, L: Fn(u32) -> bool>(
     query: &[f32],
     batch_ids: &[u32; DISTANCE_BATCH_SIZE],
     count: usize,
@@ -469,6 +505,7 @@ fn flush_batch_custom<F: Fn(&[f32], u32) -> f32>(
     candidates: &mut std::collections::BinaryHeap<MinCandidate>,
     results: &mut std::collections::BinaryHeap<MaxResult>,
     ef: usize,
+    live: &L,
 ) {
     let mut dists = [0.0f32; DISTANCE_BATCH_SIZE];
     for i in 0..count {
@@ -478,7 +515,7 @@ fn flush_batch_custom<F: Fn(&[f32], u32) -> f32>(
     record_distance_evals(count);
     if ef < CACHED_WORST_MIN_EF {
         for i in 0..count {
-            if insert_result_if_accepted(results, ef, batch_ids[i], dists[i]) {
+            if admit_candidate(results, ef, batch_ids[i], dists[i], live(batch_ids[i])) {
                 candidates.push(MinCandidate {
                     id: batch_ids[i],
                     distance: dists[i],
@@ -497,7 +534,7 @@ fn flush_batch_custom<F: Fn(&[f32], u32) -> f32>(
     };
     for i in 0..count {
         if results.len() < ef || dists[i] < worst_dist {
-            if insert_result_if_accepted(results, ef, batch_ids[i], dists[i]) {
+            if admit_candidate(results, ef, batch_ids[i], dists[i], live(batch_ids[i])) {
                 candidates.push(MinCandidate {
                     id: batch_ids[i],
                     distance: dists[i],
@@ -557,6 +594,39 @@ pub fn greedy_search_layer(
     ef: usize,
     dist_fn: fn(&[f32], &[f32]) -> f32,
 ) -> Vec<(u32, f32)> {
+    greedy_search_layer_live(
+        query,
+        entry_point,
+        layer,
+        vectors,
+        dimension,
+        ef,
+        dist_fn,
+        |_| true,
+    )
+}
+
+/// Beam search restricted to "live" points, mirroring hnswlib's general path.
+///
+/// `live` decides heap membership, not reachability: a point that fails the
+/// predicate is still traversed and can seed the frontier, but it never takes
+/// one of the `ef` result slots. That is what keeps the stop condition
+/// (`candidate worse than worst result && heap holds ef results`) counted in
+/// usable results, so tombstones and post-filters cannot truncate the output.
+#[cfg(feature = "hnsw")]
+pub(crate) fn greedy_search_layer_live<L: Fn(u32) -> bool>(
+    query: &[f32],
+    entry_point: u32,
+    layer: &crate::hnsw::graph::Layer,
+    vectors: &[f32],
+    dimension: usize,
+    ef: usize,
+    dist_fn: fn(&[f32], &[f32]) -> f32,
+    live: L,
+) -> Vec<(u32, f32)> {
+    if ef == 0 {
+        return Vec::new();
+    }
     let num_vectors = vectors.len() / dimension;
 
     THREAD_SEARCH_SCRATCH.with(|scratch_cell| {
@@ -579,12 +649,14 @@ pub fn greedy_search_layer(
             });
             #[cfg(feature = "benchmark")]
             record_candidate_push(candidates.len());
-            results.push(MaxResult {
-                id: entry_point,
-                distance: entry_distance,
-            });
-            #[cfg(feature = "benchmark")]
-            record_result_insertion();
+            if live(entry_point) {
+                results.push(MaxResult {
+                    id: entry_point,
+                    distance: entry_distance,
+                });
+                #[cfg(feature = "benchmark")]
+                record_result_insertion();
+            }
             visited.insert(entry_point);
 
             // Standard HNSW beam search:
@@ -640,6 +712,7 @@ pub fn greedy_search_layer(
                                 candidates,
                                 results,
                                 ef,
+                                &live,
                             );
                             batch_count = 0;
                         }
@@ -657,6 +730,7 @@ pub fn greedy_search_layer(
                         candidates,
                         results,
                         ef,
+                        &live,
                     );
                 }
 
@@ -683,8 +757,21 @@ pub fn greedy_search_layer(
 ///
 /// Used by `batch_search_mqo` to warm-start a query from the best result of a
 /// nearby query already processed in the batch.
+/// Greedy search seeded from multiple entry points.
+///
+/// Same beam search as [`greedy_search_layer`], but initialises the candidate
+/// heap with all provided `entry_points`. Duplicate entry IDs are silently
+/// deduplicated via the visited set. If `entry_points` is empty this returns
+/// an empty result.
+///
+/// Used by `batch_search_mqo` to warm-start a query from the best result of a
+/// nearby query already processed in the batch.
+///
+/// The `live` predicate keeps ineligible points out of the `ef` result slots;
+/// see [`greedy_search_layer_live`] for why eligibility and heap membership
+/// are separate decisions.
 #[cfg(feature = "hnsw")]
-pub fn greedy_search_layer_multi_entry(
+pub(crate) fn greedy_search_layer_multi_entry<L: Fn(u32) -> bool>(
     query: &[f32],
     entry_points: &[u32],
     layer: &crate::hnsw::graph::Layer,
@@ -692,8 +779,9 @@ pub fn greedy_search_layer_multi_entry(
     dimension: usize,
     ef: usize,
     dist_fn: fn(&[f32], &[f32]) -> f32,
+    live: L,
 ) -> Vec<(u32, f32)> {
-    if entry_points.is_empty() {
+    if entry_points.is_empty() || ef == 0 {
         return Vec::new();
     }
 
@@ -712,7 +800,7 @@ pub fn greedy_search_layer_multi_entry(
                     id: ep,
                     distance: ep_dist,
                 });
-                let _ = insert_result_if_accepted(&mut results, ef, ep, ep_dist);
+                let _ = admit_candidate(&mut results, ef, ep, ep_dist, live(ep));
             }
         }
 
@@ -742,7 +830,13 @@ pub fn greedy_search_layer_multi_entry(
                     let neighbor_vector = get_vector(vectors, dimension, neighbor_id as usize);
                     let neighbor_distance = dist_fn(query, neighbor_vector);
 
-                    if insert_result_if_accepted(&mut results, ef, neighbor_id, neighbor_distance) {
+                    if admit_candidate(
+                        &mut results,
+                        ef,
+                        neighbor_id,
+                        neighbor_distance,
+                        live(neighbor_id),
+                    ) {
                         candidates.push(MinCandidate {
                             id: neighbor_id,
                             distance: neighbor_distance,
@@ -772,7 +866,10 @@ pub fn greedy_search_layer_multi_entry(
 /// Prefetching is still performed on the stored vector array to keep the
 /// center vectors warm for the common case where the custom distance function
 /// reads them.
+// Unfiltered entry point, used by the feature-gated quantized search paths
+// (sq4u / sq8u / symphony_qg), so it looks unused in a plain `--features hnsw` build.
 #[cfg(feature = "hnsw")]
+#[allow(dead_code)]
 pub fn greedy_search_layer_custom<F: Fn(&[f32], u32) -> f32>(
     query: &[f32],
     entry_point: u32,
@@ -782,6 +879,36 @@ pub fn greedy_search_layer_custom<F: Fn(&[f32], u32) -> f32>(
     ef: usize,
     dist_fn: &F,
 ) -> Vec<(u32, f32)> {
+    greedy_search_layer_custom_live(
+        query,
+        entry_point,
+        layer,
+        vectors,
+        dimension,
+        ef,
+        dist_fn,
+        |_| true,
+    )
+}
+
+/// [`greedy_search_layer_custom`] with a "live" predicate.
+///
+/// See [`greedy_search_layer_live`] for why eligibility and heap membership
+/// are separate decisions.
+#[cfg(feature = "hnsw")]
+pub(crate) fn greedy_search_layer_custom_live<F: Fn(&[f32], u32) -> f32, L: Fn(u32) -> bool>(
+    query: &[f32],
+    entry_point: u32,
+    layer: &crate::hnsw::graph::Layer,
+    vectors: &[f32],
+    dimension: usize,
+    ef: usize,
+    dist_fn: &F,
+    live: L,
+) -> Vec<(u32, f32)> {
+    if ef == 0 {
+        return Vec::new();
+    }
     let num_vectors = vectors.len() / dimension;
 
     with_visited_set(num_vectors, ef * 2, |visited| {
@@ -794,10 +921,12 @@ pub fn greedy_search_layer_custom<F: Fn(&[f32], u32) -> f32>(
             id: entry_point,
             distance: entry_distance,
         });
-        results.push(MaxResult {
-            id: entry_point,
-            distance: entry_distance,
-        });
+        if live(entry_point) {
+            results.push(MaxResult {
+                id: entry_point,
+                distance: entry_distance,
+            });
+        }
         visited.insert(entry_point);
 
         while let Some(candidate) = candidates.pop() {
@@ -835,6 +964,7 @@ pub fn greedy_search_layer_custom<F: Fn(&[f32], u32) -> f32>(
                             &mut candidates,
                             &mut results,
                             ef,
+                            &live,
                         );
                         batch_count = 0;
                     }
@@ -849,6 +979,7 @@ pub fn greedy_search_layer_custom<F: Fn(&[f32], u32) -> f32>(
                     &mut candidates,
                     &mut results,
                     ef,
+                    &live,
                 );
             }
         }
@@ -928,7 +1059,7 @@ pub fn greedy_search_layer_edge_aware<F: Fn(u32, u32, usize) -> f32>(
 /// Returns `(results, num_evaluated)` so callers can inspect how many
 /// distance computations were performed.
 #[cfg(feature = "hnsw")]
-pub fn greedy_search_layer_adaptive(
+pub fn greedy_search_layer_adaptive<L: Fn(u32) -> bool>(
     query: &[f32],
     entry_point: u32,
     layer: &crate::hnsw::graph::Layer,
@@ -938,9 +1069,13 @@ pub fn greedy_search_layer_adaptive(
     k: usize,
     config: &crate::adaptive::AdaptiveConfig,
     dist_fn: fn(&[f32], &[f32]) -> f32,
+    live: L,
 ) -> (Vec<(u32, f32)>, usize) {
     use crate::adaptive::EarlyTerminationOracle;
 
+    if ef == 0 {
+        return (Vec::new(), 0);
+    }
     let num_vectors = vectors.len() / dimension;
 
     with_visited_set(num_vectors, ef * 2, |visited| {
@@ -957,10 +1092,12 @@ pub fn greedy_search_layer_adaptive(
             id: entry_point,
             distance: entry_distance,
         });
-        results.push(MaxResult {
-            id: entry_point,
-            distance: entry_distance,
-        });
+        if live(entry_point) {
+            results.push(MaxResult {
+                id: entry_point,
+                distance: entry_distance,
+            });
+        }
         visited.insert(entry_point);
 
         while let Some(candidate) = candidates.pop() {
@@ -993,7 +1130,13 @@ pub fn greedy_search_layer_adaptive(
                     let neighbor_distance = dist_fn(query, neighbor_vector);
                     oracle.observe(neighbor_distance);
 
-                    if insert_result_if_accepted(&mut results, ef, neighbor_id, neighbor_distance) {
+                    if admit_candidate(
+                        &mut results,
+                        ef,
+                        neighbor_id,
+                        neighbor_distance,
+                        live(neighbor_id),
+                    ) {
                         candidates.push(MinCandidate {
                             id: neighbor_id,
                             distance: neighbor_distance,
@@ -1036,7 +1179,7 @@ fn get_vector(vectors: &[f32], dimension: usize, idx: usize) -> &[f32] {
 ///
 /// Returns `(results, full_distance_count)`.
 #[cfg(feature = "hnsw")]
-pub fn greedy_search_layer_prt(
+pub fn greedy_search_layer_prt<L: Fn(u32) -> bool>(
     query: &[f32],
     entry_point: u32,
     layer: &crate::hnsw::graph::Layer,
@@ -1048,7 +1191,11 @@ pub fn greedy_search_layer_prt(
     query_proj: &[f32],
     proj_threshold: &dyn Fn(f32) -> Option<f32>,
     tfb: &mut crate::prt::TestFeedbackBuffer,
+    live: L,
 ) -> (Vec<(u32, f32)>, usize) {
+    if ef == 0 {
+        return (Vec::new(), 0);
+    }
     let num_vectors = vectors.len() / dimension;
     let mut full_dist_count: usize = 0;
 
@@ -1064,10 +1211,12 @@ pub fn greedy_search_layer_prt(
             id: entry_point,
             distance: entry_distance,
         });
-        results.push(MaxResult {
-            id: entry_point,
-            distance: entry_distance,
-        });
+        if live(entry_point) {
+            results.push(MaxResult {
+                id: entry_point,
+                distance: entry_distance,
+            });
+        }
         visited.insert(entry_point);
 
         while let Some(candidate) = candidates.pop() {
@@ -1111,7 +1260,13 @@ pub fn greedy_search_layer_prt(
                 let neighbor_distance = dist_fn(query, neighbor_vector);
                 full_dist_count += 1;
 
-                if insert_result_if_accepted(&mut results, ef, neighbor_id, neighbor_distance) {
+                if admit_candidate(
+                    &mut results,
+                    ef,
+                    neighbor_id,
+                    neighbor_distance,
+                    live(neighbor_id),
+                ) {
                     tfb.record_true_positive();
                     candidates.push(MinCandidate {
                         id: neighbor_id,
