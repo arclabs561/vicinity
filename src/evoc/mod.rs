@@ -67,9 +67,10 @@ impl EVoC {
     /// Create new EVoC clusterer.
     pub fn new(original_dim: usize, params: EVoCParams) -> Result<Self, RetrieveError> {
         if original_dim == 0 {
-            return Err(RetrieveError::InvalidParameter(
-                "Original dimension must be greater than 0".to_string(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "dimension",
+                expected: "must be greater than 0",
+            });
         }
 
         let inner = clump::EVoC::new(params.to_clump());

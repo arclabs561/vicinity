@@ -294,12 +294,20 @@ mod segment_binary {
             .expect("atomic_write");
 
         let err = HNSWSegmentReader::load(Box::new(mem), 0);
-        // Unreasonable dimension triggers the size guard -> Format error.
-        assert!(
-            matches!(err, Err(PersistenceError::Format(_))),
-            "expected Format error for unreasonable dimension, got: {:?}",
-            err.err()
-        );
+        // A file that fails the magic check and decodes to an implausible v0
+        // header is not an HNSW segment: report the magic mismatch, not a bogus
+        // "unreasonable index size".
+        match err {
+            Err(PersistenceError::BadMagic { expected, found }) => {
+                assert!(
+                    expected.contains("VCNHNSW") || expected.contains("56 43 4e 48"),
+                    "{expected}"
+                );
+                assert!(found.contains("BADMAGIC"), "{found}");
+            }
+            Err(other) => panic!("expected BadMagic for foreign metadata, got {other:?}"),
+            Ok(_) => panic!("foreign metadata must not load"),
+        }
     }
 
     // -----------------------------------------------------------------------

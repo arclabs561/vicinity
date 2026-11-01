@@ -1,0 +1,17 @@
+[package]
+name = "annoy-sys"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Benchmark-only C++ shim around Spotify's Annoy (Angular metric)"
+license = "Apache-2.0"
+
+# Own workspace root: this crate is a path dev-dependency of `vicinity` and must
+# not be absorbed into the parent package's workspace.
+[workspace]
+
+[lib]
+crate-type = ["rlib"]
+
+[build-dependencies]
+cc = "1"

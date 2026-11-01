@@ -29,22 +29,24 @@ impl ProductQuantizer {
         codebook_size: usize,
     ) -> Result<Self, RetrieveError> {
         if dimension == 0 || num_codebooks == 0 || codebook_size == 0 {
-            return Err(RetrieveError::InvalidParameter(
-                "all parameters must be greater than 0".into(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "dimension, num_codebooks, codebook_size",
+                expected: "must all be greater than 0",
+            });
         }
 
         if codebook_size > 256 {
-            return Err(RetrieveError::InvalidParameter(format!(
-                "codebook_size must be <= 256 (codes are stored as u8), got {}",
-                codebook_size
-            )));
+            return Err(RetrieveError::InvalidConfig {
+                field: "codebook_size",
+                expected: "must be at most 256 because codes are stored as u8",
+            });
         }
 
         if !dimension.is_multiple_of(num_codebooks) {
-            return Err(RetrieveError::InvalidParameter(
-                "dimension must be divisible by num_codebooks".into(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "dimension",
+                expected: "must be divisible by num_codebooks",
+            });
         }
 
         Ok(Self {

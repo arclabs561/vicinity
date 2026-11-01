@@ -224,9 +224,10 @@ impl ADSamplingState {
         ef: usize,
     ) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !index.is_built() {
-            return Err(RetrieveError::InvalidParameter(
-                "index must be built before search".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "HNSW index",
+                operation: "search",
+            });
         }
         if index.num_vectors == 0 {
             return Err(RetrieveError::EmptyIndex);

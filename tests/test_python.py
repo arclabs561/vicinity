@@ -348,7 +348,7 @@ def test_search_before_build_raises() -> None:
     idx = HNSWIndex(dim=8, metric=DistanceMetric.L2, seed=0)
     idx.add_items(rng.standard_normal((5, 8), dtype=np.float32))
     # Note: build() not called.
-    with pytest.raises(ValueError, match="must be built"):
+    with pytest.raises(ValueError, match="is not built"):
         idx.search(np.zeros(8, dtype=np.float32), k=3)
 
 
@@ -623,7 +623,7 @@ def test_ivfpq_load_corrupt_manifest_raises_runtime_error(tmp_path) -> None:
 def test_ivfpq_persistence_parameter_errors_stay_value_errors(tmp_path) -> None:
     index = IVFPQIndex(dim=8, num_clusters=8, num_codebooks=4, codebook_size=8)
 
-    with pytest.raises(ValueError, match="unbuilt"):
+    with pytest.raises(ValueError, match="is not built"):
         index.save(tmp_path / "ivfpq")
 
 

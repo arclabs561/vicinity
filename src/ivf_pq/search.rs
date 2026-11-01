@@ -189,6 +189,18 @@ impl Quantizer {
         }
     }
 
+    /// Decode PQ codes back into the vector they approximate.
+    ///
+    /// For IVF-PQ the decoded vector is the list residual, so callers must add
+    /// the list centroid to obtain a vector in the original space; see
+    /// [`IVFPQIndex::reconstruct`].
+    pub fn reconstruct(&self, codes: &[u8]) -> Vec<f32> {
+        match self {
+            Self::Product(pq) => pq.reconstruct(codes),
+            Self::Optimized(opq) => opq.reconstruct(codes),
+        }
+    }
+
     fn owned_bytes(&self) -> usize {
         match self {
             Self::Product(pq) => pq.owned_bytes(),
@@ -224,12 +236,6 @@ pub struct IVFPQIndex {
     metadata: Option<crate::filtering::MetadataStore>,
     /// Field name for filtering (e.g., "category")
     filter_field: Option<String>,
-
-    /// HNSW index over centroids for O(log nlist) coarse lookup.
-    /// Built automatically during `build()` when both `ivf_pq` and `hnsw` features are enabled.
-    /// Falls back to brute-force centroid scan when `None`.
-    #[cfg(feature = "hnsw")]
-    coarse_quantizer: Option<crate::hnsw::HNSWIndex>,
 }
 
 /// Read-only IVF-PQ searcher backed by files from [`IVFPQIndex::save_to_dir`].
@@ -325,10 +331,10 @@ impl Default for IVFPQParams {
 /// PQ codes are stored as `u8`, so a codebook holds at most 256 entries.
 fn validate_codebook_size(codebook_size: usize) -> Result<(), RetrieveError> {
     if codebook_size > 256 {
-        return Err(RetrieveError::InvalidParameter(format!(
-            "codebook_size must be <= 256 (PQ codes are stored as u8), got {}",
-            codebook_size
-        )));
+        return Err(RetrieveError::InvalidConfig {
+            field: "codebook_size",
+            expected: "must be at most 256 because PQ codes are stored as u8",
+        });
     }
     Ok(())
 }
@@ -375,9 +381,10 @@ impl IVFPQIndex {
     /// Create a new IVF-PQ index.
     pub fn new(dimension: usize, params: IVFPQParams) -> Result<Self, RetrieveError> {
         if dimension == 0 {
-            return Err(RetrieveError::InvalidParameter(
-                "dimension must be > 0".into(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "dimension",
+                expected: "must be greater than 0",
+            });
         }
         validate_codebook_size(params.codebook_size)?;
 
@@ -394,8 +401,6 @@ impl IVFPQIndex {
             quantized_codes: Vec::new(),
             metadata: None,
             filter_field: None,
-            #[cfg(feature = "hnsw")]
-            coarse_quantizer: None,
         })
     }
 
@@ -425,8 +430,6 @@ impl IVFPQIndex {
             quantized_codes: Vec::new(),
             metadata: Some(crate::filtering::MetadataStore::new()),
             filter_field: Some(filter_field.into()),
-            #[cfg(feature = "hnsw")]
-            coarse_quantizer: None,
         })
     }
 
@@ -464,9 +467,10 @@ impl IVFPQIndex {
             store.add(doc_id, metadata);
             Ok(())
         } else {
-            Err(RetrieveError::InvalidParameter(
-                "filtering not enabled; use IVFPQIndex::with_filtering()".into(),
-            ))
+            Err(RetrieveError::Unsupported {
+                feature: "filtered search",
+                hint: "rebuild the index with IVFPQIndex::with_filtering()",
+            })
         }
     }
 
@@ -483,9 +487,10 @@ impl IVFPQIndex {
     /// - Vectors are L2-normalized on insertion (cosine similarity index).
     pub fn add_slice(&mut self, doc_id: u32, vector: &[f32]) -> Result<(), RetrieveError> {
         if self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "cannot add vectors after index is built".into(),
-            ));
+            return Err(RetrieveError::AlreadyBuilt {
+                component: "IVF-PQ index",
+                operation: "add vectors",
+            });
         }
 
         if vector.len() != self.dimension {
@@ -564,9 +569,10 @@ impl IVFPQIndex {
         }
 
         if training.kmeans_max_iter == 0 {
-            return Err(RetrieveError::InvalidParameter(
-                "kmeans_max_iter must be greater than 0".into(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "kmeans_max_iter",
+                expected: "must be greater than 0",
+            });
         }
 
         let training_indices = self.training_indices(training.sample_size)?;
@@ -610,23 +616,6 @@ impl IVFPQIndex {
             .iter()
             .flat_map(|c| c.iter().copied())
             .collect();
-
-        // Build HNSW coarse quantizer over centroids for fast lookup.
-        #[cfg(feature = "hnsw")]
-        {
-            let num_centroids = self.centroids.len() / self.dimension;
-            let mut hnsw = crate::hnsw::HNSWIndex::builder(self.dimension)
-                .m(16)
-                .ef_construction(200)
-                .auto_normalize(true)
-                .build()?;
-            for i in 0..num_centroids {
-                let centroid = self.get_centroid(i);
-                hnsw.add_slice(i as u32, centroid)?;
-            }
-            hnsw.build()?;
-            self.coarse_quantizer = Some(hnsw);
-        }
 
         // Assign vectors to clusters
         let assignments = kmeans.assign_clusters(&self.vectors, self.num_vectors);
@@ -806,9 +795,10 @@ impl IVFPQIndex {
         };
 
         if sample_size == 0 {
-            return Err(RetrieveError::InvalidParameter(
-                "training_sample_size must be greater than 0".into(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "training_sample_size",
+                expected: "must be greater than 0",
+            });
         }
 
         if sample_size >= self.num_vectors {
@@ -855,6 +845,49 @@ impl IVFPQIndex {
                 cluster.set_adc_codes(Some(codes_batch));
             }
         }
+    }
+
+    /// Reconstruct an approximate vector from its PQ code and list centroid.
+    ///
+    /// This is FAISS `IndexIVFPQ::reconstruct`: codes are residuals with
+    /// respect to the inverted list's centroid, so the centroid is added back
+    /// exactly once. `idx` is the insertion index (the order vectors were
+    /// added), not a caller-provided `doc_id`. Available after
+    /// [`Self::compact`] because it needs only codes, centroids, and lists.
+    pub fn reconstruct(&self, idx: usize) -> Result<Vec<f32>, RetrieveError> {
+        if !self.built {
+            return Err(RetrieveError::InvalidParameter(
+                "index must be built before reconstruct".into(),
+            ));
+        }
+        if idx >= self.num_vectors {
+            return Err(RetrieveError::InvalidParameter(format!(
+                "vector index {idx} out of range (num_vectors = {})",
+                self.num_vectors
+            )));
+        }
+        let pq = self
+            .pq
+            .as_ref()
+            .ok_or(RetrieveError::InvalidParameter("PQ not initialized".into()))?;
+        let cluster_idx = self.cluster_of(idx as u32).ok_or_else(|| {
+            RetrieveError::Other(format!("vector index {idx} is not in any inverted list"))
+        })?;
+        let num_codebooks = self.params.num_codebooks;
+        let start = idx * num_codebooks;
+        let codes = &self.quantized_codes[start..start + num_codebooks];
+        let mut decoded = pq.reconstruct(codes);
+        for (value, centroid) in decoded.iter_mut().zip(self.get_centroid(cluster_idx)) {
+            *value += centroid;
+        }
+        Ok(decoded)
+    }
+
+    /// Inverted list index holding insertion index `idx`.
+    fn cluster_of(&self, idx: u32) -> Option<usize> {
+        self.clusters
+            .iter()
+            .position(|cluster| cluster.get_ids_ref().as_ref().contains(&idx))
     }
 
     /// Drop raw f32 vectors after building to reduce memory usage.
@@ -915,19 +948,21 @@ impl IVFPQIndex {
         include_generation_components: bool,
     ) -> Result<(), RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "cannot save unbuilt IVF-PQ index".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "IVF-PQ index",
+                operation: "save",
+            });
         }
         if self.metadata.is_some() && self.filter_field.is_none() {
-            return Err(RetrieveError::InvalidParameter(
-                "IVF-PQ filter metadata requires a filter field".into(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "filter_field",
+                expected: "must be set before enabling filter metadata",
+            });
         }
-        let pq = self
-            .pq
-            .clone()
-            .ok_or_else(|| RetrieveError::InvalidParameter("missing IVF-PQ quantizer".into()))?;
+        let pq = self.pq.clone().ok_or(RetrieveError::NotBuilt {
+            component: "IVF-PQ quantizer",
+            operation: "save",
+        })?;
         std::fs::create_dir_all(output_dir)?;
 
         let raw_vectors_present = self.vectors.len() == self.num_vectors * self.dimension;
@@ -1086,9 +1121,10 @@ impl IVFPQIndex {
         candidate_pool: usize,
     ) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "index must be built before search".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "IVF-PQ index",
+                operation: "search",
+            });
         }
 
         if query.len() != self.dimension {
@@ -1099,9 +1135,10 @@ impl IVFPQIndex {
         }
 
         if self.vectors.is_empty() {
-            return Err(RetrieveError::InvalidParameter(
-                "search_reranked unavailable after compact()".into(),
-            ));
+            return Err(RetrieveError::Unsupported {
+                feature: "search_reranked after compact()",
+                hint: "use search() instead, or keep raw vectors when compacting",
+            });
         }
 
         let pool = candidate_pool.max(k);
@@ -1142,9 +1179,10 @@ impl IVFPQIndex {
         #[cfg(feature = "benchmark")] mut profile: Option<&mut IVFPQSearchProfile>,
     ) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "index must be built before search".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "IVF-PQ index",
+                operation: "search",
+            });
         }
 
         if query.len() != self.dimension {
@@ -1154,10 +1192,10 @@ impl IVFPQIndex {
             });
         }
 
-        let pq = self
-            .pq
-            .as_ref()
-            .ok_or(RetrieveError::InvalidParameter("PQ not initialized".into()))?;
+        let pq = self.pq.as_ref().ok_or(RetrieveError::NotBuilt {
+            component: "IVF-PQ product quantizer",
+            operation: "search",
+        })?;
 
         // Normalize query (index operates on unit-length vectors)
         #[cfg(feature = "benchmark")]
@@ -1369,9 +1407,10 @@ impl IVFPQIndex {
         filter: &crate::filtering::MetadataFilter,
     ) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "index must be built before search".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "IVF-PQ index",
+                operation: "search",
+            });
         }
 
         if query.len() != self.dimension {
@@ -1406,9 +1445,10 @@ impl IVFPQIndex {
                 }
             }
             _ => {
-                return Err(RetrieveError::InvalidParameter(
-                    "only equality filters on filter_field are supported".into(),
-                ));
+                return Err(RetrieveError::Unsupported {
+                    feature: "non-equality predicates on filter_field",
+                    hint: "use only equality predicates on the configured filter_field",
+                });
             }
         };
 
@@ -1431,10 +1471,10 @@ impl IVFPQIndex {
         let mut query_residual = vec![0.0f32; self.dimension];
         let mut adc_table = Vec::new();
 
-        let pq = self
-            .pq
-            .as_ref()
-            .ok_or(RetrieveError::InvalidParameter("PQ not initialized".into()))?;
+        let pq = self.pq.as_ref().ok_or(RetrieveError::NotBuilt {
+            component: "IVF-PQ product quantizer",
+            operation: "search",
+        })?;
 
         for (cluster_idx, _) in &cluster_distances {
             let cluster = &self.clusters[*cluster_idx];
@@ -1467,9 +1507,10 @@ impl IVFPQIndex {
                     }
                 }
             } else {
-                return Err(RetrieveError::InvalidParameter(
-                    "metadata store not initialized".into(),
-                ));
+                return Err(RetrieveError::NotBuilt {
+                    component: "filter metadata store",
+                    operation: "search",
+                });
             }
         }
 
@@ -1485,14 +1526,6 @@ impl IVFPQIndex {
                 .iter()
                 .map(Cluster::owned_bytes)
                 .sum::<usize>();
-        #[cfg(feature = "hnsw")]
-        let coarse_quantizer_bytes = self
-            .coarse_quantizer
-            .as_ref()
-            .map(|index| index.memory_usage().total())
-            .unwrap_or(0);
-        #[cfg(not(feature = "hnsw"))]
-        let coarse_quantizer_bytes = 0;
         let quantized_bytes = self.quantized_codes.capacity()
             + self.pq.as_ref().map(Quantizer::owned_bytes).unwrap_or(0);
         let metadata_bytes = self.doc_ids.capacity() * std::mem::size_of::<u32>()
@@ -1506,7 +1539,7 @@ impl IVFPQIndex {
 
         crate::memory::MemoryReport {
             vectors_bytes,
-            graph_bytes: coarse_quantizer_bytes,
+            graph_bytes: 0,
             quantized_bytes,
             metadata_bytes,
         }
@@ -1528,20 +1561,14 @@ impl IVFPQIndex {
         &self.centroids[start..end]
     }
 
-    /// Find the nprobe nearest centroid indices to `query`, sorted by distance.
-    /// Uses HNSW coarse quantizer when available, brute-force otherwise.
+    /// Find the `nprobe` nearest centroid indices to `query`, sorted by distance.
+    ///
+    /// This is an exact scan over every centroid, matching FAISS
+    /// `IndexIVF::quantizer->search`. An approximate coarse quantizer loses
+    /// recall at a fixed `nprobe`: on a 1024-centroid index the approximate
+    /// probed set overlapped the exact top-`nprobe` by only 34% at `nprobe = 1`
+    /// and 84% at `nprobe = 8`.
     fn find_nearest_centroids(&self, query: &[f32], nprobe: usize) -> Vec<(usize, f32)> {
-        #[cfg(feature = "hnsw")]
-        if let Some(ref hnsw) = self.coarse_quantizer {
-            let ef = nprobe * 2;
-            if let Ok(results) = hnsw.search(query, nprobe, ef.max(nprobe)) {
-                return results
-                    .into_iter()
-                    .map(|(id, d)| (id as usize, d))
-                    .collect();
-            }
-        }
-
         let num_centroids = self.centroids.len() / self.dimension;
         let mut dists: Vec<(usize, f32)> = (0..num_centroids)
             .map(|idx| {
@@ -1781,9 +1808,11 @@ impl IVFPQFileSearcher {
         candidate_pool: usize,
     ) -> Result<(Vec<(u32, f32)>, IVFPQFileSearchDiagnostics), RetrieveError> {
         if self.raw_vectors.is_none() {
-            return Err(RetrieveError::InvalidParameter(
-                "search_reranked unavailable without raw_vectors.bin".into(),
-            ));
+            return Err(RetrieveError::Unsupported {
+                feature: "search_reranked without raw vectors",
+                hint:
+                    "save raw vectors or rebuild with raw vectors retained, or use search() instead",
+            });
         }
         if query.len() != self.dimension {
             return Err(RetrieveError::DimensionMismatch {
@@ -1810,9 +1839,11 @@ impl IVFPQFileSearcher {
         let query_normalized = normalize_query(query);
         let mut reranked = Vec::with_capacity(candidates.len());
         let Some(storage) = self.raw_vectors.as_mut() else {
-            return Err(RetrieveError::InvalidParameter(
-                "search_reranked unavailable without raw_vectors.bin".into(),
-            ));
+            return Err(RetrieveError::Unsupported {
+                feature: "search_reranked without raw vectors",
+                hint:
+                    "save raw vectors or rebuild with raw vectors retained, or use search() instead",
+            });
         };
         // Ascending offsets keep the positional reads close to sequential.
         candidates.sort_unstable_by_key(|(vector_idx, _)| *vector_idx);
@@ -2315,10 +2346,6 @@ mod tests {
                 index.add_slice(i as u32, vector).unwrap();
             }
             index.build_with_training_sample(64).unwrap();
-            #[cfg(feature = "hnsw")]
-            {
-                index.coarse_quantizer = None;
-            }
             index
         };
 
@@ -2380,10 +2407,6 @@ mod tests {
             index.add(10_000 + i as u32, vector).unwrap();
         }
         index.build_with_training_options(Some(64), 5).unwrap();
-        #[cfg(feature = "hnsw")]
-        {
-            index.coarse_quantizer = None;
-        }
 
         let query: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
         let approx_before = index.search(&query, 10).unwrap();
@@ -2455,10 +2478,6 @@ mod tests {
             doc_ids.push(doc_id);
         }
         index.build().unwrap();
-        #[cfg(feature = "hnsw")]
-        {
-            index.coarse_quantizer = None;
-        }
 
         let query: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
         let approx_before = index.search(&query, 10).unwrap();
@@ -2514,10 +2533,6 @@ mod tests {
             index.add_metadata(doc_id, metadata).unwrap();
         }
         index.build().unwrap();
-        #[cfg(feature = "hnsw")]
-        {
-            index.coarse_quantizer = None;
-        }
 
         let query: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
         let filter = crate::filtering::MetadataFilter::equals("group", 2i32);
@@ -2555,10 +2570,6 @@ mod tests {
             index.add(20_000 + i as u32, vector).unwrap();
         }
         index.build().unwrap();
-        #[cfg(feature = "hnsw")]
-        {
-            index.coarse_quantizer = None;
-        }
 
         let query: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
         let dir = tempfile::tempdir().unwrap();
@@ -2862,10 +2873,6 @@ mod tests {
             index.add(40_000 + i as u32, vector).unwrap();
         }
         index.build().unwrap();
-        #[cfg(feature = "hnsw")]
-        {
-            index.coarse_quantizer = None;
-        }
 
         let query: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
         let dir = tempfile::tempdir().unwrap();
@@ -2900,10 +2907,6 @@ mod tests {
             index.add(i as u32, v).unwrap();
         }
         index.build().unwrap();
-        #[cfg(feature = "hnsw")]
-        {
-            index.coarse_quantizer = None;
-        }
         index.compact();
 
         let query: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
@@ -2992,10 +2995,6 @@ mod tests {
             index.add(i as u32, v).unwrap();
         }
         index.build().unwrap();
-        #[cfg(feature = "hnsw")]
-        {
-            index.coarse_quantizer = None;
-        }
 
         let query: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
         let before = index.search(&query, 10).unwrap();
@@ -3048,6 +3047,249 @@ mod tests {
             err.to_string()
                 .contains("invalid IVF-PQ cluster file magic"),
             "unexpected error: {err}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod faiss_parity_tests {
+    //! Pins the two decisions FAISS `IndexIVFPQ` makes that dominate recall at a
+    //! fixed `nprobe`: codes are residuals w.r.t. the inverted list centroid,
+    //! the PQ codebooks are trained on those residuals, and the cumulative
+    //! distance table is rebuilt per (query, probed list).
+    use super::{IVFPQIndex, IVFPQParams};
+    use rand::{Rng, SeedableRng};
+
+    fn unit_vector(rng: &mut impl Rng, dim: usize) -> Vec<f32> {
+        let mut vector: Vec<f32> = (0..dim)
+            .map(|_| rng.random_range(-1.0f32..1.0f32))
+            .collect();
+        let norm = vector.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm > 1e-10 {
+            for value in vector.iter_mut() {
+                *value /= norm;
+            }
+        }
+        vector
+    }
+
+    fn seeded_small_index() -> IVFPQIndex {
+        let dim = 32;
+        let params = IVFPQParams {
+            num_clusters: 8,
+            nprobe: 8,
+            num_codebooks: 8,
+            codebook_size: 64,
+            seed: 7,
+            ..IVFPQParams::default()
+        };
+        let mut index = IVFPQIndex::new(dim, params).unwrap();
+        let mut rng = rand::rngs::StdRng::seed_from_u64(0xA11CE);
+        for i in 0..800u32 {
+            index.add(i, unit_vector(&mut rng, dim)).unwrap();
+        }
+        index.build().unwrap();
+        index
+    }
+
+    /// A code decodes back to the original vector within the PQ quantization
+    /// error: the decoded residual is the concatenation of the nearest
+    /// codewords, and the list centroid is added back exactly once.
+    #[test]
+    fn code_decodes_to_original_within_quantization_error() {
+        let index = seeded_small_index();
+        let num_codebooks = index.num_codebooks();
+        let quantizer = index.pq.as_ref().unwrap();
+
+        let mut ratios = Vec::new();
+        for i in 0..index.num_vectors {
+            let original = index.get_vector(i);
+            let cluster_idx = index.cluster_of(i as u32).unwrap();
+            let centroid = index.get_centroid(cluster_idx);
+            let codes = &index.quantized_codes[i * num_codebooks..(i + 1) * num_codebooks];
+
+            let decoded = index.reconstruct(i).unwrap();
+            let mut expected = quantizer.reconstruct(codes);
+            for (value, c) in expected.iter_mut().zip(centroid) {
+                *value += c;
+            }
+            for (a, b) in decoded.iter().zip(&expected) {
+                assert!(
+                    (a - b).abs() <= 1e-5,
+                    "reconstruct() must be centroid + decoded residual: {a} vs {b}"
+                );
+            }
+
+            let residual_norm = original
+                .iter()
+                .zip(centroid)
+                .map(|(x, c)| (x - c) * (x - c))
+                .sum::<f32>()
+                .sqrt();
+            let error = original
+                .iter()
+                .zip(&decoded)
+                .map(|(x, d)| (x - d) * (x - d))
+                .sum::<f32>()
+                .sqrt();
+            ratios.push(error / residual_norm.max(1e-9));
+        }
+
+        let mean = ratios.iter().sum::<f32>() / ratios.len() as f32;
+        let worst = ratios.iter().copied().fold(0.0f32, f32::max);
+        println!("decode error / residual norm: mean={mean:.3} worst={worst:.3}");
+        assert!(
+            mean <= 0.55,
+            "mean decode error should stay within PQ quantization error, got {mean:.3}"
+        );
+        assert!(
+            worst <= 0.85,
+            "no decoded vector should drift past 0.85 of its residual norm, got {worst:.3}"
+        );
+    }
+
+    /// The cumulative table is built per (query, probed list) from the query
+    /// residual, so the ADC distance equals the full L2 distance to the
+    /// reconstructed vector. A missing or double-counted centroid term breaks
+    /// this identity.
+    #[test]
+    fn adc_distance_matches_exact_l2_to_reconstructed_vector() {
+        let index = seeded_small_index();
+        let num_codebooks = index.num_codebooks();
+        let quantizer = index.pq.as_ref().unwrap();
+
+        let mut worst_relative = 0.0f32;
+        let mut checked = 0usize;
+        for query_idx in [0usize, 5, 42, 777] {
+            let query = index.get_vector(query_idx).to_vec();
+            for (cluster_idx, _) in index.find_nearest_centroids(&query, 3) {
+                let centroid = index.get_centroid(cluster_idx);
+                let query_residual: Vec<f32> =
+                    query.iter().zip(centroid).map(|(q, c)| q - c).collect();
+                let table = quantizer.compute_adc_table(&query_residual).unwrap();
+                for &id in index.clusters[cluster_idx].get_ids_ref().as_ref() {
+                    let start = id as usize * num_codebooks;
+                    let codes = &index.quantized_codes[start..start + num_codebooks];
+                    let adc = quantizer.distance_with_table(&table, codes);
+                    let decoded = index.reconstruct(id as usize).unwrap();
+                    let exact: f32 = query
+                        .iter()
+                        .zip(&decoded)
+                        .map(|(q, d)| (q - d) * (q - d))
+                        .sum();
+                    worst_relative = worst_relative.max((adc - exact).abs() / exact.max(1e-6));
+                    checked += 1;
+                }
+            }
+        }
+        println!("adc vs exact L2: checked={checked} worst_relative_error={worst_relative:.2e}");
+        assert!(
+            checked > 0,
+            "expected at least one candidate in the probed lists"
+        );
+        assert!(
+            worst_relative <= 1e-3,
+            "ADC must equal full L2 to the reconstruction (centroid added once), worst relative error {worst_relative:.2e}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod recall_curve_tests {
+    //! Recall@10 vs nprobe on a seeded synthetic set, pinned so a regression in
+    //! residual encoding, PQ training, or per-list distance tables shows up as a
+    //! recall drop rather than only as a distance-identity failure.
+    use super::{IVFPQIndex, IVFPQParams};
+    use rand::{Rng, SeedableRng};
+
+    const DATA_SEED: u64 = 0x1F2E_3D4C;
+    const N: usize = 10_000;
+    const DIM: usize = 96;
+    const NUM_QUERIES: usize = 100;
+    const K: usize = 10;
+    /// Calibrated on the seeded set with `IVFPQParams::default()`: the measured
+    /// landing zone is 0.126 recall@10 at nprobe=8. This uniform set is
+    /// PQ-noise-limited (8 bits per 12-dim subspace), so the floor sits just
+    /// under the measured value: dropping residual encoding or routing to the
+    /// wrong lists lands around 0.01-0.06, well below it.
+    const RECALL_FLOOR_AT_8: f64 = 0.11;
+
+    fn unit_vector(rng: &mut impl Rng, dim: usize) -> Vec<f32> {
+        let mut vector: Vec<f32> = (0..dim)
+            .map(|_| rng.random_range(-1.0f32..1.0f32))
+            .collect();
+        let norm = vector.iter().map(|x| x * x).sum::<f32>().sqrt();
+        for value in vector.iter_mut() {
+            *value /= norm;
+        }
+        vector
+    }
+
+    #[test]
+    fn recall_at_nprobe_8_meets_floor_on_seeded_set() {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(DATA_SEED);
+        let data: Vec<Vec<f32>> = (0..N).map(|_| unit_vector(&mut rng, DIM)).collect();
+        let queries: Vec<Vec<f32>> = (0..NUM_QUERIES)
+            .map(|_| unit_vector(&mut rng, DIM))
+            .collect();
+
+        // Exact cosine ground truth (unit vectors: dot product ordering).
+        let truth: Vec<Vec<u32>> = queries
+            .iter()
+            .map(|query| {
+                let mut scored: Vec<(u32, f32)> = data
+                    .iter()
+                    .enumerate()
+                    .map(|(i, vector)| {
+                        let dot: f32 = query.iter().zip(vector).map(|(a, b)| a * b).sum();
+                        (i as u32, dot)
+                    })
+                    .collect();
+                scored.select_nth_unstable_by(K - 1, |a, b| b.1.total_cmp(&a.1));
+                scored.truncate(K);
+                scored.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
+                scored.into_iter().map(|(i, _)| i).collect()
+            })
+            .collect();
+
+        let mut index = IVFPQIndex::new(DIM, IVFPQParams::default()).unwrap();
+        for (i, vector) in data.iter().enumerate() {
+            index.add(i as u32, vector.clone()).unwrap();
+        }
+        // Default parameters (1024 clusters, M=8, 256 codewords, seed 42).
+        // Training on all 10k vectors costs ~8 minutes in a debug build, so the
+        // documented sample path bounds k-means work; every vector is still
+        // assigned, encoded, and searchable, which is what this test measures.
+        index.build_with_training_sample(2_048).unwrap();
+
+        let mut curve = Vec::new();
+        for nprobe in [1usize, 4, 8, 16, 32] {
+            index.set_nprobe(nprobe);
+            let mut hits = 0usize;
+            for (query, expected) in queries.iter().zip(&truth) {
+                let results = index.search(query, K).unwrap();
+                let found: std::collections::HashSet<u32> =
+                    results.into_iter().map(|(doc_id, _)| doc_id).collect();
+                hits += expected.iter().filter(|id| found.contains(id)).count();
+            }
+            curve.push((nprobe, hits as f64 / (NUM_QUERIES * K) as f64));
+        }
+        for (nprobe, recall) in &curve {
+            println!("nprobe={nprobe:>3}  recall@{K}={recall:.4}");
+        }
+
+        let recall_8 = curve[2].1;
+        assert!(
+            recall_8 >= RECALL_FLOOR_AT_8,
+            "recall@{K} at nprobe=8 = {recall_8:.4}, expected >= {RECALL_FLOOR_AT_8}"
+        );
+        assert!(
+            curve[2].1 >= curve[0].1,
+            "probing more lists should not reduce recall@8 below recall@1: {curve:?}"
+        );
+        assert!(
+            curve[3].1 >= curve[2].1,
+            "probing more lists should not reduce recall@16 below recall@8: {curve:?}"
         );
     }
 }
