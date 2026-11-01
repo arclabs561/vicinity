@@ -279,6 +279,124 @@ Loading an angular dataset (GloVe, deep-image) reproduces the ann-benchmarks
 ranking; rows are L2-normalised, so a Euclidean dataset such as SIFT is ranked by
 cosine instead of L2.
 
+## Above 10M: the large-scale tier
+
+`examples/all_families.rs` holds the corpus in memory, computes exact ground
+truth for every domain on every run, and measures every family. None of that
+survives at 10M+. `examples/large_scale.rs` is a deliberate sibling rather than a
+mode of it: the dataset is generated **to disk in bounded chunks** and mapped
+(`memmap2`), ground truth covers a **sampled query set** (200-1000 queries) and is
+computed once by a **parallel shard scan** (`rayon`, k-way merge) then cached, and
+every phase has a guardrail (`--max-points`, `--budget-seconds`) that refuses
+instead of OOMing or running for hours.
+
+```sh
+# 100k: affordable anywhere, and the tier where ground truth is cross-checked.
+cargo run --release --example large_scale --features "large-scale,hnsw" -- --points 100k
+
+# Ground truth only, so a 100M run does not rescan for every family invocation.
+cargo run --release --example large_scale --features "large-scale,hnsw" -- \
+  --points 100m --max-points 100m --gt-only
+
+# Resumable generation and cache round-trip, checked without a large run.
+cargo run --release --example large_scale --features "large-scale,hnsw" -- --self-test
+```
+
+Data lives under `ANN_DATA_ROOT`, else `$REBUILDABLE_ROOT/vicinity-data`, else a
+temp directory. The dataset format is self-describing (`b"VICDS01\0"`, `dim: u32`,
+`count: u64`, then row-major `f32`), generation resumes by row index, and the
+ground-truth cache is keyed by `(domain, count, dim, k, query count, FNV-1a of
+the query bytes)`. A key mismatch in the file header is an error, never a silent
+reuse. `--verify-gt` cross-checks a sample against both an f32 and an f64 brute
+force scan and prints the top-10 overlap; it is on by default.
+
+### The tier ladder
+
+Numbers are for `d = 96`, `f32`, 500 sampled queries, three `ef` points and a
+persisted index, on a 16-core / 128 GiB aarch64 workstation (57 GiB free on the
+data volume). Measured rows are marked; the rest are extrapolated from them and
+say so.
+
+| Tier | Dataset | Index on disk | Peak RSS during build | Wall clock | Proves | Cannot prove |
+| --- | ---: | ---: | ---: | ---: | --- | --- |
+| 10k | 3.7 MiB | 4.4 MiB | 0.03 GiB | ~1 s measured | correctness, ranking, JSONL schema, resume/cache round-trip | anything about memory or disk pressure |
+| 100k | 36.6 MiB measured | 46.3 MiB measured | 0.3 GiB measured | 4.5 s warm measured | the index starts to dwarf the corpus; ef/recall curve is stable | anything about a corpus that does not fit in RAM |
+| 1M | 366 MiB measured | 470 MiB measured | 2.6 GiB measured (3.2 GiB process peak) | 64 s warm, 89 s cold measured | build cost and RSS become the interesting numbers | that recall is tier-invariant; it is not (below) |
+| 10M | 3.6 GiB | ~4.7 GiB | ~26 GiB est. | ~25-40 min est. | the 10k ranking is not a small-n artifact at a still-RAM-resident tier | behaviour once the index exceeds RAM |
+| 100M | 35.8 GiB | ~47 GiB | ~265 GiB est. | ~5-7 h est. | only on a host with >265 GiB; the current 128 GiB host swaps or OOMs | single-machine behaviour above 1B |
+| 1B | 358 GiB | ~470 GiB | ~2.6 TiB est. | ~3 days est., if it fit | only with an SSD-resident index (DiskANN-class); ids still fit u32 (1B < 2^32) | that HNSW's in-heap vectors can be made to fit this machine |
+
+The disk column is not the whole story: the dataset and index together need
+about **0.9 TB at 1B**, and the volume that holds `$REBUILDABLE_ROOT` has 57 GiB
+free (it shares an APFS container with the data volume, so it is not a separate
+pool). That is the first hard blocker well before RAM.
+
+What each tier cannot prove: 10k-1M say nothing about a corpus that does not fit
+in RAM, and 100M still says nothing about a single-machine index above 1B. A
+family that wins at 10k and loses at 100M has not been measured at 10k to a
+useful depth.
+
+**Recall@10 is not tier-invariant.** At a fixed `ef = 200`, `uniform` falls
+0.981 (10k) → 0.705 (100k) → 0.294 (1M), because i.i.d. uniform points in 96
+dimensions have LID ≈ 96 and their neighbour distances concentrate; the exact
+top-10 becomes an increasingly arbitrary sample of a large near-tie set.
+`clustered` also falls (0.991 at 100k → 0.807 at 1M) because each of the 16
+clusters grows from 6.3k to 63k points while the within-cluster noise stays
+full-dimensional. Compare tiers at a **fixed recall target** (report the `ef`
+required) or compare `dists_per_query`, not raw recall at one `ef`.
+
+The construction batch is capped at `n/8`. The library default of 4096 is right
+at 100k+ but would be 40% of a 10k set; that measured 0.924 instead of 0.981
+recall at `ef = 200`, so `--batch` is an upper bound, not a fixed size.
+
+Families that are only meaningful above 100M — SSD-resident DiskANN, RaBitQ at a
+fixed memory budget, streaming/updatable indexes — are **not measured by this
+harness yet**. Their case only exists once the working set stops fitting: below
+that, the quantized or disk-resident index is being asked to beat an in-RAM
+graph on a problem that is not its problem. Only HNSW is wired, because it is
+the family whose build and search path can consume a mapped, streamed corpus
+(`add_slice`). Claiming a large-scale ranking for the others would be a claim
+about code that cannot run at that tier.
+
+### Measured, 2026-11-01, `clustered` at 100k
+
+`n = 100_000`, `d = 96`, `k = 10`, 500 sampled queries, HNSW `m = 16`,
+`ef_construction = 200`, 16 cores, macOS aarch64. Rows in
+[`large-scale-100k.jsonl`](large-scale-100k.jsonl).
+
+| family | knob | recall@10 | 1/ratio@10 | p50 µs | p95 | p99 | QPS | build s | RSS after build MiB | index MiB |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| hnsw | ef=50 | 0.838 | 6.67 | 112.1 | 134.2 | 165.3 | 8848 | 2.48 | 315.0 | 46.3 |
+| hnsw | ef=100 | 0.946 | 4.79 | 156.3 | 205.5 | 264.6 | 6345 | 2.48 | 315.0 | 46.3 |
+| hnsw | ef=200 | 0.991 | 2.98 | 251.1 | 305.2 | 360.2 | 3995 | 2.48 | 315.0 | 46.3 |
+
+Exact linear-scan p50 at this size was 747.9 µs/query, so `1/ratio` is the speed
+of the exact scan over the ANN query: higher is better. Dataset 36.6 MiB, index
+46.3 MiB, whole run 3.1 s wall clock after the build was warm.
+
+### Measured, 2026-11-01, `clustered` and `uniform` at 1M
+
+Same protocol. Rows in
+[`large-scale-1m-clustered.jsonl`](large-scale-1m-clustered.jsonl) and
+[`large-scale-1m-uniform.jsonl`](large-scale-1m-uniform.jsonl).
+
+| domain | family | knob | recall@10 | p50 µs | p95 | p99 | QPS | build s | RSS after build MiB | index MiB |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| clustered | hnsw | ef=50 | 0.478 | 137.7 | 164.0 | 183.5 | 7193 | 60.6 | 2661.3 | 469.5 |
+| clustered | hnsw | ef=100 | 0.651 | 236.8 | 271.4 | 405.7 | 4138 | 60.6 | 2661.3 | 469.5 |
+| clustered | hnsw | ef=200 | 0.807 | 439.8 | 547.2 | 753.6 | 2230 | 60.6 | 2661.3 | 469.5 |
+| uniform | hnsw | ef=200 | 0.294 | 582.4 | 685.7 | 726.6 | 1701 | 88.1 | 2169.2 | 469.8 |
+
+Dataset 366.2 MiB, index 469.5 MiB (≈ 0.49 KiB/point), whole run 64 s warm and
+89 s including generation and the first ground-truth scan. Exact linear-scan p50
+was 7.40 ms/query. Ground truth for both domains is cached per
+`(domain, count, dim, k, query hash)`, so a second invocation skips the scan.
+
+The 1M rows are the basis for the ladder's RSS and disk extrapolations:
+2.6 GiB peak RSS at 1M is 2.6 KiB/point, so 100M would need ≈ 265 GiB and 1B
+≈ 2.6 TiB — HNSW keeps a flat `Vec<f32>` of the corpus in the index, and neither
+tier fits this host.
+
 ## Rules
 
 - A family is only listed once it has a measured row in a run.

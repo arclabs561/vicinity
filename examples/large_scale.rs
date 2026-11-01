@@ -1,0 +1,1879 @@
+//! Large-scale tier harness: beyond 10M points, where the dataset does not fit
+//! comfortably in RAM and exact ground truth cannot be recomputed on every run.
+//!
+//! This is a sibling of `examples/all_families.rs`, not a mode of it. At the
+//! 10k protocol the whole base set is a `Vec<Vec<f32>>`, ground truth is one
+//! exact scan per domain, and every family is measured. Above 10M that design
+//! does not survive:
+//!
+//! - the dataset is generated **to disk in bounded chunks** and then mapped
+//!   (`memmap2`), so resident memory reflects the index rather than a second
+//!   in-heap copy of the corpus;
+//! - ground truth covers a **sampled query set** (200-1000 queries) and is
+//!   computed once by a **parallel shard scan** (`rayon`, k-way merge), then
+//!   cached under a key derived from the dataset identity and the query bytes;
+//! - every phase has a **guardrail**: `--max-points` refuses a tier above the
+//!   declared ceiling and `--budget-seconds` refuses an estimate that would run
+//!   for hours, instead of discovering either through an OOM or a timeout.
+//!
+//! Only the HNSW family is wired here. It is the family whose build and search
+//! path can consume a mapped, streamed corpus (`add_slice`), and it is the one
+//! the `large-scale` feature builds. Families that are only meaningful at
+//! 100M+ (SSD-resident DiskANN, RaBitQ at a fixed memory budget, streaming
+//! indexes) are described in `benchmarks/README.md`; they are not measured by
+//! this harness yet, and the README says so.
+//!
+//! # On-disk dataset
+//!
+//! ```text
+//! magic   : 8 bytes  b"VICDS01\0"
+//! dim     : u32 LE
+//! count   : u64 LE
+//! data    : count * dim * f32 LE, row-major
+//! ```
+//!
+//! Generation is resumable. Because each row's RNG is seeded from
+//! `(dataset_seed, row_index)`, continuing at row `r` produces byte-identical
+//! output to an uninterrupted run. A partially written final row is truncated
+//! to the last complete row before continuing.
+//!
+//! # Ground-truth cache
+//!
+//! `gt/{domain}-n{count}-d{dim}-k{k}-q{queries}-h{query_hash:016x}.gt`, where
+//! `query_hash` is FNV-1a 64 over the little-endian bytes of every query
+//! component. The file repeats the key in its header and a mismatch is an
+//! error, not a silent reuse.
+//!
+//! # Usage
+//!
+//! ```bash
+//! # 100k: always affordable, and the tier where correctness is verified
+//! # against a brute-force f32 and f64 reference.
+//! cargo run --release --example large_scale --features "large-scale,hnsw" -- \
+//!   --points 100k
+//!
+//! # 1M: requires a larger time budget and ~450 MiB of dataset + index.
+//! cargo run --release --example large_scale --features "large-scale,hnsw" -- \
+//!   --points 1m --budget-seconds 7200 --json /tmp/large-1m.jsonl
+//!
+//! # Compute (or reuse) ground truth only, then exit. This is how a 100M run
+//! # avoids repeating the scan for every family invocation.
+//! cargo run --release --example large_scale --features "large-scale,hnsw" -- \
+//!   --points 100m --max-points 100m --gt-only
+//!
+//! # Built-in checks: resumable generation and cached ground truth.
+//! cargo run --release --example large_scale --features "large-scale,hnsw" -- \
+//!   --self-test
+//! ```
+//!
+//! `--features distance-stats` adds `dists_per_query` (compiled out otherwise,
+//! and emitted as `null`).
+
+// The library keeps `#![forbid(unsafe_code)]`. This example opts out at the
+// crate root because `memmap2` maps a file only through an `unsafe` call; the
+// call is confined to `DatasetFile::open` with its invariants documented.
+#![allow(unsafe_code)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
+use std::fs::{File, OpenOptions};
+use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
+use std::time::Instant;
+
+type Res<T> = Result<T, String>;
+
+/// Dataset file magic. The trailing NUL keeps it eight bytes wide.
+const MAGIC: [u8; 8] = *b"VICDS01\0";
+const GT_MAGIC: [u8; 8] = *b"VICGT01\0";
+/// `magic + dim (u32) + count (u64)`.
+const DATA_HEADER_BYTES: u64 = 8 + 4 + 8;
+/// `magic + dim (u32) + count, k, queries, query_hash (u64 x4)`.
+const GT_HEADER_BYTES: usize = 8 + 4 + 8 + 8 + 8 + 8;
+
+/// Rows generated per write. Bounds generation memory to `block * dim * 4`
+/// bytes regardless of `--points`.
+const GENERATION_BLOCK_ROWS: usize = 8192;
+/// Base seed for the synthetic domains, matching the sibling harness's order of
+/// magnitude but a distinct constant so the two harnesses never share a file.
+const SEED: u64 = 0x4C41_5247_4553_4341; // "LARGESCA"
+const QUERY_SALT: u64 = 0x5155_4552_5953_0001;
+const HNSW_SEED: u64 = 42;
+/// Queries timed with the exact scan for `inverse_ratio`. Exact p50 barely
+/// moves across 16 queries, and 10M x 16 is already seconds.
+const EXACT_TIMED_QUERIES: usize = 16;
+const MIN_GT_QUERIES: usize = 200;
+const MAX_GT_QUERIES: usize = 1000;
+
+fn main() {
+    match run() {
+        Ok(()) => {}
+        Err(message) => {
+            eprintln!("large_scale: {message}");
+            std::process::exit(2);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Configuration and guardrails
+// ---------------------------------------------------------------------------
+
+struct Args {
+    points: u64,
+    dim: usize,
+    k: usize,
+    gt_queries: usize,
+    ef: Vec<usize>,
+    domain: Domain,
+    max_points: u64,
+    budget_seconds: f64,
+    gt_only: bool,
+    /// `None` = verify when the tier is small enough to afford it.
+    verify_gt: Option<bool>,
+    reuse_gt: bool,
+    persist: bool,
+    /// Vectors per parallel construction batch. Smaller batches see more of the
+    /// graph while inserting and cost build time; 4096 is the library default
+    /// and loses recall when a batch is a large share of the set.
+    batch: usize,
+    json: Option<PathBuf>,
+    self_test: bool,
+}
+
+impl Default for Args {
+    fn default() -> Self {
+        Self {
+            points: 100_000,
+            dim: 96,
+            k: 10,
+            gt_queries: 500,
+            ef: vec![50, 100, 200],
+            domain: Domain::Uniform,
+            // A deliberate ceiling: 20M is affordable on a 128 GiB / 60 GiB-free
+            // workstation, while 100M already needs an explicit opt-in.
+            max_points: 20_000_000,
+            budget_seconds: 3600.0,
+            gt_only: false,
+            verify_gt: None,
+            reuse_gt: true,
+            persist: true,
+            batch: 4096,
+            json: None,
+            self_test: false,
+        }
+    }
+}
+
+fn run() -> Res<()> {
+    let args = parse_args()?;
+    if args.self_test {
+        return self_test();
+    }
+    validate(&args)?;
+
+    let root = data_root();
+    let ctx = DomainContext::new(args.domain, SEED, args.dim);
+    let dataset_path = dataset_path(&root, args.domain, args.points, args.dim);
+    let queries = generate_queries(&ctx, args.gt_queries);
+    let query_hash = query_hash(&queries);
+    let gt_path = gt_path(
+        &root,
+        args.domain,
+        args.points,
+        args.dim,
+        args.k,
+        args.gt_queries,
+        query_hash,
+    );
+
+    println!("# large_scale");
+    println!();
+    println!(
+        "domain={} n={} dim={} k={} queries={} ef={:?} batch={} seed=0x{SEED:016X}",
+        args.domain.name(),
+        args.points,
+        args.dim,
+        args.k,
+        args.gt_queries,
+        args.ef,
+        effective_batch(&args)
+    );
+    println!("data root: {}", root.display());
+    println!(
+        "dataset: {} (memmap2; {} MiB mapped)",
+        dataset_path.display(),
+        bytes_to_mib(
+            args.points
+                .saturating_mul(args.dim as u64)
+                .saturating_mul(4)
+        )
+    );
+    println!(
+        "ground truth: {} (query hash 0x{query_hash:016X})",
+        gt_path.display()
+    );
+    println!();
+
+    // Generation. Re-running resumes from the last complete row; the estimate
+    // only counts the rows still missing.
+    let completed = dataset_rows_on_disk(&dataset_path, args.points, args.dim)?;
+    let estimate = estimate(&args, args.points - completed, gt_path.exists());
+    println!(
+        "estimated wall clock ~{:.0}s (generation {:.0}s, ground truth {:.0}s, build {:.0}s, \
+         persist {:.0}s) against --budget-seconds {:.0}s",
+        estimate.total,
+        estimate.generation,
+        estimate.ground_truth,
+        estimate.build,
+        estimate.persist,
+        args.budget_seconds
+    );
+    if estimate.total > args.budget_seconds {
+        return Err(format!(
+            "refusing: estimated {:.0}s exceeds --budget-seconds {:.0}s. Raise the budget \
+             deliberately, lower --points, or lower --gt-queries (currently {}).",
+            estimate.total, args.budget_seconds, args.gt_queries
+        ));
+    }
+
+    let started = Instant::now();
+    let generation = ensure_dataset(&ctx, &dataset_path, args.points, args.dim)?;
+    println!(
+        "dataset {}: {} rows written, {} rows reused at {}, {:.1} MiB",
+        if generation.generated > 0 {
+            "ready"
+        } else {
+            "reused"
+        },
+        generation.generated,
+        generation.resumed_from,
+        dataset_path.display(),
+        bytes_to_mib(generation.bytes)
+    );
+    println!();
+
+    // Ground truth: cached across invocations, computed by a parallel shard
+    // scan on a miss.
+    let dataset = DatasetFile::open(&dataset_path)?;
+    let (truth, cache_state) =
+        load_or_compute_ground_truth(&dataset, &queries, args.k, &gt_path, args.reuse_gt)?;
+    match cache_state {
+        CacheState::Hit => println!("ground truth: cache hit — scan not repeated"),
+        CacheState::Computed => println!("ground truth: computed and cached"),
+        CacheState::Recomputed => println!("ground truth: --regenerate-gt, recomputed and cached"),
+    }
+
+    let verify = args
+        .verify_gt
+        .unwrap_or(args.points <= 1_000_000 && !args.gt_only);
+    if verify {
+        verify_ground_truth(&dataset, &queries, &truth, args.k)?;
+    }
+    drop(dataset);
+
+    if args.gt_only {
+        println!("--gt-only: stopping before any index is built");
+        return Ok(());
+    }
+
+    let elapsed = started.elapsed().as_secs_f64();
+    if elapsed > args.budget_seconds {
+        return Err(format!(
+            "stopped after ground truth: {elapsed:.0}s already exceeds --budget-seconds {:.0}s",
+            args.budget_seconds
+        ));
+    }
+
+    let dataset = DatasetFile::open(&dataset_path)?;
+    let exact_p50 = exact_p50_us(&dataset, &queries, args.k);
+    drop(dataset);
+    println!("exact linear-scan p50: {exact_p50:.1} us/query");
+    println!();
+
+    let mut rows: Vec<Row> = Vec::new();
+    let rss_before = rss_mib();
+    let batch = effective_batch(&args);
+    let index_path = index_path(&root, args.domain, args.points, args.dim, batch);
+    let build_start = Instant::now();
+    let index = build_hnsw(&dataset_path, args.points, args.dim, batch)?;
+    let build_s = build_start.elapsed().as_secs_f64();
+    let rss_after = rss_mib();
+    let mem_mib = match (rss_before, rss_after) {
+        (Some(before), Some(after)) => (after - before).max(0.0),
+        _ => f64::NAN,
+    };
+    println!(
+        "hnsw build: {build_s:.1}s; RSS before {:.1} MiB, after {:.1} MiB (dataset unmapped \
+         before both samples)",
+        rss_before.unwrap_or(f64::NAN),
+        rss_after.unwrap_or(f64::NAN),
+    );
+
+    let (index_disk_mib, persist_s, index_path) = if args.persist {
+        let persist_start = Instant::now();
+        let bytes = persist_index(&index, &index_path)?;
+        (
+            bytes_to_mib(bytes),
+            persist_start.elapsed().as_secs_f64(),
+            Some(index_path),
+        )
+    } else {
+        println!(
+            "index not persisted (--no-persist); resident-size estimate {:.1} MiB \
+             (not an on-disk measurement)",
+            bytes_to_mib(index.memory_usage().total() as u64)
+        );
+        // No file was written, so the on-disk size is unmeasured. Emitting the
+        // resident estimate under this column would read as a disk measurement.
+        (f64::NAN, 0.0, None)
+    };
+    if let Some(path) = &index_path {
+        println!(
+            "index persisted: {} ({index_disk_mib:.1} MiB) in {persist_s:.1}s",
+            path.display()
+        );
+    }
+
+    let exact_timed = exact_p50.max(f64::MIN_POSITIVE);
+    for &ef in &args.ef {
+        if started.elapsed().as_secs_f64() > args.budget_seconds {
+            println!("budget exhausted before ef_search={ef}; reporting the rows already measured");
+            break;
+        }
+        let stats = evaluate(&index, &queries, &truth, args.k, ef);
+        rows.push(Row {
+            family: "hnsw",
+            dataset: format!("{}@{}", args.domain.name(), tier_label(args.points)),
+            knob: "ef_search",
+            knob_value: ef,
+            recall: stats.recall,
+            ratio: exact_timed / stats.p50.max(f64::MIN_POSITIVE),
+            p50: stats.p50,
+            p95: stats.p95,
+            p99: stats.p99,
+            qps: stats.qps,
+            dists_per_query: stats.dists_per_query,
+            build_s,
+            mem_mib,
+            rss_mib: rss_after.unwrap_or(f64::NAN),
+            index_disk_mib,
+            persist_s,
+            n: args.points,
+            dim: args.dim,
+            gt_verified: verify,
+            gt_cache: gt_path.display().to_string(),
+            errors: stats.errors,
+            first_error: stats.first_error,
+        });
+    }
+
+    print_rows(&rows, args.points, args.dim, args.gt_queries);
+    let json_path = match &args.json {
+        Some(path) if !path.as_os_str().is_empty() => path.clone(),
+        _ => root.join("rows").join(default_rows_name(&args)),
+    };
+    write_jsonl(&json_path, &rows, &args, &gt_path, dataset_path.as_path())?;
+    println!(
+        "wall clock: {:.1}s; total dataset+index on disk: {:.1} MiB",
+        started.elapsed().as_secs_f64(),
+        bytes_to_mib(generation.bytes) + index_disk_mib
+    );
+    Ok(())
+}
+
+fn effective_batch(args: &Args) -> usize {
+    // A parallel batch is inserted without its members seeing each other, so a
+    // batch that is a large share of the set builds a poor graph. 4096 is the
+    // library default and right at 100k+, but a 10k tier would otherwise get a
+    // 40%-of-set first batch and lose recall. Cap at one eighth of the tier.
+    args.batch.min((args.points / 8).max(1) as usize)
+}
+
+fn validate(args: &Args) -> Res<()> {
+    if args.points == 0 {
+        return Err("--points must be greater than zero".to_string());
+    }
+    if args.points > u64::from(u32::MAX) {
+        return Err(format!(
+            "refusing: --points {} exceeds the u32 id space ({}); the ground-truth cache stores \
+             ids as u32",
+            args.points,
+            u32::MAX
+        ));
+    }
+    if args.points > args.max_points {
+        return Err(format!(
+            "refusing: --points {} exceeds --max-points {}. The ceiling is a guardrail, not an \
+             estimate: raise --max-points explicitly when the host has the disk and RAM for the \
+             tier (see the ladder in benchmarks/README.md).",
+            args.points, args.max_points
+        ));
+    }
+    if args.dim == 0 || args.dim > 4096 {
+        return Err(format!("--dim must be in 1..=4096 (got {})", args.dim));
+    }
+    if args.k == 0 || args.k as u64 >= args.points {
+        return Err(format!(
+            "--k must be in 1..points (got k={} for n={})",
+            args.k, args.points
+        ));
+    }
+    if !(MIN_GT_QUERIES..=MAX_GT_QUERIES).contains(&args.gt_queries) {
+        return Err(format!(
+            "--gt-queries must be in {MIN_GT_QUERIES}..={MAX_GT_QUERIES} (got {}); a smaller set \
+             does not measure a tail, a larger one makes the independent scan the run",
+            args.gt_queries
+        ));
+    }
+    if args.ef.is_empty() || args.ef.iter().any(|&ef| ef == 0 || ef > 16_384) {
+        return Err("--ef must be a non-empty comma-separated list in 1..=16384".to_string());
+    }
+    if !(args.budget_seconds.is_finite() && args.budget_seconds > 0.0) {
+        return Err("--budget-seconds must be a positive finite number".to_string());
+    }
+    Ok(())
+}
+
+fn parse_args() -> Res<Args> {
+    let mut args = Args::default();
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    let mut points_set = false;
+    let mut index = 0usize;
+    while index < argv.len() {
+        let flag = argv[index].clone();
+        index += 1;
+        match flag.as_str() {
+            "--points" | "--tier" | "-n" => {
+                let value = take_value(&argv, &mut index, &flag)?;
+                args.points = parse_count(&value)?;
+                points_set = true;
+            }
+            "--dim" | "-d" => args.dim = parse_usize(&take_value(&argv, &mut index, &flag)?)?,
+            "--k" => args.k = parse_usize(&take_value(&argv, &mut index, &flag)?)?,
+            "--gt-queries" | "-q" => {
+                args.gt_queries = parse_usize(&take_value(&argv, &mut index, &flag)?)?;
+            }
+            "--ef" => {
+                let value = take_value(&argv, &mut index, &flag)?;
+                args.ef = value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|token| !token.is_empty())
+                    .map(parse_usize)
+                    .collect::<Res<Vec<usize>>>()?;
+            }
+            "--domain" => {
+                let value = take_value(&argv, &mut index, &flag)?;
+                args.domain = Domain::parse(&value)?;
+            }
+            "--max-points" => {
+                args.max_points = parse_count(&take_value(&argv, &mut index, &flag)?)?;
+            }
+            "--budget-seconds" => {
+                let value = take_value(&argv, &mut index, &flag)?;
+                args.budget_seconds = value
+                    .parse::<f64>()
+                    .map_err(|_| format!("invalid --budget-seconds `{value}`"))?;
+            }
+            "--json" => {
+                // Optional path: a following non-flag token is the target.
+                args.json = match argv.get(index) {
+                    Some(next) if !next.starts_with("--") => {
+                        index += 1;
+                        Some(PathBuf::from(next))
+                    }
+                    _ => Some(PathBuf::new()),
+                };
+            }
+            "--out" => args.json = Some(PathBuf::from(take_value(&argv, &mut index, &flag)?)),
+            "--gt-only" => args.gt_only = true,
+            "--verify-gt" => args.verify_gt = Some(true),
+            "--no-verify-gt" => args.verify_gt = Some(false),
+            "--regenerate-gt" => args.reuse_gt = false,
+            "--no-persist" => args.persist = false,
+            "--batch" => {
+                args.batch = parse_usize(&take_value(&argv, &mut index, &flag)?)?;
+                if args.batch == 0 {
+                    return Err("--batch must be greater than zero".to_string());
+                }
+            }
+            "--self-test" => args.self_test = true,
+            "--help" | "-h" => {
+                print_usage();
+                std::process::exit(0);
+            }
+            other if !other.starts_with('-') && !points_set => {
+                args.points = parse_count(other)?;
+                points_set = true;
+            }
+            other => return Err(format!("unknown argument `{other}`; try --help")),
+        }
+    }
+    Ok(args)
+}
+
+fn take_value(argv: &[String], index: &mut usize, flag: &str) -> Res<String> {
+    let value = argv
+        .get(*index)
+        .cloned()
+        .ok_or_else(|| format!("{flag} needs a value"))?;
+    *index += 1;
+    Ok(value)
+}
+
+fn parse_usize(text: &str) -> Res<usize> {
+    text.trim()
+        .parse::<usize>()
+        .map_err(|_| format!("invalid number `{text}`"))
+}
+
+/// Accepts `100000`, `100_000`, `100k`, `1m`, `1b` (case-insensitive).
+fn parse_count(text: &str) -> Res<u64> {
+    let cleaned: String = text.trim().replace('_', "");
+    let (digits, multiplier) = match cleaned.chars().last() {
+        Some('k' | 'K') => (&cleaned[..cleaned.len() - 1], 1_000u64),
+        Some('m' | 'M') => (&cleaned[..cleaned.len() - 1], 1_000_000),
+        Some('b' | 'B') => (&cleaned[..cleaned.len() - 1], 1_000_000_000),
+        _ => (cleaned.as_str(), 1),
+    };
+    let value = digits
+        .parse::<u64>()
+        .map_err(|_| format!("invalid count `{text}`"))?;
+    value
+        .checked_mul(multiplier)
+        .ok_or_else(|| format!("count `{text}` overflows u64"))
+}
+
+fn print_usage() {
+    println!(
+        "large_scale — tier harness above 10M points\n\
+         \n\
+         Options:\n\
+           --points <n|100k|1m>   base vectors (default 100000)\n\
+           --domain <uniform|clustered|neardup>  synthetic statistics (default uniform)\n\
+           --dim <d>              width (default 96)\n\
+           --k <k>                neighbours (default 10)\n\
+           --gt-queries <q>       sampled query set, 200..=1000 (default 500)\n\
+           --ef <a,b,c>           ef_search sweep (default 50,100,200)\n\
+           --max-points <n>       hard ceiling (default 20000000)\n\
+           --budget-seconds <s>   refuse an estimate above this (default 3600)\n\
+           --gt-only              compute/reuse ground truth, then stop\n\
+           --regenerate-gt        ignore an existing cache and recompute\n\
+           --verify-gt / --no-verify-gt  force/disable the f32+f64 cross-check\n\
+           --no-persist           skip the postcard index snapshot\n\
+           --batch <n>            parallel construction batch (default 4096; smaller\n\
+                                  batches see more of the graph and raise recall)\n\
+           --json [path]          write JSONL rows (default under <root>/rows/)\n\
+           --self-test            resumable-generation and cache checks, then exit\n\
+         \n\
+         ANN_DATA_ROOT overrides the data root; otherwise $REBUILDABLE_ROOT/vicinity-data,\n\
+         otherwise a temp directory."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Paths
+// ---------------------------------------------------------------------------
+
+fn data_root() -> PathBuf {
+    if let Ok(value) = std::env::var("ANN_DATA_ROOT") {
+        if !value.is_empty() {
+            return PathBuf::from(value);
+        }
+    }
+    if let Ok(value) = std::env::var("REBUILDABLE_ROOT") {
+        if !value.is_empty() {
+            return Path::new(&value).join("vicinity-data");
+        }
+    }
+    std::env::temp_dir().join("vicinity-data")
+}
+
+fn dataset_path(root: &Path, domain: Domain, count: u64, dim: usize) -> PathBuf {
+    root.join("datasets")
+        .join(format!("{}-n{count}-d{dim}.bin", domain.name()))
+}
+
+fn gt_path(
+    root: &Path,
+    domain: Domain,
+    count: u64,
+    dim: usize,
+    k: usize,
+    queries: usize,
+    hash: u64,
+) -> PathBuf {
+    root.join("gt").join(format!(
+        "{}-n{count}-d{dim}-k{k}-q{queries}-h{hash:016x}.gt",
+        domain.name()
+    ))
+}
+
+fn index_path(root: &Path, domain: Domain, count: u64, dim: usize, batch: usize) -> PathBuf {
+    root.join("indexes").join(format!(
+        "{}-n{count}-d{dim}-m16-efc200-b{batch}.postcard",
+        domain.name()
+    ))
+}
+
+fn default_rows_name(args: &Args) -> String {
+    format!(
+        "large-scale-{}-{}-d{}-k{}.jsonl",
+        args.domain.name(),
+        tier_label(args.points),
+        args.dim,
+        args.k
+    )
+}
+
+fn tier_label(points: u64) -> String {
+    match points {
+        0..=999 => points.to_string(),
+        1_000..=999_999 => format!("{}k", points / 1_000),
+        1_000_000..=999_999_999 => format!("{}m", points / 1_000_000),
+        _ => format!("{}b", points / 1_000_000_000),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Domains: the sibling harness's statistics, streamed one row at a time
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Domain {
+    Uniform,
+    Clustered,
+    Neardup,
+}
+
+impl Domain {
+    fn parse(text: &str) -> Res<Self> {
+        match text {
+            "uniform" => Ok(Self::Uniform),
+            "clustered" => Ok(Self::Clustered),
+            "neardup" => Ok(Self::Neardup),
+            other => Err(format!(
+                "unknown domain `{other}`; known domains: uniform,clustered,neardup"
+            )),
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Uniform => "uniform",
+            Self::Clustered => "clustered",
+            Self::Neardup => "neardup",
+        }
+    }
+
+    fn seed(self) -> u64 {
+        match self {
+            Self::Uniform => SEED,
+            Self::Clustered => SEED ^ 0xC1_0000,
+            Self::Neardup => SEED ^ 0x0D_0000,
+        }
+    }
+}
+
+const CLUSTER_CENTRES: usize = 16;
+const CLUSTER_SIGMA: f32 = 0.25;
+const NEARDUP_SEEDS: usize = 64;
+const NEARDUP_SIGMA: f32 = 0.02;
+const NEARDUP_COPY_PCT: u32 = 90;
+
+/// The small, seed-derived structure a domain needs while streaming rows.
+/// Uniform has none; clustered keeps 16 centres; neardup keeps 64 seed
+/// documents. All of it is independent of the point count, so memory stays
+/// bounded.
+struct DomainContext {
+    domain: Domain,
+    dim: usize,
+    seed: u64,
+    centres: Vec<Vec<f32>>,
+    documents: Vec<Vec<f32>>,
+}
+
+impl DomainContext {
+    fn new(domain: Domain, seed: u64, dim: usize) -> Self {
+        let mut rng = StdRng::seed_from_u64(domain.seed() ^ seed.rotate_left(17));
+        let centres = if domain == Domain::Clustered {
+            (0..CLUSTER_CENTRES)
+                .map(|_| unit_vector(&mut rng, dim))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let documents = if domain == Domain::Neardup {
+            (0..NEARDUP_SEEDS)
+                .map(|_| unit_vector(&mut rng, dim))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        Self {
+            domain,
+            dim,
+            seed: domain.seed(),
+            centres,
+            documents,
+        }
+    }
+
+    /// Deterministic row `index`, independent of chunk boundaries so a resumed
+    /// generation is byte-identical to an uninterrupted one.
+    fn row_at(&self, index: u64) -> Vec<f32> {
+        let mut rng = StdRng::seed_from_u64(
+            self.seed ^ index.wrapping_mul(0x9E37_79B9_7F4A_7C15).rotate_left(7),
+        );
+        self.sample_one(index, &mut rng)
+    }
+
+    fn sample_one(&self, index: u64, rng: &mut StdRng) -> Vec<f32> {
+        match self.domain {
+            Domain::Uniform => normalize(sample_raw(rng, self.dim)),
+            Domain::Clustered => {
+                let centre = &self.centres[index as usize % self.centres.len()];
+                let noise = sample_raw(rng, self.dim);
+                let mixed: Vec<f32> = centre
+                    .iter()
+                    .zip(noise.iter())
+                    .map(|(c, n)| c + CLUSTER_SIGMA * n)
+                    .collect();
+                normalize(mixed)
+            }
+            Domain::Neardup => {
+                if rng.random_range(0..100) < NEARDUP_COPY_PCT {
+                    let document = &self.documents[rng.random_range(0..self.documents.len())];
+                    let jitter = unit_vector(rng, self.dim);
+                    let mixed: Vec<f32> = document
+                        .iter()
+                        .zip(jitter.iter())
+                        .map(|(d, j)| d + NEARDUP_SIGMA * j)
+                        .collect();
+                    normalize(mixed)
+                } else {
+                    unit_vector(rng, self.dim)
+                }
+            }
+        }
+    }
+}
+
+fn generate_queries(ctx: &DomainContext, count: usize) -> Vec<Vec<f32>> {
+    let mut rng = StdRng::seed_from_u64(ctx.seed ^ QUERY_SALT);
+    (0..count as u64)
+        .map(|index| ctx.sample_one(index, &mut rng))
+        .collect()
+}
+
+fn sample_raw(rng: &mut StdRng, dim: usize) -> Vec<f32> {
+    (0..dim).map(|_| rng.random_range(-1.0f32..1.0)).collect()
+}
+
+fn unit_vector(rng: &mut StdRng, dim: usize) -> Vec<f32> {
+    normalize(sample_raw(rng, dim))
+}
+
+fn normalize(mut vector: Vec<f32>) -> Vec<f32> {
+    let norm = vector.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm > 1e-12 {
+        for value in &mut vector {
+            *value /= norm;
+        }
+    }
+    vector
+}
+
+// ---------------------------------------------------------------------------
+// Dataset file: chunked, resumable generation and memory-mapped reads
+// ---------------------------------------------------------------------------
+
+struct Generation {
+    generated: u64,
+    resumed_from: u64,
+    bytes: u64,
+}
+
+struct DataHeader {
+    dim: usize,
+    count: u64,
+}
+
+fn dataset_bytes(count: u64, dim: usize) -> Res<u64> {
+    count
+        .checked_mul(dim as u64)
+        .and_then(|elements| elements.checked_mul(4))
+        .and_then(|data| data.checked_add(DATA_HEADER_BYTES))
+        .ok_or_else(|| format!("dataset size overflows u64 for n={count}, dim={dim}"))
+}
+
+/// Complete rows already on disk, or an error when the header contradicts the
+/// requested dataset.
+fn dataset_rows_on_disk(path: &Path, count: u64, dim: usize) -> Res<u64> {
+    if !path.exists() {
+        return Ok(0);
+    }
+    let length = std::fs::metadata(path)
+        .map_err(|err| format!("cannot stat {}: {err}", path.display()))?
+        .len();
+    if length < DATA_HEADER_BYTES {
+        return Ok(0);
+    }
+    let header = read_data_header(path)?;
+    if header.dim != dim || header.count != count {
+        return Err(format!(
+            "{} holds dim={} count={}, but this run asks for dim={dim} count={count}. \
+             Delete it or choose a different --points/--dim (the file name is not a guarantee).",
+            path.display(),
+            header.dim,
+            header.count
+        ));
+    }
+    Ok(((length - DATA_HEADER_BYTES) / (dim as u64 * 4)).min(count))
+}
+
+fn read_data_header(path: &Path) -> Res<DataHeader> {
+    let mut file =
+        File::open(path).map_err(|err| format!("cannot open {}: {err}", path.display()))?;
+    let mut raw = [0u8; DATA_HEADER_BYTES as usize];
+    file.read_exact(&mut raw)
+        .map_err(|err| format!("cannot read {} header: {err}", path.display()))?;
+    if raw[0..8] != MAGIC {
+        return Err(format!(
+            "{} has magic {:?}, expected {:?}; not a vicinity large-scale dataset",
+            path.display(),
+            &raw[0..8],
+            MAGIC
+        ));
+    }
+    let dim = u32::from_le_bytes(
+        raw[8..12]
+            .try_into()
+            .map_err(|_| "header dim slice".to_string())?,
+    ) as usize;
+    let count = u64::from_le_bytes(
+        raw[12..20]
+            .try_into()
+            .map_err(|_| "header count slice".to_string())?,
+    );
+    Ok(DataHeader { dim, count })
+}
+
+fn ensure_dataset(ctx: &DomainContext, path: &Path, count: u64, dim: usize) -> Res<Generation> {
+    let total = dataset_bytes(count, dim)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|err| format!("cannot create {}: {err}", parent.display()))?;
+    }
+
+    let mut resumed_from = 0u64;
+    if path.exists() {
+        let length = std::fs::metadata(path)
+            .map_err(|err| format!("cannot stat {}: {err}", path.display()))?
+            .len();
+        if length >= DATA_HEADER_BYTES {
+            let header = read_data_header(path)?;
+            if header.dim != dim || header.count != count {
+                return Err(format!(
+                    "{} holds dim={} count={}, but this run asks for dim={dim} count={count}",
+                    path.display(),
+                    header.dim,
+                    header.count
+                ));
+            }
+            if length > total {
+                return Err(format!(
+                    "{} is {} bytes, larger than the {total} bytes implied by dim={dim} \
+                     count={count}; refusing to truncate a file that may be something else",
+                    path.display(),
+                    length
+                ));
+            }
+            let stride = dim as u64 * 4;
+            resumed_from = (length - DATA_HEADER_BYTES) / stride;
+            // Drop a partially written trailing row; per-row seeding makes the
+            // rewrite identical to the interrupted bytes.
+            let keep = DATA_HEADER_BYTES + resumed_from * stride;
+            if keep != length {
+                let file = OpenOptions::new()
+                    .write(true)
+                    .open(path)
+                    .map_err(|err| format!("cannot open {} to truncate: {err}", path.display()))?;
+                file.set_len(keep)
+                    .map_err(|err| format!("cannot truncate {}: {err}", path.display()))?;
+            }
+        }
+    }
+
+    let remaining = count.saturating_sub(resumed_from);
+    let remaining_bytes = remaining * dim as u64 * 4;
+    if let Some(free) = available_bytes(path) {
+        // The index snapshot is roughly vectors + graph edges; require headroom
+        // rather than filling the volume to the last byte.
+        let index_estimate = count
+            .saturating_mul(dim as u64)
+            .saturating_mul(4)
+            .saturating_mul(2);
+        let needed = remaining_bytes.saturating_add(index_estimate);
+        if free < needed.saturating_add(512 * 1024 * 1024) {
+            return Err(format!(
+                "refusing: {} has {:.1} GiB free but the dataset needs {:.1} GiB more and the \
+                 index snapshot needs about {:.1} GiB. Free space or choose a smaller tier.",
+                path.parent().unwrap_or(path).display(),
+                bytes_to_mib(free) / 1024.0,
+                bytes_to_mib(remaining_bytes) / 1024.0,
+                bytes_to_mib(index_estimate) / 1024.0
+            ));
+        }
+    }
+
+    if remaining == 0 {
+        return Ok(Generation {
+            generated: 0,
+            resumed_from,
+            bytes: total,
+        });
+    }
+
+    let mut file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(path)
+        .map_err(|err| format!("cannot open {} for generation: {err}", path.display()))?;
+
+    if resumed_from == 0 {
+        // Fresh header. A zero-length or short file is rewritten from scratch.
+        file.set_len(0)
+            .map_err(|err| format!("cannot reset {}: {err}", path.display()))?;
+        file.seek(SeekFrom::Start(0))
+            .map_err(|err| format!("cannot seek {}: {err}", path.display()))?;
+        let mut header = Vec::with_capacity(DATA_HEADER_BYTES as usize);
+        header.extend_from_slice(&MAGIC);
+        header.extend_from_slice(&(dim as u32).to_le_bytes());
+        header.extend_from_slice(&count.to_le_bytes());
+        file.write_all(&header)
+            .map_err(|err| format!("cannot write {} header: {err}", path.display()))?;
+    } else {
+        file.seek(SeekFrom::Start(
+            DATA_HEADER_BYTES + resumed_from * dim as u64 * 4,
+        ))
+        .map_err(|err| format!("cannot seek {}: {err}", path.display()))?;
+    }
+
+    let mut writer = BufWriter::with_capacity(1 << 20, file);
+    let mut row = resumed_from;
+    while row < count {
+        let block = ((count - row) as usize).min(GENERATION_BLOCK_ROWS);
+        let mut buffer: Vec<u8> = Vec::with_capacity(block * dim * 4);
+        for offset in 0..block {
+            let vector = ctx.row_at(row + offset as u64);
+            debug_assert_eq!(vector.len(), dim);
+            for value in &vector {
+                buffer.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        writer
+            .write_all(&buffer)
+            .map_err(|err| format!("cannot write {}: {err}", path.display()))?;
+        row += block as u64;
+        if row.is_multiple_of(GENERATION_BLOCK_ROWS as u64 * 64) && row < count {
+            println!("  generated {row}/{count} rows");
+        }
+    }
+    writer
+        .flush()
+        .map_err(|err| format!("cannot flush {}: {err}", path.display()))?;
+    let file = writer
+        .into_inner()
+        .map_err(|err| format!("cannot finish {}: {err}", path.display()))?;
+    file.sync_data()
+        .map_err(|err| format!("cannot sync {}: {err}", path.display()))?;
+
+    let bytes = std::fs::metadata(path)
+        .map_err(|err| format!("cannot stat {} after generation: {err}", path.display()))?
+        .len();
+    Ok(Generation {
+        generated: remaining,
+        resumed_from,
+        bytes,
+    })
+}
+
+/// Free bytes on the volume containing `path`, or `None` when `df` cannot say.
+fn available_bytes(path: &Path) -> Option<u64> {
+    let parent = path.parent().filter(|p| p.exists())?;
+    let output = std::process::Command::new("df")
+        .arg("-k")
+        .arg(parent)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let line = text.lines().rfind(|line| !line.trim().is_empty())?;
+    let fields: Vec<&str> = line.split_whitespace().collect();
+    let available_kib = fields.get(3)?.parse::<u64>().ok()?;
+    available_kib.checked_mul(1024)
+}
+
+/// A read-only memory map of a dataset file. Rows are borrowed, never copied:
+/// the index owns its vector storage, so RSS after an unmapped build is the
+/// index rather than the corpus.
+struct DatasetFile {
+    mmap: memmap2::Mmap,
+    dim: usize,
+    count: u64,
+}
+
+impl DatasetFile {
+    fn open(path: &Path) -> Res<Self> {
+        let header = read_data_header(path)?;
+        let file =
+            File::open(path).map_err(|err| format!("cannot open {}: {err}", path.display()))?;
+        let expected = dataset_bytes(header.count, header.dim)?;
+        if expected > usize::MAX as u64 {
+            return Err(format!(
+                "{} needs {expected} bytes, more than this platform can map ({} bytes)",
+                path.display(),
+                usize::MAX
+            ));
+        }
+        let length = file
+            .metadata()
+            .map_err(|err| format!("cannot stat {}: {err}", path.display()))?
+            .len();
+        if length != expected {
+            return Err(format!(
+                "{} is {length} bytes, expected {expected} for dim={} count={}; generation may \
+                 still be running or the file is truncated",
+                path.display(),
+                header.dim,
+                header.count
+            ));
+        }
+        // SAFETY: the file is opened read-only and not mutated while mapped. The
+        // header ends at byte 20, which is 4-byte aligned, and every row is a
+        // whole number of f32 values, so `row()` only creates aligned slices.
+        let mmap = unsafe { memmap2::MmapOptions::new().map(&file) }
+            .map_err(|err| format!("cannot mmap {}: {err}", path.display()))?;
+        if !cfg!(target_endian = "little") {
+            return Err(
+                "the dataset format is little-endian; big-endian hosts are unsupported".to_string(),
+            );
+        }
+        if mmap.len() != expected as usize {
+            return Err(format!(
+                "mapped {} bytes of {}, expected {expected}",
+                mmap.len(),
+                path.display()
+            ));
+        }
+        Ok(Self {
+            mmap,
+            dim: header.dim,
+            count: header.count,
+        })
+    }
+
+    fn dim(&self) -> usize {
+        self.dim
+    }
+
+    fn count(&self) -> u64 {
+        self.count
+    }
+
+    fn row(&self, index: u64) -> &[f32] {
+        assert!(index < self.count, "row {index} out of bounds");
+        let stride = self.dim * 4;
+        let start = DATA_HEADER_BYTES as usize + index as usize * stride;
+        let bytes = &self.mmap[start..start + stride];
+        let pointer = bytes.as_ptr().cast::<f32>();
+        // SAFETY: `mmap` is page-aligned, the header is 20 bytes (4-aligned),
+        // and `stride` is a multiple of 4, so `pointer` is aligned for f32 and
+        // `bytes` covers exactly `dim` initialized values.
+        unsafe { std::slice::from_raw_parts(pointer, self.dim) }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Ground truth: sampled queries, parallel shards, cached by key
+// ---------------------------------------------------------------------------
+
+enum CacheState {
+    Hit,
+    Computed,
+    Recomputed,
+}
+
+/// Fixed-capacity top-k, kept sorted by descending score. `k` is 10 in the
+/// protocol, so a linear insertion is cheaper than a heap. Scores are f64 so
+/// the independent f64 reference is not narrowed back to f32 while ranking.
+struct TopK {
+    k: usize,
+    items: Vec<(f64, u32)>,
+}
+
+impl TopK {
+    fn new(k: usize) -> Self {
+        Self {
+            k,
+            items: Vec::with_capacity(k + 1),
+        }
+    }
+
+    fn push(&mut self, score: f64, id: u32) {
+        if self.items.len() == self.k {
+            if let Some(&(worst, _)) = self.items.last() {
+                if score <= worst {
+                    return;
+                }
+            }
+        }
+        let position = self.items.partition_point(|&(value, _)| value > score);
+        self.items.insert(position, (score, id));
+        if self.items.len() > self.k {
+            self.items.pop();
+        }
+    }
+}
+
+fn query_hash(queries: &[Vec<f32>]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64; // FNV-1a 64 offset basis
+    for query in queries {
+        for value in query {
+            for byte in value.to_le_bytes() {
+                hash ^= u64::from(byte);
+                hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+    }
+    hash
+}
+
+fn load_or_compute_ground_truth(
+    dataset: &DatasetFile,
+    queries: &[Vec<f32>],
+    k: usize,
+    path: &Path,
+    reuse: bool,
+) -> Res<(Vec<Vec<u32>>, CacheState)> {
+    let hash = query_hash(queries);
+    let present = path.exists();
+    if reuse && present {
+        match load_gt_cache(path, dataset.dim(), dataset.count(), k, queries.len(), hash) {
+            Ok(truth) => return Ok((truth, CacheState::Hit)),
+            Err(message) => {
+                return Err(format!(
+                    "{message}. Delete the file to recompute, or pass --regenerate-gt"
+                ));
+            }
+        }
+    }
+    let truth = compute_ground_truth(dataset, queries, k);
+    save_gt_cache(path, &truth, dataset.dim(), dataset.count(), k, hash)?;
+    // `present` is sampled before the save so "recomputed" means "a cache was
+    // there and this run ignored it", not "the save just created one".
+    Ok((
+        truth,
+        if present {
+            CacheState::Recomputed
+        } else {
+            CacheState::Computed
+        },
+    ))
+}
+
+fn compute_ground_truth(dataset: &DatasetFile, queries: &[Vec<f32>], k: usize) -> Vec<Vec<u32>> {
+    use rayon::prelude::*;
+
+    let threads = rayon::current_num_threads().max(1);
+    let shard_count = (threads * 4).max(8) as u64;
+    let rows = dataset.count();
+    let shard_rows = rows.div_ceil(shard_count).max(1);
+    let ranges: Vec<(u64, u64)> = (0..shard_count)
+        .map(|shard| {
+            let low = (shard * shard_rows).min(rows);
+            let high = ((shard + 1) * shard_rows).min(rows);
+            (low, high)
+        })
+        .filter(|(low, high)| low < high)
+        .collect();
+
+    println!(
+        "ground truth scan: {} queries x {} rows in {} shards on {} threads",
+        queries.len(),
+        rows,
+        ranges.len(),
+        threads
+    );
+
+    let scan_start = Instant::now();
+    let partials: Vec<Vec<TopK>> = ranges
+        .par_iter()
+        .map(|&(low, high)| {
+            let mut best: Vec<TopK> = (0..queries.len()).map(|_| TopK::new(k)).collect();
+            for row_index in low..high {
+                let row = dataset.row(row_index);
+                for (query, top) in queries.iter().zip(best.iter_mut()) {
+                    let distance = vicinity::distance::cosine_distance_normalized(query, row);
+                    top.push(f64::from(-distance), row_index as u32);
+                }
+            }
+            best
+        })
+        .collect();
+
+    // k-way merge: each shard contributes a sorted top-k per query.
+    let merged: Vec<Vec<u32>> = (0..queries.len())
+        .map(|query_index| {
+            let mut items: Vec<(f64, u32)> = Vec::with_capacity(k * partials.len());
+            for partial in &partials {
+                items.extend_from_slice(&partial[query_index].items);
+            }
+            items.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
+            items.truncate(k);
+            items.into_iter().map(|(_, id)| id).collect()
+        })
+        .collect();
+    println!(
+        "ground truth scan: {:.1}s ({:.1} M candidate comparisons/s)",
+        scan_start.elapsed().as_secs_f64(),
+        (rows as f64 * queries.len() as f64 / scan_start.elapsed().as_secs_f64()) / 1e6
+    );
+    merged
+}
+
+fn load_gt_cache(
+    path: &Path,
+    dim: usize,
+    count: u64,
+    k: usize,
+    queries: usize,
+    hash: u64,
+) -> Res<Vec<Vec<u32>>> {
+    let mut file =
+        File::open(path).map_err(|err| format!("cannot open {}: {err}", path.display()))?;
+    let mut raw = vec![0u8; GT_HEADER_BYTES];
+    file.read_exact(&mut raw)
+        .map_err(|err| format!("cannot read {} header: {err}", path.display()))?;
+    if raw[0..8] != GT_MAGIC {
+        return Err(format!(
+            "{} has magic {:?}, expected {:?}",
+            path.display(),
+            &raw[0..8],
+            GT_MAGIC
+        ));
+    }
+    let cached_dim = u32::from_le_bytes(raw[8..12].try_into().unwrap_or([0; 4])) as usize;
+    let cached_count = u64::from_le_bytes(raw[12..20].try_into().unwrap_or([0; 8]));
+    let cached_k = u64::from_le_bytes(raw[20..28].try_into().unwrap_or([0; 8])) as usize;
+    let cached_queries = u64::from_le_bytes(raw[28..36].try_into().unwrap_or([0; 8])) as usize;
+    let cached_hash = u64::from_le_bytes(raw[36..44].try_into().unwrap_or([0; 8]));
+    if cached_dim != dim
+        || cached_count != count
+        || cached_k != k
+        || cached_queries != queries
+        || cached_hash != hash
+    {
+        return Err(format!(
+            "{} is a stale ground-truth cache: dim {cached_dim}/{dim}, count \
+             {cached_count}/{count}, k {cached_k}/{k}, queries {cached_queries}/{queries}, \
+             hash {cached_hash:016x}/{hash:016x}",
+            path.display()
+        ));
+    }
+
+    let expected = queries
+        .checked_mul(k)
+        .and_then(|ids| ids.checked_mul(4))
+        .ok_or_else(|| "ground-truth cache size overflows usize".to_string())?;
+    let mut data = vec![0u8; expected];
+    file.read_exact(&mut data)
+        .map_err(|err| format!("cannot read {} ids: {err}", path.display()))?;
+    let (words, _rest) = data.as_chunks::<4>();
+    let truth = words
+        .iter()
+        .map(|chunk| u32::from_le_bytes(*chunk))
+        .collect::<Vec<u32>>()
+        .chunks(k)
+        .map(<[u32]>::to_vec)
+        .collect();
+    Ok(truth)
+}
+
+fn save_gt_cache(
+    path: &Path,
+    truth: &[Vec<u32>],
+    dim: usize,
+    count: u64,
+    k: usize,
+    hash: u64,
+) -> Res<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|err| format!("cannot create {}: {err}", parent.display()))?;
+    }
+    let temporary = path.with_extension(format!("tmp-{}", std::process::id()));
+    let mut file = File::create(&temporary)
+        .map_err(|err| format!("cannot create {}: {err}", temporary.display()))?;
+    let mut header = Vec::with_capacity(GT_HEADER_BYTES);
+    header.extend_from_slice(&GT_MAGIC);
+    header.extend_from_slice(&(dim as u32).to_le_bytes());
+    header.extend_from_slice(&count.to_le_bytes());
+    header.extend_from_slice(&(k as u64).to_le_bytes());
+    header.extend_from_slice(&(truth.len() as u64).to_le_bytes());
+    header.extend_from_slice(&hash.to_le_bytes());
+    file.write_all(&header)
+        .map_err(|err| format!("cannot write {}: {err}", temporary.display()))?;
+    for ids in truth {
+        for id in ids {
+            file.write_all(&id.to_le_bytes())
+                .map_err(|err| format!("cannot write {}: {err}", temporary.display()))?;
+        }
+    }
+    file.sync_all()
+        .map_err(|err| format!("cannot sync {}: {err}", temporary.display()))?;
+    std::fs::rename(&temporary, path).map_err(|err| {
+        format!(
+            "cannot rename {} to {}: {err}",
+            temporary.display(),
+            path.display()
+        )
+    })?;
+    Ok(())
+}
+
+/// Cross-check the cached ground truth against two independent brute-force
+/// references over a small query sample: scalar f32 accumulation (a different
+/// code path from the SIMD shard scan) and f64 accumulation.
+fn verify_ground_truth(
+    dataset: &DatasetFile,
+    queries: &[Vec<f32>],
+    truth: &[Vec<u32>],
+    k: usize,
+) -> Res<()> {
+    let sample = queries.len().min(8);
+    let mut f32_overlap = 0usize;
+    let mut f64_overlap = 0usize;
+    let mut total = 0usize;
+    let mut first: Option<(Vec<(u32, f64)>, Vec<(u32, f64)>)> = None;
+
+    for query_index in 0..sample {
+        let query = &queries[query_index];
+        let mut f32_top = TopK::new(k);
+        let mut f64_top = TopK::new(k);
+        for row_index in 0..dataset.count() {
+            let row = dataset.row(row_index);
+            let mut sum32 = 0.0f32;
+            let mut sum64 = 0.0f64;
+            for (q, r) in query.iter().zip(row.iter()) {
+                sum32 += q * r;
+                sum64 += f64::from(*q) * f64::from(*r);
+            }
+            f32_top.push(f64::from(sum32), row_index as u32);
+            f64_top.push(sum64, row_index as u32);
+        }
+        let f32_ids: Vec<u32> = f32_top.items.iter().map(|&(_, id)| id).collect();
+        let f64_ids: Vec<u32> = f64_top.items.iter().map(|&(_, id)| id).collect();
+        f32_overlap += overlap(&f32_ids, &truth[query_index]);
+        f64_overlap += overlap(&f64_ids, &truth[query_index]);
+        total += k;
+        if first.is_none() {
+            first = Some((
+                f32_top.items.iter().map(|&(s, id)| (id, s)).collect(),
+                f64_top.items.iter().map(|&(s, id)| (id, s)).collect(),
+            ));
+        }
+    }
+
+    let f32_rate = f32_overlap as f64 / total as f64;
+    let f64_rate = f64_overlap as f64 / total as f64;
+    println!(
+        "gt verify: {sample} sampled queries, mean top-{k} overlap with cached truth \
+         f32 reference {f32_rate:.3}, f64 reference {f64_rate:.3}"
+    );
+    if let Some((f32_items, f64_items)) = &first {
+        println!("  query 0 f32 brute force: {f32_items:?}");
+        println!("  query 0 f64 brute force: {f64_items:?}");
+        println!("  query 0 cached truth:    {:?}", truth[0]);
+    }
+    if f32_rate < 0.98 || f64_rate < 0.98 {
+        return Err(format!(
+            "ground truth failed verification: f32 overlap {f32_rate:.3}, f64 overlap \
+             {f64_rate:.3}; expected >= 0.98"
+        ));
+    }
+    println!();
+    Ok(())
+}
+
+fn overlap(ids: &[u32], truth: &[u32]) -> usize {
+    ids.iter().filter(|id| truth.contains(id)).count()
+}
+
+fn brute_top_k(dataset: &DatasetFile, query: &[f32], k: usize) -> Vec<u32> {
+    let mut top = TopK::new(k);
+    for row_index in 0..dataset.count() {
+        let distance =
+            vicinity::distance::cosine_distance_normalized(query, dataset.row(row_index));
+        top.push(f64::from(-distance), row_index as u32);
+    }
+    top.items.into_iter().map(|(_, id)| id).collect()
+}
+
+/// Exact-scan p50 over a bounded query sample, timed like a family query so
+/// `1/ratio` is time-based (ann-benchmarks' definition).
+fn exact_p50_us(dataset: &DatasetFile, queries: &[Vec<f32>], k: usize) -> f64 {
+    for query in queries.iter().take(2) {
+        let _ = brute_top_k(dataset, query, k);
+    }
+    let mut latencies: Vec<f64> = queries
+        .iter()
+        .take(EXACT_TIMED_QUERIES)
+        .map(|query| {
+            let start = Instant::now();
+            let _ = brute_top_k(dataset, query, k);
+            start.elapsed().as_secs_f64() * 1e6
+        })
+        .collect();
+    percentile(&mut latencies, 50.0)
+}
+
+// ---------------------------------------------------------------------------
+// Index build, persistence and measurement
+// ---------------------------------------------------------------------------
+
+fn build_hnsw(path: &Path, count: u64, dim: usize, batch: usize) -> Res<vicinity::hnsw::HNSWIndex> {
+    use vicinity::distance::DistanceMetric;
+    use vicinity::hnsw::{HNSWIndex, HNSWParams};
+
+    let dataset = DatasetFile::open(path)?;
+    if dataset.count() != count || dataset.dim() != dim {
+        return Err(format!(
+            "dataset opened as dim={} count={}, expected dim={dim} count={count}",
+            dataset.dim(),
+            dataset.count()
+        ));
+    }
+    let params = HNSWParams {
+        metric: DistanceMetric::Cosine,
+        seed: Some(HNSW_SEED),
+        ..HNSWParams::default()
+    };
+    let mut index = HNSWIndex::with_params(dim, params).map_err(string_err)?;
+    for row_index in 0..count {
+        index
+            .add_slice(row_index as u32, dataset.row(row_index))
+            .map_err(string_err)?;
+    }
+    index.build_parallel(batch).map_err(string_err)?;
+    Ok(index)
+}
+
+fn persist_index(index: &vicinity::hnsw::HNSWIndex, path: &Path) -> Res<u64> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|err| format!("cannot create {}: {err}", parent.display()))?;
+    }
+    let file =
+        File::create(path).map_err(|err| format!("cannot create {}: {err}", path.display()))?;
+    let writer = BufWriter::with_capacity(1 << 20, file);
+    let mut writer = postcard::to_io(index, writer)
+        .map_err(|err| format!("cannot serialize index to {}: {err}", path.display()))?;
+    writer
+        .flush()
+        .map_err(|err| format!("cannot flush {}: {err}", path.display()))?;
+    let file = writer
+        .into_inner()
+        .map_err(|err| format!("cannot finish {}: {err}", path.display()))?;
+    file.sync_data()
+        .map_err(|err| format!("cannot sync {}: {err}", path.display()))?;
+    let bytes = std::fs::metadata(path)
+        .map_err(|err| format!("cannot stat {}: {err}", path.display()))?
+        .len();
+    Ok(bytes)
+}
+
+struct Stats {
+    recall: f64,
+    p50: f64,
+    p95: f64,
+    p99: f64,
+    qps: f64,
+    dists_per_query: f64,
+    errors: usize,
+    first_error: Option<String>,
+}
+
+fn evaluate(
+    index: &vicinity::hnsw::HNSWIndex,
+    queries: &[Vec<f32>],
+    truth: &[Vec<u32>],
+    k: usize,
+    ef: usize,
+) -> Stats {
+    for query in queries.iter().take(5) {
+        let _ = index.search(query, k, ef);
+    }
+
+    let mut latencies = Vec::with_capacity(queries.len());
+    let mut hits = 0usize;
+    let mut errors = 0usize;
+    let mut first_error = None;
+    vicinity::distance_stats::reset_distance_count();
+    let loop_start = Instant::now();
+    for (query, expected) in queries.iter().zip(truth.iter()) {
+        let start = Instant::now();
+        match index.search(query, k, ef) {
+            Ok(results) => {
+                hits += results
+                    .iter()
+                    .take(k)
+                    .filter(|(id, _)| expected.iter().take(k).any(|t| t == id))
+                    .count();
+            }
+            Err(error) => {
+                errors += 1;
+                if first_error.is_none() {
+                    first_error = Some(string_err(error));
+                }
+            }
+        }
+        latencies.push(start.elapsed().as_secs_f64() * 1e6);
+    }
+    let total_s = loop_start.elapsed().as_secs_f64();
+    let dists = vicinity::distance_stats::take_distance_count();
+    let denominator = (queries.len() * k) as f64;
+    Stats {
+        recall: hits as f64 / denominator,
+        p50: percentile(&mut latencies.clone(), 50.0),
+        p95: percentile(&mut latencies.clone(), 95.0),
+        p99: percentile(&mut latencies, 99.0),
+        qps: queries.len() as f64 / total_s.max(f64::EPSILON),
+        dists_per_query: if cfg!(feature = "distance-stats") {
+            dists as f64 / queries.len() as f64
+        } else {
+            f64::NAN
+        },
+        errors,
+        first_error,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Reporting
+// ---------------------------------------------------------------------------
+
+struct Row {
+    family: &'static str,
+    dataset: String,
+    knob: &'static str,
+    knob_value: usize,
+    recall: f64,
+    ratio: f64,
+    p50: f64,
+    p95: f64,
+    p99: f64,
+    qps: f64,
+    dists_per_query: f64,
+    build_s: f64,
+    mem_mib: f64,
+    rss_mib: f64,
+    index_disk_mib: f64,
+    persist_s: f64,
+    n: u64,
+    dim: usize,
+    gt_verified: bool,
+    gt_cache: String,
+    errors: usize,
+    first_error: Option<String>,
+}
+
+fn print_rows(rows: &[Row], count: u64, dim: usize, queries: usize) {
+    println!("## large_scale: n={count} dim={dim} queries={queries}");
+    println!();
+    println!(
+        "| family | knob | recall@10 | 1/ratio@10 | p50 us | p95 us | p99 us | QPS | build s | \
+         RSS after build MiB | index disk MiB | dists/q |"
+    );
+    println!(
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
+    );
+    for row in rows {
+        let disk = if row.index_disk_mib.is_finite() {
+            format!("{:.1}", row.index_disk_mib)
+        } else {
+            "-".to_string()
+        };
+        println!(
+            "| {} | {}={} | {:.3} | {:.2} | {:.1} | {:.1} | {:.1} | {:.0} | {:.2} | {:.1} | \
+             {} | {} |",
+            row.family,
+            row.knob,
+            row.knob_value,
+            row.recall,
+            row.ratio,
+            row.p50,
+            row.p95,
+            row.p99,
+            row.qps,
+            row.build_s,
+            row.mem_mib,
+            disk,
+            if cfg!(feature = "distance-stats") {
+                format!("{:.0}", row.dists_per_query)
+            } else {
+                "-".to_string()
+            }
+        );
+        if row.errors > 0 {
+            println!(
+                "| ^ {} query errors: {} | | | | | | | | | | | |",
+                row.errors,
+                row.first_error.as_deref().unwrap_or("unknown")
+            );
+        }
+    }
+    println!();
+}
+
+fn write_jsonl(path: &Path, rows: &[Row], args: &Args, gt_cache: &Path, dataset: &Path) -> Res<()> {
+    use std::fmt::Write as _;
+
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .map_err(|err| format!("cannot create {}: {err}", parent.display()))?;
+        }
+    }
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "{{\"_meta\":true,\"schema\":1,\"harness\":\"large_scale\",\"n\":{},\"dim\":{},\
+         \"k\":{},\"queries\":{},\"dataset\":\"{}\",\"tier\":\"{}\",\"seed\":\"0x{SEED:016X}\",\
+         \"mmap\":true,\"large_scale\":true,\"batch\":{},\"distance_stats\":{},\"max_points\":{},\
+         \"budget_seconds\":{},\"vicinity\":\"{}\",\"gt_cache\":\"{}\",\"data_file\":\"{}\"}}",
+        args.points,
+        args.dim,
+        args.k,
+        args.gt_queries,
+        args.domain.name(),
+        tier_label(args.points),
+        effective_batch(args),
+        cfg!(feature = "distance-stats"),
+        args.max_points,
+        json_num(args.budget_seconds, 1),
+        env!("CARGO_PKG_VERSION"),
+        json_escape(&gt_cache.display().to_string()),
+        json_escape(&dataset.display().to_string()),
+    );
+    for row in rows {
+        let _ = writeln!(
+            out,
+            "{{\"family\":\"{}\",\"dataset\":\"{}\",\"knob\":\"{}\",\"knob_value\":{},\
+             \"recall_at_10\":{},\"recall\":{},\"inverse_ratio\":{},\"ratio\":{},\
+             \"p50_us\":{},\"p95_us\":{},\"p99_us\":{},\"qps\":{},\"dists_per_query\":{},\
+             \"build_s\":{},\"mem_mib\":{},\"rss_mib\":{},\"index_disk_mib\":{},\"persist_s\":{},\
+             \"n\":{},\"dim\":{},\"gt_verified\":{},\"gt_cache\":\"{}\"}}",
+            row.family,
+            row.dataset,
+            row.knob,
+            row.knob_value,
+            json_num(row.recall, 4),
+            json_num(row.recall, 4),
+            json_num(row.ratio, 4),
+            json_num(row.ratio, 4),
+            json_num(row.p50, 1),
+            json_num(row.p95, 1),
+            json_num(row.p99, 1),
+            json_num(row.qps, 1),
+            json_num(row.dists_per_query, 1),
+            json_num(row.build_s, 4),
+            json_num(row.mem_mib, 1),
+            json_num(row.rss_mib, 1),
+            json_num(row.index_disk_mib, 1),
+            json_num(row.persist_s, 3),
+            row.n,
+            row.dim,
+            row.gt_verified,
+            json_escape(&row.gt_cache),
+        );
+    }
+    std::fs::write(path, out).map_err(|err| format!("cannot write {}: {err}", path.display()))?;
+    println!(
+        "wrote {} rows to {} (scripts/benefits.py {})",
+        rows.len(),
+        path.display(),
+        path.display()
+    );
+    Ok(())
+}
+
+fn json_num(value: f64, precision: usize) -> String {
+    if value.is_finite() {
+        format!("{value:.precision$}")
+    } else {
+        "null".to_string()
+    }
+}
+
+fn json_escape(text: &str) -> String {
+    text.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn percentile(samples: &mut [f64], p: f64) -> f64 {
+    if samples.is_empty() {
+        return f64::NAN;
+    }
+    samples.sort_by(f64::total_cmp);
+    let rank = ((p / 100.0) * samples.len() as f64).ceil() as usize;
+    samples[rank.saturating_sub(1).min(samples.len() - 1)]
+}
+
+fn rss_mib() -> Option<f64> {
+    let pid = std::process::id().to_string();
+    let output = std::process::Command::new("ps")
+        .args(["-o", "rss=", "-p", &pid])
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let kib: f64 = text.trim().parse().ok()?;
+    Some(kib / 1024.0)
+}
+
+fn bytes_to_mib(bytes: u64) -> f64 {
+    bytes as f64 / (1024.0 * 1024.0)
+}
+
+fn string_err<E: std::fmt::Display>(error: E) -> String {
+    error.to_string()
+}
+
+// ---------------------------------------------------------------------------
+// Estimate: what the guardrail compares against --budget-seconds
+// ---------------------------------------------------------------------------
+
+struct Estimate {
+    generation: f64,
+    ground_truth: f64,
+    build: f64,
+    persist: f64,
+    total: f64,
+}
+
+fn estimate(args: &Args, remaining_rows: u64, gt_cached: bool) -> Estimate {
+    // Conservative coefficients measured on a 16-core arm64 workstation:
+    // generation is dominated by random draws and 384 MiB/s of writes, the
+    // shard scan by SIMD dot products across all cores, and HNSW construction
+    // by graph search at ef_construction=200.
+    let generation = (remaining_rows as f64 * args.dim as f64) / 50e6;
+    let ground_truth = if gt_cached {
+        0.0
+    } else {
+        (args.gt_queries as f64 * args.points as f64 * args.dim as f64) / 3e9
+    };
+    let build = args.points as f64 * 2.0e-4;
+    let persist = if args.persist {
+        (args.points as f64 * args.dim as f64 * 4.0) / 300e6
+    } else {
+        0.0
+    };
+    let total = generation + ground_truth + build + persist;
+    Estimate {
+        generation,
+        ground_truth,
+        build,
+        persist,
+        total,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Self-test: the two hard claims, checked without a large run
+// ---------------------------------------------------------------------------
+
+/// 1. Truncating a generated dataset and regenerating restores it byte for
+///    byte (per-row seeding is what makes resume safe).
+/// 2. A cached ground truth round-trips and matches brute force on both f32
+///    and f64 accumulation.
+fn self_test() -> Res<()> {
+    println!("# large_scale self-test");
+    let root = data_root().join("selftest");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root)
+        .map_err(|err| format!("cannot create {}: {err}", root.display()))?;
+
+    let domain = Domain::Neardup;
+    let dim = 8;
+    let count = 4096u64;
+    let k = 10;
+    let query_count = 200;
+    let ctx = DomainContext::new(domain, SEED, dim);
+    let path = dataset_path(&root, domain, count, dim);
+
+    let first = ensure_dataset(&ctx, &path, count, dim)?;
+    if first.generated != count || first.resumed_from != 0 {
+        return Err(format!(
+            "self-test: fresh generation reported {} rows from {}",
+            first.generated, first.resumed_from
+        ));
+    }
+    let complete = std::fs::read(&path).map_err(|err| format!("read {}: {err}", path.display()))?;
+    let stride = dim as u64 * 4;
+    let truncated = DATA_HEADER_BYTES + (count - 37) * stride + 11; // partial row too
+    let file = OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .map_err(|err| format!("open {}: {err}", path.display()))?;
+    file.set_len(truncated)
+        .map_err(|err| format!("truncate {}: {err}", path.display()))?;
+    drop(file);
+
+    let resumed = ensure_dataset(&ctx, &path, count, dim)?;
+    if resumed.resumed_from != count - 37 || resumed.generated != 37 {
+        return Err(format!(
+            "self-test: resume reported {} rows from {}",
+            resumed.generated, resumed.resumed_from
+        ));
+    }
+    let restored = std::fs::read(&path).map_err(|err| format!("read {}: {err}", path.display()))?;
+    if restored != complete {
+        return Err("self-test: resumed dataset differs from the uninterrupted bytes".to_string());
+    }
+    println!(
+        "generation resume: PASS (truncated to {} rows, restored byte-identically)",
+        count - 37
+    );
+
+    let dataset = DatasetFile::open(&path)?;
+    let queries = generate_queries(&ctx, query_count);
+    let hash = query_hash(&queries);
+    let cache = gt_path(&root, domain, count, dim, k, query_count, hash);
+    let (truth, state) = load_or_compute_ground_truth(&dataset, &queries, k, &cache, true)?;
+    if !matches!(state, CacheState::Computed) {
+        return Err("self-test: first ground-truth pass was not a computation".to_string());
+    }
+    let (cached, state) = load_or_compute_ground_truth(&dataset, &queries, k, &cache, true)?;
+    if !matches!(state, CacheState::Hit) || cached != truth {
+        return Err("self-test: cache hit did not reproduce the computed truth".to_string());
+    }
+    let mut mismatches = 0usize;
+    for (query_index, query) in queries.iter().take(4).enumerate() {
+        let reference = brute_top_k(&dataset, query, k);
+        if reference != cached[query_index] {
+            mismatches += 1;
+        }
+    }
+    verify_ground_truth(&dataset, &queries, &cached, k)?;
+    println!(
+        "ground-truth cache: PASS (computed, hit, {mismatches} brute-force row(s) differed on 4)"
+    );
+    println!("self-test: PASS");
+    Ok(())
+}
