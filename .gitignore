@@ -32,5 +32,9 @@ _archive/
 # Profiling artifacts
 cargo-flamegraph.trace/
 *.svg
+# Exception: the benchmark atlas ships SVG on purpose. It is documentation, not
+# a profiling artefact, and the PNG encoder in the matplotlib build that made
+# these figures produces a raster whose text layer decodes badly.
+!docs/plots/atlas/*.svg
 Cargo.lock
 /semver-checks/

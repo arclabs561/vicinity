@@ -9,6 +9,10 @@
 
 ## Benchmark data
 
+- [benchmark-atlas.md](benchmark-atlas.md): figures for every measured family,
+  domain and tier, with the protocol and the caveats behind each one.
+- [storage-audit.md](storage-audit.md): per-family snapshot, file-search and
+  cache support, and where the resident memory actually goes.
 - [benchmark-results.md](benchmark-results.md): recall/QPS tables
   and analysis across datasets.
 - [datasets.md](datasets.md): ANN benchmark datasets, download
@@ -36,14 +40,17 @@ v2 storage metadata. Generate fresh rows with `examples/ann_benchmark.rs` before
 making storage-mode or fixed-recall QPS claims.
 
 Use `storage_mode` and `cache_state` when comparing rows. `in_memory`,
-`snapshot_loaded`, `file`, and `mmap` are different workloads. `--resume`
+`snapshot_loaded`, `file` and `segmented_store` are different workloads.
+Older rows may say `mmap`; that path no longer exists. `open_mmap` is a
+deprecated alias for the block-cache reader, so those rows measure `file`. `--resume`
 skips rows already present for the same dataset metadata and parameters;
 `--fresh` starts a new result file.
 The summary tool keeps capped rows separate by appending limits to the dataset
 label, for example `glove-25-angular[train=50000,queries=1000]`.
 
 Plots live in `plots/` and are regenerated from JSONL via
-`scripts/plot_comparison.py`.
+`scripts/plot_comparison.py`; the atlas figures in `plots/atlas/` come from
+`scripts/plot_atlas.py`.
 
 Use `scripts/summarize_ann_results.py` to audit coverage before quoting a
 leaderboard. Pass `--expect ALGORITHM:STORAGE` to show missing rows for a
