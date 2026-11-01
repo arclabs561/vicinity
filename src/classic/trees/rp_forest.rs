@@ -525,34 +525,6 @@ impl RpForestIndex {
         self.max_sq_norm = max_sq;
     }
 
-    /// Search a single tree and append the leaf's candidate IDs.
-    fn collect_leaf_candidates(
-        &self,
-        node: &TreeNode,
-        query: &[f32],
-        candidates: &mut std::collections::HashSet<u32>,
-    ) {
-        match node {
-            TreeNode::Leaf { indices } => candidates.extend(indices.iter().copied()),
-            TreeNode::Internal {
-                hyperplane,
-                threshold,
-                left,
-                right,
-            } => {
-                let projection = simd::dot(query, hyperplane);
-                // Build splits on the median projection; comparing against zero
-                // instead sends roughly half of all queries down the wrong
-                // branch, which is why this family never reached usable recall.
-                if projection < *threshold {
-                    self.collect_leaf_candidates(left, query, candidates);
-                } else {
-                    self.collect_leaf_candidates(right, query, candidates);
-                }
-            }
-        }
-    }
-
     /// Get vector from SoA storage.
     fn get_vector(&self, idx: usize) -> &[f32] {
         let start = idx * self.dimension;
