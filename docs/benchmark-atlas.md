@@ -169,6 +169,33 @@ exists only where a `distance-stats` build has been run, and the columns that ar
 empty across a whole row are families whose row set predates a field. An empty
 cell is "not measured", never "zero".
 
+### 13. External libraries, with repeats
+
+[external-repeats-fashion20k.svg](plots/atlas/external-repeats-fashion20k.svg)
+
+The only result set here with external libraries and repeats on the same corpus
+and query set: Fashion-MNIST at 20k x 784, k = 10, three runs per algorithm.
+`hnsw` recall 0.984 ± 0.020 at ~17.0k QPS, `usearch` 0.986 ± 0.018 at ~6.4k,
+`hnsw_rs` 0.969 ± 0.022 at ~4.3k, `brute` 1.000 at 433. Index footprint 72, 128
+and 68 MiB.
+
+Two cautions are visible in the error bars: repeated QPS on this host spreads by
+±45%, so the *ordering* on speed is indicative while the recall ordering is
+stable, and the heap figures are library-reported estimates rather than measured
+allocations. The right panel pairs each algorithm's heap estimate with its
+serialized size, which is the only place in the repo where both exist for
+external code.
+
+### 14. One family across two datasets
+
+[single-family-datasets.svg](plots/atlas/single-family-datasets.svg)
+
+SQ8U is the only family measured on GloVe-100 and Fashion-MNIST, so this is a
+width comparison rather than an algorithm comparison: the same 4-bit traversal
+reaches 0.922 at 874 QPS on 1.18M x 100, and 1.000 at 1172 QPS on 60k x 784. The
+larger, narrower corpus is the harder one even at a tenth of the points, which is
+the recall-versus-LID effect the synthetic domains also show.
+
 ## Nuances we have paid for
 
 1. **Equal `ef` is not equal recall.** Only equal-recall rows compare across

@@ -565,6 +565,113 @@ def fig_real(name: str, rows: list[Row], out: Path, extra: str) -> None:
     finish(fig, out)
 
 
+def fig_external_repeats(out: Path) -> None:
+    """fashion-mnist 20k: our HNSW against two external libraries, three repeats."""
+    path = ROOT / "docs" / "fashion20k-k10.jsonl"
+    if not path.exists():
+        return
+    rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    rows = [r for r in rows if not r.get("_meta")]
+    by_alg: dict[str, list[dict]] = defaultdict(list)
+    for row in rows:
+        by_alg[row["algorithm"]].append(row)
+
+    fig, axes = plt.subplots(1, 2, figsize=(11.5, 4.6))
+    ax = axes[0]
+    for idx, (alg, points) in enumerate(sorted(by_alg.items())):
+        recalls = [p["recall_at_10"] for p in points]
+        qps = [p["qps"] for p in points]
+        ax.errorbar(
+            float(np.mean(qps)),
+            float(np.mean(recalls)),
+            xerr=float(np.std(qps)),
+            yerr=float(np.std(recalls)),
+            fmt="o",
+            capsize=3,
+            color=COLOR_CYCLE[idx % len(COLOR_CYCLE)],
+            label=f"{alg} (n={len(points)})",
+        )
+    ax.set_xscale("log")
+    ax.set_xlabel("queries per second (log), mean ± sd over repeats")
+    ax.set_ylabel("recall@10, mean ± sd")
+    ax.grid(alpha=0.25)
+    ax.legend(fontsize=7, frameon=False)
+
+    ax = axes[1]
+    names = sorted(by_alg)
+    xs = np.arange(len(names))
+    heap = [
+        float(np.mean([p.get("index_bytes") or 0 for p in by_alg[name]])) / 2**20
+        for name in names
+    ]
+    disk = [
+        float(np.mean([p.get("serialized_bytes") or 0 for p in by_alg[name]])) / 2**20
+        for name in names
+    ]
+    ax.bar(xs - 0.2, heap, width=0.38, label="in memory (heap estimate)")
+    ax.bar(xs + 0.2, disk, width=0.38, label="serialized")
+    ax.set_xticks(xs)
+    ax.set_xticklabels(names, rotation=20, ha="right", fontsize=8)
+    ax.set_ylabel("MiB")
+    ax.grid(axis="y", alpha=0.25)
+    ax.legend(fontsize=7, frameon=False)
+    ax.set_title("footprint per algorithm", fontsize=8, loc="left")
+    fig.suptitle(
+        subtitle(
+            "docs/fashion20k-k10.jsonl",
+            "20k x 784, k=10, 3 repeats per algorithm: ours against two external HNSWs",
+        ),
+        fontsize=9,
+        x=0.01,
+        ha="left",
+    )
+    finish(fig, out)
+
+
+def fig_single_family(out: Path) -> None:
+    """One family across the datasets where only it was measured."""
+    files = {
+        "GloVe-100 (1.18M, 100d)": ROOT / "docs" / "glove-100-angular.jsonl",
+        "Fashion-MNIST (60k, 784d)": ROOT / "docs" / "fashion-mnist-784-euclidean.jsonl",
+    }
+    fig, ax = plt.subplots(figsize=(8, 5))
+    plotted = 0
+    for idx, (label, path) in enumerate(files.items()):
+        if not path.exists():
+            continue
+        rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+        rows = [r for r in rows if not r.get("_meta") and r.get("recall_at_10") is not None]
+        if not rows:
+            continue
+        rows.sort(key=lambda r: r["recall_at_10"])
+        ax.plot(
+            [r["qps"] for r in rows],
+            [r["recall_at_10"] for r in rows],
+            marker="o",
+            linewidth=1.5,
+            color=COLOR_CYCLE[idx % len(COLOR_CYCLE)],
+            label=label,
+        )
+        plotted += 1
+    if plotted == 0:
+        plt.close(fig)
+        return
+    ax.set_xscale("log")
+    ax.set_xlabel("queries per second (log)")
+    ax.set_ylabel("recall@10")
+    ax.grid(alpha=0.25)
+    ax.legend(fontsize=8, frameon=False)
+    ax.set_title(
+        subtitle(
+            "docs/glove-100-angular.jsonl, docs/fashion-mnist-784-euclidean.jsonl",
+            "SQ8U, the only family measured on these two datasets",
+        ),
+        fontsize=9,
+        loc="left",
+    )
+    finish(fig, out)
+
+
 def fig_seeds(out: Path) -> None:
     path = ROOT / "docs" / "hnsw-seed-recall.csv"
     if not path.exists():
@@ -677,6 +784,8 @@ def main() -> None:
         rows = data.get(f"{name}.jsonl", [])
         if rows:
             fig_real(name, rows, OUT / f"real-{name}.png", extra)
+    fig_external_repeats(OUT / "external-repeats-fashion20k.svg")
+    fig_single_family(OUT / "single-family-datasets.svg")
     fig_seeds(OUT / "seed-variance.png")
 
 
