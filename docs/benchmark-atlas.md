@@ -9,6 +9,11 @@ fastest": *at what recall*, *at what cost*, *on what data*, and *with what
 storage*. A single recall/QPS curve answers the first and silently assumes the
 other three.
 
+What the atlas does *not* do is say what the field has that these families do
+not. That is [research-frontier.md](research-frontier.md): the surveys this
+protocol should be measured against, the methods absent here, and the five 2026
+developments most likely to reorder a table like this one.
+
 ## Protocol
 
 | | |
