@@ -1,0 +1,218 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::needless_update)]
+//! Cross-algorithm consistency tests.
+//!
+//! Verifies that all graph-based ANN algorithms (HNSW, NSW, DiskANN, SNG)
+//! produce results consistent with brute-force ground truth on the same
+//! dataset. Algorithms use different distance metrics internally, but on
+//! normalized vectors the nearest-neighbor rankings are identical.
+
+#[path = "../common/mod.rs"]
+mod common;
+use common::*;
+
+use vicinity::diskann::{DiskANNIndex, DiskANNParams};
+use vicinity::hnsw::HNSWIndex;
+use vicinity::nsw::NSWIndex;
+use vicinity::sng::{SNGIndex, SNGParams};
+
+// Use the shared `exact_knn_with_distances` helper from `common::`. For
+// normalized vectors the ranking is the same regardless of whether the
+// index uses cosine, dot-product, or L2 internally.
+use common::exact_knn_with_distances as exact_knn;
+
+// ---------------------------------------------------------------------------
+// Shared dataset
+// ---------------------------------------------------------------------------
+
+const N: usize = 200;
+const DIM: usize = 32;
+const N_QUERIES: usize = 20;
+const K: usize = 10;
+const SEED_DATA: u64 = 42;
+const SEED_QUERIES: u64 = 999;
+
+fn dataset() -> Vec<Vec<f32>> {
+    random_vectors(N, DIM, SEED_DATA)
+        .into_iter()
+        .map(|v| normalize(&v))
+        .collect()
+}
+
+fn queries() -> Vec<Vec<f32>> {
+    random_vectors(N_QUERIES, DIM, SEED_QUERIES)
+        .into_iter()
+        .map(|v| normalize(&v))
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Index builders
+// ---------------------------------------------------------------------------
+
+fn build_hnsw(vectors: &[Vec<f32>]) -> HNSWIndex {
+    let mut idx = HNSWIndex::new(DIM, 16, 100).expect("hnsw: create");
+    for (i, v) in vectors.iter().enumerate() {
+        idx.add(i as u32, v.clone()).expect("hnsw: add");
+    }
+    idx.build().expect("hnsw: build");
+    idx
+}
+
+fn build_nsw(vectors: &[Vec<f32>]) -> NSWIndex {
+    let mut idx = NSWIndex::new(DIM, 16, 16).expect("nsw: create");
+    for (i, v) in vectors.iter().enumerate() {
+        idx.add(i as u32, v.clone()).expect("nsw: add");
+    }
+    idx.build().expect("nsw: build");
+    idx
+}
+
+fn build_diskann(vectors: &[Vec<f32>]) -> DiskANNIndex {
+    let params = DiskANNParams {
+        m: 32,
+        ef_construction: 100,
+        alpha: 1.2,
+        ef_search: 100,
+        seed: None,
+        ..DiskANNParams::default()
+    };
+    let mut idx = DiskANNIndex::new(DIM, params).expect("diskann: create");
+    for (i, v) in vectors.iter().enumerate() {
+        idx.add(i as u32, v.clone()).expect("diskann: add");
+    }
+    idx.build().expect("diskann: build");
+    idx
+}
+
+fn build_sng(vectors: &[Vec<f32>]) -> SNGIndex {
+    let mut idx = SNGIndex::new(DIM, SNGParams::default()).expect("sng: create");
+    for (i, v) in vectors.iter().enumerate() {
+        idx.add(i as u32, v.clone()).expect("sng: add");
+    }
+    idx.build().expect("sng: build");
+    idx
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+/// All four algorithms achieve at least 50% recall@10 vs brute-force ground truth.
+#[test]
+fn cross_algorithm_recall_vs_brute_force() {
+    let vectors = dataset();
+    let qs = queries();
+
+    let hnsw = build_hnsw(&vectors);
+    let nsw = build_nsw(&vectors);
+    let diskann = build_diskann(&vectors);
+    let sng = build_sng(&vectors);
+
+    let ef = 100;
+
+    let mut recall_hnsw_total = 0.0_f32;
+    let mut recall_nsw_total = 0.0_f32;
+    let mut recall_diskann_total = 0.0_f32;
+    let mut recall_sng_total = 0.0_f32;
+
+    for q in &qs {
+        let gt = exact_knn(&vectors, q, K);
+
+        let r_hnsw = hnsw.search(q, K, ef).expect("hnsw search");
+        let r_nsw = nsw.search(q, K, ef).expect("nsw search");
+        let r_diskann = diskann.search(q, K, ef).expect("diskann search");
+        let r_sng = sng.search(q, K).expect("sng search");
+
+        recall_hnsw_total += recall_at_k_sets(&gt, &r_hnsw, K);
+        recall_nsw_total += recall_at_k_sets(&gt, &r_nsw, K);
+        recall_diskann_total += recall_at_k_sets(&gt, &r_diskann, K);
+        recall_sng_total += recall_at_k_sets(&gt, &r_sng, K);
+    }
+
+    let n_q = N_QUERIES as f32;
+    let avg_hnsw = recall_hnsw_total / n_q;
+    let avg_nsw = recall_nsw_total / n_q;
+    let avg_diskann = recall_diskann_total / n_q;
+    let avg_sng = recall_sng_total / n_q;
+
+    let threshold = 0.5;
+
+    assert!(
+        avg_hnsw >= threshold,
+        "HNSW avg recall@{K} = {avg_hnsw:.3}, expected >= {threshold}"
+    );
+    assert!(
+        avg_nsw >= threshold,
+        "NSW avg recall@{K} = {avg_nsw:.3}, expected >= {threshold}"
+    );
+    assert!(
+        avg_diskann >= threshold,
+        "DiskANN avg recall@{K} = {avg_diskann:.3}, expected >= {threshold}"
+    );
+    assert!(
+        avg_sng >= threshold,
+        "SNG avg recall@{K} = {avg_sng:.3}, expected >= {threshold}"
+    );
+}
+
+/// Stable algorithms (HNSW, NSW, DiskANN) return themselves as the nearest
+/// neighbor when queried with a dataset vector. SNG (experimental) is checked
+/// with a softer containment assertion (top-10).
+#[test]
+fn self_query_returns_self() {
+    let vectors = dataset();
+
+    let hnsw = build_hnsw(&vectors);
+    let nsw = build_nsw(&vectors);
+    let diskann = build_diskann(&vectors);
+    let sng = build_sng(&vectors);
+
+    let ef = 100;
+
+    for (i, q) in vectors.iter().enumerate() {
+        let doc_id = i as u32;
+
+        // HNSW -- strict top-1
+        let r = hnsw.search(q, 1, ef).expect("hnsw self-query");
+        assert!(!r.is_empty());
+        assert_eq!(
+            r[0].0, doc_id,
+            "HNSW: self-query doc_id={doc_id} returned {} (dist={:.6})",
+            r[0].0, r[0].1
+        );
+
+        // NSW -- strict top-1
+        let r = nsw.search(q, 1, ef).expect("nsw self-query");
+        assert!(!r.is_empty());
+        assert_eq!(
+            r[0].0, doc_id,
+            "NSW: self-query doc_id={doc_id} returned {} (dist={:.6})",
+            r[0].0, r[0].1
+        );
+
+        // DiskANN -- strict top-1
+        let r = diskann.search(q, 1, ef).expect("diskann self-query");
+        assert!(!r.is_empty());
+        assert_eq!(
+            r[0].0, doc_id,
+            "DiskANN: self-query doc_id={doc_id} returned {} (dist={:.6})",
+            r[0].0, r[0].1
+        );
+    }
+
+    // SNG (experimental) -- softer: self must appear in top-10
+    let mut sng_found = 0;
+    for (i, q) in vectors.iter().enumerate() {
+        let doc_id = i as u32;
+        let r = sng.search(q, 10).expect("sng self-query");
+        if r.iter().any(|(id, _)| *id == doc_id) {
+            sng_found += 1;
+        }
+    }
+    let sng_rate = sng_found as f32 / N as f32;
+    assert!(
+        sng_rate >= 0.8,
+        "SNG: only {:.1}% of self-queries found in top-10 (expected >= 80%)",
+        sng_rate * 100.0
+    );
+}
