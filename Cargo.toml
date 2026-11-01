@@ -10,7 +10,7 @@ documentation = "https://docs.rs/vicinity"
 license = "MIT OR Apache-2.0"
 keywords = ["ann", "hnsw", "vector-search", "similarity", "nearest-neighbor"]
 categories = ["algorithms", "science"]
-exclude = ["data/", "benches/", "docs/", "scripts/", ".github/"]
+exclude = ["data/", "benches/", "benchmarks/", "docs/", "scripts/", ".github/"]
 
 [workspace]
 
@@ -308,6 +308,39 @@ required-features = ["store"]
 name = "sparse_mips_benchmark"
 path = "examples/sparse_mips_benchmark.rs"
 required-features = ["sparse_mips"]
+
+# Every index family on one protocol. `required-features` lists every family
+# the harness can drive; run it with `--features distance-stats` too when the
+# baseline should carry `dists_per_query` (see `benchmarks/README.md`).
+[[example]]
+name = "all_families"
+path = "examples/all_families.rs"
+required-features = [
+  "hnsw",
+  "nsw",
+  "nsg",
+  "finger",
+  "fresh_graph",
+  "filtered_graph",
+  "vamana",
+  "diskann",
+  "ivf_pq",
+  "ivf_avq",
+  "ivf_rabitq",
+  "emg",
+  "curator",
+  "lsh",
+  "pipnn",
+  "rp_quant",
+  "sq4",
+  "binary_index",
+  "sng",
+  "range_filtered",
+  "kdtree",
+  "balltree",
+  "kmeans_tree",
+  "rptree",
+]
 
 [profile.release]
 lto = "thin"

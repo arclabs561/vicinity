@@ -49,6 +49,16 @@
 //! A family whose build or query fails is reported with the error instead of
 //! being dropped silently. Pass a family name as the first argument to rerun
 //! just that family (`cargo run --release --example all_families -- ivf_pq`).
+//!
+//! # JSONL output
+//!
+//! `--json` replaces the markdown report with one JSON object per row on
+//! stdout (or in `--out <path>`), for the performance ratchet
+//! (`scripts/ratchet.py`) and for diffing two runs. `scripts/ratchet.py`
+//! consumes this format; `benchmarks/README.md` documents the contract. The
+//! first line is a `_meta` object with the protocol constants, toolchain,
+//! and host, so a comparison can refuse to mix hosts. Failures are emitted as
+//! `_failure` objects instead of being folded into the report.
 
 // Sweep-value constants are dead when the family that reads them is not
 // compiled in (`--features hnsw` and nothing else), which is a normal way to
@@ -129,8 +139,9 @@ struct Row {
     /// Distance computations per query (0 when `distance-stats` is off).
     dists_per_query: f64,
     build_s: f64,
-    /// Resident-set growth across the build, in MiB (0 when unavailable).
-    mem_mib: f64,
+    /// Resident-set growth across the build, in MiB. `None` when the RSS probe
+    /// is unavailable, which must not read as a measurement of zero.
+    mem_mib: Option<f64>,
     errors: usize,
     first_error: Option<String>,
 }
@@ -159,40 +170,100 @@ struct Skipped {
     reason: &'static str,
 }
 
+/// Command-line options: a family filter, and how to report.
+struct Options {
+    /// Positional filter: `all_families ivf_pq` reruns one family.
+    only: Option<String>,
+    /// Emit JSONL instead of the markdown report.
+    json: bool,
+    /// Where JSONL goes; stdout when absent.
+    out: Option<String>,
+}
+
+fn parse_options() -> Result<Options, String> {
+    let mut opts = Options {
+        only: None,
+        json: false,
+        out: None,
+    };
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--json" => opts.json = true,
+            "--out" => {
+                opts.out = Some(args.next().ok_or("--out needs a path")?);
+            }
+            "--help" | "-h" => {
+                println!(
+                    "usage: all_families [FAMILY] [--json] [--out PATH]\n\n\
+                     Runs every enabled family on the same protocol. Without --json it\n\
+                     prints markdown; with --json it prints one JSON object per row."
+                );
+                std::process::exit(0);
+            }
+            other if other.starts_with('-') => {
+                return Err(format!("unknown flag `{other}` (try --help)"));
+            }
+            other => {
+                if opts.only.is_some() {
+                    return Err(format!("only one family filter is accepted, got `{other}`"));
+                }
+                opts.only = Some(other.to_string());
+            }
+        }
+    }
+    Ok(opts)
+}
+
 fn main() {
-    // Optional positional filter: `all_families ivf_pq` reruns one family.
-    let only = std::env::args().nth(1);
+    let opts = match parse_options() {
+        Ok(opts) => opts,
+        Err(message) => {
+            eprintln!("all_families: {message}");
+            std::process::exit(2);
+        }
+    };
     let mut datasets = build_datasets();
     let families: Vec<Family> = families()
         .into_iter()
-        .filter(|f| only.as_deref().is_none_or(|name| name == f.name))
+        .filter(|f| opts.only.as_deref().is_none_or(|name| name == f.name))
         .collect();
     let mut rows: Vec<Row> = Vec::new();
     let mut failures: Vec<(String, String)> = Vec::new();
 
-    println!("# All-family ANN benchmark");
-    println!();
-    println!(
-        "n={N} dim={DIM} k={K} queries={N_QUERIES} seed=0x{SEED:016X} \
-         datasets=uniform,clustered(16 centres) metric=cosine (L2-normalised)"
-    );
-    println!();
-
-    for dataset in &mut datasets {
+    if !opts.json {
+        println!("# All-family ANN benchmark");
+        println!();
         println!(
-            "exact linear scan p50 on `{}`: {:.1} us/query",
-            dataset.name, dataset.exact_p50_us
+            "n={N} dim={DIM} k={K} queries={N_QUERIES} seed=0x{SEED:016X} \
+             datasets=uniform,clustered(16 centres) metric=cosine (L2-normalised)"
         );
+        println!();
+
+        for dataset in &mut datasets {
+            println!(
+                "exact linear scan p50 on `{}`: {:.1} us/query",
+                dataset.name, dataset.exact_p50_us
+            );
+        }
+        println!();
+        println!(
+            "1/ratio@10 = exact-scan p50 / family p50 (time-based, as in ann-benchmarks); \
+             QPS = queries / total timed-loop seconds; p50/p95/p99 are per-query wall clock."
+        );
+        println!();
     }
-    println!();
-    println!(
-        "1/ratio@10 = exact-scan p50 / family p50 (time-based, as in ann-benchmarks); \
-         QPS = queries / total timed-loop seconds; p50/p95/p99 are per-query wall clock."
-    );
-    println!();
 
     for dataset in &datasets {
         for family in &families {
+            if opts.json {
+                // The JSONL goes to stdout (or a file) and only lands at the
+                // end; a full sweep takes minutes, so narrate on stderr.
+                eprintln!(
+                    "all_families: building and measuring {}/{}",
+                    family.name, dataset.name
+                );
+            }
             match run_family(family, dataset) {
                 Ok(mut produced) => rows.append(&mut produced),
                 Err(reason) => {
@@ -202,6 +273,11 @@ fn main() {
                 }
             }
         }
+    }
+
+    if opts.json {
+        emit_jsonl(&rows, &failures, &datasets, opts.out.as_deref());
+        return;
     }
 
     print_rows(&rows);
@@ -378,6 +454,193 @@ fn dists_cell(row: &Row) -> String {
     }
 }
 
+/// `mem MiB` cell: `-` when the RSS probe returned nothing.
+fn mem_cell(row: &Row) -> String {
+    match row.mem_mib {
+        Some(mib) => format!("{mib:.1}"),
+        None => "-".to_string(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// JSONL output (consumed by `scripts/ratchet.py`)
+// ---------------------------------------------------------------------------
+
+/// Escape a string for a JSON string literal. Every string written here is an
+/// identifier or an error message, so this only needs the mandatory escapes.
+fn json_escape(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    for ch in value.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// A finite `f64` as JSON, `null` for NaN/inf so the document stays valid.
+fn json_number(value: f64, decimals: usize) -> String {
+    if value.is_finite() {
+        format!("{value:.decimals$}")
+    } else {
+        "null".to_string()
+    }
+}
+
+/// First line of `<tool> --version`, or `unknown` when the tool is missing.
+fn tool_version(tool: &str) -> String {
+    std::process::Command::new(tool)
+        .arg("--version")
+        .output()
+        .ok()
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        .filter(|text| !text.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// One-minute load average: `/proc/loadavg` on Linux, `sysctl` on macOS.
+///
+/// Wall clock on a loaded host measures the scheduler, not the index. The
+/// ratchet reads this to decide whether a timing gate means anything.
+fn one_minute_load() -> Option<f64> {
+    if let Ok(text) = std::fs::read_to_string("/proc/loadavg") {
+        if let Some(first) = text.split_whitespace().next() {
+            if let Ok(value) = first.parse() {
+                return Some(value);
+            }
+        }
+    }
+    let output = std::process::Command::new("sysctl")
+        .args(["-n", "vm.loadavg"])
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    text.split(|ch: char| !(ch.is_ascii_digit() || ch == '.'))
+        .find(|token| !token.is_empty())
+        .and_then(|token| token.parse().ok())
+}
+
+/// Host fields that let a consumer refuse to compare timings across machines.
+fn host_fields() -> (String, String) {
+    let arch = std::env::consts::ARCH.to_string();
+    let os = std::env::consts::OS.to_string();
+    let kernel = std::process::Command::new("uname")
+        .arg("-r")
+        .output()
+        .ok()
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        .filter(|text| !text.is_empty())
+        .unwrap_or_else(|| "unknown".to_string());
+    (format!("{arch}-{os}"), kernel)
+}
+
+/// Write one JSON object per measured row, preceded by a `_meta` line.
+///
+/// The field names are the contract with `scripts/ratchet.py`:
+/// `recall_at_10` and `inverse_ratio` are the `recall@10` / `1/ratio@10`
+/// columns, and `dists_per_query` is `null` unless the harness was built with
+/// `--features distance-stats`.
+fn emit_jsonl(
+    rows: &[Row],
+    failures: &[(String, String)],
+    datasets: &[Dataset],
+    out: Option<&str>,
+) {
+    let (host, kernel) = host_fields();
+    let mut buf = String::new();
+
+    let exact: Vec<String> = datasets
+        .iter()
+        .map(|d| {
+            format!(
+                "\"{}\":{}",
+                json_escape(d.name),
+                json_number(d.exact_p50_us, 3)
+            )
+        })
+        .collect();
+    let cores = std::thread::available_parallelism()
+        .ok()
+        .map(std::num::NonZeroUsize::get);
+    buf.push_str(&format!(
+        "{{\"_meta\":true,\"schema\":1,\"harness\":\"all_families\",\"n\":{N},\"dim\":{DIM},\
+         \"k\":{K},\"queries\":{N_QUERIES},\"seed\":\"0x{SEED:016X}\",\"host\":\"{}\",\
+         \"kernel\":\"{}\",\"rustc\":\"{}\",\"vicinity\":\"{}\",\"target\":\"{}\",\
+         \"cores\":{},\"load1\":{},\"distance_stats\":{},\"exact_p50_us\":{{{}}}}}\n",
+        json_escape(&host),
+        json_escape(&kernel),
+        json_escape(&tool_version("rustc")),
+        env!("CARGO_PKG_VERSION"),
+        json_escape(std::env::consts::ARCH),
+        cores.map_or_else(|| "null".to_string(), |n| n.to_string()),
+        one_minute_load().map_or_else(|| "null".to_string(), |load| format!("{load:.2}")),
+        cfg!(feature = "distance-stats"),
+        exact.join(","),
+    ));
+
+    for row in rows {
+        let dists = if cfg!(feature = "distance-stats") {
+            json_number(row.dists_per_query, 3)
+        } else {
+            "null".to_string()
+        };
+        let mem = match row.mem_mib {
+            Some(mib) => json_number(mib, 3),
+            None => "null".to_string(),
+        };
+        buf.push_str(&format!(
+            "{{\"family\":\"{}\",\"dataset\":\"{}\",\"knob\":\"{}\",\"knob_value\":{},\
+             \"recall_at_10\":{},\"inverse_ratio\":{},\"p50_us\":{},\"p95_us\":{},\
+             \"p99_us\":{},\"qps\":{},\"build_s\":{},\"mem_mib\":{},\"dists_per_query\":{}}}",
+            json_escape(row.family),
+            json_escape(row.dataset),
+            json_escape(row.knob),
+            row.knob_value,
+            json_number(row.recall, 6),
+            json_number(row.ratio, 6),
+            json_number(row.p50, 3),
+            json_number(row.p95, 3),
+            json_number(row.p99, 3),
+            json_number(row.qps, 3),
+            json_number(row.build_s, 6),
+            mem,
+            dists,
+        ));
+        match &row.first_error {
+            None => buf.push('\n'),
+            Some(err) => buf.push_str(&format!(
+                ",\"query_errors\":{},\"first_error\":\"{}\"}}\n",
+                row.errors,
+                json_escape(err)
+            )),
+        }
+    }
+
+    for (family, reason) in failures {
+        buf.push_str(&format!(
+            "{{\"_failure\":true,\"family\":\"{}\",\"error\":\"{}\"}}\n",
+            json_escape(family),
+            json_escape(reason)
+        ));
+    }
+
+    match out {
+        Some(path) => {
+            if let Err(err) = std::fs::write(path, buf) {
+                eprintln!("all_families: cannot write {path}: {err}");
+                std::process::exit(2);
+            }
+        }
+        None => print!("{buf}"),
+    }
+}
+
 fn intersection_count(results: &[(u32, f32)], truth: &[u32], k: usize) -> usize {
     results
         .iter()
@@ -419,8 +682,8 @@ fn run_family(family: &Family, dataset: &Dataset) -> Result<Vec<Row>, String> {
                 .map_err(|e| format!("build failed at {}={knob}: {e}", family.knob))?;
             let build_s = build_start.elapsed().as_secs_f64();
             let mem_mib = match (rss_before, rss_mib()) {
-                (Some(before), Some(after)) => (after - before).max(0.0),
-                _ => 0.0,
+                (Some(before), Some(after)) => Some((after - before).max(0.0)),
+                _ => None,
             };
             rows.push(row_for(
                 family,
@@ -438,8 +701,8 @@ fn run_family(family: &Family, dataset: &Dataset) -> Result<Vec<Row>, String> {
             .map_err(|e| format!("build failed: {e}"))?;
         let build_s = build_start.elapsed().as_secs_f64();
         let mem_mib = match (rss_before, rss_mib()) {
-            (Some(before), Some(after)) => (after - before).max(0.0),
-            _ => 0.0,
+            (Some(before), Some(after)) => Some((after - before).max(0.0)),
+            _ => None,
         };
         for &knob in family.values {
             rows.push(row_for(
@@ -461,7 +724,7 @@ fn row_for(
     dataset: &Dataset,
     knob: usize,
     build_s: f64,
-    mem_mib: f64,
+    mem_mib: Option<f64>,
     index: &mut dyn Searcher,
 ) -> Row {
     let stats = evaluate(index, dataset, knob);
@@ -498,7 +761,7 @@ fn print_rows(rows: &[Row]) {
         println!("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |");
         for row in rows.iter().filter(|r| r.dataset == dataset) {
             println!(
-                "| {} | {}={} | {:.3} | {:.2} | {:.1} | {} | {:.1} | {:.1} | {:.0} | {:.2} | {:.1} |",
+                "| {} | {}={} | {:.3} | {:.2} | {:.1} | {} | {:.1} | {:.1} | {:.0} | {:.2} | {} |",
                 row.family,
                 row.knob,
                 row.knob_value,
@@ -510,7 +773,7 @@ fn print_rows(rows: &[Row]) {
                 row.p99,
                 row.qps,
                 row.build_s,
-                row.mem_mib
+                mem_cell(row)
             );
             if row.errors > 0 {
                 println!(
@@ -934,14 +1197,18 @@ fn to_string_err<E: std::fmt::Display>(err: E) -> String {
 #[cfg(feature = "hnsw")]
 fn build_hnsw(vectors: &[Vec<f32>], dim: usize, _knob: usize) -> Result<Box<dyn Searcher>, String> {
     use vicinity::distance::DistanceMetric;
-    use vicinity::hnsw::HNSWIndex;
+    use vicinity::hnsw::{HNSWIndex, HNSWParams};
 
-    let mut index = HNSWIndex::builder(dim)
-        .m(16)
-        .ef_construction(200)
-        .metric(DistanceMetric::Cosine)
-        .build()
-        .map_err(to_string_err)?;
+    // Layer assignment draws from the RNG. A fixed seed is what makes the
+    // recall column comparable between runs; the builder does not expose it.
+    let params = HNSWParams {
+        m: 16,
+        ef_construction: 200,
+        metric: DistanceMetric::Cosine,
+        seed: Some(42),
+        ..Default::default()
+    };
+    let mut index = HNSWIndex::with_params(dim, params).map_err(to_string_err)?;
     for (i, vector) in vectors.iter().enumerate() {
         index.add_slice(i as u32, vector).map_err(to_string_err)?;
     }
