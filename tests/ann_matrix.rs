@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 //! ANN comparison matrix: several sizes, dimensions and distributions.
 //!
 //! Run with `--features hnsw` (usearch is a dev-dependency of the crate, so use
