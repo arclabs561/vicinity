@@ -448,11 +448,16 @@ impl IVFRaBitQIndex {
     #[cfg(feature = "hnsw")]
     fn rebuild_coarse_quantizer(&mut self) -> Result<(), RetrieveError> {
         let nc = self.centroids.len() / self.dimension;
-        let mut hnsw = crate::hnsw::HNSWIndex::builder(self.dimension)
-            .m(16)
-            .ef_construction(200)
-            .auto_normalize(true)
-            .build()?;
+        // Seeded like the k-means above: the coarse graph decides which
+        // centroid a query lands in, so its layer assignment moves recall too.
+        let params = crate::hnsw::HNSWParams {
+            m: 16,
+            ef_construction: 200,
+            auto_normalize: true,
+            seed: Some(self.params.seed),
+            ..Default::default()
+        };
+        let mut hnsw = crate::hnsw::HNSWIndex::with_params(self.dimension, params)?;
         for i in 0..nc {
             let centroid = self.get_centroid(i);
             hnsw.add_slice(i as u32, centroid)?;
