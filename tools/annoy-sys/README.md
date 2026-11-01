@@ -18,3 +18,6 @@ multi-threaded Annoy builds would not be a like-for-like build-time comparison.
 
 This crate is a **dev-dependency only**, behind the `annoy-bench` feature of the
 parent crate. It is never built for the default library target.
+
+# The two vendored upstream headers are load-bearing for the bench shim;
+# ~/.gitignore_global ignores `vendor/`, so add them explicitly.
