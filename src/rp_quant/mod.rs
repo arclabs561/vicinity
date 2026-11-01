@@ -127,19 +127,22 @@ impl RpQuantIndex {
     /// Create a new RpQuant index.
     pub fn new(dimension: usize, params: RpQuantParams) -> Result<Self, RetrieveError> {
         if dimension == 0 {
-            return Err(RetrieveError::InvalidParameter(
-                "dimension must be > 0".into(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "dimension",
+                expected: "must be greater than 0",
+            });
         }
         if params.projected_dim == 0 {
-            return Err(RetrieveError::InvalidParameter(
-                "projected_dim must be > 0".into(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "projected_dim",
+                expected: "must be greater than 0",
+            });
         }
         if params.rerank_factor == 0 {
-            return Err(RetrieveError::InvalidParameter(
-                "rerank_factor must be > 0".into(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "rerank_factor",
+                expected: "must be greater than 0",
+            });
         }
         Ok(Self {
             dimension,
@@ -163,9 +166,10 @@ impl RpQuantIndex {
     /// Add a vector from a slice.
     pub fn add_slice(&mut self, doc_id: u32, vector: &[f32]) -> Result<(), RetrieveError> {
         if self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "cannot add after build".into(),
-            ));
+            return Err(RetrieveError::AlreadyBuilt {
+                component: "RpQuant index",
+                operation: "add vectors",
+            });
         }
         if vector.len() != self.dimension {
             return Err(RetrieveError::DimensionMismatch {
@@ -266,9 +270,10 @@ impl RpQuantIndex {
     /// per-dimension statistics.
     pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<(), RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "cannot save unbuilt RpQuant index".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "RpQuant index",
+                operation: "save",
+            });
         }
         let output_dir = output_dir.as_ref();
         std::fs::create_dir_all(output_dir)?;
@@ -334,9 +339,10 @@ impl RpQuantIndex {
     /// Returns `(doc_id, distance)` pairs sorted by ascending distance.
     pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "index must be built before search".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "RpQuant index",
+                operation: "search",
+            });
         }
         if query.is_empty() {
             return Err(RetrieveError::EmptyQuery);

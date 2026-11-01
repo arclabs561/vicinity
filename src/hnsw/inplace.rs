@@ -152,9 +152,16 @@ impl InPlaceIndex {
     /// Load an in-place update graph from a file snapshot.
     #[cfg(feature = "serde")]
     pub fn load_from_file<P: AsRef<std::path::Path>>(path: P) -> Result<Self, RetrieveError> {
-        let file = std::fs::File::open(path.as_ref())?;
+        let path = path.as_ref();
+        let file = std::fs::File::open(path).map_err(|source| RetrieveError::IoAt {
+            path: path.to_path_buf(),
+            source: std::sync::Arc::new(source),
+        })?;
         let snapshot: InPlaceSnapshot = serde_json::from_reader(std::io::BufReader::new(file))
-            .map_err(|e| RetrieveError::FormatError(e.to_string()))?;
+            .map_err(|e| RetrieveError::SerializationAt {
+                path: path.to_path_buf(),
+                message: e.to_string(),
+            })?;
         snapshot.into_index()
     }
 
@@ -1504,10 +1511,18 @@ impl MappedInPlaceIndex {
     /// Load a mapped in-place index from a file snapshot.
     #[cfg(feature = "serde")]
     pub fn load_from_file<P: AsRef<std::path::Path>>(path: P) -> Result<Self, RetrieveError> {
-        let file = std::fs::File::open(path.as_ref())?;
+        let path = path.as_ref();
+        let file = std::fs::File::open(path).map_err(|source| RetrieveError::IoAt {
+            path: path.to_path_buf(),
+            source: std::sync::Arc::new(source),
+        })?;
         let snapshot: MappedInPlaceSnapshot =
-            serde_json::from_reader(std::io::BufReader::new(file))
-                .map_err(|e| RetrieveError::FormatError(e.to_string()))?;
+            serde_json::from_reader(std::io::BufReader::new(file)).map_err(|e| {
+                RetrieveError::SerializationAt {
+                    path: path.to_path_buf(),
+                    message: e.to_string(),
+                }
+            })?;
         snapshot.into_index()
     }
 }

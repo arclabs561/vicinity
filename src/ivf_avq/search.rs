@@ -172,9 +172,10 @@ impl IVFAVQIndex {
     /// Create a new IVF-AVQ index with the given vector dimension and parameters.
     pub fn new(dimension: usize, params: IVFAVQParams) -> Result<Self, RetrieveError> {
         if dimension == 0 {
-            return Err(RetrieveError::InvalidParameter(
-                "dimension must be > 0".into(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "dimension",
+                expected: "must be greater than 0",
+            });
         }
         Ok(Self {
             vectors: Vec::new(),
@@ -201,9 +202,10 @@ impl IVFAVQIndex {
     /// - `doc_id` is preserved and returned in search results.
     pub fn add_slice(&mut self, doc_id: u32, vector: &[f32]) -> Result<(), RetrieveError> {
         if self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "index already built".into(),
-            ));
+            return Err(RetrieveError::AlreadyBuilt {
+                component: "IVF-AVQ index",
+                operation: "build",
+            });
         }
         if vector.len() != self.dimension {
             return Err(RetrieveError::DimensionMismatch {
@@ -302,14 +304,15 @@ impl IVFAVQIndex {
     /// Save a built IVF-AVQ index to a directory.
     pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<(), RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "cannot save unbuilt IVF-AVQ index".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "IVF-AVQ index",
+                operation: "save",
+            });
         }
-        let quantizer = self
-            .quantizer
-            .as_ref()
-            .ok_or_else(|| RetrieveError::InvalidParameter("missing IVF-AVQ quantizer".into()))?;
+        let quantizer = self.quantizer.as_ref().ok_or(RetrieveError::NotBuilt {
+            component: "IVF-AVQ quantizer",
+            operation: "save",
+        })?;
         let output_dir = output_dir.as_ref();
         std::fs::create_dir_all(output_dir)?;
 
@@ -406,9 +409,10 @@ impl IVFAVQIndex {
     /// Search for the k nearest neighbors of the query vector.
     pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "index must be built before search".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "IVF-AVQ index",
+                operation: "search",
+            });
         }
         if query.len() != self.dimension {
             return Err(RetrieveError::DimensionMismatch {
@@ -420,12 +424,10 @@ impl IVFAVQIndex {
             return Ok(Vec::new());
         }
 
-        let quantizer = self
-            .quantizer
-            .as_ref()
-            .ok_or(RetrieveError::InvalidParameter(
-                "quantizer not initialized".into(),
-            ))?;
+        let quantizer = self.quantizer.as_ref().ok_or(RetrieveError::NotBuilt {
+            component: "IVF-AVQ quantizer",
+            operation: "search",
+        })?;
 
         // 1. Find top partitions
         // Compute dot product with all centroids
@@ -1418,8 +1420,10 @@ mod tests {
         let result = IVFAVQIndex::new(0, IVFAVQParams::default());
         assert!(result.is_err());
         match result.unwrap_err() {
-            RetrieveError::InvalidParameter(_) => {}
-            other => panic!("Expected InvalidParameter, got {:?}", other),
+            RetrieveError::InvalidConfig {
+                field: "dimension", ..
+            } => {}
+            other => panic!("Expected InvalidConfig for dimension, got {other:?}"),
         }
     }
 

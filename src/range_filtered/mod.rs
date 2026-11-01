@@ -155,9 +155,10 @@ impl RangeFilteredIndex {
     /// Create a new range-filtered index.
     pub fn new(dimension: usize, params: RangeFilteredParams) -> Result<Self, RetrieveError> {
         if dimension == 0 {
-            return Err(RetrieveError::InvalidParameter(
-                "dimension must be > 0".into(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "dimension",
+                expected: "must be greater than 0",
+            });
         }
         Ok(Self {
             dimension,
@@ -180,9 +181,10 @@ impl RangeFilteredIndex {
         attribute: f64,
     ) -> Result<(), RetrieveError> {
         if self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "cannot add after build".into(),
-            ));
+            return Err(RetrieveError::AlreadyBuilt {
+                component: "range-filtered index",
+                operation: "add vectors",
+            });
         }
         if vector.len() != self.dimension {
             return Err(RetrieveError::DimensionMismatch {
@@ -251,9 +253,10 @@ impl RangeFilteredIndex {
     #[cfg(feature = "hnsw")]
     pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<(), RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "cannot save unbuilt range-filtered index".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "range-filtered index",
+                operation: "save",
+            });
         }
         let output_dir = output_dir.as_ref();
         std::fs::create_dir_all(output_dir)?;
@@ -315,9 +318,10 @@ impl RangeFilteredIndex {
         hi: f64,
     ) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "index must be built before search".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "range-filtered index",
+                operation: "search",
+            });
         }
         if query.len() != self.dimension {
             return Err(RetrieveError::DimensionMismatch {
@@ -329,9 +333,10 @@ impl RangeFilteredIndex {
         let hnsw = match self.full_index.as_ref() {
             Some(h) => h,
             None => {
-                return Err(RetrieveError::InvalidParameter(
-                    "index must be built before search".into(),
-                ))
+                return Err(RetrieveError::NotBuilt {
+                    component: "range-filtered index",
+                    operation: "search",
+                })
             }
         };
 

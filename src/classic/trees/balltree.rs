@@ -89,9 +89,10 @@ impl BallTreeIndex {
     /// Create new Ball Tree index.
     pub fn new(dimension: usize, params: BallTreeParams) -> Result<Self, RetrieveError> {
         if dimension == 0 {
-            return Err(RetrieveError::InvalidParameter(
-                "Dimension must be greater than 0".to_string(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "dimension",
+                expected: "must be greater than 0",
+            });
         }
 
         Ok(Self {
@@ -108,17 +109,17 @@ impl BallTreeIndex {
     /// Add a vector to the index.
     pub fn add(&mut self, doc_id: u32, embedding: Vec<f32>) -> Result<(), RetrieveError> {
         if embedding.len() != self.dimension {
-            return Err(RetrieveError::InvalidParameter(format!(
-                "Embedding dimension {} != {}",
-                embedding.len(),
-                self.dimension
-            )));
+            return Err(RetrieveError::DimensionMismatch {
+                query_dim: embedding.len(),
+                doc_dim: self.dimension,
+            });
         }
 
         if self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "Cannot add vectors after build".to_string(),
-            ));
+            return Err(RetrieveError::AlreadyBuilt {
+                component: "Ball tree index",
+                operation: "add vectors",
+            });
         }
 
         self.vectors.extend_from_slice(&embedding);
@@ -147,9 +148,10 @@ impl BallTreeIndex {
     /// Save a built Ball tree index to a directory.
     pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<(), RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "cannot save unbuilt Ball tree index".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "Ball tree index",
+                operation: "save",
+            });
         }
         let output_dir = output_dir.as_ref();
         std::fs::create_dir_all(output_dir)?;
@@ -331,23 +333,23 @@ impl BallTreeIndex {
     /// than the current k-th best distance.
     pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "Index not built".to_string(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "Ball tree index",
+                operation: "search",
+            });
         }
 
         if query.len() != self.dimension {
-            return Err(RetrieveError::InvalidParameter(format!(
-                "Query dimension {} != {}",
-                query.len(),
-                self.dimension
-            )));
+            return Err(RetrieveError::DimensionMismatch {
+                query_dim: query.len(),
+                doc_dim: self.dimension,
+            });
         }
 
-        let root = self
-            .root
-            .as_ref()
-            .ok_or_else(|| RetrieveError::InvalidParameter("Tree not built".to_string()))?;
+        let root = self.root.as_ref().ok_or(RetrieveError::NotBuilt {
+            component: "Ball tree index",
+            operation: "search",
+        })?;
 
         // Use a bounded priority queue for k-nearest neighbors
         // Store (distance, index) pairs, sorted by distance descending (max-heap behavior)

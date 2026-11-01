@@ -122,7 +122,10 @@ impl HNSWSq4Index {
     /// order so the auxiliary arrays cannot drift from graph node IDs.
     pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<(), RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter("index not built".into()));
+            return Err(RetrieveError::NotBuilt {
+                component: "SQ4U index",
+                operation: "save",
+            });
         }
         let output_dir = output_dir.as_ref();
         std::fs::create_dir_all(output_dir)?;
@@ -257,9 +260,10 @@ impl HNSWSq4Index {
 
     fn check_ready(&self, query: &[f32]) -> Result<(), RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "index must be built before search".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "SQ4U index",
+                operation: "search",
+            });
         }
         if query.len() != self.index.dimension {
             return Err(RetrieveError::DimensionMismatch {
