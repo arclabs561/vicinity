@@ -323,9 +323,34 @@ path = "examples/rp_forest_search_k.rs"
 required-features = ["rptree"]
 # Every index family on one protocol.
 [[example]]
-name = "old_families_check"
-path = "examples/__old_check.rs"
-required-features = ["hnsw"]
+name = "all_families"
+path = "examples/all_families.rs"
+required-features = [
+  "hnsw",
+  "nsw",
+  "nsg",
+  "finger",
+  "fresh_graph",
+  "filtered_graph",
+  "vamana",
+  "diskann",
+  "ivf_pq",
+  "ivf_avq",
+  "ivf_rabitq",
+  "emg",
+  "curator",
+  "lsh",
+  "pipnn",
+  "rp_quant",
+  "sq4",
+  "binary_index",
+  "sng",
+  "range_filtered",
+  "kdtree",
+  "balltree",
+  "kmeans_tree",
+  "rptree",
+]
 
 [profile.release]
 lto = "thin"
