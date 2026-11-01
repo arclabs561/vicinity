@@ -258,7 +258,8 @@ allocator are not, so this is not a transitive guarantee.
 
 [User guide](docs/GUIDE.md) · [API](https://docs.rs/vicinity) ·
 [Benchmarks](docs/benchmark-atlas.md) · [Algorithms](docs/algorithms.md) ·
-[Datasets](docs/datasets.md) · [References](docs/references.md)
+[Datasets](docs/datasets.md) · [References](docs/references.md) ·
+[Research frontier](docs/research-frontier.md)
 
 ## License
 
