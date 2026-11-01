@@ -283,14 +283,33 @@ name = "glove_benchmark"
 path = "examples/glove_benchmark.rs"
 required-features = ["hnsw"]
 
+# Auto-discovered tests carry `required-features` by being declared here; this
+# target imports five feature-gated families, so every other lane failed to
+# compile it before the gate was explicit.
+[[test]]
+name = "bughunt_high"
+required-features = ["finger", "fresh_graph", "nsg", "sng", "filtered_graph"]
+
 [[example]]
 name = "ann_benchmark"
 path = "examples/ann_benchmark.rs"
+required-features = [
+  "hnsw",
+  "nsw",
+  "nsg",
+  "finger",
+  "fresh_graph",
+  "filtered_graph",
+  "diskann",
+  "emg",
+  "pipnn",
+  "persistence",
+]
 
 [[example]]
 name = "acorn_selectivity"
 path = "examples/acorn_selectivity.rs"
-required-features = ["hnsw"]
+required-features = ["hnsw", "filtered_graph", "range_filtered"]
 
 [[example]]
 name = "hybrid_search"
