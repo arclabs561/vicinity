@@ -1462,6 +1462,7 @@ fn build_ivf_rabitq(
         nprobe: 4,
         total_bits: 4,
         seed: 42,
+        ..IVFRaBitQParams::default()
     };
     let mut index = IVFRaBitQIndex::new(dim, params).map_err(to_string_err)?;
     for (i, vector) in vectors.iter().enumerate() {
