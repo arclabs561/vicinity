@@ -20,6 +20,14 @@ These source changes are not assigned to a package release here.
 
 ### Added
 
+- `RpForestIndex` search walks the forest from one global best-bound frontier
+  instead of descending to one leaf per tree, and stops on a candidate-id
+  budget: `search_with_budget` takes it explicitly, `search_with_budget_stats`
+  reports the counters (`search_k` is spent per leaf, so the id count
+  overshoots by up to one leaf), and `search` uses Annoy's `k * num_trees`.
+- `RPTreeParams::leaf_size` and `derived_leaf_size` expose the dimension-derived
+  leaf cap, so callers can read the cap an index will build with (or the same
+  derivation for a dimension they have not indexed yet).
 - `HNSWIndex::doc_id` maps an internal node id (the id a
   `search_with_distance` closure receives, BFS-reordered after `build`) to the
   doc id passed to `add`, so closures can look up per-document data by doc id.
@@ -27,9 +35,19 @@ These source changes are not assigned to a package release here.
   existing WAL after a restart; a writer from `WalWriter::new` refuses appends
   once segments exist. `WalWriter::flush_and_sync` fsyncs the current segment
   and its directory; `flush` does not.
+- `IVFPQIndex::reconstruct` decodes a stored PQ code plus its inverted-list
+  centroid back into a vector, matching FAISS `IndexIVFPQ::reconstruct`. It
+  works after `compact()`.
 
 ### Fixed
 
+- IVF-PQ picks the probed inverted lists with an exact scan over every centroid,
+  as FAISS `IndexIVF::quantizer->search` does. The default `hnsw` feature built
+  an HNSW coarse quantizer and searched it with `ef = 2 * nprobe`, which
+  overlapped the exact top-`nprobe` lists by 34% at `nprobe = 1` and 84% at
+  `nprobe = 8` on a 1024-centroid index. Recall@10 on the seeded 10k/96-d set
+  moves from 0.032/0.079/0.098/0.100/0.132 to 0.032/0.078/0.100/0.103/0.134 at
+  nprobe 1/4/8/16/32.
 - `LsmIndex` treats inserting an existing ID as an update. Updating an ID
   still in L0 put it into the compaction merge twice; the level's HNSW
   rejected the duplicate, `compact()` (or the `insert` that triggered it)
@@ -97,6 +115,19 @@ These source changes are not assigned to a package release here.
 
 ### Changed
 
+- The RP-forest split is fitted by angular two-means instead of one random
+  direction through the origin: two seeded centroids are refined over sampled
+  points, the normal is their difference, and a split whose larger child would
+  take more than 95% of the node is retried (three attempts) before the most
+  balanced one is kept. The plane still passes through the origin, so the
+  traversal's `far_child_dot_bound` remains a valid bound for it. Measured
+  against Annoy 1.17.3 at matched budgets, recall@10 now matches or beats it at
+  every budget on both the uniform and 16-cluster distributions (a tie at the
+  smallest uniform budget); see `tests/annoy_parity.rs`.
+- `RPTreeParams::default()` no longer hardcodes `max_leaf_size = 10`; the new
+  default is `0`, meaning "derive from the dimension", which yields
+  `dimension + 2` ids per leaf (98 at `d = 96`), matching Annoy's node layout.
+  Existing indexes and explicit `max_leaf_size` values are unaffected.
 - On-disk layout: `DiskANNIndex::save` writes its graph, vector, doc-id, and
   metadata files into a new directory under `generations/`, syncs them, and
   publishes the save by atomically replacing a `CURRENT` pointer in the output

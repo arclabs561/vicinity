@@ -88,16 +88,17 @@ impl KDTreeIndex {
     /// Create new KD-Tree index.
     pub fn new(dimension: usize, params: KDTreeParams) -> Result<Self, RetrieveError> {
         if dimension == 0 {
-            return Err(RetrieveError::InvalidParameter(
-                "Dimension must be greater than 0".to_string(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "dimension",
+                expected: "must be greater than 0",
+            });
         }
 
         if dimension > 50 {
-            return Err(RetrieveError::InvalidParameter(
-                "KD-Tree not recommended for dimensions > 50. Use Ball Tree or modern methods."
-                    .to_string(),
-            ));
+            return Err(RetrieveError::Unsupported {
+                feature: "KD-tree with dimension > 50",
+                hint: "use BallTree or an HNSW index for high-dimensional data",
+            });
         }
 
         Ok(Self {
@@ -114,17 +115,17 @@ impl KDTreeIndex {
     /// Add a vector to the index.
     pub fn add(&mut self, doc_id: u32, embedding: Vec<f32>) -> Result<(), RetrieveError> {
         if embedding.len() != self.dimension {
-            return Err(RetrieveError::InvalidParameter(format!(
-                "Embedding dimension {} != {}",
-                embedding.len(),
-                self.dimension
-            )));
+            return Err(RetrieveError::DimensionMismatch {
+                query_dim: embedding.len(),
+                doc_dim: self.dimension,
+            });
         }
 
         if self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "Cannot add vectors after build".to_string(),
-            ));
+            return Err(RetrieveError::AlreadyBuilt {
+                component: "KD-tree index",
+                operation: "add vectors",
+            });
         }
 
         self.vectors.extend_from_slice(&embedding);
@@ -153,9 +154,10 @@ impl KDTreeIndex {
     /// Save a built KD-tree index to a directory.
     pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<(), RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "cannot save unbuilt KD-tree index".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "KD-tree index",
+                operation: "save",
+            });
         }
         let output_dir = output_dir.as_ref();
         std::fs::create_dir_all(output_dir)?;
@@ -278,23 +280,23 @@ impl KDTreeIndex {
     /// Search for k nearest neighbors.
     pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "Index not built".to_string(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "KD-tree index",
+                operation: "search",
+            });
         }
 
         if query.len() != self.dimension {
-            return Err(RetrieveError::InvalidParameter(format!(
-                "Query dimension {} != {}",
-                query.len(),
-                self.dimension
-            )));
+            return Err(RetrieveError::DimensionMismatch {
+                query_dim: query.len(),
+                doc_dim: self.dimension,
+            });
         }
 
-        let root = self
-            .root
-            .as_ref()
-            .ok_or_else(|| RetrieveError::InvalidParameter("Tree not built".to_string()))?;
+        let root = self.root.as_ref().ok_or(RetrieveError::NotBuilt {
+            component: "KD-tree index",
+            operation: "search",
+        })?;
 
         let dist_fn = crate::distance::cosine_distance_normalized;
 

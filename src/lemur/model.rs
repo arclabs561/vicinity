@@ -45,23 +45,22 @@ impl LemurEncoder {
         ln_beta: Vec<f32>,
     ) -> Result<Self, crate::RetrieveError> {
         if w.len() != hidden_dim * input_dim {
-            return Err(crate::RetrieveError::InvalidParameter(format!(
-                "w must be {} elements (hidden_dim * input_dim), got {}",
-                hidden_dim * input_dim,
-                w.len()
-            )));
+            return Err(crate::RetrieveError::InvalidConfig {
+                field: "w",
+                expected: "must have hidden_dim * input_dim elements",
+            });
         }
         if b.len() != hidden_dim {
-            return Err(crate::RetrieveError::InvalidParameter(format!(
-                "b must be {} elements, got {}",
-                hidden_dim,
-                b.len()
-            )));
+            return Err(crate::RetrieveError::InvalidConfig {
+                field: "b",
+                expected: "must have hidden_dim elements",
+            });
         }
         if ln_gamma.len() != hidden_dim || ln_beta.len() != hidden_dim {
-            return Err(crate::RetrieveError::InvalidParameter(
-                "ln_gamma and ln_beta must have hidden_dim elements".into(),
-            ));
+            return Err(crate::RetrieveError::InvalidConfig {
+                field: "ln_gamma and ln_beta",
+                expected: "must each have hidden_dim elements",
+            });
         }
         Ok(Self {
             w,

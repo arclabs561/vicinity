@@ -176,9 +176,10 @@ impl SparseMipsIndex {
     /// Returns an error if the index has already been built.
     pub fn add(&mut self, doc_id: u32, vector: SparseVector) -> Result<(), RetrieveError> {
         if self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "cannot add after build".into(),
-            ));
+            return Err(RetrieveError::AlreadyBuilt {
+                component: "SparseMIPS index",
+                operation: "add vectors",
+            });
         }
         self.vectors.push(vector);
         self.doc_ids.push(doc_id);
@@ -262,9 +263,10 @@ impl SparseMipsIndex {
     /// Loading restores the built graph directly.
     pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<(), RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "cannot save unbuilt SparseMIPS index".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "SparseMIPS index",
+                operation: "save",
+            });
         }
         let output_dir = output_dir.as_ref();
         std::fs::create_dir_all(output_dir)?;
@@ -393,9 +395,10 @@ impl SparseMipsIndex {
     /// (i.e., descending by inner product).
     pub fn search(&self, query: &SparseVector, k: usize) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "index must be built before search".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "SparseMIPS index",
+                operation: "search",
+            });
         }
         if self.num_vectors == 0 {
             return Err(RetrieveError::EmptyIndex);

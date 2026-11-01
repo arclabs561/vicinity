@@ -68,14 +68,16 @@ impl SQ4Index {
     /// Create a new SQ4 index.
     pub fn new(dimension: usize, params: SQ4Params) -> Result<Self, RetrieveError> {
         if dimension == 0 {
-            return Err(RetrieveError::InvalidParameter(
-                "dimension must be > 0".into(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "dimension",
+                expected: "must be greater than 0",
+            });
         }
         if params.rerank_factor == 0 {
-            return Err(RetrieveError::InvalidParameter(
-                "rerank_factor must be > 0".into(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "rerank_factor",
+                expected: "must be greater than 0",
+            });
         }
         Ok(Self {
             dimension,
@@ -94,9 +96,10 @@ impl SQ4Index {
     /// Add a vector. Input is L2-normalized internally.
     pub fn add_slice(&mut self, doc_id: u32, vector: &[f32]) -> Result<(), RetrieveError> {
         if self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "cannot add after build".into(),
-            ));
+            return Err(RetrieveError::AlreadyBuilt {
+                component: "SQ4 index",
+                operation: "add vectors",
+            });
         }
         if vector.len() != self.dimension {
             return Err(RetrieveError::DimensionMismatch {
@@ -189,7 +192,10 @@ impl SQ4Index {
     /// derived state.
     pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<(), RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter("index not built".into()));
+            return Err(RetrieveError::NotBuilt {
+                component: "SQ4 index",
+                operation: "save",
+            });
         }
         let output_dir = output_dir.as_ref();
         std::fs::create_dir_all(output_dir)?;
@@ -253,9 +259,10 @@ impl SQ4Index {
     /// then re-ranks top candidates with exact cosine distance.
     pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "index must be built before search".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "SQ4 index",
+                operation: "search",
+            });
         }
         if query.is_empty() {
             return Err(RetrieveError::EmptyQuery);
