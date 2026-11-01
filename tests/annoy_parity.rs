@@ -13,10 +13,11 @@
 //! Both sides see the same L2-normalized vectors, so Annoy's `angular` metric
 //! and this crate's `1 - dot(q, v)` cosine are the same ordering.
 //!
-//! There is no `search_with_budget` on `RpForestIndex` on this branch, so the
-//! forest runs its only search path: exact descent to one leaf per tree, exact
-//! distance on the union. Its candidate budget is therefore structural
-//! (`trees * leaf`), not a knob.
+//! The forest runs this branch's priority-queue traversal: both children of every
+//! split are pushed and expanded in bound order, so its candidate budget is the
+//! `search_k` knob of [`RpForestIndex::search_with_budget`], directly comparable
+//! to Annoy's `search_k`. The build leaf size stays structural — it caps how many
+//! ids one leaf contributes — so the table reports the resolved cap per row.
 
 #![cfg(all(feature = "annoy-bench", feature = "rptree"))]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -177,7 +178,10 @@ where
     (recall, p50(samples))
 }
 
-fn measure_ours(ds: &Dataset, truth: &[Vec<u32>], trees: usize, leaf: usize) -> Row {
+/// `leaf` is the build-time leaf cap; `0` means "derive from the dimension".
+/// `budget` is the `search_k` handed to `search_with_budget`, i.e. the number of
+/// distinct ids the traversal is allowed to score, matching Annoy's `search_k`.
+fn measure_ours(ds: &Dataset, truth: &[Vec<u32>], trees: usize, leaf: usize, budget: usize) -> Row {
     let params = RpForestParams {
         num_trees: trees,
         tree_params: RPTreeParams {
@@ -202,8 +206,8 @@ fn measure_ours(ds: &Dataset, truth: &[Vec<u32>], trees: usize, leaf: usize) -> 
 
         let (r, p) = recall_and_latency(&ds.queries, truth, |q| {
             index
-                .search(q, K)
-                .expect("rp-forest: search")
+                .search_with_budget(q, K, budget)
+                .expect("rp-forest: search_with_budget")
                 .into_iter()
                 .map(|(id, _)| id)
                 .collect()
@@ -212,11 +216,12 @@ fn measure_ours(ds: &Dataset, truth: &[Vec<u32>], trees: usize, leaf: usize) -> 
         latencies.push(p);
     }
 
+    let resolved = params.tree_params.leaf_size(DIM);
     Row {
         family: "rp_forest",
         trees,
-        setting: format!("leaf {leaf}"),
-        budget: trees * leaf,
+        setting: format!("leaf {resolved}, search_k {budget}"),
+        budget,
         recall,
         p50: median(latencies),
         build: median(builds),
@@ -294,30 +299,63 @@ fn print_table(dataset: &str, rows: &[Row]) {
     }
 }
 
+/// Annoy recall interpolated onto a target latency, from the Annoy rows of this
+/// table sorted by p50. `None` when the target is faster than every Annoy point.
+fn annoy_recall_at(points: &[(f64, f64)], target: f64) -> Option<f64> {
+    let first = *points.first()?;
+    let last = *points.last()?;
+    if target < first.0 {
+        return None;
+    }
+    if target >= last.0 {
+        return Some(last.1);
+    }
+    for w in points.windows(2) {
+        let (t0, r0) = w[0];
+        let (t1, r1) = w[1];
+        if target >= t0 && target <= t1 {
+            if t1 <= t0 {
+                return Some(r1);
+            }
+            let a = (target - t0) / (t1 - t0);
+            return Some(r0 + a * (r1 - r0));
+        }
+    }
+    Some(last.1)
+}
+
 fn print_iso_latency(rows: &[Row]) {
-    println!("  recall at nearest p50 (ours vs the closest Annoy latency point):");
+    let mut annoy: Vec<(f64, f64)> = rows
+        .iter()
+        .filter(|r| r.family == "annoy")
+        .map(|r| (r.p50.as_secs_f64(), r.recall))
+        .collect();
+    annoy.sort_by(|a, b| a.0.total_cmp(&b.0));
+    println!("  recall at equal p50 (Annoy interpolated onto our measured latency):");
     for ours in rows.iter().filter(|r| r.family == "rp_forest") {
-        let Some(annoy) = rows.iter().filter(|r| r.family == "annoy").min_by(|a, b| {
-            let da = (a.p50.as_secs_f64() - ours.p50.as_secs_f64()).abs();
-            let db = (b.p50.as_secs_f64() - ours.p50.as_secs_f64()).abs();
-            da.total_cmp(&db)
-        }) else {
-            continue;
-        };
-        let ratio = annoy.p50.as_secs_f64() / ours.p50.as_secs_f64();
-        println!(
-            "    ours {}t/{:<10} {:>6.1} us r={:.3}  |  annoy {}t/{:<14} {:>6.1} us r={:.3}  \
-             (latency x{ratio:.2}, recall {:+.3})",
-            ours.trees,
-            ours.setting,
-            ours.p50.as_secs_f64() * 1e6,
-            ours.recall,
-            annoy.trees,
-            annoy.setting,
-            annoy.p50.as_secs_f64() * 1e6,
-            annoy.recall,
-            annoy.recall - ours.recall
-        );
+        let t = ours.p50.as_secs_f64();
+        match annoy_recall_at(&annoy, t) {
+            Some(r) => println!(
+                "    ours {}t/{:<28} {:>6.1} us r={:.3}  |  annoy at the same p50 r={:.3}  \
+                 (recall {:+.3})",
+                ours.trees,
+                ours.setting,
+                t * 1e6,
+                ours.recall,
+                r,
+                ours.recall - r
+            ),
+            None => println!(
+                "    ours {}t/{:<28} {:>6.1} us r={:.3}  |  faster than any Annoy point \
+                 (its fastest is {:.1} us at r={:.3})",
+                ours.trees,
+                ours.setting,
+                t * 1e6,
+                ours.recall,
+                annoy.first().map_or(f64::NAN, |p| p.0) * 1e6,
+                annoy.first().map_or(f64::NAN, |p| p.1),
+            ),
+        }
     }
 }
 
@@ -336,25 +374,27 @@ fn rp_forest_vs_annoy_parity() {
             .map(|q| exact_top_k(&ds.vectors, q))
             .collect();
 
-        // Matched-budget pairs: the forest sees one leaf per tree (exactly
-        // `trees * leaf` items at most), Annoy sees up to `search_k` items
-        // chosen by its best-first node queue. Extra Annoy points bracket the
-        // forest's latency so recall-at-equal-latency can be read off directly.
+        // Matched-budget pairs: both families are allowed to score the same
+        // number of distinct ids, so a recall difference is a traversal-quality
+        // difference, not a budget difference. `leaf 0` is the derived cap
+        // (`dimension + 2`), i.e. what an unconfigured index builds with.
+        let derived = 0;
+
         let rows = vec![
-            measure_ours(ds, &truth, 10, 10),    // budget 100
-            measure_annoy(ds, &truth, 10, -1),   // budget 100
-            measure_ours(ds, &truth, 10, 20),    // budget 200
-            measure_ours(ds, &truth, 50, 10),    // budget 500
-            measure_annoy(ds, &truth, 50, -1),   // budget 500
-            measure_annoy(ds, &truth, 10, 300),  // matches leaf 100 x 10 trees
-            measure_ours(ds, &truth, 10, 100),   // budget 1000
-            measure_annoy(ds, &truth, 10, 1000), // budget 1000
-            measure_ours(ds, &truth, 50, 100),   // budget 5000
-            measure_annoy(ds, &truth, 50, 2000), // brackets leaf 100 x 50 trees
-            measure_annoy(ds, &truth, 50, 5000), // budget 5000
-            measure_ours(ds, &truth, 100, 100),  // budget 10000
-            measure_annoy(ds, &truth, 50, 8000), // brackets budget 10000
-            measure_annoy(ds, &truth, 10, 2000),
+            measure_ours(ds, &truth, 10, derived, 100),
+            measure_annoy(ds, &truth, 10, 100),
+            measure_ours(ds, &truth, 10, derived, 490),
+            measure_annoy(ds, &truth, 10, 490),
+            measure_ours(ds, &truth, 10, derived, 980),
+            measure_annoy(ds, &truth, 10, 980),
+            measure_ours(ds, &truth, 50, derived, 4900),
+            measure_annoy(ds, &truth, 50, 4900),
+            measure_ours(ds, &truth, 10, derived, 1960),
+            measure_annoy(ds, &truth, 10, 1960),
+            measure_ours(ds, &truth, 10, derived, 4900),
+            measure_annoy(ds, &truth, 10, 4900),
+            measure_ours(ds, &truth, 10, derived, 9800),
+            measure_annoy(ds, &truth, 10, 9800),
         ];
         print_table(ds.name, &rows);
         print_iso_latency(&rows);
