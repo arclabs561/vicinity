@@ -328,7 +328,7 @@ mod tests {
         assert!(ProductQuantizer::new(8, 2, 256).is_ok());
         assert!(matches!(
             ProductQuantizer::new(8, 2, 257),
-            Err(RetrieveError::InvalidParameter(_))
+            Err(RetrieveError::InvalidConfig { .. })
         ));
     }
 

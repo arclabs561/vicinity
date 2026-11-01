@@ -411,8 +411,10 @@ mod tests {
         let result = NSWIndex::new(0, 8, 8);
         assert!(result.is_err());
         match result.unwrap_err() {
-            RetrieveError::InvalidParameter(_) => {}
-            other => panic!("Expected InvalidParameter, got {:?}", other),
+            RetrieveError::InvalidConfig {
+                field: "dimension", ..
+            } => {}
+            other => panic!("Expected InvalidConfig for dimension, got {other:?}"),
         }
     }
 

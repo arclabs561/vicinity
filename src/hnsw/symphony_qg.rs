@@ -1689,8 +1689,11 @@ mod tests {
 
         let err = index.search(&vectors[0], 5, 40).unwrap_err();
         assert!(
-            err.to_string().contains("requires raw vectors"),
-            "unexpected error: {err}"
+            matches!(
+                err,
+                RetrieveError::Unsupported { feature, .. } if feature.contains("compacted search")
+            ),
+            "expected Unsupported(raw vectors), got {err:?}"
         );
 
         #[cfg(feature = "serde")]
@@ -1698,8 +1701,12 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let err = index.save_to_dir(dir.path()).unwrap_err();
             assert!(
-                err.to_string().contains("compacted SymphonyQG-VR"),
-                "unexpected error: {err}"
+                matches!(
+                    err,
+                    RetrieveError::Unsupported { feature, .. }
+                        if feature.contains("compacted SymphonyQG-VR")
+                ),
+                "expected Unsupported(compacted save), got {err:?}"
             );
         }
     }

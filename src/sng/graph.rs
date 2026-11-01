@@ -377,8 +377,10 @@ mod tests {
     fn test_zero_dimension_error() {
         let result = SNGIndex::new(0, SNGParams::default());
         match result {
-            Err(RetrieveError::InvalidParameter(_)) => {}
-            Err(other) => panic!("Expected InvalidParameter, got {:?}", other),
+            Err(RetrieveError::InvalidConfig {
+                field: "dimension", ..
+            }) => {}
+            Err(other) => panic!("Expected InvalidConfig for dimension, got {other:?}"),
             Ok(_) => panic!("Expected error for dimension 0"),
         }
     }
