@@ -317,6 +317,11 @@ name = "sparse_mips_benchmark"
 path = "examples/sparse_mips_benchmark.rs"
 required-features = ["sparse_mips"]
 
+[[example]]
+name = "rp_forest_search_k"
+path = "examples/rp_forest_search_k.rs"
+required-features = ["rptree"]
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

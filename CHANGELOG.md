@@ -20,6 +20,14 @@ These source changes are not assigned to a package release here.
 
 ### Added
 
+- `RpForestIndex` search walks the forest from one global best-bound frontier
+  instead of descending to one leaf per tree, and stops on a candidate-id
+  budget: `search_with_budget` takes it explicitly, `search_with_budget_stats`
+  reports the counters (`search_k` is spent per leaf, so the id count
+  overshoots by up to one leaf), and `search` uses Annoy's `k * num_trees`.
+- `RPTreeParams::leaf_size` and `derived_leaf_size` expose the dimension-derived
+  leaf cap, so callers can read the cap an index will build with (or the same
+  derivation for a dimension they have not indexed yet).
 - `HNSWIndex::doc_id` maps an internal node id (the id a
   `search_with_distance` closure receives, BFS-reordered after `build`) to the
   doc id passed to `add`, so closures can look up per-document data by doc id.
@@ -107,6 +115,19 @@ These source changes are not assigned to a package release here.
 
 ### Changed
 
+- The RP-forest split is fitted by angular two-means instead of one random
+  direction through the origin: two seeded centroids are refined over sampled
+  points, the normal is their difference, and a split whose larger child would
+  take more than 95% of the node is retried (three attempts) before the most
+  balanced one is kept. The plane still passes through the origin, so the
+  traversal's `far_child_dot_bound` remains a valid bound for it. Measured
+  against Annoy 1.17.3 at matched budgets, recall@10 now matches or beats it at
+  every budget on both the uniform and 16-cluster distributions (a tie at the
+  smallest uniform budget); see `tests/annoy_parity.rs`.
+- `RPTreeParams::default()` no longer hardcodes `max_leaf_size = 10`; the new
+  default is `0`, meaning "derive from the dimension", which yields
+  `dimension + 2` ids per leaf (98 at `d = 96`), matching Annoy's node layout.
+  Existing indexes and explicit `max_leaf_size` values are unaffected.
 - On-disk layout: `DiskANNIndex::save` writes its graph, vector, doc-id, and
   metadata files into a new directory under `generations/`, syncs them, and
   publishes the save by atomically replacing a `CURRENT` pointer in the output
