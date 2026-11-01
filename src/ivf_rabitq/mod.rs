@@ -326,8 +326,8 @@ impl IVFRaBitQIndex {
 
     /// Working dimension of the rotated space.
     ///
-    /// Equal to [`Self::dimension`] rounded up to a multiple of 32 under
-    /// [`RotationKind::FhtKac`], and equal to [`Self::dimension`] under
+    /// Equal to the index dimension rounded up to a multiple of 32 under
+    /// [`RotationKind::FhtKac`], and equal to the index dimension under
     /// [`RotationKind::Identity`].
     pub fn padded_dimension(&self) -> usize {
         self.padded_dim
