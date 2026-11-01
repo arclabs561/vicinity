@@ -647,9 +647,10 @@ impl Layer {
     #[cfg(feature = "compact-hnsw")]
     fn freeze_csr(&mut self, eligible: &[u32]) -> Result<(), RetrieveError> {
         let NeighborStorage::Uncompressed(neighbors) = &self.storage else {
-            return Err(RetrieveError::InvalidParameter(
-                "compact upper layers require uncompressed neighbor storage".into(),
-            ));
+            return Err(RetrieveError::Unsupported {
+                feature: "compact upper layers with compressed neighbor storage",
+                hint: "disable id compression or compact upper layers",
+            });
         };
         let mut node_ids = Vec::with_capacity(eligible.len());
         let mut offsets = Vec::with_capacity(eligible.len() + 1);
@@ -788,18 +789,20 @@ impl HNSWIndex {
     ///
     /// # Errors
     ///
-    /// Returns [`RetrieveError::InvalidParameter`] if `dimension`, `m`, or
+    /// Returns [`RetrieveError::InvalidConfig`] if `dimension`, `m`, or
     /// `m_max` is zero.
     pub fn new(dimension: usize, m: usize, m_max: usize) -> Result<Self, RetrieveError> {
         if dimension == 0 {
-            return Err(RetrieveError::InvalidParameter(
-                "dimension must be > 0".into(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "dimension",
+                expected: "must be greater than 0",
+            });
         }
         if m == 0 || m_max == 0 {
-            return Err(RetrieveError::InvalidParameter(
-                "m and m_max must be greater than 0".into(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "m and m_max",
+                expected: "must both be greater than 0",
+            });
         }
 
         Ok(Self {
@@ -829,14 +832,16 @@ impl HNSWIndex {
     /// Create with custom parameters.
     pub fn with_params(dimension: usize, params: HNSWParams) -> Result<Self, RetrieveError> {
         if dimension == 0 {
-            return Err(RetrieveError::InvalidParameter(
-                "dimension must be > 0".into(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "dimension",
+                expected: "must be greater than 0",
+            });
         }
         if params.m == 0 || params.m_max == 0 {
-            return Err(RetrieveError::InvalidParameter(
-                "m and m_max must be greater than 0".into(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "m and m_max",
+                expected: "must both be greater than 0",
+            });
         }
 
         Ok(Self {
@@ -873,14 +878,16 @@ impl HNSWIndex {
         filter_field: impl Into<String>,
     ) -> Result<Self, RetrieveError> {
         if dimension == 0 {
-            return Err(RetrieveError::InvalidParameter(
-                "dimension must be > 0".into(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "dimension",
+                expected: "must be greater than 0",
+            });
         }
         if m == 0 || m_max == 0 {
-            return Err(RetrieveError::InvalidParameter(
-                "m and m_max must be greater than 0".into(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "m and m_max",
+                expected: "must both be greater than 0",
+            });
         }
 
         Ok(Self {
@@ -1029,14 +1036,16 @@ impl HNSWIndex {
         // Repair mutates adjacency and is unavailable after freezing/compression.
         #[cfg(feature = "compact-hnsw")]
         if self.params.compact_upper_layers {
-            return Err(RetrieveError::InvalidParameter(
-                "delete_with_repair is unavailable for compact upper layers".into(),
-            ));
+            return Err(RetrieveError::Unsupported {
+                feature: "delete_with_repair on compact upper layers",
+                hint: "load without compact upper layers, or use delete() (tombstone) instead",
+            });
         }
         if self.layers.iter().any(Layer::is_read_only) {
-            return Err(RetrieveError::InvalidParameter(
-                "delete_with_repair requires mutable neighbor storage".into(),
-            ));
+            return Err(RetrieveError::Unsupported {
+                feature: "delete_with_repair on compressed neighbor storage",
+                hint: "use uncompressed neighbor storage, or use delete() (tombstone) instead",
+            });
         }
 
         let dist_fn = self.dist_fn();
@@ -1181,14 +1190,16 @@ impl HNSWIndex {
 
         #[cfg(feature = "compact-hnsw")]
         if self.params.compact_upper_layers {
-            return Err(RetrieveError::InvalidParameter(
-                "delete_batch_with_repair is unavailable for compact upper layers".into(),
-            ));
+            return Err(RetrieveError::Unsupported {
+                feature: "delete_batch_with_repair on compact upper layers",
+                hint: "load without compact upper layers, or use delete() (tombstone) instead",
+            });
         }
         if self.layers.iter().any(Layer::is_read_only) {
-            return Err(RetrieveError::InvalidParameter(
-                "delete_batch_with_repair requires mutable neighbor storage".into(),
-            ));
+            return Err(RetrieveError::Unsupported {
+                feature: "delete_batch_with_repair on compressed neighbor storage",
+                hint: "use uncompressed neighbor storage, or use delete() (tombstone) instead",
+            });
         }
 
         let dist_fn = self.dist_fn();
@@ -1563,8 +1574,18 @@ impl HNSWIndex {
     /// Convenience wrapper over [`Self::load_from_reader`].
     #[cfg(feature = "serde")]
     pub fn load_from_file<P: AsRef<std::path::Path>>(path: P) -> Result<Self, RetrieveError> {
-        let file = std::fs::File::open(path.as_ref())?;
-        Self::load_from_reader(std::io::BufReader::new(file))
+        let path = path.as_ref();
+        let file = std::fs::File::open(path).map_err(|source| RetrieveError::IoAt {
+            path: path.to_path_buf(),
+            source: std::sync::Arc::new(source),
+        })?;
+        Self::load_from_reader(std::io::BufReader::new(file)).map_err(|error| match error {
+            RetrieveError::Serialization(message) => RetrieveError::SerializationAt {
+                path: path.to_path_buf(),
+                message,
+            },
+            other => other,
+        })
     }
 
     /// Deserialize an index from a reader (JSON).
@@ -1804,9 +1825,10 @@ impl HNSWIndex {
             }
             Ok(())
         } else {
-            Err(RetrieveError::InvalidParameter(
-                "filtering not enabled; use HNSWIndex::with_filtering()".into(),
-            ))
+            Err(RetrieveError::Unsupported {
+                feature: "filtered search",
+                hint: "rebuild the index with HNSWIndex::with_filtering()",
+            })
         }
     }
 
@@ -1822,18 +1844,19 @@ impl HNSWIndex {
     ///
     /// # Errors
     ///
-    /// Returns [`RetrieveError::InvalidParameter`] if:
-    /// - Any component is NaN or infinite.
+    /// Returns [`RetrieveError::NonFiniteInput`] if any component is NaN or
+    /// infinite, and [`RetrieveError::InvalidParameter`] if:
     /// - Cosine distance is selected and the vector is not L2-normalized
     ///   (`norm^2` differs from 1 by more than 0.01), unless `auto_normalize`
     ///   is enabled on the builder.
     /// - The `doc_id` is a duplicate.
-    /// - The index has already been built.
+    /// - The index has already been built ([`RetrieveError::AlreadyBuilt`]).
     pub fn add_slice(&mut self, doc_id: u32, vector: &[f32]) -> Result<(), RetrieveError> {
         if self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "cannot add vectors after index is built".into(),
-            ));
+            return Err(RetrieveError::AlreadyBuilt {
+                component: "HNSW index",
+                operation: "add vectors",
+            });
         }
 
         if self.doc_id_to_internal.contains_key(&doc_id) {
@@ -1853,10 +1876,11 @@ impl HNSWIndex {
         // NaN slips past the cosine norm check below, gives meaningless
         // distances, and serializes as JSON null, which cannot be loaded back.
         if let Some(i) = vector.iter().position(|x| !x.is_finite()) {
-            return Err(RetrieveError::InvalidParameter(format!(
-                "vector for doc_id {} has a non-finite component at index {} ({})",
-                doc_id, i, vector[i]
-            )));
+            return Err(RetrieveError::NonFiniteInput {
+                doc_id: u64::from(doc_id),
+                component: i,
+                value: f64::from(vector[i]),
+            });
         }
 
         // Normalize if requested, otherwise borrow the original slice.
@@ -1991,9 +2015,10 @@ impl HNSWIndex {
 
         #[cfg(all(feature = "compact-hnsw", feature = "id-compression"))]
         if self.params.compact_upper_layers && self.params.id_compression.is_some() {
-            return Err(RetrieveError::InvalidParameter(
-                "compact upper layers and id compression cannot be combined".into(),
-            ));
+            return Err(RetrieveError::Unsupported {
+                feature: "compact upper layers together with id compression",
+                hint: "enable only one of compact-hnsw or id-compression",
+            });
         }
 
         // Construct graph
@@ -2049,9 +2074,10 @@ impl HNSWIndex {
 
         #[cfg(all(feature = "compact-hnsw", feature = "id-compression"))]
         if self.params.compact_upper_layers && self.params.id_compression.is_some() {
-            return Err(RetrieveError::InvalidParameter(
-                "compact upper layers and id compression cannot be combined".into(),
-            ));
+            return Err(RetrieveError::Unsupported {
+                feature: "compact upper layers together with id compression",
+                hint: "enable only one of compact-hnsw or id-compression",
+            });
         }
 
         crate::hnsw::construction::construct_graph_parallel(self, batch_size)?;
@@ -2370,7 +2396,7 @@ impl HNSWIndex {
     ///
     /// # Errors
     ///
-    /// * [`RetrieveError::InvalidParameter`] if the index has not been built.
+    /// * [`RetrieveError::NotBuilt`] if the index has not been built.
     /// * [`RetrieveError::DimensionMismatch`] if `query.len()` differs from
     ///   the index dimension.
     /// * [`RetrieveError::EmptyIndex`] if the index contains no vectors.
@@ -2381,9 +2407,10 @@ impl HNSWIndex {
         ef: usize,
     ) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "index must be built before search".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "HNSW index",
+                operation: "search",
+            });
         }
 
         if query.len() != self.dimension {
@@ -2487,27 +2514,11 @@ impl HNSWIndex {
                         }
                     }
 
-                    // Use the standard beam search from the best entry point
-                    crate::hnsw::search::greedy_search_layer(
-                        query,
-                        best_entry,
-                        &self.layers[0],
-                        &self.vectors,
-                        self.dimension,
-                        ef.max(k),
-                        self.dist_fn(),
-                    )
+                    // Use the standard beam search from the best entry point.
+                    self.search_base_layer(query, best_entry, ef.max(k))
                 } else {
                     // Default: Use greedy search from entry point
-                    crate::hnsw::search::greedy_search_layer(
-                        query,
-                        current_closest,
-                        &self.layers[0],
-                        &self.vectors,
-                        self.dimension,
-                        ef.max(k),
-                        self.dist_fn(),
-                    )
+                    self.search_base_layer(query, current_closest, ef.max(k))
                 };
 
             // Clear decompression caches after search
@@ -2534,6 +2545,17 @@ impl HNSWIndex {
         } else {
             Ok(Vec::new())
         }
+    }
+
+    /// Search using the index's configured `ef_search`.
+    ///
+    /// This is the form most callers want: the builder's `ef_search` is the
+    /// tuned default, and `search(query, k, ef)` exists for per-query overrides.
+    /// Before this existed, a value set with `.ef_search(..)` on the builder was
+    /// silently ignored by the three-argument `search`, so recall stayed at
+    /// whatever the caller passed.
+    pub fn search_knn(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, RetrieveError> {
+        self.search(query, k, self.params.ef_search)
     }
 
     /// Search with a caller-provided distance function.
@@ -2569,9 +2591,10 @@ impl HNSWIndex {
         dist_fn: &F,
     ) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "index must be built before search".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "HNSW index",
+                operation: "search",
+            });
         }
         if self.num_vectors == 0 {
             return Err(RetrieveError::EmptyIndex);
@@ -2585,7 +2608,7 @@ impl HNSWIndex {
 
         // Fine search in base layer with custom distance
         if !self.layers.is_empty() {
-            let base_results = crate::hnsw::search::greedy_search_layer_custom(
+            let base_results = crate::hnsw::search::greedy_search_layer_custom_live(
                 query,
                 current_closest,
                 &self.layers[0],
@@ -2593,6 +2616,7 @@ impl HNSWIndex {
                 self.dimension,
                 ef.max(k),
                 dist_fn,
+                |id| !self.tombstones.is_deleted(id as usize),
             );
 
             let results = base_results
@@ -2703,9 +2727,10 @@ impl HNSWIndex {
         ef_search: usize,
     ) -> Result<Vec<Vec<(u32, f32)>>, RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "index must be built before search".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "HNSW index",
+                operation: "search",
+            });
         }
         if self.num_vectors == 0 {
             return Err(RetrieveError::EmptyIndex);
@@ -2800,7 +2825,7 @@ impl HNSWIndex {
             let base_results = if self.layers.is_empty() {
                 Vec::new()
             } else if chain_pos == 0 {
-                crate::hnsw::search::greedy_search_layer(
+                crate::hnsw::search::greedy_search_layer_live(
                     query,
                     current_closest,
                     &self.layers[0],
@@ -2808,6 +2833,7 @@ impl HNSWIndex {
                     self.dimension,
                     ef_search.max(k),
                     dist_fn,
+                    |id| !self.tombstones.is_deleted(id as usize),
                 )
             } else {
                 let parent_best = best_internal_for_chain[chain_pos - 1];
@@ -2826,6 +2852,7 @@ impl HNSWIndex {
                     self.dimension,
                     ef_search.max(k),
                     dist_fn,
+                    |id| !self.tombstones.is_deleted(id as usize),
                 )
             };
 
@@ -2873,9 +2900,10 @@ impl HNSWIndex {
         filter: &crate::filtering::MetadataFilter,
     ) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "index must be built before search".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "HNSW index",
+                operation: "search",
+            });
         }
 
         if query.len() != self.dimension {
@@ -2886,9 +2914,10 @@ impl HNSWIndex {
         }
 
         if self.metadata.is_none() || self.filter_field.is_none() {
-            return Err(RetrieveError::InvalidParameter(
-                "filtering not enabled; use HNSWIndex::with_filtering()".into(),
-            ));
+            return Err(RetrieveError::Unsupported {
+                feature: "filtered search",
+                hint: "rebuild the index with HNSWIndex::with_filtering()",
+            });
         }
 
         let prepared_query = self.prepare_query(query);
@@ -2906,9 +2935,10 @@ impl HNSWIndex {
                 Some(value.clone())
             }
             _ => {
-                return Err(RetrieveError::InvalidParameter(
-                    "only equality filters on filter_field are supported".into(),
-                ));
+                return Err(RetrieveError::Unsupported {
+                    feature: "non-equality predicates on filter_field",
+                    hint: "use only equality predicates on the configured filter_field",
+                });
             }
         };
 
@@ -2943,7 +2973,13 @@ impl HNSWIndex {
         let start_dist = dist_fn(query, start_vec);
         candidates.push(std::cmp::Reverse((FloatOrd(start_dist), start_point)));
 
-        // Greedy search in base layer, only exploring filtered neighbors
+        // Greedy search in base layer, only exploring filtered neighbors.
+        //
+        // The budget is counted in live results, not visited nodes: hnswlib's
+        // `isIdAllowed` path only admits allowed points to `top_candidates`
+        // (`hnswalg.h:432-441`), so tombstones must not let the traversal stop
+        // while fewer than `ef` usable members have been found.
+        let mut live_matches = 0usize;
         while let Some(std::cmp::Reverse((FloatOrd(_dist), vector_id))) = candidates.pop() {
             if visited.contains(&vector_id) {
                 continue;
@@ -2958,6 +2994,10 @@ impl HNSWIndex {
                 != desired_category.as_ref()
             {
                 continue;
+            }
+
+            if !self.tombstones.is_deleted(vector_id as usize) {
+                live_matches += 1;
             }
 
             // Explore neighbors that match filter
@@ -2982,7 +3022,7 @@ impl HNSWIndex {
                 candidates.push(std::cmp::Reverse((FloatOrd(neighbor_dist), neighbor_id)));
             }
 
-            if visited.len() >= ef.max(k) {
+            if live_matches >= ef.max(k) {
                 break;
             }
         }
@@ -3042,9 +3082,10 @@ impl HNSWIndex {
         filter: &crate::filtering::MetadataFilter,
     ) -> Result<(Vec<(u32, f32)>, crate::hnsw::AcornStats), RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "index must be built before search".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "HNSW index",
+                operation: "search",
+            });
         }
 
         if query.len() != self.dimension {
@@ -3059,9 +3100,10 @@ impl HNSWIndex {
         }
 
         let Some(metadata) = self.metadata.as_ref() else {
-            return Err(RetrieveError::InvalidParameter(
-                "filtering not enabled; use HNSWIndex::with_filtering()".into(),
-            ));
+            return Err(RetrieveError::Unsupported {
+                feature: "filtered search",
+                hint: "rebuild the index with HNSWIndex::with_filtering()",
+            });
         };
 
         let prepared_query = self.prepare_query(query);
@@ -3122,9 +3164,10 @@ impl HNSWIndex {
         config: &crate::adaptive::AdaptiveConfig,
     ) -> Result<(Vec<(u32, f32)>, usize), RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "index must be built before search".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "HNSW index",
+                operation: "search",
+            });
         }
 
         if query.len() != self.dimension {
@@ -3159,6 +3202,7 @@ impl HNSWIndex {
                 k,
                 config,
                 self.dist_fn(),
+                |id| !self.tombstones.is_deleted(id as usize),
             );
             num_evaluated = evaluated;
 
@@ -3206,9 +3250,10 @@ impl HNSWIndex {
         decay: f32,
     ) -> Result<(Vec<(u32, f32)>, usize), RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "index must be built before search".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "HNSW index",
+                operation: "search",
+            });
         }
         if query.len() != self.dimension {
             return Err(RetrieveError::DimensionMismatch {
@@ -3275,6 +3320,7 @@ impl HNSWIndex {
             &query_proj,
             &proj_threshold,
             &mut tfb,
+            |id| !self.tombstones.is_deleted(id as usize),
         );
 
         let results = base_results
@@ -3398,6 +3444,38 @@ impl HNSWIndex {
             return Some(ep);
         }
         self.compute_entry_point()
+    }
+
+    /// Base-layer beam search for `query`.
+    ///
+    /// Without tombstones this is the plain beam search with no per-candidate
+    /// eligibility check. With tombstones, the search uses hnswlib's general
+    /// path semantics: deleted nodes remain traversable but never take one of
+    /// the `ef` result slots, so `ef` counts live results and the output is not
+    /// truncated to fewer than `k` live neighbours.
+    fn search_base_layer(&self, query: &[f32], entry_point: u32, ef: usize) -> Vec<(u32, f32)> {
+        if self.tombstones.is_empty() {
+            crate::hnsw::search::greedy_search_layer(
+                query,
+                entry_point,
+                &self.layers[0],
+                &self.vectors,
+                self.dimension,
+                ef,
+                self.dist_fn(),
+            )
+        } else {
+            crate::hnsw::search::greedy_search_layer_live(
+                query,
+                entry_point,
+                &self.layers[0],
+                &self.vectors,
+                self.dimension,
+                ef,
+                self.dist_fn(),
+                |id| !self.tombstones.is_deleted(id as usize),
+            )
+        }
     }
 
     /// Descend from `entry_point` at `entry_layer` through upper layers to layer 1,

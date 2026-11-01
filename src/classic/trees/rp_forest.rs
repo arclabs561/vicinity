@@ -117,9 +117,10 @@ impl RpForestIndex {
     /// Create a new RP-forest index.
     pub fn new(dimension: usize, params: RpForestParams) -> Result<Self, RetrieveError> {
         if dimension == 0 {
-            return Err(RetrieveError::InvalidParameter(
-                "dimension must be > 0".into(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "dimension",
+                expected: "must be greater than 0",
+            });
         }
 
         Ok(Self {
@@ -136,9 +137,10 @@ impl RpForestIndex {
     /// Add a vector to the index.
     pub fn add(&mut self, doc_id: u32, vector: Vec<f32>) -> Result<(), RetrieveError> {
         if self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "Cannot add vectors after index is built".to_string(),
-            ));
+            return Err(RetrieveError::AlreadyBuilt {
+                component: "RP-forest index",
+                operation: "add vectors",
+            });
         }
 
         if vector.len() != self.dimension {
@@ -178,9 +180,10 @@ impl RpForestIndex {
     /// Save a built RP-forest index to a directory.
     pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<(), RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "cannot save unbuilt RP-forest index".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "RP-forest index",
+                operation: "save",
+            });
         }
         let output_dir = output_dir.as_ref();
         std::fs::create_dir_all(output_dir)?;
@@ -327,9 +330,10 @@ impl RpForestIndex {
     /// Search for k nearest neighbors.
     pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "Index must be built before search".to_string(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "RP-forest index",
+                operation: "search",
+            });
         }
 
         if query.len() != self.dimension {
@@ -377,12 +381,15 @@ impl RpForestIndex {
             TreeNode::Leaf { indices } => candidates.extend(indices.iter().copied()),
             TreeNode::Internal {
                 hyperplane,
-                threshold: _,
+                threshold,
                 left,
                 right,
             } => {
                 let projection = simd::dot(query, hyperplane);
-                if projection < 0.0 {
+                // Build splits on the median projection; comparing against zero
+                // instead sends roughly half of all queries down the wrong
+                // branch, which is why this family never reached usable recall.
+                if projection < *threshold {
                     self.collect_leaf_candidates(left, query, candidates);
                 } else {
                     self.collect_leaf_candidates(right, query, candidates);

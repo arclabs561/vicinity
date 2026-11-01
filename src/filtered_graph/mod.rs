@@ -204,9 +204,10 @@ impl FilteredGraphIndex {
     /// Returns an error when `dimension == 0`.
     pub fn new(dimension: usize, params: FilteredGraphParams) -> Result<Self, RetrieveError> {
         if dimension == 0 {
-            return Err(RetrieveError::InvalidParameter(
-                "dimension must be > 0".into(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "dimension",
+                expected: "must be greater than 0",
+            });
         }
         Ok(Self {
             dimension,
@@ -240,9 +241,10 @@ impl FilteredGraphIndex {
         attrs: HashMap<String, AttrValue>,
     ) -> Result<(), RetrieveError> {
         if self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "cannot add vectors after build".into(),
-            ));
+            return Err(RetrieveError::AlreadyBuilt {
+                component: "filtered graph index",
+                operation: "add vectors",
+            });
         }
         if vector.len() != self.dimension {
             return Err(RetrieveError::DimensionMismatch {
@@ -286,9 +288,10 @@ impl FilteredGraphIndex {
     /// Save a built filtered graph index to a directory.
     pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<(), RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "cannot save unbuilt filtered graph index".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "filtered graph index",
+                operation: "save",
+            });
         }
         let output_dir = output_dir.as_ref();
         std::fs::create_dir_all(output_dir)?;
@@ -375,9 +378,10 @@ impl FilteredGraphIndex {
         filter: &Filter,
     ) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "index must be built before search".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "filtered graph index",
+                operation: "search",
+            });
         }
         if query.len() != self.dimension {
             return Err(RetrieveError::DimensionMismatch {
@@ -429,9 +433,10 @@ impl FilteredGraphIndex {
     /// Unfiltered nearest-neighbor search.
     pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "index must be built before search".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "filtered graph index",
+                operation: "search",
+            });
         }
         if query.len() != self.dimension {
             return Err(RetrieveError::DimensionMismatch {
@@ -459,9 +464,10 @@ impl FilteredGraphIndex {
         ef_search: usize,
     ) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "index must be built before search".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "filtered graph index",
+                operation: "search",
+            });
         }
         if query.len() != self.dimension {
             return Err(RetrieveError::DimensionMismatch {
@@ -816,39 +822,57 @@ impl FilteredGraphIndex {
 
         let mut visited: HashSet<u32> = HashSet::new();
         let mut frontier: BinaryHeap<std::cmp::Reverse<(FloatOrd, u32)>> = BinaryHeap::new();
-        let mut candidates: Vec<(u32, f32)> = Vec::new();
+        // Bounded best-set, worst candidate on top. The previous version kept
+        // every visited candidate in a Vec and re-sorted it on each pop, which
+        // costs O(visited * candidates log candidates) and measured ~1 s per
+        // query at ef=1600.
+        let mut best: BinaryHeap<(FloatOrd, u32)> = BinaryHeap::new();
+        // Keep a wider pool than `ef`: callers post-filter this set, and a beam
+        // capped at exactly `ef` loses recall as soon as a predicate rejects a
+        // few of its members.
+        let pool = ef.saturating_mul(4).max(ef);
 
         let entry = self.medoid;
         let entry_dist = cosine_distance_normalized(query, self.get_vector(entry as usize));
         visited.insert(entry);
         frontier.push(std::cmp::Reverse((FloatOrd(entry_dist), entry)));
-        candidates.push((entry, entry_dist));
+        best.push((FloatOrd(entry_dist), entry));
 
         while let Some(std::cmp::Reverse((FloatOrd(current_dist), current_id))) = frontier.pop() {
-            // Early exit: if we already have ef candidates and current is worse
-            // than the ef-th, no neighbor can improve the result set.
-            if candidates.len() >= ef {
-                candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
-                if current_dist > candidates[ef - 1].1 * 1.5 {
-                    break;
+            // Nothing reachable can beat the current worst member of a full set.
+            if best.len() >= pool {
+                if let Some((worst, _)) = best.peek() {
+                    if current_dist > worst.0 {
+                        break;
+                    }
                 }
             }
 
             for &nb in &self.neighbors[current_id as usize] {
                 if visited.insert(nb) {
                     let d = cosine_distance_normalized(query, self.get_vector(nb as usize));
-                    candidates.push((nb, d));
                     frontier.push(std::cmp::Reverse((FloatOrd(d), nb)));
+                    if best.len() < pool {
+                        best.push((FloatOrd(d), nb));
+                    } else if let Some((worst, _)) = best.peek() {
+                        if d < worst.0 {
+                            best.pop();
+                            best.push((FloatOrd(d), nb));
+                        }
+                    }
                 }
             }
 
-            if visited.len() > ef * 10 {
+            if visited.len() > pool * 10 {
                 break;
             }
         }
 
-        candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
-        candidates.dedup_by_key(|c| c.0);
+        let mut candidates: Vec<(u32, f32)> = best
+            .into_iter()
+            .map(|(FloatOrd(distance), id)| (id, distance))
+            .collect();
+        candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
         candidates
     }
 

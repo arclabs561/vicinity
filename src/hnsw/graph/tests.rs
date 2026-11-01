@@ -69,7 +69,11 @@ fn add_rejects_non_finite_components() {
             assert!(
                 matches!(
                     index.add_slice(7, &[bad, 0.0]),
-                    Err(RetrieveError::InvalidParameter(_))
+                    Err(RetrieveError::NonFiniteInput {
+                        doc_id: 7,
+                        component: 0,
+                        ..
+                    })
                 ),
                 "{metric:?} accepted {bad}"
             );
@@ -534,7 +538,13 @@ fn test_search_acorn_requires_filtering_metadata() {
         .search_acorn(&q, 5, &crate::hnsw::AcornConfig::default(), &filter)
         .unwrap_err();
 
-    assert!(matches!(err, RetrieveError::InvalidParameter(_)));
+    assert!(matches!(
+        err,
+        RetrieveError::Unsupported {
+            feature: "filtered search",
+            ..
+        }
+    ));
 }
 
 #[cfg(feature = "serde")]
@@ -2015,5 +2025,459 @@ fn test_delete_with_repair_recall_vs_tombstone() {
         "repair ({}) should return >= tombstone ({}) results",
         repair_results.len(),
         tombstone_results.len(),
+    );
+}
+
+#[test]
+fn search_before_build_returns_not_built() {
+    let index = HNSWIndex::new(4, 8, 16).unwrap();
+    let error = index.search(&[0.0, 0.0, 0.0, 0.0], 5, 10).unwrap_err();
+    assert!(
+        matches!(
+            error,
+            RetrieveError::NotBuilt {
+                component: "HNSW index",
+                operation: "search"
+            }
+        ),
+        "expected NotBuilt, got {error:?}"
+    );
+    let message = error.to_string();
+    assert!(message.contains("HNSW index"), "{message}");
+    assert!(message.contains("call build()"), "{message}");
+}
+
+#[test]
+fn add_after_build_returns_already_built() {
+    let (mut index, query) = build_test_index();
+    let error = index.add(9_999, query).unwrap_err();
+    assert!(
+        matches!(
+            error,
+            RetrieveError::AlreadyBuilt {
+                component: "HNSW index",
+                ..
+            }
+        ),
+        "expected AlreadyBuilt, got {error:?}"
+    );
+    assert!(error.to_string().contains("insert()"));
+}
+
+#[test]
+fn zero_dimension_returns_invalid_config() {
+    let error = HNSWIndex::new(0, 8, 16).unwrap_err();
+    assert!(
+        matches!(
+            error,
+            RetrieveError::InvalidConfig {
+                field: "dimension",
+                ..
+            }
+        ),
+        "expected InvalidConfig for dimension, got {error:?}"
+    );
+    assert!(error.to_string().contains("dimension"));
+}
+
+#[test]
+fn filtered_search_without_filtering_returns_unsupported() {
+    let (index, query) = build_test_index();
+    let error = index
+        .search_with_filter(
+            &query,
+            5,
+            32,
+            &crate::filtering::MetadataFilter::equals("group", 0_u32),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            RetrieveError::Unsupported {
+                feature: "filtered search",
+                ..
+            }
+        ),
+        "expected Unsupported, got {error:?}"
+    );
+    assert!(error.to_string().contains("with_filtering()"));
+}
+
+#[test]
+fn non_finite_component_returns_non_finite_input() {
+    let mut index = HNSWIndex::new(4, 8, 16).unwrap();
+    let error = index.add(42, vec![0.0, f32::NAN, 0.0, 0.0]).unwrap_err();
+    match error {
+        RetrieveError::NonFiniteInput {
+            doc_id,
+            component,
+            value,
+        } => {
+            assert_eq!(doc_id, 42);
+            assert_eq!(component, 1);
+            assert!(value.is_nan());
+        }
+        other => panic!("expected NonFiniteInput, got {other:?}"),
+    }
+    assert_eq!(index.num_vectors, 0, "rejected vector must not be stored");
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn load_from_file_missing_path_reports_io_with_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("absent.json");
+    let error = HNSWIndex::load_from_file(&path).unwrap_err();
+    match error {
+        RetrieveError::IoAt {
+            path: reported,
+            source,
+        } => {
+            assert_eq!(reported, path);
+            assert_eq!(source.kind(), std::io::ErrorKind::NotFound);
+        }
+        other => panic!("expected IoAt, got {other:?}"),
+    }
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn load_from_file_foreign_bytes_reports_serialization_with_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("foreign.json");
+    std::fs::write(&path, b"\x89PNG\r\n\x1a\n not an index").unwrap();
+    let error = HNSWIndex::load_from_file(&path).unwrap_err();
+    match error {
+        RetrieveError::SerializationAt {
+            path: reported,
+            message,
+        } => {
+            assert_eq!(reported, path);
+            assert!(!message.is_empty());
+        }
+        other => panic!("expected SerializationAt, got {other:?}"),
+    }
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn load_from_file_truncated_reports_serialization_with_path() {
+    let (index, _) = build_test_index();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("truncated.json");
+    index.save_to_file(&path).unwrap();
+    let bytes = std::fs::read(&path).unwrap();
+    std::fs::write(&path, &bytes[..bytes.len() / 2]).unwrap();
+
+    let error = HNSWIndex::load_from_file(&path).unwrap_err();
+    match error {
+        RetrieveError::SerializationAt {
+            path: reported,
+            message,
+        } => {
+            assert_eq!(reported, path);
+            assert!(
+                message.contains("EOF") || message.contains("line"),
+                "{message}"
+            );
+        }
+        other => panic!("expected SerializationAt, got {other:?}"),
+    }
+}
+
+// ── hnswlib parity: search contract (nmslib/hnswlib ca42672) ────────────────
+
+/// Deterministic pseudo-random unit-ish vectors for parity tests.
+fn parity_vector(state: &mut u64, dim: usize) -> Vec<f32> {
+    let mut v = Vec::with_capacity(dim);
+    for _ in 0..dim {
+        *state ^= *state << 13;
+        *state ^= *state >> 7;
+        *state ^= *state << 17;
+        v.push(((*state >> 11) as f32 / (1u64 << 53) as f32) * 2.0 - 1.0);
+    }
+    v
+}
+
+fn parity_index(n: usize, dim: usize, state: &mut u64) -> HNSWIndex {
+    let params = HNSWParams {
+        m: 8,
+        m_max: 16,
+        ef_construction: 32,
+        metric: DistanceMetric::L2,
+        seed: Some(7),
+        ..Default::default()
+    };
+    let mut index = HNSWIndex::with_params(dim, params).unwrap();
+    for i in 0..n {
+        index.add(i as u32, parity_vector(state, dim)).unwrap();
+    }
+    index.build().unwrap();
+    index
+}
+
+#[test]
+fn search_raises_ef_to_k() {
+    // hnswlib `searchKnn` calls `searchBaseLayerST(..., std::max(ef_, k), ...)`
+    // (hnswalg.h:1457). A beam narrower than `k` would return fewer than `k`
+    // neighbours even when the index holds them.
+    let mut state = 0xA11C_E5EE_D001u64;
+    let index = parity_index(400, 16, &mut state);
+    let query = parity_vector(&mut state, 16);
+
+    for ef in [0, 1, 5, 9] {
+        let results = index.search(&query, 10, ef).unwrap();
+        assert_eq!(results.len(), 10, "ef={ef}, k=10 must still return 10");
+        let mut ids: Vec<u32> = results.iter().map(|(id, _)| *id).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), 10, "ef={ef} returned duplicate neighbours");
+    }
+}
+
+#[test]
+fn tombstones_do_not_consume_ef_result_slots() {
+    // hnswlib's general path (`searchBaseLayerST<false>`, selected whenever
+    // `num_deleted_ > 0`) only admits live points to `top_candidates`, and its
+    // stop condition requires `top_candidates.size() == ef` (hnswalg.h:432-441,
+    // :379). Counting tombstones towards `ef` ends the search early and returns
+    // fewer than `k` live neighbours.
+    let dim = 16;
+    let n = 400usize;
+    let mut state = 0xA11C_E5EE_D002u64;
+    let mut index = HNSWIndex::with_params(
+        dim,
+        HNSWParams {
+            m: 8,
+            m_max: 16,
+            ef_construction: 32,
+            metric: DistanceMetric::L2,
+            seed: Some(7),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let mut inserted: Vec<Vec<f32>> = Vec::with_capacity(n);
+    for i in 0..n {
+        let v = parity_vector(&mut state, dim);
+        index.add(i as u32, v.clone()).unwrap();
+        inserted.push(v);
+    }
+    index.build().unwrap();
+    let query = parity_vector(&mut state, dim);
+
+    // Keep 40 live nodes, spread through the graph.
+    for id in 0..(n as u32 - 40) {
+        index.delete(id).unwrap();
+    }
+
+    for ef in [10, 16, 64] {
+        let results = index.search(&query, 10, ef).unwrap();
+        assert_eq!(
+            results.len(),
+            10,
+            "ef={ef}: 40 live neighbours exist, tombstones must not end the search"
+        );
+        for (doc_id, _) in &results {
+            assert!(*doc_id >= n as u32 - 40, "tombstoned id {doc_id} leaked");
+        }
+    }
+
+    // With a beam wider than the live set the search must be exact.
+    let brute_force: Vec<u32> = {
+        let mut live: Vec<(u32, f32)> = (n as u32 - 40..n as u32)
+            .map(|id| {
+                let d: f32 = query
+                    .iter()
+                    .zip(&inserted[id as usize])
+                    .map(|(a, b)| (a - b) * (a - b))
+                    .sum();
+                (id, d)
+            })
+            .collect();
+        live.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+        live.iter().take(10).map(|(id, _)| *id).collect()
+    };
+    let got: Vec<u32> = index
+        .search(&query, 10, 64)
+        .unwrap()
+        .iter()
+        .map(|(id, _)| *id)
+        .collect();
+    assert_eq!(got, brute_force, "ef=64 over 40 live nodes must be exact");
+
+    // Sibling search paths share the beam primitive and must not truncate either.
+    let vectors = &index.vectors;
+    let dimension = index.dimension;
+    let distance = |q: &[f32], internal_id: u32| {
+        let start = internal_id as usize * dimension;
+        crate::distance::l2_distance(q, &vectors[start..start + dimension])
+    };
+    assert_eq!(
+        index
+            .search_with_distance(&query, 10, 10, &distance)
+            .unwrap()
+            .len(),
+        10,
+        "search_with_distance must not count tombstones towards ef"
+    );
+
+    let other = parity_vector(&mut state, dim);
+    let batch = index.batch_search_mqo(&[&query, &other], 10, 10).unwrap();
+    assert_eq!(batch.len(), 2);
+    assert_eq!(batch[0].len(), 10, "batch_search_mqo must not truncate");
+    assert_eq!(batch[1].len(), 10, "batch_search_mqo must not truncate");
+
+    let mut prt = crate::prt::ProbabilisticRoutingTest::new(dim, 8, Some(42));
+    prt.project_database(&index.vectors);
+    assert_eq!(
+        index
+            .search_prt(&query, 10, 10, &prt, 2.0, 1.0)
+            .unwrap()
+            .0
+            .len(),
+        10,
+        "search_prt must not count tombstones towards ef"
+    );
+
+    assert_eq!(
+        index
+            .search_adaptive(
+                &query,
+                10,
+                10,
+                &crate::adaptive::AdaptiveConfig::conservative()
+            )
+            .unwrap()
+            .0
+            .len(),
+        10,
+        "search_adaptive must not count tombstones towards ef"
+    );
+}
+
+#[test]
+fn layer0_degree_distribution_is_capped_at_m_max() {
+    // hnswlib gives the inserted node at most `M` layer-0 neighbours and only
+    // grows existing nodes' reciprocal lists to `maxM0_ = 2*M`
+    // (hnswalg.h:119, :544-545, :635). `construct_graph` instead selects up to
+    // `m_max` for the new node too (documented in construction.rs), so every
+    // layer-0 node saturates at `2*M`. This test pins the cap and records the
+    // deliberate deviation from the reference degree distribution.
+    let mut state = 0xD0D0_0D0D_0001u64;
+    let index = parity_index(400, 16, &mut state);
+    let degrees: Vec<usize> = (0..400)
+        .map(|id| index.layers[0].get_neighbors(id as u32).len())
+        .collect();
+
+    let max = *degrees.iter().max().unwrap();
+    let mean = degrees.iter().sum::<usize>() as f64 / degrees.len() as f64;
+    assert!(max <= 16, "layer-0 degree {max} exceeds m_max = 2*M");
+    assert!(
+        mean > 8.0,
+        "expected saturated lists (mean {mean:.1} > M = 8) from the deliberate \
+         new-node cap of m_max"
+    );
+}
+
+#[test]
+fn neighbor_heuristic_keeps_all_candidates_below_m() {
+    // hnswlib returns early from `getNeighborsByHeuristic2` when
+    // `top_candidates.size() < M` (hnswalg.h:478-480), so early inserts keep
+    // every candidate instead of being pruned.
+    use crate::hnsw::construction::select_neighbors;
+
+    let dim = 8;
+    let mut state = 0xD0D0_0D0D_0002u64;
+    let mut vectors = Vec::new();
+    for _ in 0..5 {
+        vectors.extend(parity_vector(&mut state, dim));
+    }
+    let query = parity_vector(&mut state, dim);
+    let mut candidates: Vec<(u32, f32)> = (0..5)
+        .map(|id| {
+            let v = &vectors[id as usize * dim..(id as usize + 1) * dim];
+            let d: f32 = query.iter().zip(v).map(|(a, b)| (a - b) * (a - b)).sum();
+            (id, d)
+        })
+        .collect();
+
+    let selected = select_neighbors(
+        &query,
+        &mut candidates,
+        16,
+        &vectors,
+        dim,
+        &NeighborhoodDiversification::RelativeNeighborhood,
+        crate::distance::l2_distance,
+    );
+
+    let mut sorted = selected.clone();
+    sorted.sort_unstable();
+    assert_eq!(
+        sorted,
+        vec![0, 1, 2, 3, 4],
+        "candidates < M must all survive"
+    );
+}
+
+#[test]
+fn filtered_search_does_not_count_tombstones_towards_ef() {
+    // hnswlib's `isIdAllowed` path only admits allowed points to the result
+    // heap, so `ef` counts usable results. `search_with_filter` bounds the
+    // traversal by visited nodes instead; counting tombstones towards that
+    // budget ends the search while live members are still reachable.
+    use crate::filtering::{DocumentMetadata, MetadataFilter, MetadataValue};
+
+    let dim = 8;
+    let mut index = HNSWIndex::with_filtering(dim, 8, 16, "group").unwrap();
+    let mut state = 0xA11C_E5EE_D003u64;
+    for id in 0..200u32 {
+        let mut metadata = DocumentMetadata::new();
+        metadata.insert("group".into(), MetadataValue::from(0u32));
+        index.add_metadata(id, metadata).unwrap();
+        let v = crate::distance::normalize(&parity_vector(&mut state, dim));
+        index.add(id, v).unwrap();
+    }
+    index.build().unwrap();
+    let query = crate::distance::normalize(&parity_vector(&mut state, dim));
+
+    for id in 0..190u32 {
+        index.delete(id).unwrap();
+    }
+
+    let filter = MetadataFilter::equals("group", 0u32);
+    let results = index.search_with_filter(&query, 10, 10, &filter).unwrap();
+    assert_eq!(
+        results.len(),
+        10,
+        "10 live members remain; tombstones must not exhaust the ef budget"
+    );
+    assert!(results.iter().all(|(doc_id, _)| *doc_id >= 190));
+}
+
+/// The builder's `ef_search` must be the default the convenience search uses;
+/// before `search_knn` existed, a tuned builder value was silently ignored by
+/// the three-argument `search`.
+#[test]
+fn search_knn_uses_the_builder_ef() {
+    let dim = 8;
+    let mut index = HNSWIndex::builder(dim)
+        .auto_normalize(true)
+        .ef_search(64)
+        .build()
+        .unwrap();
+    for i in 0..200u32 {
+        let v: Vec<f32> = (0..dim)
+            .map(|d| ((i * 31 + d as u32 * 7) % 100) as f32 / 100.0)
+            .collect();
+        index.add_slice(i, &v).unwrap();
+    }
+    index.build().unwrap();
+    let query: Vec<f32> = (0..dim).map(|d| (d as f32) / 8.0).collect();
+    assert_eq!(
+        index.search_knn(&query, 5).unwrap(),
+        index.search(&query, 5, 64).unwrap()
     );
 }

@@ -15,6 +15,9 @@ fn to_durability_err(e: PersistenceError) -> durability::PersistenceError {
     match e {
         PersistenceError::Io(e) => durability::PersistenceError::Io(e),
         PersistenceError::Format(s) => durability::PersistenceError::Format(s),
+        PersistenceError::BadMagic { expected, found } => durability::PersistenceError::Format(
+            format!("bad magic: expected {expected}, found {found}"),
+        ),
         PersistenceError::Serialization(s) => durability::PersistenceError::Encode(s),
         PersistenceError::Deserialization(s) => durability::PersistenceError::Decode(s),
         PersistenceError::ChecksumMismatch { expected, actual } => {
