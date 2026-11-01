@@ -40,6 +40,46 @@ python3 scripts/benefits.py benchmarks/rows.jsonl
 Output is the table above: per-family rows, axis leaders, Pareto front, and the
 "wins when" sentence that should appear in the README for each family.
 
+## Producing rows without external datasets
+
+`cargo run --release --example all_families` measures every family on one
+protocol and can emit rows in the shape above. Structure is a variable, not a
+constant: seven synthetic domains stand in for seven kinds of real workload, and
+each one's hardness is measured at run time rather than implied by its generator.
+
+| Domain | Width | Stands in for |
+| --- | ---: | --- |
+| `uniform` | 96 | baseline: uniform random points, no cluster structure |
+| `clustered16` | 96 | 16 centres, `sigma = 0.25`: a few strong clusters |
+| `text` | 96 | Zipf-weighted 200-topic mixture, anisotropic per topic: word/document embeddings |
+| `image` | 96 | 64 parents x 16 children at a small offset: deep-embedding locality |
+| `sparse` | 768 | ~2% nonzero, queries share terms with a document: lexical vectors |
+| `neardup` | 96 | 90% jitter around 64 seed documents: near-duplicate-heavy corpora |
+| `lowdim` | 8 | points on a random 3-D subspace: intrinsically low-dimensional data |
+
+Two numbers are printed beside each domain because one is not enough:
+
+- **LID**: Levina-Bickel maximum-likelihood local intrinsic dimensionality at
+  `k = 10`, median with p10-p90 over 200 sampled points. This is the difficulty of
+  the *inside* of a neighbourhood.
+- **Separation**: median distance to a random base point divided by the distance
+  to the 10th neighbour. Near 1.0 means neighbours are indistinguishable from the
+  background; large means a query's cluster is easy to *reach*.
+
+They disagree on purpose: inside a near-duplicate cloud LID stays high (the cloud
+is still locally high-dimensional) while separation is enormous, and recall
+follows separation. Reporting only LID would call that domain hard and be wrong.
+
+| Environment variable | Effect |
+| --- | --- |
+| `ANN_DATASETS` | Comma-separated domains to run, e.g. `text,image`; unset runs all seven |
+| `ANN_FVECS` | Path to a `.fvecs` file (int32 dim then dim float32 per row, little-endian); replaces the synthetic domains. The first 200 rows are also the queries, so recall@10 has a 0.1 self-match floor |
+| `ANN_JSONL` | Path to write JSONL rows in the shape above, ready for `scripts/benefits.py` |
+
+Loading an angular dataset (GloVe, deep-image) reproduces the ann-benchmarks
+ranking; rows are L2-normalised, so a Euclidean dataset such as SIFT is ranked by
+cosine instead of L2.
+
 ## Rules
 
 - A family is only listed once it has a measured row in `rows.jsonl`.
