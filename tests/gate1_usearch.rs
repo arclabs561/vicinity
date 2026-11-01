@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 //! Gate 1 of the breadth kill test: HNSW at matched recall against `usearch`.
 //!
 //! Synthetic, seeded, one machine. Reports QPS at recall@10 for vicinity's
