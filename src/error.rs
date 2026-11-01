@@ -158,7 +158,9 @@ impl RetrieveError {
     ///
     /// Printable ASCII is shown as a quoted string so the message names the file
     /// type a human would recognize; anything else is hex-escaped.
-    #[cfg_attr(not(feature = "persistence"), allow(dead_code))]
+    // Used only by `persistence::hnsw`, which needs both features: with
+    // persistence on and hnsw off the helper has no caller.
+    #[cfg_attr(not(all(feature = "persistence", feature = "hnsw")), allow(dead_code))]
     pub(crate) fn describe_magic(bytes: &[u8]) -> String {
         if !bytes.is_empty()
             && bytes
