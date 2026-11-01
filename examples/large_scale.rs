@@ -12,16 +12,41 @@
 //! - ground truth covers a **sampled query set** (200-1000 queries) and is
 //!   computed once by a **parallel shard scan** (`rayon`, k-way merge), then
 //!   cached under a key derived from the dataset identity and the query bytes;
-//! - every phase has a **guardrail**: `--max-points` refuses a tier above the
-//!   declared ceiling and `--budget-seconds` refuses an estimate that would run
-//!   for hours, instead of discovering either through an OOM or a timeout.
+//! - every phase has a **guardrail** instead of discovering the problem as an
+//!   OOM, a full volume or a timeout, and every refusal names the resource:
+//!   RAM (measured KiB/point times `--points` against the host's memory), disk
+//!   (the volume's free GiB against the corpus plus the selected indexes),
+//!   time (`--budget-seconds` against the phase estimate), and `--max-points`
+//!   as the declared ceiling. Memory is checked first because a larger budget
+//!   cannot move it.
 //!
-//! Only the HNSW family is wired here. It is the family whose build and search
-//! path can consume a mapped, streamed corpus (`add_slice`), and it is the one
-//! the `large-scale` feature builds. Families that are only meaningful at
-//! 100M+ (SSD-resident DiskANN, RaBitQ at a fixed memory budget, streaming
-//! indexes) are described in `benchmarks/README.md`; they are not measured by
-//! this harness yet, and the README says so.
+//! Two families are wired, selected with `--families`:
+//!
+//! - `hnsw` — built with `HNSWIndex::add_slice` from the mapped rows and
+//!   searched from the same in-RAM object with `HNSWIndex::search`.
+//! - `diskann` — built with `DiskANNIndex::add_slice` + `build_parallel` from
+//!   the same mapped rows, persisted with `DiskANNIndex::save`, then the build
+//!   object is **dropped** and the timed queries run through
+//!   `DiskANNSearcher`, the block-cache reader over `graph.index` and
+//!   `vectors.bin`. Its p50/QPS therefore include positional file reads and its
+//!   search RSS is bounded by `--diskann-cache-mib`, not by the corpus. At a
+//!   tier where the index still fits in RAM this measures the mechanism rather
+//!   than disk pressure, and the run prints the cache budget and hit rate so
+//!   the reader can see which it was.
+//!
+//! Neither family receives a `Vec<Vec<f32>>` corpus: every build streams
+//! borrowed rows from `DatasetFile`, so resident memory after an unmapped build
+//! is the index rather than the index plus a second copy of the base set.
+//!
+//! DiskANN scores squared L2 (`simd::l2_distance_squared`). Every stored row
+//! and query in these domains is L2-normalized, and squared L2 is then a
+//! monotone transform of cosine, so ranking — and recall against a cosine
+//! ground truth — is the same measurement.
+//!
+//! The families that remain unwired (NSG, Vamana, IVF-PQ as a streamed corpus,
+//! RaBitQ at a fixed memory budget, streaming/updatable indexes) are named in
+//! `benchmarks/README.md` with the specific API or resource that stops each
+//! one; the reasons are re-checked against `src/` rather than assumed.
 //!
 //! # On-disk dataset
 //!
@@ -49,20 +74,20 @@
 //! ```bash
 //! # 100k: always affordable, and the tier where correctness is verified
 //! # against a brute-force f32 and f64 reference.
-//! cargo run --release --example large_scale --features "large-scale,hnsw" -- \
+//! cargo run --release --example large_scale --features "large-scale,hnsw,diskann" -- \
 //!   --points 100k
 //!
-//! # 1M: requires a larger time budget and ~450 MiB of dataset + index.
-//! cargo run --release --example large_scale --features "large-scale,hnsw" -- \
+//! # 1M: requires a larger time budget and ~1.3 GiB of dataset + both indexes.
+//! cargo run --release --example large_scale --features "large-scale,hnsw,diskann" -- \
 //!   --points 1m --budget-seconds 7200 --json /tmp/large-1m.jsonl
 //!
 //! # Compute (or reuse) ground truth only, then exit. This is how a 100M run
 //! # avoids repeating the scan for every family invocation.
-//! cargo run --release --example large_scale --features "large-scale,hnsw" -- \
+//! cargo run --release --example large_scale --features "large-scale,hnsw,diskann" -- \
 //!   --points 100m --max-points 100m --gt-only
 //!
 //! # Built-in checks: resumable generation and cached ground truth.
-//! cargo run --release --example large_scale --features "large-scale,hnsw" -- \
+//! cargo run --release --example large_scale --features "large-scale,hnsw,diskann" -- \
 //!   --self-test
 //! ```
 //!
@@ -120,12 +145,42 @@ fn main() {
 // Configuration and guardrails
 // ---------------------------------------------------------------------------
 
+/// A family this harness can build from mapped rows and measure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Family {
+    Hnsw,
+    Diskann,
+}
+
+impl Family {
+    fn parse(text: &str) -> Res<Self> {
+        match text {
+            "hnsw" => Ok(Self::Hnsw),
+            "diskann" => Ok(Self::Diskann),
+            other => Err(format!(
+                "unknown family `{other}`; families wired at this tier: hnsw,diskann"
+            )),
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Hnsw => "hnsw",
+            Self::Diskann => "diskann",
+        }
+    }
+}
+
 struct Args {
     points: u64,
     dim: usize,
     k: usize,
     gt_queries: usize,
     ef: Vec<usize>,
+    families: Vec<Family>,
+    /// Block-cache budget for the file-backed DiskANN searcher. `0` disables
+    /// the cache, which makes every vector read a positional read.
+    diskann_cache_mib: usize,
     domain: Domain,
     max_points: u64,
     budget_seconds: f64,
@@ -150,9 +205,14 @@ impl Default for Args {
             k: 10,
             gt_queries: 500,
             ef: vec![50, 100, 200],
+            families: vec![Family::Hnsw, Family::Diskann],
+            diskann_cache_mib: 64,
             domain: Domain::Uniform,
-            // A deliberate ceiling: 20M is affordable on a 128 GiB / 60 GiB-free
-            // workstation, while 100M already needs an explicit opt-in.
+            // A deliberate ceiling: 20M fits this host's RAM (42 GiB at the
+            // measured 2.09 KiB/point) and its disk, while 100M already needs an
+            // explicit opt-in. It does not fit the default hour: a 20M build is
+            // ~55 min at the measured 0.12-0.16 ms/point, so `--budget-seconds`
+            // refuses it until the budget is raised deliberately.
             max_points: 20_000_000,
             budget_seconds: 3600.0,
             gt_only: false,
@@ -200,6 +260,13 @@ fn run() -> Res<()> {
         args.ef,
         effective_batch(&args)
     );
+    let family_names: Vec<&str> = args.families.iter().map(|family| family.name()).collect();
+    println!(
+        "families={} diskann-cache-mib={} distance-stats={}",
+        family_names.join(","),
+        args.diskann_cache_mib,
+        cfg!(feature = "distance-stats")
+    );
     println!("data root: {}", root.display());
     println!(
         "dataset: {} (memmap2; {} MiB mapped)",
@@ -221,25 +288,36 @@ fn run() -> Res<()> {
     let completed = dataset_rows_on_disk(&dataset_path, args.points, args.dim)?;
     let estimate = estimate(&args, args.points - completed, gt_path.exists());
     println!(
-        "estimated wall clock ~{:.0}s (generation {:.0}s, ground truth {:.0}s, build {:.0}s, \
-         persist {:.0}s) against --budget-seconds {:.0}s",
+        "estimated wall clock ~{:.0}s (generation {:.0}s, ground truth {:.0}s, hnsw build {:.0}s, \
+         diskann build {:.0}s, persist {:.0}s) against --budget-seconds {:.0}s",
         estimate.total,
         estimate.generation,
         estimate.ground_truth,
-        estimate.build,
+        estimate.hnsw_build,
+        estimate.diskann_build,
         estimate.persist,
         args.budget_seconds
     );
+    if let Some(refusal) = memory_refusal(&args) {
+        return Err(refusal);
+    }
     if estimate.total > args.budget_seconds {
         return Err(format!(
-            "refusing: estimated {:.0}s exceeds --budget-seconds {:.0}s. Raise the budget \
-             deliberately, lower --points, or lower --gt-queries (currently {}).",
-            estimate.total, args.budget_seconds, args.gt_queries
+            "refusing: time, not memory or disk. The estimated {:.0}s (generation {:.0}s, ground \
+             truth {:.0}s, builds {:.0}s, persist {:.0}s) exceeds --budget-seconds {:.0}s. Raise \
+             the budget deliberately, lower --points, or lower --gt-queries (currently {}).",
+            estimate.total,
+            estimate.generation,
+            estimate.ground_truth,
+            estimate.hnsw_build + estimate.diskann_build,
+            estimate.persist,
+            args.budget_seconds,
+            args.gt_queries
         ));
     }
 
     let started = Instant::now();
-    let generation = ensure_dataset(&ctx, &dataset_path, args.points, args.dim)?;
+    let generation = ensure_dataset(&ctx, &dataset_path, args.points, args.dim, &args.families)?;
     println!(
         "dataset {}: {} rows written, {} rows reused at {}, {:.1} MiB",
         if generation.generated > 0 {
@@ -293,80 +371,228 @@ fn run() -> Res<()> {
     println!();
 
     let mut rows: Vec<Row> = Vec::new();
-    let rss_before = rss_mib();
+    let mut index_disk_mib_total = 0.0f64;
     let batch = effective_batch(&args);
-    let index_path = index_path(&root, args.domain, args.points, args.dim, batch);
-    let build_start = Instant::now();
-    let index = build_hnsw(&dataset_path, args.points, args.dim, batch)?;
-    let build_s = build_start.elapsed().as_secs_f64();
-    let rss_after = rss_mib();
-    let mem_mib = match (rss_before, rss_after) {
-        (Some(before), Some(after)) => (after - before).max(0.0),
-        _ => f64::NAN,
-    };
-    println!(
-        "hnsw build: {build_s:.1}s; RSS before {:.1} MiB, after {:.1} MiB (dataset unmapped \
-         before both samples)",
-        rss_before.unwrap_or(f64::NAN),
-        rss_after.unwrap_or(f64::NAN),
-    );
-
-    let (index_disk_mib, persist_s, index_path) = if args.persist {
-        let persist_start = Instant::now();
-        let bytes = persist_index(&index, &index_path)?;
-        (
-            bytes_to_mib(bytes),
-            persist_start.elapsed().as_secs_f64(),
-            Some(index_path),
-        )
-    } else {
-        println!(
-            "index not persisted (--no-persist); resident-size estimate {:.1} MiB \
-             (not an on-disk measurement)",
-            bytes_to_mib(index.memory_usage().total() as u64)
-        );
-        // No file was written, so the on-disk size is unmeasured. Emitting the
-        // resident estimate under this column would read as a disk measurement.
-        (f64::NAN, 0.0, None)
-    };
-    if let Some(path) = &index_path {
-        println!(
-            "index persisted: {} ({index_disk_mib:.1} MiB) in {persist_s:.1}s",
-            path.display()
-        );
-    }
-
     let exact_timed = exact_p50.max(f64::MIN_POSITIVE);
-    for &ef in &args.ef {
-        if started.elapsed().as_secs_f64() > args.budget_seconds {
-            println!("budget exhausted before ef_search={ef}; reporting the rows already measured");
-            break;
+    let hnsw_path = index_path(&root, args.domain, args.points, args.dim, batch);
+    let diskann_dir = diskann_index_dir(&root, args.domain, args.points, args.dim, batch);
+
+    'families: for family in &args.families {
+        match family {
+            Family::Hnsw => {
+                let rss_before = rss_mib();
+                let build_start = Instant::now();
+                let index = build_hnsw(&dataset_path, args.points, args.dim, batch)?;
+                let build_s = build_start.elapsed().as_secs_f64();
+                let rss_after = rss_mib();
+                println!(
+                    "hnsw build: {build_s:.1}s; RSS before {:.1} MiB, after {:.1} MiB (dataset \
+                     unmapped before both samples)",
+                    rss_before.unwrap_or(f64::NAN),
+                    rss_after.unwrap_or(f64::NAN),
+                );
+                let (index_disk_mib, persist_s) = if args.persist {
+                    let persist_start = Instant::now();
+                    let bytes = persist_index(&index, &hnsw_path)?;
+                    let persist_s = persist_start.elapsed().as_secs_f64();
+                    let mib = bytes_to_mib(bytes);
+                    println!(
+                        "hnsw index persisted: {} ({mib:.1} MiB) in {persist_s:.1}s",
+                        hnsw_path.display()
+                    );
+                    (mib, persist_s)
+                } else {
+                    println!(
+                        "hnsw index not persisted (--no-persist); resident-size estimate {:.1} \
+                         MiB (not an on-disk measurement)",
+                        bytes_to_mib(index.memory_usage().total() as u64)
+                    );
+                    // No file was written, so the on-disk size is unmeasured.
+                    // Emitting the resident estimate under this column would
+                    // read as a disk measurement.
+                    (f64::NAN, 0.0)
+                };
+                let report = BuildReport {
+                    build_s,
+                    mem_mib: bytes_to_mib(index.memory_usage().total() as u64),
+                    rss_mib: rss_after.unwrap_or(f64::NAN),
+                    index_disk_mib,
+                    persist_s,
+                };
+                if report.index_disk_mib.is_finite() {
+                    index_disk_mib_total += report.index_disk_mib;
+                }
+                for &ef in &args.ef {
+                    if let Some(refusal) = budget_refusal(&args, started, family, ef) {
+                        println!("{refusal}");
+                        break 'families;
+                    }
+                    let stats = evaluate(
+                        |query, k, ef| index.search(query, k, ef).map_err(string_err),
+                        &queries,
+                        &truth,
+                        args.k,
+                        ef,
+                    );
+                    push_rows(
+                        &mut rows,
+                        family.name(),
+                        "ef_search",
+                        ef,
+                        stats,
+                        &report,
+                        &args,
+                        verify,
+                        &gt_path,
+                        exact_timed,
+                    );
+                }
+            }
+            Family::Diskann => {
+                // The build is in RAM (no family here can stream a graph to
+                // disk); the measured queries then run from files, with RSS
+                // bounded by the block cache rather than by the corpus.
+                let rss_before = rss_mib();
+                let build_start = Instant::now();
+                let index = build_diskann(&dataset_path, args.points, args.dim, batch)?;
+                let build_s = build_start.elapsed().as_secs_f64();
+                let rss_after = rss_mib();
+                println!(
+                    "diskann build: {build_s:.1}s; RSS before {:.1} MiB, after {:.1} MiB (in-RAM \
+                     Vamana construction from the mapped corpus; the build object is dropped \
+                     before any query runs)",
+                    rss_before.unwrap_or(f64::NAN),
+                    rss_after.unwrap_or(f64::NAN),
+                );
+                ensure_index_space(&diskann_dir, estimate_diskann_bytes(&args))?;
+                let persist_start = Instant::now();
+                let bytes = persist_diskann(&index, &diskann_dir)?;
+                let persist_s = persist_start.elapsed().as_secs_f64();
+                let index_disk_mib = bytes_to_mib(bytes);
+                println!(
+                    "diskann index persisted: {} ({index_disk_mib:.1} MiB) in {persist_s:.1}s",
+                    diskann_dir.display()
+                );
+                let report = BuildReport {
+                    build_s,
+                    mem_mib: bytes_to_mib(index.size_bytes() as u64),
+                    rss_mib: rss_after.unwrap_or(f64::NAN),
+                    index_disk_mib,
+                    persist_s,
+                };
+                index_disk_mib_total += index_disk_mib;
+
+                // Same graph and the same build: one sweep against the resident
+                // object, one against the files. Publishing only the file row
+                // would read as "DiskANN is slow" when what is slow is the
+                // storage path.
+                let mut in_ram_recall: Vec<(usize, f64)> = Vec::new();
+                for &ef in &args.ef {
+                    if let Some(refusal) = budget_refusal(&args, started, family, ef) {
+                        println!("{refusal}");
+                        break 'families;
+                    }
+                    let stats = evaluate(
+                        |query, k, ef| index.search(query, k, ef).map_err(string_err),
+                        &queries,
+                        &truth,
+                        args.k,
+                        ef,
+                    );
+                    in_ram_recall.push((ef, stats.recall));
+                    push_rows(
+                        &mut rows,
+                        family.name(),
+                        "ef_search",
+                        ef,
+                        stats,
+                        &report,
+                        &args,
+                        verify,
+                        &gt_path,
+                        exact_timed,
+                    );
+                }
+                drop(index);
+
+                let cache_bytes = args.diskann_cache_mib.saturating_mul(1 << 20);
+                let mut searcher = vicinity::diskann::DiskANNSearcher::load_with_cache(
+                    &diskann_dir,
+                    vicinity::FileCacheConfig::with_budget(cache_bytes),
+                )
+                .map_err(string_err)?;
+                let search_rss = rss_mib();
+                println!(
+                    "diskann file-backed search: block cache {} MiB, RSS after open {:.1} MiB, \
+                     index files {index_disk_mib:.1} MiB ({} the cache budget)",
+                    args.diskann_cache_mib,
+                    search_rss.unwrap_or(f64::NAN),
+                    if (cache_bytes as u64) < bytes {
+                        "exceed"
+                    } else {
+                        "fit in"
+                    }
+                );
+                let file_report = BuildReport {
+                    rss_mib: search_rss.unwrap_or(f64::NAN),
+                    ..report
+                };
+                let first_file_row = rows.len();
+                for &ef in &args.ef {
+                    if let Some(refusal) = budget_refusal(&args, started, family, ef) {
+                        println!("{refusal}");
+                        break 'families;
+                    }
+                    let stats = evaluate(
+                        |query, k, ef| searcher.search(query, k, ef).map_err(string_err),
+                        &queries,
+                        &truth,
+                        args.k,
+                        ef,
+                    );
+                    if let Some((_, resident)) =
+                        in_ram_recall.iter().find(|(value, _)| *value == ef)
+                    {
+                        println!(
+                            "diskann ef_search={ef}: file-backed recall {:.3} vs resident {:.3}",
+                            stats.recall, resident
+                        );
+                    }
+                    push_rows(
+                        &mut rows,
+                        "diskann-file",
+                        "ef_search",
+                        ef,
+                        stats,
+                        &file_report,
+                        &args,
+                        verify,
+                        &gt_path,
+                        exact_timed,
+                    );
+                }
+                // Opening the searcher reuses pages the build object no longer
+                // references; the kernel returns them lazily, so the RSS right
+                // after open is the build's high-water mark, not what the
+                // queries ran in. Publish the steady-state sample.
+                if let Some(rss) = rss_mib() {
+                    for row in rows.iter_mut().skip(first_file_row) {
+                        row.rss_mib = rss;
+                    }
+                }
+                let cache = searcher.cache_stats();
+                println!(
+                    "diskann block cache after the sweep: hit rate {:.1}% ({} hits / {} misses), \
+                     resident {:.1} of {:.1} MiB; RSS after search {:.1} MiB",
+                    cache.hit_rate() * 100.0,
+                    cache.hits,
+                    cache.misses,
+                    bytes_to_mib(cache.resident_bytes as u64),
+                    bytes_to_mib(cache.budget_bytes as u64),
+                    rss_mib().unwrap_or(f64::NAN),
+                );
+            }
         }
-        let stats = evaluate(&index, &queries, &truth, args.k, ef);
-        rows.push(Row {
-            family: "hnsw",
-            dataset: format!("{}@{}", args.domain.name(), tier_label(args.points)),
-            knob: "ef_search",
-            knob_value: ef,
-            recall: stats.recall,
-            ratio: exact_timed / stats.p50.max(f64::MIN_POSITIVE),
-            p50: stats.p50,
-            p95: stats.p95,
-            p99: stats.p99,
-            qps: stats.qps,
-            dists_per_query: stats.dists_per_query,
-            build_s,
-            mem_mib,
-            rss_mib: rss_after.unwrap_or(f64::NAN),
-            index_disk_mib,
-            persist_s,
-            n: args.points,
-            dim: args.dim,
-            gt_verified: verify,
-            gt_cache: gt_path.display().to_string(),
-            errors: stats.errors,
-            first_error: stats.first_error,
-        });
     }
 
     print_rows(&rows, args.points, args.dim, args.gt_queries);
@@ -378,7 +604,7 @@ fn run() -> Res<()> {
     println!(
         "wall clock: {:.1}s; total dataset+index on disk: {:.1} MiB",
         started.elapsed().as_secs_f64(),
-        bytes_to_mib(generation.bytes) + index_disk_mib
+        bytes_to_mib(generation.bytes) + index_disk_mib_total
     );
     Ok(())
 }
@@ -430,6 +656,15 @@ fn validate(args: &Args) -> Res<()> {
     if args.ef.is_empty() || args.ef.iter().any(|&ef| ef == 0 || ef > 16_384) {
         return Err("--ef must be a non-empty comma-separated list in 1..=16384".to_string());
     }
+    if args.families.contains(&Family::Diskann) && !args.persist {
+        return Err(
+            "--no-persist cannot measure diskann: the measurement is the file-backed \
+                    searcher (save, drop the build object, then query through the block cache), \
+                    so there are no files to search. Drop diskann from --families or drop \
+                    --no-persist."
+                .to_string(),
+        );
+    }
     if !(args.budget_seconds.is_finite() && args.budget_seconds > 0.0) {
         return Err("--budget-seconds must be a positive finite number".to_string());
     }
@@ -467,6 +702,22 @@ fn parse_args() -> Res<Args> {
             "--domain" => {
                 let value = take_value(&argv, &mut index, &flag)?;
                 args.domain = Domain::parse(&value)?;
+            }
+            "--families" => {
+                let value = take_value(&argv, &mut index, &flag)?;
+                let families = value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|token| !token.is_empty())
+                    .map(Family::parse)
+                    .collect::<Res<Vec<Family>>>()?;
+                if families.is_empty() {
+                    return Err("--families must name at least one family".to_string());
+                }
+                args.families = families;
+            }
+            "--diskann-cache-mib" => {
+                args.diskann_cache_mib = parse_usize(&take_value(&argv, &mut index, &flag)?)?;
             }
             "--max-points" => {
                 args.max_points = parse_count(&take_value(&argv, &mut index, &flag)?)?;
@@ -557,12 +808,17 @@ fn print_usage() {
            --k <k>                neighbours (default 10)\n\
            --gt-queries <q>       sampled query set, 200..=1000 (default 500)\n\
            --ef <a,b,c>           ef_search sweep (default 50,100,200)\n\
+           --families <a,b>       families to build and measure: hnsw,diskann\n\
+                                  (default both)\n\
+           --diskann-cache-mib <n>  block cache for the file-backed diskann\n\
+                                  searcher; 0 disables it (default 64)\n\
            --max-points <n>       hard ceiling (default 20000000)\n\
            --budget-seconds <s>   refuse an estimate above this (default 3600)\n\
            --gt-only              compute/reuse ground truth, then stop\n\
            --regenerate-gt        ignore an existing cache and recompute\n\
            --verify-gt / --no-verify-gt  force/disable the f32+f64 cross-check\n\
-           --no-persist           skip the postcard index snapshot\n\
+           --no-persist           skip the postcard index snapshot (hnsw only;\n\
+                                   refused with diskann in --families)\n\
            --batch <n>            parallel construction batch (default 4096; smaller\n\
                                   batches see more of the graph and raise recall)\n\
            --json [path]          write JSONL rows (default under <root>/rows/)\n\
@@ -618,11 +874,24 @@ fn index_path(root: &Path, domain: Domain, count: u64, dim: usize, batch: usize)
     ))
 }
 
+/// `save` publishes a generation under this directory; the searcher opens the
+/// one named by `CURRENT`.
+fn diskann_index_dir(root: &Path, domain: Domain, count: u64, dim: usize, batch: usize) -> PathBuf {
+    root.join("indexes").join(format!(
+        "{}-n{count}-d{dim}-m32-efc100-b{batch}-diskann/",
+        domain.name()
+    ))
+}
+
 fn default_rows_name(args: &Args) -> String {
+    // The family set is in the name so a narrower run cannot silently replace
+    // an artifact that carried more rows.
+    let families: Vec<&str> = args.families.iter().map(|family| family.name()).collect();
     format!(
-        "large-scale-{}-{}-d{}-k{}.jsonl",
+        "large-scale-{}-{}-{}-d{}-k{}.jsonl",
         args.domain.name(),
         tier_label(args.points),
+        families.join("+"),
         args.dim,
         args.k
     )
@@ -861,7 +1130,13 @@ fn read_data_header(path: &Path) -> Res<DataHeader> {
     Ok(DataHeader { dim, count })
 }
 
-fn ensure_dataset(ctx: &DomainContext, path: &Path, count: u64, dim: usize) -> Res<Generation> {
+fn ensure_dataset(
+    ctx: &DomainContext,
+    path: &Path,
+    count: u64,
+    dim: usize,
+    families: &[Family],
+) -> Res<Generation> {
     let total = dataset_bytes(count, dim)?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -910,21 +1185,31 @@ fn ensure_dataset(ctx: &DomainContext, path: &Path, count: u64, dim: usize) -> R
     let remaining = count.saturating_sub(resumed_from);
     let remaining_bytes = remaining * dim as u64 * 4;
     if let Some(free) = available_bytes(path) {
-        // The index snapshot is roughly vectors + graph edges; require headroom
-        // rather than filling the volume to the last byte.
-        let index_estimate = count
-            .saturating_mul(dim as u64)
-            .saturating_mul(4)
-            .saturating_mul(2);
+        // Each index is roughly vectors + graph edges: 1.26x the dataset for
+        // HNSW (46.3 MiB per 36.6 MiB measured at 100k) and 1.35x for DiskANN
+        // (49.6 MiB). Require headroom rather than filling the volume to the
+        // last byte.
+        let index_estimate = index_disk_estimate(families, total);
         let needed = remaining_bytes.saturating_add(index_estimate);
-        if free < needed.saturating_add(512 * 1024 * 1024) {
+        let headroom = 512 * 1024 * 1024;
+        if free < needed.saturating_add(headroom) {
+            let names: Vec<&str> = families.iter().map(|family| family.name()).collect();
             return Err(format!(
-                "refusing: {} has {:.1} GiB free but the dataset needs {:.1} GiB more and the \
-                 index snapshot needs about {:.1} GiB. Free space or choose a smaller tier.",
+                "refusing: disk, not time or memory. {} has {:.2} GiB free; this tier needs \
+                 {:.2} GiB more of dataset plus about {:.2} GiB for the {} index files ({}), \
+                 {:.2} GiB short of the {:.2} GiB free requirement.",
                 path.parent().unwrap_or(path).display(),
                 bytes_to_mib(free) / 1024.0,
                 bytes_to_mib(remaining_bytes) / 1024.0,
-                bytes_to_mib(index_estimate) / 1024.0
+                bytes_to_mib(index_estimate) / 1024.0,
+                names.join("+"),
+                if names.len() > 1 {
+                    "one per family"
+                } else {
+                    "one index"
+                },
+                bytes_to_mib(needed.saturating_add(headroom).saturating_sub(free)) / 1024.0,
+                bytes_to_mib(needed.saturating_add(headroom)) / 1024.0,
             ));
         }
     }
@@ -1003,12 +1288,31 @@ fn ensure_dataset(ctx: &DomainContext, path: &Path, count: u64, dim: usize) -> R
     })
 }
 
+/// Bytes the selected families' index files need for a full dataset, from the
+/// measured 100k ratio: 46.3 MiB of HNSW and 49.6 MiB of DiskANN per 36.6 MiB
+/// of dataset, i.e. 1.26x and 1.35x.
+fn index_disk_estimate(families: &[Family], dataset_bytes: u64) -> u64 {
+    families
+        .iter()
+        .map(|family| match family {
+            Family::Hnsw => dataset_bytes.saturating_mul(126) / 100,
+            Family::Diskann => dataset_bytes.saturating_mul(135) / 100,
+        })
+        .fold(0u64, |sum, bytes| sum.saturating_add(bytes))
+}
+
 /// Free bytes on the volume containing `path`, or `None` when `df` cannot say.
+///
+/// `path` need not exist: the nearest existing ancestor is what `df` is asked
+/// about, so the check can run before the index directory is created.
 fn available_bytes(path: &Path) -> Option<u64> {
-    let parent = path.parent().filter(|p| p.exists())?;
+    let mut target = path;
+    while !target.exists() {
+        target = target.parent()?;
+    }
     let output = std::process::Command::new("df")
         .arg("-k")
-        .arg(parent)
+        .arg(target)
         .output()
         .ok()?;
     if !output.status.success() {
@@ -1500,6 +1804,190 @@ fn persist_index(index: &vicinity::hnsw::HNSWIndex, path: &Path) -> Res<u64> {
     Ok(bytes)
 }
 
+/// DiskANN's builder is a strict superset of Vamana's: it is the same two-pass
+/// Vamana construction, and `DiskANNIndex` is the only type in the crate that
+/// both consumes borrowed slices and serializes to a layout a file-backed
+/// searcher can read (`save` → `DiskANNSearcher`). `VamanaIndex` has no
+/// `add_slice`, so it cannot ingest a mapped row without allocating a copy per
+/// row, and it has no file-backed searcher at all.
+fn build_diskann(
+    path: &Path,
+    count: u64,
+    dim: usize,
+    batch: usize,
+) -> Res<vicinity::diskann::DiskANNIndex> {
+    use vicinity::diskann::{DiskANNIndex, DiskANNParams};
+
+    let dataset = DatasetFile::open(path)?;
+    if dataset.count() != count || dataset.dim() != dim {
+        return Err(format!(
+            "dataset opened as dim={} count={}, expected dim={dim} count={count}",
+            dataset.dim(),
+            dataset.count()
+        ));
+    }
+    let params = DiskANNParams {
+        seed: Some(HNSW_SEED),
+        ..DiskANNParams::default()
+    };
+    let mut index = DiskANNIndex::new(dim, params).map_err(string_err)?;
+    for row_index in 0..count {
+        index
+            .add_slice(row_index as u32, dataset.row(row_index))
+            .map_err(string_err)?;
+    }
+    index.build_parallel(batch).map_err(string_err)?;
+    Ok(index)
+}
+
+/// Save into a fresh directory and return the bytes the searcher will read.
+/// The old tree is removed first so the column is one index, not a stack of
+/// generations from earlier runs.
+fn persist_diskann(index: &vicinity::diskann::DiskANNIndex, dir: &Path) -> Res<u64> {
+    if dir.exists() {
+        std::fs::remove_dir_all(dir)
+            .map_err(|err| format!("cannot clear {}: {err}", dir.display()))?;
+    }
+    std::fs::create_dir_all(dir)
+        .map_err(|err| format!("cannot create {}: {err}", dir.display()))?;
+    index.save(dir).map_err(string_err)?;
+    dir_bytes(dir)
+}
+
+fn dir_bytes(dir: &Path) -> Res<u64> {
+    let mut total = 0u64;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        let entries = std::fs::read_dir(&current)
+            .map_err(|err| format!("cannot read {}: {err}", current.display()))?;
+        for entry in entries {
+            let entry = entry.map_err(|err| format!("cannot read {}: {err}", current.display()))?;
+            let metadata = entry
+                .metadata()
+                .map_err(|err| format!("cannot stat {}: {err}", entry.path().display()))?;
+            if metadata.is_dir() {
+                stack.push(entry.path());
+            } else {
+                total = total.saturating_add(metadata.len());
+            }
+        }
+    }
+    Ok(total)
+}
+
+/// Refuse before writing when the volume cannot hold the index. The message
+/// names the resource (free bytes), not just the refusal.
+fn ensure_index_space(dir: &Path, needed: u64) -> Res<()> {
+    const HEADROOM: u64 = 512 * 1024 * 1024;
+    let Some(free) = available_bytes(dir) else {
+        return Ok(());
+    };
+    if free < needed.saturating_add(HEADROOM) {
+        return Err(format!(
+            "refusing: disk, not time or memory. {} has {:.2} GiB free, the diskann index needs \
+             about {:.2} GiB plus {:.2} GiB headroom: {:.2} GiB short. Free space, lower \
+             --points, or drop diskann from --families.",
+            dir.display(),
+            bytes_to_mib(free) / 1024.0,
+            bytes_to_mib(needed) / 1024.0,
+            bytes_to_mib(HEADROOM) / 1024.0,
+            bytes_to_mib(needed.saturating_add(HEADROOM) - free) / 1024.0,
+        ));
+    }
+    Ok(())
+}
+
+/// `vectors.bin` plus the adjacency pages and ids: `dim * 4` bytes per vector,
+/// `m * 4 + 8` bytes per node.
+fn estimate_diskann_bytes(args: &Args) -> u64 {
+    const M: u64 = 32;
+    args.points.saturating_mul(args.dim as u64 * 4 + M * 4 + 8)
+}
+
+/// Measured peak RSS per point for each family's build at 1M (2.09 KiB HNSW,
+/// 1.21 KiB DiskANN). The corpus is a file mapping and its clean pages are
+/// evictable, so it is not added to the build peak.
+fn build_peak_kib_per_point(family: Family) -> f64 {
+    match family {
+        Family::Hnsw => 2.09,
+        Family::Diskann => 1.21,
+    }
+}
+
+fn physical_memory_bytes() -> Option<u64> {
+    #[cfg(target_os = "macos")]
+    {
+        let output = std::process::Command::new("sysctl")
+            .args(["-n", "hw.memsize"])
+            .output()
+            .ok()?;
+        String::from_utf8_lossy(&output.stdout).trim().parse().ok()
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let text = std::fs::read_to_string("/proc/meminfo").ok()?;
+        let line = text.lines().find(|line| line.starts_with("MemTotal:"))?;
+        let kib: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
+        kib.checked_mul(1024)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        None
+    }
+}
+
+/// Refuse when the largest selected build cannot fit in RAM. This is checked
+/// before `--budget-seconds` because memory is the wall a longer budget cannot
+/// move.
+fn memory_refusal(args: &Args) -> Option<String> {
+    // `--gt-only` stops before any index exists; only the scan's RSS matters and
+    // that is bounded by the query count, not by the tier.
+    if args.gt_only {
+        return None;
+    }
+    let physical = physical_memory_bytes()?;
+    let mut largest = args.families.first().copied()?;
+    for family in &args.families {
+        if build_peak_kib_per_point(*family) > build_peak_kib_per_point(largest) {
+            largest = *family;
+        }
+    }
+    let per_point = build_peak_kib_per_point(largest);
+    let needed = args.points as f64 * per_point * 1024.0;
+    let usable = physical as f64 * 0.85;
+    if needed <= usable {
+        return None;
+    }
+    Some(format!(
+        "refusing: memory, not time or disk. The {} build peaks at about {:.0} GiB \
+         ({per_point:.2} KiB/point measured at 1M) and this host has {:.0} GiB, of which the \
+         guardrail allows {:.0} GiB; the largest tier that fits is about {:.0}M points. Lower \
+         --points, or select diskann only ({:.2} KiB/point).",
+        largest.name(),
+        bytes_to_mib(needed as u64) / 1024.0,
+        bytes_to_mib(physical) / 1024.0,
+        bytes_to_mib(usable as u64) / 1024.0,
+        usable / (per_point * 1024.0) / 1e6,
+        build_peak_kib_per_point(Family::Diskann),
+    ))
+}
+
+/// `None` while the budget still affords the next point; `Some(message)` names
+/// the resource that ran out when it does not.
+fn budget_refusal(args: &Args, started: Instant, family: &Family, ef: usize) -> Option<String> {
+    let spent = started.elapsed().as_secs_f64();
+    if spent <= args.budget_seconds {
+        return None;
+    }
+    Some(format!(
+        "budget exhausted: time, not memory or disk. {spent:.0}s of --budget-seconds {:.0}s is \
+         already spent before {} ef_search={ef}; reporting the rows measured so far. Raise \
+         --budget-seconds deliberately or lower --points/--ef.",
+        args.budget_seconds,
+        family.name(),
+    ))
+}
+
 struct Stats {
     recall: f64,
     p50: f64,
@@ -1511,15 +1999,25 @@ struct Stats {
     first_error: Option<String>,
 }
 
-fn evaluate(
-    index: &vicinity::hnsw::HNSWIndex,
+/// One measurement point over the shared query set and cached truth.
+///
+/// `search` is the family's own call — `HNSWIndex::search` for the in-RAM
+/// graph, `DiskANNSearcher::search` for the file-backed one — so the closure
+/// keeps each family's real call signature (`&self` vs `&mut self`) out of the
+/// measurement code. Five untimed warm-up queries run first; with a block
+/// cache that is what makes the timed rows steady-state rather than cold.
+fn evaluate<F>(
+    mut search: F,
     queries: &[Vec<f32>],
     truth: &[Vec<u32>],
     k: usize,
     ef: usize,
-) -> Stats {
+) -> Stats
+where
+    F: FnMut(&[f32], usize, usize) -> Result<Vec<(u32, f32)>, String>,
+{
     for query in queries.iter().take(5) {
-        let _ = index.search(query, k, ef);
+        let _ = search(query, k, ef);
     }
 
     let mut latencies = Vec::with_capacity(queries.len());
@@ -1530,7 +2028,7 @@ fn evaluate(
     let loop_start = Instant::now();
     for (query, expected) in queries.iter().zip(truth.iter()) {
         let start = Instant::now();
-        match index.search(query, k, ef) {
+        match search(query, k, ef) {
             Ok(results) => {
                 hits += results
                     .iter()
@@ -1541,7 +2039,7 @@ fn evaluate(
             Err(error) => {
                 errors += 1;
                 if first_error.is_none() {
-                    first_error = Some(string_err(error));
+                    first_error = Some(error);
                 }
             }
         }
@@ -1556,6 +2054,9 @@ fn evaluate(
         p95: percentile(&mut latencies.clone(), 95.0),
         p99: percentile(&mut latencies, 99.0),
         qps: queries.len() as f64 / total_s.max(f64::EPSILON),
+        // A number only when the counter exists; when the feature is off the
+        // cell stays null rather than claiming "0 distances" (which would be a
+        // false claim that every query was free).
         dists_per_query: if cfg!(feature = "distance-stats") {
             dists as f64 / queries.len() as f64
         } else {
@@ -1595,15 +2096,65 @@ struct Row {
     first_error: Option<String>,
 }
 
+/// Where a build put its measurements. One per family per run; every row from
+/// that family carries the same values.
+struct BuildReport {
+    build_s: f64,
+    mem_mib: f64,
+    rss_mib: f64,
+    index_disk_mib: f64,
+    persist_s: f64,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_rows(
+    rows: &mut Vec<Row>,
+    family: &'static str,
+    knob: &'static str,
+    knob_value: usize,
+    stats: Stats,
+    report: &BuildReport,
+    args: &Args,
+    verify: bool,
+    gt_path: &Path,
+    exact_timed: f64,
+) {
+    rows.push(Row {
+        family,
+        dataset: format!("{}@{}", args.domain.name(), tier_label(args.points)),
+        knob,
+        knob_value,
+        recall: stats.recall,
+        ratio: exact_timed / stats.p50.max(f64::MIN_POSITIVE),
+        p50: stats.p50,
+        p95: stats.p95,
+        p99: stats.p99,
+        qps: stats.qps,
+        dists_per_query: stats.dists_per_query,
+        build_s: report.build_s,
+        mem_mib: report.mem_mib,
+        rss_mib: report.rss_mib,
+        index_disk_mib: report.index_disk_mib,
+        persist_s: report.persist_s,
+        n: args.points,
+        dim: args.dim,
+        gt_verified: verify,
+        gt_cache: gt_path.display().to_string(),
+        errors: stats.errors,
+        first_error: stats.first_error,
+    });
+}
+
 fn print_rows(rows: &[Row], count: u64, dim: usize, queries: usize) {
     println!("## large_scale: n={count} dim={dim} queries={queries}");
     println!();
     println!(
         "| family | knob | recall@10 | 1/ratio@10 | p50 us | p95 us | p99 us | QPS | build s | \
-         RSS after build MiB | index disk MiB | dists/q |"
+         index mem MiB | RSS at query MiB | index disk MiB | dists/q |"
     );
     println!(
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | \
+         ---: |"
     );
     for row in rows {
         let disk = if row.index_disk_mib.is_finite() {
@@ -1613,7 +2164,7 @@ fn print_rows(rows: &[Row], count: u64, dim: usize, queries: usize) {
         };
         println!(
             "| {} | {}={} | {:.3} | {:.2} | {:.1} | {:.1} | {:.1} | {:.0} | {:.2} | {:.1} | \
-             {} | {} |",
+             {:.1} | {} | {} |",
             row.family,
             row.knob,
             row.knob_value,
@@ -1625,6 +2176,7 @@ fn print_rows(rows: &[Row], count: u64, dim: usize, queries: usize) {
             row.qps,
             row.build_s,
             row.mem_mib,
+            row.rss_mib,
             disk,
             if cfg!(feature = "distance-stats") {
                 format!("{:.0}", row.dists_per_query)
@@ -1634,7 +2186,7 @@ fn print_rows(rows: &[Row], count: u64, dim: usize, queries: usize) {
         );
         if row.errors > 0 {
             println!(
-                "| ^ {} query errors: {} | | | | | | | | | | | |",
+                "| ^ {} query errors: {} | | | | | | | | | | | | |",
                 row.errors,
                 row.first_error.as_deref().unwrap_or("unknown")
             );
@@ -1653,11 +2205,13 @@ fn write_jsonl(path: &Path, rows: &[Row], args: &Args, gt_cache: &Path, dataset:
         }
     }
     let mut out = String::new();
+    let families: Vec<&str> = args.families.iter().map(|family| family.name()).collect();
     let _ = writeln!(
         out,
         "{{\"_meta\":true,\"schema\":1,\"harness\":\"large_scale\",\"n\":{},\"dim\":{},\
          \"k\":{},\"queries\":{},\"dataset\":\"{}\",\"tier\":\"{}\",\"seed\":\"0x{SEED:016X}\",\
-         \"mmap\":true,\"large_scale\":true,\"batch\":{},\"distance_stats\":{},\"max_points\":{},\
+         \"mmap\":true,\"large_scale\":true,\"batch\":{},\"families\":\"{}\",\
+         \"diskann_cache_mib\":{},\"distance_stats\":{},\"max_points\":{},\
          \"budget_seconds\":{},\"vicinity\":\"{}\",\"gt_cache\":\"{}\",\"data_file\":\"{}\"}}",
         args.points,
         args.dim,
@@ -1666,6 +2220,8 @@ fn write_jsonl(path: &Path, rows: &[Row], args: &Args, gt_cache: &Path, dataset:
         args.domain.name(),
         tier_label(args.points),
         effective_batch(args),
+        families.join(","),
+        args.diskann_cache_mib,
         cfg!(feature = "distance-stats"),
         args.max_points,
         json_num(args.budget_seconds, 1),
@@ -1762,33 +2318,53 @@ fn string_err<E: std::fmt::Display>(error: E) -> String {
 struct Estimate {
     generation: f64,
     ground_truth: f64,
-    build: f64,
+    hnsw_build: f64,
+    diskann_build: f64,
     persist: f64,
     total: f64,
 }
 
 fn estimate(args: &Args, remaining_rows: u64, gt_cached: bool) -> Estimate {
-    // Conservative coefficients measured on a 16-core arm64 workstation:
-    // generation is dominated by random draws and 384 MiB/s of writes, the
-    // shard scan by SIMD dot products across all cores, and HNSW construction
-    // by graph search at ef_construction=200.
+    // Conservative coefficients measured on a 16-core arm64 workstation. The
+    // 100M corpus was written at ~640 MB/s, so generation at 50e6 components/s
+    // (200 MB/s) is ~3x conservative; HNSW construction measured 1.2-1.6e-4
+    // s/point and DiskANN's two-pass Vamana 1.2-1.3e-4 s/point at 100k-3M, and
+    // both coefficients below sit above those so a loaded host still fits.
     let generation = (remaining_rows as f64 * args.dim as f64) / 50e6;
     let ground_truth = if gt_cached {
         0.0
     } else {
-        (args.gt_queries as f64 * args.points as f64 * args.dim as f64) / 3e9
+        // Measured at 100M: 500 queries x 100M rows in 45.8 s = 1092 M
+        // 96-dim comparisons/s across 16 threads. 1.0e11 is that rate with
+        // ~10% of headroom.
+        (args.gt_queries as f64 * args.points as f64 * args.dim as f64) / 1.0e11
     };
-    let build = args.points as f64 * 2.0e-4;
-    let persist = if args.persist {
-        (args.points as f64 * args.dim as f64 * 4.0) / 300e6
+    // `--gt-only` stops before any index exists, so it must not be refused for
+    // build time it will never spend.
+    let builds = !args.gt_only;
+    let hnsw_build = if builds && args.families.contains(&Family::Hnsw) {
+        args.points as f64 * 1.8e-4
     } else {
         0.0
     };
+    let diskann_build = if builds && args.families.contains(&Family::Diskann) {
+        args.points as f64 * 1.6e-4
+    } else {
+        0.0
+    };
+    let persist_per_family = (args.points as f64 * args.dim as f64 * 4.0) / 300e6;
+    let persist = if args.persist && builds {
+        persist_per_family * args.families.len() as f64
+    } else {
+        0.0
+    };
+    let build = hnsw_build + diskann_build;
     let total = generation + ground_truth + build + persist;
     Estimate {
         generation,
         ground_truth,
-        build,
+        hnsw_build,
+        diskann_build,
         persist,
         total,
     }
@@ -1817,7 +2393,8 @@ fn self_test() -> Res<()> {
     let ctx = DomainContext::new(domain, SEED, dim);
     let path = dataset_path(&root, domain, count, dim);
 
-    let first = ensure_dataset(&ctx, &path, count, dim)?;
+    let families = [Family::Hnsw, Family::Diskann];
+    let first = ensure_dataset(&ctx, &path, count, dim, &families)?;
     if first.generated != count || first.resumed_from != 0 {
         return Err(format!(
             "self-test: fresh generation reported {} rows from {}",
@@ -1835,7 +2412,7 @@ fn self_test() -> Res<()> {
         .map_err(|err| format!("truncate {}: {err}", path.display()))?;
     drop(file);
 
-    let resumed = ensure_dataset(&ctx, &path, count, dim)?;
+    let resumed = ensure_dataset(&ctx, &path, count, dim, &families)?;
     if resumed.resumed_from != count - 37 || resumed.generated != 37 {
         return Err(format!(
             "self-test: resume reported {} rows from {}",
