@@ -56,7 +56,8 @@ through a predicate instead of filtering after the fact, and
 `filtered_graph::search_filtered` picks between a beam and an exact scan of the
 inverted list depending on selectivity.
 
-On 20k random points at 20% selectivity, recall@10 is 1.000 for a pre-filtered
+On 20k random points at 20% selectivity (one point in five passes the predicate),
+recall@10 is 1.000 for a pre-filtered
 exact scan (91 µs), 1.000 for post-filtering an HNSW beam (602 µs), 1.000 through
 the filtered graph and 0.583 for the ACORN-style two-hop walk (2.1 ms).
 
@@ -158,7 +159,16 @@ Three caveats apply before any of it is quoted. Equal `ef` is not equal recall:
 0.981 at 10k and 0.294 at 1M are the same knob. QPS is host-sensitive and
 single-threaded: one exact scan here measured 8.6 ms to 26.8 ms an hour apart, so
 quote latency with its host. And a row measures one storage mode: resident and
-file-backed DiskANN are separate rows, 2.1× to 3.3× apart.
+file-backed DiskANN differ by 2.1× to 3.3×, so a row is not the family.
+
+Four terms carry most of the numbers. **Recall@10** is the mean fraction of the
+true ten nearest neighbours that a query returns, where the truth is an exact
+scan of the same corpus. **`ef_search`** is the beam width: how many candidates
+the walk keeps live, which is the knob that trades latency for recall. It is an
+absolute count, not a fraction of `n`, which is why the same value means
+different things at different tiers. A **family** is one index implementation
+(`hnsw`, `ivf_pq`, `lsh`), not a category. A **storage mode** is where that
+family answered from, the heap or the file cache, and the two are separate rows.
 
 [Atlas](docs/benchmark-atlas.md) · [Storage audit](docs/storage-audit.md) ·
 [Full results](docs/benchmark-results.md) · [Ratchet](benchmarks/README.md)
