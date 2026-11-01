@@ -2481,3 +2481,108 @@ fn search_knn_uses_the_builder_ef() {
         index.search(&query, 5, 64).unwrap()
     );
 }
+
+/// Deleting a tenth of the index must not eat the `ef` budget.
+///
+/// Before the admission split, the beam filled its result set with any node it
+/// reached, tombstones included, and stopped once that set was full. At 10%
+/// deleted and `ef = 10` the search returned **zero** results and recall@10 was
+/// 0.090 on a seeded 5k set; at `ef = 64` it returned 6 of 10. The fix admits a
+/// candidate to a result slot only when it is live, so `ef` counts live results.
+///
+/// The floor here is a regression guard, not a target: it is far below what the
+/// current code reaches because the point is to fail loudly if tombstones ever
+/// start consuming slots again.
+#[test]
+fn tombstones_keep_recall_when_a_tenth_of_the_index_is_deleted() {
+    let dim = 32;
+    let n = 5_000usize;
+    let mut seed: u64 = 0x5EED_1234;
+    let mut next = || -> f32 {
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+        ((seed >> 33) as f32) / (u32::MAX as f32) - 0.5
+    };
+    let mut vectors: Vec<Vec<f32>> = Vec::with_capacity(n);
+    for _ in 0..n {
+        let mut v: Vec<f32> = (0..dim).map(|_| next()).collect();
+        let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm > 0.0 {
+            v.iter_mut().for_each(|x| *x /= norm);
+        }
+        vectors.push(v);
+    }
+
+    let params = HNSWParams {
+        seed: Some(42),
+        ..HNSWParams::default()
+    };
+    let mut index = HNSWIndex::with_params(dim, params).unwrap();
+    for (i, v) in vectors.iter().enumerate() {
+        index.add(i as u32, v.clone()).unwrap();
+    }
+    index.build().unwrap();
+
+    // Delete every tenth node: 10% of the index, spread across the graph.
+    let deleted: Vec<bool> = (0..n).map(|i| i % 10 == 0).collect();
+    for i in (0..n).filter(|i| i % 10 == 0) {
+        index.delete(i as u32).unwrap();
+    }
+    let live: Vec<u32> = (0..n as u32).filter(|&i| !deleted[i as usize]).collect();
+
+    // Exact top-10 over the live set, same cosine score the index uses.
+    let exact = |query: &[f32]| -> Vec<u32> {
+        let mut scored: Vec<(u32, f32)> = live
+            .iter()
+            .map(|&id| {
+                (
+                    id,
+                    crate::distance::cosine_distance_normalized(query, &vectors[id as usize]),
+                )
+            })
+            .collect();
+        scored.sort_unstable_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+        scored.into_iter().take(10).map(|(id, _)| id).collect()
+    };
+
+    let queries: Vec<Vec<f32>> = (0..50)
+        .map(|_| {
+            let mut q: Vec<f32> = (0..dim).map(|_| next()).collect();
+            let norm = q.iter().map(|x| x * x).sum::<f32>().sqrt();
+            if norm > 0.0 {
+                q.iter_mut().for_each(|x| *x /= norm);
+            }
+            q
+        })
+        .collect();
+
+    let mut measured = Vec::new();
+    for ef in [10usize, 32, 64, 128] {
+        let mut hits = 0usize;
+        for query in &queries {
+            let got = index.search(query, 10, ef).unwrap();
+            assert_eq!(
+                got.len(),
+                10,
+                "ef={ef} returned {} of 10 results",
+                got.len()
+            );
+            let want = exact(query);
+            hits += got.iter().filter(|(id, _)| want.contains(id)).count();
+        }
+        let recall = hits as f32 / (queries.len() * 10) as f32;
+        measured.push((ef, recall));
+    }
+    for (ef, recall) in &measured {
+        eprintln!("tombstone-measure ef={ef} recall@10={recall:.4}");
+    }
+    // Floors are regression guards, not targets: they fail loudly if a
+    // tombstone ever takes an `ef` slot again, which collapses these numbers.
+    for (ef, floor) in [(10usize, 0.70f32), (32, 0.90), (64, 0.95), (128, 0.95)] {
+        let recall = measured.iter().find(|(e, _)| *e == ef).unwrap().1;
+        assert!(
+            recall >= floor,
+            "ef={ef} recall@10 was {recall:.3} with 10% deleted (floor {floor}): \
+             tombstones are consuming result slots"
+        );
+    }
+}
