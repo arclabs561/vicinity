@@ -23,7 +23,7 @@
 //!
 //! Vectors are L2-normalized on ingest so the default cosine HNSW is well-formed.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
@@ -52,6 +52,14 @@ const INDEX_KIND: &str = "hnsw";
 const SIDECAR_MAGIC: &[u8; 8] = b"VICHNSW1";
 const SIDECAR_VERSION: u32 = 2;
 
+#[cfg(test)]
+thread_local! {
+    /// Counts live-buffer graph builds on the current thread. A test asserts the
+    /// graph is built once per write rather than once per query; thread-local so
+    /// tests running in parallel do not disturb each other.
+    static LIVE_BUFFER_BUILDS: Cell<usize> = const { Cell::new(0) };
+}
+
 /// An updatable, durable multi-segment HNSW index.
 pub struct UpdatableIndex {
     inner: SegmentedStore<VectorBacking>,
@@ -63,6 +71,12 @@ pub struct UpdatableIndex {
     /// Segment ids whose on-disk HNSW sidecar was validated or written in this
     /// process, so a checkpoint re-persists only genuinely missing/stale segments.
     persisted: RefCell<HashSet<u64>>,
+    /// Bumped by every mutation that can change the unflushed buffer, so the
+    /// live-buffer graph is rebuilt on the first query after a write and reused
+    /// by every query in between.
+    live_epoch: Cell<u64>,
+    /// The unflushed buffer's HNSW, tagged with the epoch it was built at.
+    live_cache: RefCell<Option<(u64, Option<HNSWIndex>)>>,
 }
 
 /// A read-only checkpoint view that loads per-segment HNSW sidecars before
@@ -105,6 +119,8 @@ impl UpdatableIndex {
                 by_segment_id: HashMap::new(),
             }),
             persisted: RefCell::new(HashSet::new()),
+            live_epoch: Cell::new(0),
+            live_cache: RefCell::new(None),
         })
     }
 
@@ -124,6 +140,7 @@ impl UpdatableIndex {
         // supersedes the id's sealed copy, so that one segment's cached HNSW and
         // sidecar go stale.
         self.invalidate_live_segment_of(id);
+        self.invalidate_live_buffer();
         self.inner.add(id, distance::normalize(vector))?;
         Ok(())
     }
@@ -158,6 +175,7 @@ impl UpdatableIndex {
             self.invalidate_live_segment_of(*id);
         }
         self.inner.extend(normalized)?;
+        self.invalidate_live_buffer();
         Ok(())
     }
 
@@ -165,6 +183,7 @@ impl UpdatableIndex {
     pub fn delete(&mut self, id: u32) -> PersistenceResult<()> {
         // Look up the owning segment first: the delete clears it.
         self.invalidate_live_segment_of(id);
+        self.invalidate_live_buffer();
         self.inner.delete(id)?;
         Ok(())
     }
@@ -175,6 +194,14 @@ impl UpdatableIndex {
     /// build re-persists over the live set. (The `load_sidecar` guard would
     /// reject a stale sidecar anyway; this just avoids a wasted load + rebuild
     /// on the next search.) Call before mutating `inner`.
+    /// Mark the cached live-buffer graph stale. Every mutation that can change
+    /// the unflushed buffer calls this, so the next query rebuilds exactly once
+    /// instead of once per query.
+    fn invalidate_live_buffer(&self) {
+        self.live_epoch.set(self.live_epoch.get().wrapping_add(1));
+        *self.live_cache.borrow_mut() = None;
+    }
+
     fn invalidate_live_segment_of(&self, id: u32) {
         let Some(seg_id) = self.inner.live_segment_of(&id) else {
             return;
@@ -190,6 +217,7 @@ impl UpdatableIndex {
     /// Merge segments (dropping tombstoned vectors) and persist a checkpoint.
     pub fn compact(&mut self) -> PersistenceResult<()> {
         self.inner.compact()?;
+        self.invalidate_live_buffer();
         self.prune_cache_to_current_segments();
         self.persist_new_segments();
         Ok(())
@@ -201,6 +229,7 @@ impl UpdatableIndex {
     /// since the last checkpoint are built (O(new), not O(corpus)).
     pub fn checkpoint(&mut self) -> PersistenceResult<()> {
         self.inner.checkpoint()?;
+        self.invalidate_live_buffer();
         self.persist_new_segments();
         Ok(())
     }
@@ -209,6 +238,7 @@ impl UpdatableIndex {
     /// so the segment count stays bounded without a full [`compact`](Self::compact).
     pub fn compact_tiers(&mut self) -> PersistenceResult<()> {
         let stats = self.inner.compact_tiers()?;
+        self.invalidate_live_buffer();
         if stats.merges > 0 {
             self.prune_cache_to_current_segments();
             self.persist_new_segments();
@@ -221,6 +251,7 @@ impl UpdatableIndex {
     /// [`compact`](Self::compact) when a few segments are delete-heavy.
     pub fn reclaim(&mut self, min_live_ratio: f64) -> PersistenceResult<()> {
         let stats = self.inner.reclaim_tombstones(min_live_ratio)?;
+        self.invalidate_live_buffer();
         if stats.merges > 0 {
             self.prune_cache_to_current_segments();
             self.persist_new_segments();
@@ -257,10 +288,23 @@ impl UpdatableIndex {
                 }
             }
         }
-        // The small unflushed buffer is built per query.
-        let buffered = self.inner.buffer();
-        if let Some(idx) = self.build_live_index(buffered) {
-            cand.extend(idx.search(&q, k, ef).unwrap_or_default());
+        // The unflushed buffer's graph is cached across queries: it is rebuilt on
+        // the first query after a write and reused until the next one. Building it
+        // per query made query cost scale with the buffer, which is the opposite of
+        // what a mutable store is for.
+        {
+            let epoch = self.live_epoch.get();
+            let mut guard = self.live_cache.borrow_mut();
+            let stale = guard.as_ref().is_none_or(|(built, _)| *built != epoch);
+            if stale {
+                let built = self.build_live_index(self.inner.buffer());
+                #[cfg(test)]
+                LIVE_BUFFER_BUILDS.with(|c| c.set(c.get() + 1));
+                *guard = Some((epoch, built));
+            }
+            if let Some((_, Some(idx))) = guard.as_ref() {
+                cand.extend(idx.search(&q, k, ef).unwrap_or_default());
+            }
         }
         // Lower cosine distance is nearer.
         cand.sort_by(|a, b| a.1.total_cmp(&b.1));
@@ -728,6 +772,60 @@ mod tests {
             .map(|(id, _)| id)
             .collect();
         assert_eq!(top, vec![2], "recovery preserves the search");
+    }
+
+    #[test]
+    fn live_buffer_graph_is_built_once_per_write_not_once_per_query() {
+        // Before the cache, `search` built an HNSW over the unflushed buffer on
+        // every call, so query cost grew with the buffer and repeated queries paid
+        // the build again. A flush threshold above the corpus size keeps every
+        // vector in the buffer, which is the case this measures.
+        let dir = MemoryDirectory::arc();
+        let mut store = UpdatableIndex::open(dir, 1024, 4, 16, 32).unwrap();
+        for i in 0..200u32 {
+            let a = i as f32 * 0.017;
+            store.add(i, &[a.cos(), a.sin(), 1.0, 0.5]).unwrap();
+        }
+
+        LIVE_BUFFER_BUILDS.with(|c| c.set(0));
+        let first = store.search(&[1.0, 0.0, 1.0, 0.5], 5, 32);
+        assert_eq!(
+            LIVE_BUFFER_BUILDS.with(Cell::get),
+            1,
+            "the first query after a write builds the live graph once"
+        );
+
+        for _ in 0..4 {
+            let again = store.search(&[1.0, 0.0, 1.0, 0.5], 5, 32);
+            assert_eq!(
+                again.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+                first.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+                "a cached graph returns the same neighbours"
+            );
+        }
+        assert_eq!(
+            LIVE_BUFFER_BUILDS.with(Cell::get),
+            1,
+            "four more queries reuse the cached graph"
+        );
+
+        // One more write invalidates it, and the next query rebuilds exactly once.
+        store.add(201, &[0.3, 0.4, 1.0, 0.5]).unwrap();
+        let _ = store.search(&[0.3, 0.4, 1.0, 0.5], 5, 32);
+        let _ = store.search(&[0.3, 0.4, 1.0, 0.5], 5, 32);
+        assert_eq!(
+            LIVE_BUFFER_BUILDS.with(Cell::get),
+            2,
+            "a write costs one rebuild, not one per following query"
+        );
+
+        // Checkpoint flushes the buffer, so the cache must not serve the old graph.
+        store.checkpoint().unwrap();
+        let after = store.search(&[0.3, 0.4, 1.0, 0.5], 5, 32);
+        assert!(
+            after.iter().all(|(id, _)| *id != 0),
+            "the query still returns live neighbours after a flush"
+        );
     }
 
     #[test]
