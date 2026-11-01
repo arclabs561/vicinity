@@ -1462,6 +1462,10 @@ fn build_ivf_rabitq(
         nprobe: 4,
         total_bits: 4,
         seed: 42,
+        // The harness measures the shipped defaults for rotation and the error
+        // bound; changing them would make its row incomparable with the
+        // baseline the ratchet compares against.
+        ..IVFRaBitQParams::default()
     };
     let mut index = IVFRaBitQIndex::new(dim, params).map_err(to_string_err)?;
     for (i, vector) in vectors.iter().enumerate() {
