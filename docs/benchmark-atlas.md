@@ -26,6 +26,18 @@ Rows are committed under [`benchmarks/`](../benchmarks/) and
 large-scale tiers are `benchmarks/large-scale-*.jsonl`; the per-dataset runs are
 `docs/*.jsonl`.
 
+A **tier** is one rung of the corpus-size ladder (10k, 100k, 1M, 3M measured;
+10M, 100M, 1B estimated), and it is a controlled comparison rather than a bigger
+version of the rung below it. Within a tier, the generator, `d=96`, the metric,
+the query count and the exact ground truth are fixed; only `n` moves. Between
+tiers everything is held constant except `n` as well, which is the point: a
+difference between the 100k and 1M curves is attributable to scale and nothing
+else. It also means a tier result is not transportable. `ef` is an absolute
+beam width, not a fraction of `n`, so the same `ef=200` that scores 0.981 at 10k
+scores 0.294 at 1M on uniform data; a plot that joins tiers without saying so
+invites exactly that misreading. Every figure here names its tier in the caption
+and plots each tier as its own series.
+
 ## Compared with ann-benchmarks
 
 [ANN-Benchmarks](https://ann-benchmarks.com/) is the reference this work is

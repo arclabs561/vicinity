@@ -112,10 +112,23 @@ positional reads.
    throughput at one core.
 
 5. **RaBitQ cannot be persisted after compaction.** `compact()` frees the f32
-   corpus and then `save_to_dir` fails because edges cannot be reconstructed
-   outside `qntz` (`benchmarks/README.md`, "RaBitQ at a fixed memory budget").
-   The family whose entire selling point is a fixed memory budget is the one that
-   cannot be written to disk in that form.
+   corpus and then `save_to_dir` fails (`benchmarks/README.md`, "RaBitQ at a
+   fixed memory budget"). The reason is not that the codes are unserialisable.
+   An `EdgeQuantizedVector` holds a `QuantizedVector` built against a *zero*
+   centroid plus one scalar, `ip_parent_rot_codes`, which precomputes
+   `⟨R·u, codes + cb⟩` for the parent `u` (`qntz/src/rabitq.rs:850-872`). Both
+   are derived quantities: given the residual `R·(v−u)` and `R·u` they are
+   cheap to compute, and given only the codes you cannot check that either
+   invariant holds. The current file format is rebuild-on-load — it writes
+   `raw_vectors.bin`, `centroids.bin` and cluster membership and recomputes the
+   codes at load — so `compact()` removes the format's only input.
+   Persisting the codes instead is possible in principle (the fields are `pub`),
+   but `EdgeQuantizedVector` is `#[non_exhaustive]`, so nothing outside `qntz`
+   can construct one from bytes; that needs a constructor or a serde derive in
+   `qntz`, plus a format version and a checksum, because a load path that trusts
+   the file cannot re-validate the invariants. The family whose entire selling
+   point is a fixed memory budget is the one that cannot be written to disk in
+   that form.
 
 6. **No family compresses at rest.** Index files are raw `f32` vectors and `u32`
    ids. That is the right default for latency, but it means disk bytes ≈ corpus

@@ -533,10 +533,19 @@ impl IVFRaBitQIndex {
 
     /// Save a built IVF-RaBitQ index to a directory.
     ///
-    /// The current format stores normalized raw vectors and cluster membership,
-    /// then rebuilds RaBitQ edge codes on load. Saving after [`Self::compact`]
-    /// is rejected because `qntz::rabitq::EdgeQuantizedVector` intentionally
-    /// cannot be reconstructed from fields outside `qntz`.
+    /// The format is rebuild-on-load: it stores normalized raw vectors, cluster
+    /// membership and centroids, then recomputes the RaBitQ edge codes when the
+    /// index is opened. [`Self::compact`] drops exactly the raw vectors that
+    /// rebuild needs, so a compacted index has no input left to write.
+    ///
+    /// The codes are not the obstacle: `qntz::rabitq::EdgeQuantizedVector`
+    /// exposes its fields for inspection. It is `#[non_exhaustive]` with no
+    /// public constructor, though, so an index cannot assemble one from bytes it
+    /// read back, and an `EdgeQuantizedVector` is only meaningful if its codes
+    /// were built against a zero centroid and its `ip_parent_rot_codes` matches
+    /// the parent used for the residual. Persisting codes therefore needs a
+    /// constructor or serde derive in `qntz`, plus a versioned, checksummed
+    /// format that accepts trusting the file rather than re-deriving it.
     pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<(), RetrieveError> {
         if !self.built {
             return Err(RetrieveError::NotBuilt {
