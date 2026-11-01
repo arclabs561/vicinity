@@ -2044,11 +2044,11 @@ mod tests {
         };
         assert!(matches!(
             IVFPQIndex::new(16, params.clone()),
-            Err(RetrieveError::InvalidParameter(_))
+            Err(RetrieveError::InvalidConfig { .. })
         ));
         assert!(matches!(
             IVFPQIndex::with_filtering(16, params, "category"),
-            Err(RetrieveError::InvalidParameter(_))
+            Err(RetrieveError::InvalidConfig { .. })
         ));
     }
 
@@ -2448,9 +2448,13 @@ mod tests {
 
         let query: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
         let err = index.search_reranked(&query, 5, 50).unwrap_err();
+        // Assert the cause, not the prose: the message is allowed to improve.
         assert!(
-            err.to_string().contains("search_reranked unavailable"),
-            "unexpected error: {err}"
+            matches!(
+                err,
+                RetrieveError::Unsupported { feature, .. } if feature.contains("search_reranked")
+            ),
+            "expected Unsupported(search_reranked), got {err:?}"
         );
     }
 
@@ -2919,16 +2923,18 @@ mod tests {
         assert_eq!(loaded.search(&query, 10).unwrap(), approx_before);
         let err = loaded.search_reranked(&query, 10, 80).unwrap_err();
         assert!(
-            err.to_string().contains("search_reranked unavailable"),
-            "unexpected error: {err}"
+            matches!(
+                err,
+                RetrieveError::Unsupported { feature, .. } if feature.contains("search_reranked")
+            ),
+            "expected Unsupported(search_reranked), got {err:?}"
         );
 
         let mut file_searcher = IVFPQFileSearcher::load(dir.path()).unwrap();
         assert_eq!(file_searcher.search(&query, 10).unwrap(), approx_before);
         let err = file_searcher.search_reranked(&query, 10, 80).unwrap_err();
         assert!(
-            err.to_string()
-                .contains("search_reranked unavailable without raw_vectors.bin"),
+            err.to_string().contains("search_reranked"),
             "unexpected error: {err}"
         );
     }
