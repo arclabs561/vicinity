@@ -1400,8 +1400,10 @@ mod tests {
     fn test_zero_dimension_error() {
         let result = DiskANNIndex::new(0, DiskANNParams::default());
         match result {
-            Err(RetrieveError::InvalidParameter(_)) => {}
-            Err(other) => panic!("Expected InvalidParameter, got {:?}", other),
+            Err(RetrieveError::InvalidConfig { field, .. }) => {
+                assert_eq!(field, "dimension");
+            }
+            Err(other) => panic!("Expected InvalidConfig, got {other:?}"),
             Ok(_) => panic!("Expected error for dimension 0"),
         }
     }

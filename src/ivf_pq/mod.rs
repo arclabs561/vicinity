@@ -97,6 +97,18 @@
 //!
 //! Distance computed via table lookup (precompute query-to-codebook distances).
 //!
+//! ## 3. Residuals (FAISS parity)
+//!
+//! Codes are residuals, not raw vectors: a vector is stored as
+//! `vector - centroid_of_its_list`, the PQ codebooks are trained on those
+//! residuals, and each probed list rebuilds the cumulative distance table from
+//! `query - that_list_centroid`. The table sum is then the full L2 distance to
+//! the reconstructed vector (`centroid + decoded residual`), so the centroid
+//! enters exactly once. Storing raw-vector codes while probing with residual
+//! tables (or the reverse) double-counts the centroid and collapses recall.
+//! Probed lists are chosen by an exact scan over every centroid, as in FAISS
+//! `IndexIVF::quantizer->search`.
+//!
 //! # Parameter Recommendations
 //!
 //! | Dataset Size | num_clusters | num_codebooks | nprobe |
