@@ -128,6 +128,17 @@ impl OptimizedProductQuantizer {
         self.pq.distance_with_table(table, codes)
     }
 
+    /// Reconstruct a vector in the original (unrotated) space from PQ codes.
+    ///
+    /// The rotation is orthogonal, so decoding applies the transpose.
+    pub fn reconstruct(&self, codes: &[u8]) -> Vec<f32> {
+        let rotated = self.pq.reconstruct(codes);
+        match &self.rotation {
+            Some(r) => transpose_matrix_vector_multiply(r, &rotated, self.dimension),
+            None => rotated,
+        }
+    }
+
     /// Apply rotation to a single vector.
     fn rotate_vector(&self, vector: &[f32]) -> Vec<f32> {
         match &self.rotation {
@@ -175,6 +186,19 @@ fn matrix_vector_multiply(m: &[f32], v: &[f32], d: usize) -> Vec<f32> {
             sum += m[row_start + j] * v[j];
         }
         *val = sum;
+    }
+    result
+}
+
+/// Multiply by the transpose of a row-major matrix: `Mᵀ · v`.
+fn transpose_matrix_vector_multiply(m: &[f32], v: &[f32], d: usize) -> Vec<f32> {
+    let mut result = vec![0.0f32; d];
+    for (i, out) in result.iter_mut().enumerate() {
+        let mut sum = 0.0;
+        for (j, &value) in v.iter().enumerate() {
+            sum += m[j * d + i] * value;
+        }
+        *out = sum;
     }
     result
 }
@@ -277,6 +301,62 @@ fn reconstruct_vector(pq: &ProductQuantizer, codes: &[u8], _dimension: usize) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `reconstruct` must undo the rotation. The rotation is pinned to a known
+    /// 90-degree rotation so the check is deterministic: a decoder that returned
+    /// the rotated-space reconstruction (forgot the transpose) fails it.
+    #[test]
+    fn reconstruct_undoes_learned_rotation() {
+        use rand::{Rng, SeedableRng};
+        let dim = 4;
+        let mut rng = rand::rngs::StdRng::seed_from_u64(11);
+        let mut data = Vec::new();
+        for _ in 0..64 {
+            for _ in 0..dim {
+                data.push(rng.random_range(-1.0f32..1.0f32));
+            }
+        }
+
+        let mut opq = OptimizedProductQuantizer::new(dim, 2, 16).unwrap();
+        opq.fit(&data, 64, 1).unwrap();
+        // 90-degree rotation in the first two dimensions, identity elsewhere.
+        let rotation = vec![
+            0.0, -1.0, 0.0, 0.0, //
+            1.0, 0.0, 0.0, 0.0, //
+            0.0, 0.0, 1.0, 0.0, //
+            0.0, 0.0, 0.0, 1.0,
+        ];
+        opq.rotation = Some(rotation.clone());
+
+        let original: Vec<f32> = (0..dim)
+            .map(|_| rng.random_range(-1.0f32..0.9f32))
+            .collect();
+        let codes = opq.quantize(&original);
+        let decoded = opq.reconstruct(&codes);
+
+        let rotated_space = opq.pq.reconstruct(&codes);
+        let expected = transpose_matrix_vector_multiply(&rotation, &rotated_space, dim);
+        for (a, b) in decoded.iter().zip(&expected) {
+            assert!((a - b).abs() <= 1e-6, "decode must apply R^T: {a} vs {b}");
+        }
+
+        let error: f32 = original
+            .iter()
+            .zip(&decoded)
+            .map(|(a, b)| (a - b) * (a - b))
+            .sum::<f32>()
+            .sqrt();
+        let forgot_transpose: f32 = original
+            .iter()
+            .zip(&rotated_space)
+            .map(|(a, b)| (a - b) * (a - b))
+            .sum::<f32>()
+            .sqrt();
+        assert!(
+            error < forgot_transpose,
+            "un-rotated decode ({error:.3}) must beat the rotated-space decode ({forgot_transpose:.3})"
+        );
+    }
 
     #[test]
     fn test_identity_rotation() {
