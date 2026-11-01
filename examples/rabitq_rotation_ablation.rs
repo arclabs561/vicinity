@@ -1,3 +1,5 @@
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 //! Recall@10 with and without the FHT/Kac rotation, at a fixed candidate budget.
 //!
 //! Builds IVF-RaBitQ over a seeded `n = 10_000, d = 96` set (isotropic,

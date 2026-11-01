@@ -185,7 +185,7 @@ impl FhtKacRotator {
     /// Normalized Hadamard transform over the first or last `trunc_dim`
     /// coordinates, alternating by round.
     fn hadamard_block(&self, round: usize, values: &mut [f32]) {
-        let start = if round % 2 == 0 {
+        let start = if round.is_multiple_of(2) {
             0
         } else {
             self.padded_dim - self.trunc_dim
