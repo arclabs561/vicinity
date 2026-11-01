@@ -138,9 +138,10 @@ impl SymphonyQGIndex {
     #[cfg(feature = "serde")]
     pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<(), RetrieveError> {
         if !self.index.is_built() || !self.quantized_built {
-            return Err(RetrieveError::InvalidParameter(
-                "cannot save unbuilt SymphonyQG index".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "SymphonyQG index",
+                operation: "save",
+            });
         }
 
         let output_dir = output_dir.as_ref();
@@ -311,14 +312,16 @@ impl SymphonyQGIndex {
 
     fn check_search_ready(&self, query: &[f32]) -> Result<(), RetrieveError> {
         if !self.index.is_built() {
-            return Err(RetrieveError::InvalidParameter(
-                "index must be built before search".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "SymphonyQG index",
+                operation: "search",
+            });
         }
         if !self.quantized_built {
-            return Err(RetrieveError::InvalidParameter(
-                "quantization not built (call build())".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "SymphonyQG quantization",
+                operation: "search",
+            });
         }
         if query.len() != self.index.dimension {
             return Err(RetrieveError::DimensionMismatch {
@@ -337,8 +340,9 @@ impl SymphonyQGIndex {
     fn rotate_query(&self, query: &[f32]) -> Result<Vec<f32>, RetrieveError> {
         self.quantizer
             .as_ref()
-            .ok_or_else(|| {
-                RetrieveError::InvalidParameter("quantizer must be set after build".into())
+            .ok_or(RetrieveError::NotBuilt {
+                component: "SymphonyQG quantizer",
+                operation: "search",
             })?
             .rotate_query(query)
             .map_err(|e| RetrieveError::InvalidParameter(format!("rotate query: {e}")))
@@ -519,14 +523,16 @@ impl SymphonyQGVRIndex {
     #[cfg(feature = "serde")]
     pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<(), RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "cannot save unbuilt SymphonyQG-VR index".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "SymphonyQG-VR index",
+                operation: "save",
+            });
         }
         if self.is_compacted() {
-            return Err(RetrieveError::InvalidParameter(
-                "cannot save compacted SymphonyQG-VR index".into(),
-            ));
+            return Err(RetrieveError::Unsupported {
+                feature: "saving a compacted SymphonyQG-VR index",
+                hint: "save before compact(), or rebuild the index",
+            });
         }
 
         let output_dir = output_dir.as_ref();
@@ -740,10 +746,10 @@ impl SymphonyQGVRIndex {
             return Ok(Vec::new());
         }
         if self.is_compacted() {
-            return Err(RetrieveError::InvalidParameter(
-                "SymphonyQG-VR search currently requires raw vectors; compacted search is unavailable"
-                    .into(),
-            ));
+            return Err(RetrieveError::Unsupported {
+                feature: "SymphonyQG-VR compacted search",
+                hint: "search the uncompacted index, or use search_reranked() with raw vectors",
+            });
         }
         if query.len() != self.dimension {
             return Err(RetrieveError::DimensionMismatch {
@@ -752,8 +758,9 @@ impl SymphonyQGVRIndex {
             });
         }
 
-        let quantizer = self.quantizer.as_ref().ok_or_else(|| {
-            RetrieveError::InvalidParameter("quantizer not built (call build())".into())
+        let quantizer = self.quantizer.as_ref().ok_or(RetrieveError::NotBuilt {
+            component: "SymphonyQG quantizer",
+            operation: "search",
         })?;
         let rotated_query = quantizer
             .rotate_query(query)
@@ -889,9 +896,10 @@ impl SymphonyQGVRIndex {
             return Ok(Vec::new());
         }
         if self.is_compacted() {
-            return Err(RetrieveError::InvalidParameter(
-                "search_reranked unavailable after compact() -- use search() instead".into(),
-            ));
+            return Err(RetrieveError::Unsupported {
+                feature: "search_reranked after compact()",
+                hint: "use search() instead",
+            });
         }
 
         let pool = rerank_pool.max(k);

@@ -210,9 +210,10 @@ impl CuratorIndex {
     /// Create a new Curator index.
     pub fn new(dimension: usize, params: CuratorParams) -> Result<Self, RetrieveError> {
         if dimension == 0 {
-            return Err(RetrieveError::InvalidParameter(
-                "dimension must be > 0".into(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "dimension",
+                expected: "must be greater than 0",
+            });
         }
         Ok(Self {
             dimension,
@@ -235,9 +236,10 @@ impl CuratorIndex {
         labels: Vec<String>,
     ) -> Result<(), RetrieveError> {
         if self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "cannot add after build".into(),
-            ));
+            return Err(RetrieveError::AlreadyBuilt {
+                component: "curator index",
+                operation: "add vectors",
+            });
         }
         if vector.len() != self.dimension {
             return Err(RetrieveError::DimensionMismatch {
@@ -289,9 +291,10 @@ impl CuratorIndex {
     /// Save a built Curator index to a directory.
     pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<(), RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "cannot save unbuilt curator index".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "curator index",
+                operation: "save",
+            });
         }
         if self.staging_labels.len() != self.num_vectors {
             return Err(RetrieveError::InvalidParameter(
@@ -373,9 +376,10 @@ impl CuratorIndex {
         label: &str,
     ) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "index must be built before search".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "curator index",
+                operation: "search",
+            });
         }
         if query.len() != self.dimension {
             return Err(RetrieveError::DimensionMismatch {
@@ -398,9 +402,10 @@ impl CuratorIndex {
     /// Unfiltered search (scans all leaves).
     pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "index must be built before search".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "curator index",
+                operation: "search",
+            });
         }
         if query.len() != self.dimension {
             return Err(RetrieveError::DimensionMismatch {

@@ -107,9 +107,10 @@ impl RPTreeIndex {
     /// Create new Random Projection Tree index.
     pub fn new(dimension: usize, params: RPTreeParams) -> Result<Self, RetrieveError> {
         if dimension == 0 {
-            return Err(RetrieveError::InvalidParameter(
-                "Dimension must be greater than 0".to_string(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "dimension",
+                expected: "must be greater than 0",
+            });
         }
 
         Ok(Self {
@@ -126,17 +127,17 @@ impl RPTreeIndex {
     /// Add a vector to the index.
     pub fn add(&mut self, doc_id: u32, embedding: Vec<f32>) -> Result<(), RetrieveError> {
         if embedding.len() != self.dimension {
-            return Err(RetrieveError::InvalidParameter(format!(
-                "Embedding dimension {} != {}",
-                embedding.len(),
-                self.dimension
-            )));
+            return Err(RetrieveError::DimensionMismatch {
+                query_dim: embedding.len(),
+                doc_dim: self.dimension,
+            });
         }
 
         if self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "Cannot add vectors after build".to_string(),
-            ));
+            return Err(RetrieveError::AlreadyBuilt {
+                component: "random-projection tree index",
+                operation: "add vectors",
+            });
         }
 
         self.vectors.extend_from_slice(&embedding);
@@ -165,9 +166,10 @@ impl RPTreeIndex {
     /// Save a built random-projection tree index to a directory.
     pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<(), RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "cannot save unbuilt random-projection tree index".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "random-projection tree index",
+                operation: "save",
+            });
         }
         let output_dir = output_dir.as_ref();
         std::fs::create_dir_all(output_dir)?;
@@ -318,23 +320,23 @@ impl RPTreeIndex {
     /// Search for k nearest neighbors.
     pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "Index not built".to_string(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "random-projection tree index",
+                operation: "search",
+            });
         }
 
         if query.len() != self.dimension {
-            return Err(RetrieveError::InvalidParameter(format!(
-                "Query dimension {} != {}",
-                query.len(),
-                self.dimension
-            )));
+            return Err(RetrieveError::DimensionMismatch {
+                query_dim: query.len(),
+                doc_dim: self.dimension,
+            });
         }
 
-        let root = self
-            .root
-            .as_ref()
-            .ok_or_else(|| RetrieveError::InvalidParameter("Tree not built".to_string()))?;
+        let root = self.root.as_ref().ok_or(RetrieveError::NotBuilt {
+            component: "random-projection tree index",
+            operation: "search",
+        })?;
 
         let mut heap = BinaryHeap::with_capacity(k.max(1));
         self.search_pruned(root, query, k, &mut heap)?;

@@ -173,14 +173,16 @@ impl FreshGraphIndex {
     /// Create a new FreshGraph index with the given dimension and parameters.
     pub fn new(dimension: usize, params: FreshGraphParams) -> Result<Self, RetrieveError> {
         if dimension == 0 {
-            return Err(RetrieveError::InvalidParameter(
-                "dimension must be > 0".into(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "dimension",
+                expected: "must be greater than 0",
+            });
         }
         if params.alpha < 1.0 {
-            return Err(RetrieveError::InvalidParameter(
-                "alpha must be >= 1.0".into(),
-            ));
+            return Err(RetrieveError::InvalidConfig {
+                field: "alpha",
+                expected: "must be at least 1.0",
+            });
         }
         Ok(Self {
             dimension,
@@ -205,9 +207,10 @@ impl FreshGraphIndex {
     /// Add a vector from a slice to the pre-build staging area.
     pub fn add_slice(&mut self, doc_id: u32, vector: &[f32]) -> Result<(), RetrieveError> {
         if self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "use insert() to add vectors after build".into(),
-            ));
+            return Err(RetrieveError::AlreadyBuilt {
+                component: "fresh graph index",
+                operation: "add vectors",
+            });
         }
         if vector.len() != self.dimension {
             return Err(RetrieveError::DimensionMismatch {
@@ -325,9 +328,10 @@ impl FreshGraphIndex {
     /// tombstones. It is a snapshot format, not a write-ahead log.
     pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<(), RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "cannot save unbuilt fresh graph index".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "fresh graph index",
+                operation: "save",
+            });
         }
         if self.doc_ids.len() != self.num_vectors
             || self.deleted.len() != self.num_vectors
@@ -443,9 +447,10 @@ impl FreshGraphIndex {
     /// live vector.
     pub fn insert(&mut self, doc_id: u32, vector: &[f32]) -> Result<(), RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "call build() before insert()".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "fresh graph index",
+                operation: "insert",
+            });
         }
         if vector.len() != self.dimension {
             return Err(RetrieveError::DimensionMismatch {
@@ -600,9 +605,10 @@ impl FreshGraphIndex {
     /// excluded from search results.
     pub fn delete(&mut self, doc_id: u32) -> Result<bool, RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "call build() before delete()".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "fresh graph index",
+                operation: "delete",
+            });
         }
         for i in 0..self.num_vectors {
             if self.doc_ids[i] == doc_id && !self.deleted[i] {
@@ -658,9 +664,10 @@ impl FreshGraphIndex {
     /// the returned result set.
     pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "index must be built before search".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "fresh graph index",
+                operation: "search",
+            });
         }
         if query.len() != self.dimension {
             return Err(RetrieveError::DimensionMismatch {
@@ -694,9 +701,10 @@ impl FreshGraphIndex {
         ef_search: usize,
     ) -> Result<Vec<(u32, f32)>, RetrieveError> {
         if !self.built {
-            return Err(RetrieveError::InvalidParameter(
-                "index must be built before search".into(),
-            ));
+            return Err(RetrieveError::NotBuilt {
+                component: "fresh graph index",
+                operation: "search",
+            });
         }
         if query.len() != self.dimension {
             return Err(RetrieveError::DimensionMismatch {
