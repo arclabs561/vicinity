@@ -52,16 +52,53 @@
 //!
 //! 1. **IVF partitioning**: k-means clusters vectors into cells
 //! 2. **Residual computation**: subtract cluster centroid from each vector
-//! 3. **RaBitQ quantization**: random rotation + sign/extended bits + correction factors
-//! 4. **Search**: probe nearest centroids, scan clusters with RaBitQ approximate distances
+//! 3. **Rotation**: FHT/Kac random rotation ([`rotator::FhtKacRotator`])
+//! 4. **RaBitQ quantization**: sign/extended bits + correction factors
+//! 5. **Search**: probe nearest centroids, scan clusters with RaBitQ approximate
+//!    distances, skip candidates the error bound excludes, exact-rerank survivors
 //!
 //! Built non-compacted indexes can be saved with `IVFRaBitQIndex::save_to_dir()`
 //! and restored with `IVFRaBitQIndex::load_from_dir()`. The current format
 //! reloads into memory and rebuilds edge codes from raw vectors.
 //!
+//! # Rotation
+//!
+//! The rotation is not optional decoration: RaBitQ's error analysis assumes a
+//! uniformly random orthogonal transform, and constructing one dense
+//! `D × D` matrix costs `O(D²)` per vector. This index uses the reference
+//! library's default: the **FHT/Kac** rotator, four Rademacher sign passes, a
+//! normalized fast Hadamard transform and a `π/4` Givens step over the padded
+//! tail, at `O(D log D)` per vector with `4D` bits of state. The working
+//! dimension is the input dimension rounded up to a multiple of 32, and that
+//! padded dimension is persisted so a reload cannot silently change the
+//! sampled transform.
+//!
+//! Data, centroids **and** queries all go through the same rotation.
+//! [`IVFRaBitQIndex::dequantize`] un-rotates a stored code back into the
+//! original coordinate system.
+//!
+//! [`RotationKind::Identity`] exists for ablation only. Without a rotation the
+//! signs of the residual coordinates are correlated with the coordinate axes,
+//! quantization error stops being isotropic, and recall drops sharply.
+//!
+//! # Distance and the error bound
+//!
 //! Distance is computed asymmetrically: query is exact f32, database vectors are
-//! quantized. The correction factors (`f_add`, `f_rescale`) provide theoretical
-//! error bounds on the distance estimate.
+//! quantized. The correction factors (`f_add`, `f_rescale`) provide the
+//! distance estimate and `f_error` its margin.
+//!
+//! Search uses that margin to skip candidates that cannot enter the result
+//! heap: `lower_bound = max(0, estimate - f_error · ‖q − c‖)` and a candidate
+//! is skipped when `lower_bound ≥` the heap's worst entry (FAISS
+//! `RaBitQUtils.h::should_refine_candidate`). Survivors are reranked with exact
+//! f32 distance when raw vectors are still resident.
+//!
+//! **The bound is probabilistic, not a guarantee.** `f_error` is RaBitQ's
+//! `1.9·ε` margin under the random-rotation model
+//! (FAISS `RaBitQUtils.cpp`, `kConstEpsilon = 1.9`). It bounds the estimator in
+//! expectation over rotations, so a specific dataset can exceed it and a true
+//! neighbor can be pruned. It is a speed/recall tradeoff, not a correctness
+//! proof.
 //!
 //! # References
 //!
@@ -69,18 +106,42 @@
 //!   Theoretical Error Bound for Approximate Nearest Neighbor Search." SIGMOD 2024.
 //! - Shi, Gao, Xia, Fehér, Long (2026). "GPU-Native Approximate Nearest Neighbor
 //!   Search with IVF-RaBitQ: Fast Index Build and Search." arXiv:2602.23999.
+//! - RaBitQ-Library `docs/docs/rabitq/rotator.md` (FHT/Kac default rotator,
+//!   32-wide padding, `4D` bits of state).
+//! - FAISS `faiss/impl/RaBitQUtils.cpp` (`kConstEpsilon = 1.9`),
+//!   `faiss/impl/RaBitQUtils.h` (`should_refine_candidate` lower bound),
+//!   `faiss/impl/RaBitQuantizer.cpp` (refine only when the bound can win).
+
+pub mod rotator;
 
 use crate::distance::FloatOrd;
 use crate::RetrieveError;
 use qntz::rabitq::{RaBitQConfig, RaBitQQuantizer};
+use rotator::FhtKacRotator;
 use serde::{Deserialize, Serialize};
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-const IVFRABITQ_FORMAT_VERSION: u32 = 1;
+const IVFRABITQ_FORMAT_VERSION: u32 = 2;
 const IVFRABITQ_CLUSTERS_MAGIC: &[u8; 8] = b"IVFRBQCL";
 static IVFRABITQ_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+/// Which rotation the index applies before quantizing residuals.
+///
+/// [`RotationKind::FhtKac`] is the reference default and the only supported
+/// production setting. [`RotationKind::Identity`] exists so rotation can be
+/// ablated against the same code path; RaBitQ's error model assumes a random
+/// orthogonal rotation, so recall degrades without one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RotationKind {
+    /// FHT/Kac structured rotation: `O(D log D)` per vector, `4D` bits of state.
+    #[default]
+    FhtKac,
+    /// No rotation. Ablation only; see [`RotationKind::FhtKac`].
+    Identity,
+}
 
 /// IVF-RaBitQ parameters.
 #[derive(Clone, Debug)]
@@ -91,8 +152,16 @@ pub struct IVFRaBitQParams {
     pub nprobe: usize,
     /// RaBitQ bits per dimension (1-8). Default: 4.
     pub total_bits: usize,
-    /// Random seed for the rotation matrix.
+    /// Random seed for the rotation and for k-means initialization.
     pub seed: u64,
+    /// Residual rotation. Default: [`RotationKind::FhtKac`].
+    pub rotation: RotationKind,
+    /// Skip candidates whose error-bound lower bound cannot beat the heap.
+    ///
+    /// Default: `true`. The bound is probabilistic (see the module docs), so
+    /// pathological data can make it prune true neighbors; set this to `false`
+    /// to rerank every candidate in the probed lists instead.
+    pub use_error_bound: bool,
 }
 
 impl Default for IVFRaBitQParams {
@@ -102,8 +171,22 @@ impl Default for IVFRaBitQParams {
             nprobe: 10,
             total_bits: 4,
             seed: 42,
+            rotation: RotationKind::FhtKac,
+            use_error_bound: true,
         }
     }
+}
+
+/// Candidate accounting for one search, for tuning and for rotation ablations.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct IVFRaBitQSearchStats {
+    /// Candidates scanned in the probed inverted lists.
+    pub candidates_scanned: usize,
+    /// Candidates skipped because the error-bound lower bound could not beat
+    /// the heap's worst entry.
+    pub pruned_by_bound: usize,
+    /// Candidates reranked with exact f32 distance.
+    pub exact_reranks: usize,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -112,6 +195,8 @@ struct PersistedIVFRaBitQParams {
     nprobe: usize,
     total_bits: usize,
     seed: u64,
+    rotation: RotationKind,
+    use_error_bound: bool,
 }
 
 impl From<&IVFRaBitQParams> for PersistedIVFRaBitQParams {
@@ -121,6 +206,8 @@ impl From<&IVFRaBitQParams> for PersistedIVFRaBitQParams {
             nprobe: params.nprobe,
             total_bits: params.total_bits,
             seed: params.seed,
+            rotation: params.rotation,
+            use_error_bound: params.use_error_bound,
         }
     }
 }
@@ -132,6 +219,8 @@ impl PersistedIVFRaBitQParams {
             nprobe: self.nprobe,
             total_bits: self.total_bits,
             seed: self.seed,
+            rotation: self.rotation,
+            use_error_bound: self.use_error_bound,
         }
     }
 }
@@ -140,6 +229,10 @@ impl PersistedIVFRaBitQParams {
 struct IVFRaBitQManifest {
     version: u32,
     dimension: usize,
+    /// Working dimension the codes were built in. Persisted because the
+    /// sampled FHT/Kac transform depends on it: reloading with a different
+    /// padded dimension silently changes the rotation and therefore recall.
+    padded_dim: usize,
     num_vectors: usize,
     params: PersistedIVFRaBitQParams,
 }
@@ -177,8 +270,12 @@ pub struct IVFRaBitQIndex {
     /// Flat centroid storage: `[c0_d0, c0_d1, ..., c1_d0, ...]`.
     centroids: Vec<f32>,
 
-    // RaBitQ quantizer (shared rotation matrix across all clusters)
+    // RaBitQ quantizer over the padded, pre-rotated residual space
     quantizer: RaBitQQuantizer,
+    /// FHT/Kac rotator; `None` for [`RotationKind::Identity`].
+    rotator: Option<FhtKacRotator>,
+    /// Working dimension: the quantizer and every code operate in this space.
+    padded_dim: usize,
 
     /// HNSW coarse quantizer over centroids for O(log k) lookup.
     #[cfg(feature = "hnsw")]
@@ -199,7 +296,14 @@ impl IVFRaBitQIndex {
             total_bits: params.total_bits,
             t_const: None,
         };
-        let quantizer = RaBitQQuantizer::with_config(dimension, params.seed, config)
+        let rotator = match params.rotation {
+            RotationKind::FhtKac => Some(FhtKacRotator::new(dimension, params.seed)?),
+            RotationKind::Identity => None,
+        };
+        let padded_dim = rotator
+            .as_ref()
+            .map_or(dimension, FhtKacRotator::padded_dim);
+        let quantizer = RaBitQQuantizer::with_config(padded_dim, params.seed, config)
             .map_err(|e| RetrieveError::InvalidParameter(format!("RaBitQ config: {e}")))?;
 
         Ok(Self {
@@ -213,9 +317,36 @@ impl IVFRaBitQIndex {
             clusters: Vec::new(),
             centroids: Vec::new(),
             quantizer,
+            rotator,
+            padded_dim,
             #[cfg(feature = "hnsw")]
             coarse_quantizer: None,
         })
+    }
+
+    /// Working dimension of the rotated space.
+    ///
+    /// Equal to [`Self::dimension`] rounded up to a multiple of 32 under
+    /// [`RotationKind::FhtKac`], and equal to [`Self::dimension`] under
+    /// [`RotationKind::Identity`].
+    pub fn padded_dimension(&self) -> usize {
+        self.padded_dim
+    }
+
+    /// Rotate a vector from the input space into the working space.
+    fn rotate(&self, vector: &[f32]) -> Result<Vec<f32>, RetrieveError> {
+        match self.rotator {
+            Some(ref rotator) => rotator.rotate(vector),
+            None => Ok(vector.to_vec()),
+        }
+    }
+
+    /// Invert [`Self::rotate`].
+    fn unrotate(&self, rotated: &[f32]) -> Result<Vec<f32>, RetrieveError> {
+        match self.rotator {
+            Some(ref rotator) => rotator.unrotate(rotated),
+            None => Ok(rotated.to_vec()),
+        }
     }
 
     /// Set the number of clusters to probe during search.
@@ -284,9 +415,11 @@ impl IVFRaBitQIndex {
             return Err(RetrieveError::EmptyIndex);
         }
 
-        // Stage 1: k-means clustering
+        // Stage 1: k-means clustering. The seed makes both the k-means++ start
+        // and (below) the rotation repeatable, so a seeded index is reproducible.
         let num_clusters = self.params.num_clusters.min(self.num_vectors);
-        let mut kmeans = crate::partitioning::kmeans::KMeans::new(self.dimension, num_clusters)?;
+        let mut kmeans = crate::partitioning::kmeans::KMeans::new(self.dimension, num_clusters)?
+            .with_seed(self.params.seed);
         kmeans.fit(&self.vectors, self.num_vectors)?;
 
         self.centroids = kmeans
@@ -341,21 +474,20 @@ impl IVFRaBitQIndex {
         // Each cluster centroid plays the role of `parent` in VR; baking
         // `<R*cluster_c, xu_cb>` into the edge lets search form an absolute
         // `||q - v||^2` that is comparable across probed clusters.
+        //
+        // Data and centroids go through the same FHT/Kac rotation as the
+        // query, so `R*v - R*c = R*(v - c)` holds exactly and the residual
+        // handed to qntz is already rotated.
         self.clusters = Vec::with_capacity(cluster_indices.len());
         for (cluster_idx, indices) in cluster_indices.into_iter().enumerate() {
             let centroid = self.get_centroid(cluster_idx).to_vec();
-            let centroid_rot = self.quantizer.rotate_query(&centroid).map_err(|e| {
-                RetrieveError::InvalidParameter(format!("RaBitQ rotate centroid: {e}"))
-            })?;
+            let centroid_rot = self.rotate(&centroid)?;
             let mut quantized = Vec::with_capacity(indices.len());
 
             for &vector_idx in &indices {
-                let vec = self.get_vector(vector_idx as usize);
+                let vec = self.get_vector(vector_idx as usize).to_vec();
                 // R*(v - c) via O(d) subtraction of the pre-rotated views.
-                let vec_rot = self
-                    .quantizer
-                    .rotate_query(vec)
-                    .map_err(|e| RetrieveError::InvalidParameter(format!("RaBitQ rotate: {e}")))?;
+                let vec_rot = self.rotate(&vec)?;
                 let residual_rot: Vec<f32> = vec_rot
                     .iter()
                     .zip(centroid_rot.iter())
@@ -422,6 +554,7 @@ impl IVFRaBitQIndex {
         let manifest = IVFRaBitQManifest {
             version: IVFRABITQ_FORMAT_VERSION,
             dimension: self.dimension,
+            padded_dim: self.padded_dim,
             num_vectors: self.num_vectors,
             params: PersistedIVFRaBitQParams::from(&params),
         };
@@ -446,6 +579,13 @@ impl IVFRaBitQIndex {
 
         let params = manifest.params.into_params();
         let mut index = Self::new(manifest.dimension, params)?;
+        if index.padded_dim != manifest.padded_dim {
+            return Err(RetrieveError::FormatError(format!(
+                "IVF-RaBitQ padded dimension mismatch: index was built in {} dimensions, this \
+                 build would sample a {}-dimensional rotation; recall would silently change",
+                manifest.padded_dim, index.padded_dim
+            )));
+        }
         index.num_vectors = manifest.num_vectors;
         index.vectors = read_f32_exact(&input_dir.join("raw_vectors.bin"), raw_vector_len)?;
         index.doc_ids = read_u32_exact(&input_dir.join("doc_ids.bin"), manifest.num_vectors)?;
@@ -473,6 +613,23 @@ impl IVFRaBitQIndex {
         k: usize,
         nprobe: usize,
     ) -> Result<Vec<(u32, f32)>, RetrieveError> {
+        self.search_with_stats(query, k, nprobe)
+            .map(|(results, _)| results)
+    }
+
+    /// Search with a custom nprobe value, returning candidate accounting.
+    ///
+    /// Each candidate is scored with one RaBitQ dot product. A candidate whose
+    /// error-bound lower bound cannot beat the heap's worst entry is skipped
+    /// outright; every other candidate is reranked with exact f32 distance when
+    /// raw vectors are resident. See the module docs for why the bound is
+    /// probabilistic rather than a guarantee.
+    pub fn search_with_stats(
+        &self,
+        query: &[f32],
+        k: usize,
+        nprobe: usize,
+    ) -> Result<(Vec<(u32, f32)>, IVFRaBitQSearchStats), RetrieveError> {
         if !self.built {
             return Err(RetrieveError::NotBuilt {
                 component: "IVF-RaBitQ index",
@@ -486,7 +643,7 @@ impl IVFRaBitQIndex {
             });
         }
         if k == 0 {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), IVFRaBitQSearchStats::default()));
         }
 
         // Normalize query
@@ -501,21 +658,13 @@ impl IVFRaBitQIndex {
         // Find nearest centroids
         let cluster_distances = self.find_nearest_centroids(query, nprobe);
 
-        // Rerank pool scales with nprobe: more probed clusters means noisier
-        // RaBitQ approximations need a larger pool to avoid discarding true
-        // neighbors. A bounded max-heap avoids the O(N log N) sort cost.
-        let rerank_size = (k * 10).max(k * nprobe).max(64);
+        // Rotate the query once (O(d log d)), then pay O(d) per candidate.
+        let rotated_query = self.rotate(query)?;
 
-        // Pre-rotate query once (O(d^2)), then use O(d) prerotated distance per candidate.
-        let rotated_query = self
-            .quantizer
-            .rotate_query(query)
-            .map_err(|e| RetrieveError::InvalidParameter(format!("rotate query: {e}")))?;
-
-        // Phase 1: approximate distances via RaBitQ with bounded shortlist.
-        // Use a max-heap so we can evict the worst candidate in O(log n).
+        let mut stats = IVFRaBitQSearchStats::default();
+        // Max-heap of the current best `k`, so the worst entry is O(1) to read.
         let mut heap: std::collections::BinaryHeap<(FloatOrd, u32)> =
-            std::collections::BinaryHeap::with_capacity(rerank_size + 1);
+            std::collections::BinaryHeap::with_capacity(k);
 
         for (cluster_idx, _coarse_dist) in &cluster_distances {
             let cluster = &self.clusters[*cluster_idx];
@@ -523,53 +672,82 @@ impl IVFRaBitQIndex {
                 continue;
             }
 
-            // `rotated_query` is R*q (quantizer has no centroid set, so
-            // rotate_query does not subtract one). edge_distance_term_prerotated
-            // expects exactly that. Add ||q - cluster_c||^2 to compose a true
-            // absolute distance comparable across probed clusters.
+            // `rotated_query` is R*q, which is what
+            // edge_distance_term_prerotated expects. Add ||q - cluster_c||^2 to
+            // compose a true absolute distance comparable across probed
+            // clusters.
             //
             // `_coarse_dist` from find_nearest_centroids is cosine distance
             // (or HNSW-metric distance), not guaranteed to be L2-squared, so
             // we recompute ||q - c||^2 directly here. One O(d) op per probed
-            // cluster is cheap relative to the per-vector edge loop below.
+            // cluster is cheap relative to the per-vector edge loop below, and
+            // its square root is the query-side error factor `g_error`.
             let cluster_centroid = self.get_centroid(*cluster_idx);
             let q_c_sqr: f32 = query
                 .iter()
                 .zip(cluster_centroid.iter())
                 .map(|(a, b)| (a - b) * (a - b))
                 .sum();
+            let g_error = q_c_sqr.sqrt();
+            stats.candidates_scanned += cluster.quantized.len();
 
             for (i, edge) in cluster.quantized.iter().enumerate() {
                 let edge_term =
                     RaBitQQuantizer::edge_distance_term_prerotated(&rotated_query, edge);
-                let dist = q_c_sqr + edge_term;
-                let vec_idx = cluster.vector_indices[i];
+                let estimate = q_c_sqr + edge_term;
 
-                if heap.len() < rerank_size {
-                    heap.push((FloatOrd(dist), vec_idx));
+                // RaBitQ error bound: the estimate is off by at most
+                // f_error * ||q - c||, so `lower_bound` is the best distance
+                // this candidate could possibly have. Skipping when it cannot
+                // beat the heap keeps ranking exact on survivors and drops the
+                // rest (FAISS RaBitQUtils.h::should_refine_candidate).
+                let bound_enabled = self.params.use_error_bound;
+                let margin = if bound_enabled {
+                    edge.quantized.f_error * g_error
+                } else {
+                    0.0
+                };
+                let lower_bound = (estimate - margin).max(0.0);
+                if bound_enabled && heap.len() >= k {
+                    if let Some(&(FloatOrd(worst), _)) = heap.peek() {
+                        if lower_bound >= worst {
+                            stats.pruned_by_bound += 1;
+                            continue;
+                        }
+                    }
+                }
+
+                let vec_idx = cluster.vector_indices[i];
+                let distance = if self.compacted {
+                    estimate
+                } else {
+                    stats.exact_reranks += 1;
+                    crate::distance::l2_distance_squared(query, self.get_vector(vec_idx as usize))
+                };
+
+                if heap.len() < k {
+                    heap.push((FloatOrd(distance), vec_idx));
                 } else if let Some(&(FloatOrd(worst), _)) = heap.peek() {
-                    if dist < worst {
+                    if distance < worst {
                         heap.pop();
-                        heap.push((FloatOrd(dist), vec_idx));
+                        heap.push((FloatOrd(distance), vec_idx));
                     }
                 }
             }
         }
 
-        // Phase 2: exact reranking with original vectors (skipped when compacted).
-        let mut results: Vec<(u32, f32)> = if self.compacted {
-            heap.into_iter()
-                .map(|(FloatOrd(dist), vec_idx)| (self.doc_ids[vec_idx as usize], dist))
-                .collect()
-        } else {
-            heap.into_iter()
-                .map(|(_, vec_idx)| {
-                    let vec = self.get_vector(vec_idx as usize);
-                    let dist = crate::distance::cosine_distance_normalized(query, vec);
-                    (self.doc_ids[vec_idx as usize], dist)
-                })
-                .collect()
-        };
+        // Exact mode ranks by squared L2 over unit-norm vectors, so cosine
+        // distance is exactly half of it (`cosine_distance_normalized` returns
+        // `1 - dot`). Ranking is unchanged; only the reported scale differs.
+        // Compact mode keeps reporting the raw squared estimate, as documented
+        // on `compact()`.
+        let reported_scale = if self.compacted { 1.0 } else { 0.5 };
+        let mut results: Vec<(u32, f32)> = heap
+            .into_iter()
+            .map(|(FloatOrd(distance), vec_idx)| {
+                (self.doc_ids[vec_idx as usize], distance * reported_scale)
+            })
+            .collect();
 
         results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
         results.truncate(k);
@@ -582,7 +760,56 @@ impl IVFRaBitQIndex {
                 *dist = 0.0;
             }
         }
-        Ok(results)
+        Ok((results, stats))
+    }
+
+    /// Decode one indexed vector back into the original coordinate system.
+    ///
+    /// Reconstructs the quantized residual in the rotated working space, adds
+    /// the cluster centroid, un-rotates with the index's FHT/Kac transform, and
+    /// truncates the padding. Works after [`Self::compact`] because only codes
+    /// and centroids are needed.
+    ///
+    /// The result approximates the *normalized* vector that
+    /// [`Self::add_slice`] stored, up to quantization error.
+    pub fn dequantize(&self, vector_idx: usize) -> Result<Vec<f32>, RetrieveError> {
+        if vector_idx >= self.num_vectors {
+            return Err(RetrieveError::InvalidParameter(format!(
+                "vector index {vector_idx} out of range (len {})",
+                self.num_vectors
+            )));
+        }
+        let (cluster_idx, slot) = self.locate(vector_idx)?;
+        let code = &self.clusters[cluster_idx].quantized[slot].quantized;
+
+        let mut rotated = vec![0.0f32; self.padded_dim];
+        for (index, value) in rotated.iter_mut().enumerate() {
+            // x_hat = delta * code + vl, the inverse of qntz's packed encoding.
+            *value = code.delta * f32::from(code.codes[index]) + code.vl;
+        }
+        let centroid = self.get_centroid(cluster_idx).to_vec();
+        let centroid_rot = self.rotate(&centroid)?;
+        for (value, offset) in rotated.iter_mut().zip(centroid_rot.iter()) {
+            *value += offset;
+        }
+
+        let restored = self.unrotate(&rotated)?;
+        Ok(restored[..self.dimension].to_vec())
+    }
+
+    /// Locate a vector's cluster and slot. Cluster membership lists are built
+    /// in ascending vector order, so this is a binary search per cluster.
+    fn locate(&self, vector_idx: usize) -> Result<(usize, usize), RetrieveError> {
+        let target = u32::try_from(vector_idx)
+            .map_err(|_| RetrieveError::InvalidParameter("vector index does not fit u32".into()))?;
+        for (cluster_idx, cluster) in self.clusters.iter().enumerate() {
+            if let Ok(slot) = cluster.vector_indices.binary_search(&target) {
+                return Ok((cluster_idx, slot));
+            }
+        }
+        Err(RetrieveError::InvalidParameter(format!(
+            "vector index {vector_idx} is not assigned to any cluster"
+        )))
     }
 
     /// Number of indexed vectors.
@@ -960,6 +1187,7 @@ mod tests {
             nprobe: 4,
             total_bits: 4,
             seed: 42,
+            ..IVFRaBitQParams::default()
         };
         let mut index = IVFRaBitQIndex::new(dim, params).unwrap();
         index.add_batch(&doc_ids, &data).unwrap();
@@ -990,6 +1218,7 @@ mod tests {
             nprobe: 4,
             total_bits: 4,
             seed: 44,
+            ..IVFRaBitQParams::default()
         };
         let mut index = IVFRaBitQIndex::new(dim, params).unwrap();
         index.add_batch(&doc_ids, &data).unwrap();
@@ -1024,6 +1253,7 @@ mod tests {
             nprobe: 4,
             total_bits: 1, // binary only
             seed: 42,
+            ..IVFRaBitQParams::default()
         };
         let mut index = IVFRaBitQIndex::new(dim, params).unwrap();
         index.add_batch(&doc_ids, &data).unwrap();
@@ -1046,6 +1276,7 @@ mod tests {
             nprobe: 4,
             total_bits: 4,
             seed: 42,
+            ..IVFRaBitQParams::default()
         };
         let mut index = IVFRaBitQIndex::new(dim, params).unwrap();
         index.add_batch(&doc_ids, &data).unwrap();
@@ -1085,6 +1316,7 @@ mod tests {
             nprobe: 4, // probe all clusters
             total_bits: 4,
             seed: 42,
+            ..IVFRaBitQParams::default()
         };
         let mut index = IVFRaBitQIndex::new(dim, params).unwrap();
         index.add_batch(&doc_ids, &data).unwrap();
@@ -1117,6 +1349,7 @@ mod tests {
             nprobe: 4,
             total_bits: 4,
             seed: 101,
+            ..IVFRaBitQParams::default()
         };
         let mut index = IVFRaBitQIndex::new(dim, params).unwrap();
         index.add_batch(&doc_ids, &data).unwrap();
@@ -1184,6 +1417,7 @@ mod tests {
             nprobe: 4,
             total_bits: 4,
             seed: 105,
+            ..IVFRaBitQParams::default()
         };
         let mut index = IVFRaBitQIndex::new(dim, params).unwrap();
         index.add_batch(&doc_ids, &data).unwrap();
@@ -1221,6 +1455,7 @@ mod tests {
             nprobe: 4,
             total_bits: 4,
             seed: 102,
+            ..IVFRaBitQParams::default()
         };
         let mut index = IVFRaBitQIndex::new(dim, params).unwrap();
         index.add_batch(&doc_ids, &data).unwrap();
@@ -1247,6 +1482,7 @@ mod tests {
             nprobe: 4,
             total_bits: 4,
             seed: 103,
+            ..IVFRaBitQParams::default()
         };
         let mut index = IVFRaBitQIndex::new(dim, params).unwrap();
         index.add_batch(&doc_ids, &data).unwrap();
@@ -1279,6 +1515,7 @@ mod tests {
             nprobe: 4,
             total_bits: 4,
             seed: 104,
+            ..IVFRaBitQParams::default()
         };
         let mut index = IVFRaBitQIndex::new(dim, params).unwrap();
         index.add_batch(&doc_ids, &data).unwrap();
@@ -1313,10 +1550,13 @@ mod tests {
         write_manifest(
             dir.path(),
             &IVFRaBitQManifest {
+                padded_dim: 64,
                 version: IVFRABITQ_FORMAT_VERSION,
                 dimension: 32,
                 num_vectors: 10,
                 params: PersistedIVFRaBitQParams {
+                    rotation: RotationKind::FhtKac,
+                    use_error_bound: true,
                     num_clusters: 0,
                     nprobe: 1,
                     total_bits: 4,
@@ -1341,10 +1581,13 @@ mod tests {
         write_manifest(
             dir.path(),
             &IVFRaBitQManifest {
+                padded_dim: 64,
                 version: IVFRABITQ_FORMAT_VERSION,
                 dimension: 32,
                 num_vectors: 10,
                 params: PersistedIVFRaBitQParams {
+                    rotation: RotationKind::FhtKac,
+                    use_error_bound: true,
                     num_clusters: 4,
                     nprobe: 1,
                     total_bits: 0,
@@ -1369,10 +1612,13 @@ mod tests {
         write_manifest(
             dir.path(),
             &IVFRaBitQManifest {
+                padded_dim: 64,
                 version: IVFRABITQ_FORMAT_VERSION,
                 dimension: 2,
                 num_vectors: usize::MAX,
                 params: PersistedIVFRaBitQParams {
+                    rotation: RotationKind::FhtKac,
+                    use_error_bound: true,
                     num_clusters: 1,
                     nprobe: 1,
                     total_bits: 4,
@@ -1397,10 +1643,13 @@ mod tests {
         write_manifest(
             dir.path(),
             &IVFRaBitQManifest {
+                padded_dim: 64,
                 version: IVFRABITQ_FORMAT_VERSION,
                 dimension: 2,
                 num_vectors: 1,
                 params: PersistedIVFRaBitQParams {
+                    rotation: RotationKind::FhtKac,
+                    use_error_bound: true,
                     num_clusters: usize::MAX,
                     nprobe: 1,
                     total_bits: 4,
@@ -1417,5 +1666,318 @@ mod tests {
             err.to_string().contains("centroid length overflows"),
             "unexpected error: {err}"
         );
+    }
+
+    // ─── Rotation / bound regression tests ────────────────────────────────
+
+    const SEEDED_DIM: usize = 96;
+    const SEEDED_N: usize = 10_000;
+    const SEEDED_CLUSTERS: usize = 64;
+    const SEEDED_QUERIES: usize = 50;
+
+    /// SplitMix64 fixture: same generator as the ablation example.
+    struct TestRng(u64);
+
+    impl TestRng {
+        fn new(seed: u64) -> Self {
+            Self(seed)
+        }
+
+        fn next_u64(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^ (z >> 31)
+        }
+
+        fn uniform(&mut self) -> f32 {
+            ((self.next_u64() >> 40) as f32 / (1u64 << 23) as f32) - 1.0
+        }
+    }
+
+    fn unit(mut v: Vec<f32>) -> Vec<f32> {
+        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm > 0.0 {
+            for x in &mut v {
+                *x /= norm;
+            }
+        }
+        v
+    }
+
+    /// Per-dimension scale decays geometrically, so a few coordinates dominate
+    /// the norm. This is where a rotation earns its keep: without one, the
+    /// quiet coordinates carry no sign information.
+    fn anisotropic_set(n: usize, seed: u64) -> Vec<f32> {
+        let mut rng = TestRng::new(seed);
+        let scales: Vec<f32> = (0..SEEDED_DIM)
+            .map(|i| 1_000f32.powf(-(i as f32) / (SEEDED_DIM - 1) as f32))
+            .collect();
+        let mut flat = Vec::with_capacity(n * SEEDED_DIM);
+        for _ in 0..n {
+            let v: Vec<f32> = scales.iter().map(|s| s * rng.uniform()).collect();
+            flat.extend(unit(v));
+        }
+        flat
+    }
+
+    fn clustered_set(n: usize, seed: u64, spread: f32) -> Vec<f32> {
+        let mut rng = TestRng::new(seed);
+        let centers: Vec<Vec<f32>> = (0..SEEDED_CLUSTERS)
+            .map(|_| (0..SEEDED_DIM).map(|_| rng.uniform()).collect())
+            .collect();
+        let mut flat = Vec::with_capacity(n * SEEDED_DIM);
+        for i in 0..n {
+            let mut v = centers[i % SEEDED_CLUSTERS].clone();
+            for value in &mut v {
+                *value += spread * rng.uniform();
+            }
+            flat.extend(unit(v));
+        }
+        flat
+    }
+
+    fn build_seeded(data: &[f32], n: usize, rotation: RotationKind, seed: u64) -> IVFRaBitQIndex {
+        let params = IVFRaBitQParams {
+            num_clusters: SEEDED_CLUSTERS,
+            nprobe: 8,
+            total_bits: 4,
+            seed,
+            rotation,
+            use_error_bound: true,
+        };
+        let mut index = IVFRaBitQIndex::new(SEEDED_DIM, params).unwrap();
+        let ids: Vec<u32> = (0..n as u32).collect();
+        index.add_batch(&ids, data).unwrap();
+        index.build().unwrap();
+        index
+    }
+
+    fn brute_force_top_k(data: &[f32], n: usize, query: &[f32], k: usize) -> Vec<u32> {
+        let mut scored: Vec<(f32, u32)> = (0..n)
+            .map(|i| {
+                let v = &data[i * SEEDED_DIM..(i + 1) * SEEDED_DIM];
+                let dot: f32 = query.iter().zip(v).map(|(a, b)| a * b).sum();
+                (1.0 - dot, i as u32)
+            })
+            .collect();
+        scored.select_nth_unstable_by(k - 1, |a, b| a.0.total_cmp(&b.0));
+        scored.truncate(k);
+        scored.into_iter().map(|(_, id)| id).collect()
+    }
+
+    fn recall_at_k(
+        index: &IVFRaBitQIndex,
+        queries: &[f32],
+        num_queries: usize,
+        data: &[f32],
+        n: usize,
+        k: usize,
+        nprobe: usize,
+    ) -> f64 {
+        let mut hits = 0usize;
+        for q in 0..num_queries {
+            let query = &queries[q * SEEDED_DIM..(q + 1) * SEEDED_DIM];
+            let expected = brute_force_top_k(data, n, query, k);
+            let got: Vec<u32> = index
+                .search_with_ef(query, k, nprobe)
+                .unwrap()
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect();
+            hits += expected.iter().filter(|id| got.contains(id)).count();
+        }
+        hits as f64 / (num_queries * k) as f64
+    }
+
+    /// End-to-end recall floor on the seeded set.
+    ///
+    /// nprobe=32 of 64 lists, so the floor is dominated by quantization and
+    /// pruning rather than by how many lists were probed. Measured: see the
+    /// floor value below.
+    #[test]
+    fn recall_floor_on_seeded_set() {
+        let data = anisotropic_set(SEEDED_N, 11);
+        let queries = anisotropic_set(SEEDED_QUERIES, 12);
+
+        let index = build_seeded(&data, SEEDED_N, RotationKind::FhtKac, 42);
+        let recall = recall_at_k(&index, &queries, SEEDED_QUERIES, &data, SEEDED_N, 10, 32);
+        assert!(
+            recall >= 0.95,
+            "recall@10 {recall:.3} below floor 0.95 on the seeded anisotropic set"
+        );
+    }
+
+    /// Rotation is not cosmetic: on anisotropic data the estimate-only ranking
+    /// loses a large amount of recall without it, which is the defect this
+    /// module is meant to avoid.
+    ///
+    /// Compacted index (no exact rerank) and every list probed, so only the
+    /// quantized estimate can move the number.
+    #[test]
+    fn rotation_lifts_estimate_only_recall() {
+        let data = anisotropic_set(SEEDED_N, 11);
+        let queries = anisotropic_set(20, 12);
+
+        let mut rotated = build_seeded(&data, SEEDED_N, RotationKind::FhtKac, 42);
+        rotated.compact();
+        let mut plain = build_seeded(&data, SEEDED_N, RotationKind::Identity, 42);
+        plain.compact();
+
+        let rotated_recall =
+            recall_at_k(&rotated, &queries, 20, &data, SEEDED_N, 10, SEEDED_CLUSTERS);
+        let plain_recall = recall_at_k(&plain, &queries, 20, &data, SEEDED_N, 10, SEEDED_CLUSTERS);
+        assert!(
+            rotated_recall >= plain_recall + 0.05,
+            "rotation did not help: FHT/Kac {rotated_recall:.3} vs none {plain_recall:.3}"
+        );
+    }
+
+    /// The same seed reproduces the index bit for bit; a different seed
+    /// samples a different transform, visible in decoded codes (end-to-end
+    /// results can coincide because exact reranking masks code differences).
+    #[test]
+    fn seeded_build_is_reproducible_and_seed_sensitive() {
+        let data = clustered_set(2_000, 21, 0.25);
+        let query = data[..SEEDED_DIM].to_vec();
+
+        let first = build_seeded(&data, 2_000, RotationKind::FhtKac, 7);
+        let repeat = build_seeded(&data, 2_000, RotationKind::FhtKac, 7);
+        let other = build_seeded(&data, 2_000, RotationKind::FhtKac, 8);
+
+        assert_eq!(
+            first.search(&query, 10).unwrap(),
+            repeat.search(&query, 10).unwrap()
+        );
+        assert_eq!(first.dequantize(3).unwrap(), repeat.dequantize(3).unwrap());
+        assert_ne!(first.dequantize(3).unwrap(), other.dequantize(3).unwrap());
+    }
+
+    /// Identity rotation is the ablation path: no padding, and it is recorded
+    /// in the snapshot so a reload cannot silently swap the transform.
+    #[test]
+    fn identity_rotation_keeps_the_native_dimension() {
+        let data = anisotropic_set(256, 31);
+        let index = build_seeded(&data, 256, RotationKind::Identity, 42);
+        assert_eq!(index.padded_dimension(), SEEDED_DIM);
+
+        let rotated = build_seeded(&data, 256, RotationKind::FhtKac, 42);
+        assert_eq!(rotated.padded_dimension(), SEEDED_DIM);
+    }
+
+    /// `dequantize` un-rotates: the decoded vector points the same way as the
+    /// stored one, and decoding works without the raw vectors.
+    #[test]
+    fn dequantize_recovers_the_stored_direction() {
+        let data = clustered_set(512, 41, 0.25);
+        let mut index = build_seeded(&data, 512, RotationKind::FhtKac, 42);
+
+        let mut min_cosine = 1.0f32;
+        for id in [0usize, 7, 100, 511] {
+            let original = &data[id * SEEDED_DIM..(id + 1) * SEEDED_DIM];
+            let decoded = index.dequantize(id).unwrap();
+            assert_eq!(decoded.len(), SEEDED_DIM);
+            let dot: f32 = decoded.iter().zip(original).map(|(a, b)| a * b).sum();
+            min_cosine = min_cosine.min(dot);
+        }
+        assert!(
+            min_cosine > 0.9,
+            "dequantized direction drifted: min cosine {min_cosine:.3}"
+        );
+
+        let before = index.dequantize(7).unwrap();
+        index.compact();
+        assert_eq!(index.dequantize(7).unwrap(), before);
+
+        assert!(index.dequantize(512).is_err());
+    }
+
+    /// The 1.9-epsilon margin must actually bound the estimator on real codes.
+    ///
+    /// This is the evidence behind the pruning: if the margin were zero (a
+    /// common failure when the ratio term collapses) the search would be
+    /// pruning on a bare estimate. Measured coverage on this fixture is >0.95.
+    #[test]
+    fn error_bound_covers_observed_estimator_error() {
+        let data = clustered_set(2_000, 51, 0.25);
+        let index = build_seeded(&data, 2_000, RotationKind::FhtKac, 42);
+        let queries = clustered_set(SEEDED_QUERIES, 52, 0.25);
+
+        let mut covered = 0usize;
+        let mut checked = 0usize;
+        let mut saw_positive_margin = false;
+
+        for q in 0..SEEDED_QUERIES {
+            let query = &queries[q * SEEDED_DIM..(q + 1) * SEEDED_DIM];
+            let rotated_query = index.rotate(query).unwrap();
+            for cluster_idx in 0..SEEDED_CLUSTERS {
+                let cluster = &index.clusters[cluster_idx];
+                let centroid = index.get_centroid(cluster_idx);
+                let q_c_sqr: f32 = query
+                    .iter()
+                    .zip(centroid.iter())
+                    .map(|(a, b)| (a - b) * (a - b))
+                    .sum();
+                let g_error = q_c_sqr.sqrt();
+
+                for (slot, edge) in cluster.quantized.iter().enumerate() {
+                    let estimate = q_c_sqr
+                        + RaBitQQuantizer::edge_distance_term_prerotated(&rotated_query, edge);
+                    let vec_idx = cluster.vector_indices[slot] as usize;
+                    let vector = index.get_vector(vec_idx);
+                    let exact: f32 = query
+                        .iter()
+                        .zip(vector.iter())
+                        .map(|(a, b)| (a - b) * (a - b))
+                        .sum();
+                    let margin = edge.quantized.f_error * g_error;
+                    saw_positive_margin |= margin > 0.0;
+                    if (estimate - exact).abs() <= margin {
+                        covered += 1;
+                    }
+                    checked += 1;
+                }
+            }
+        }
+
+        assert!(saw_positive_margin, "error margin collapsed to zero");
+        let coverage = covered as f64 / checked as f64;
+        assert!(
+            coverage >= 0.90,
+            "1.9-epsilon margin covered only {coverage:.3} of estimator errors"
+        );
+    }
+
+    /// The bound must not cost recall: pruning and exhaustive reranking of the
+    /// same candidate set agree on the seeded data.
+    #[test]
+    fn error_bound_pruning_preserves_recall() {
+        let data = clustered_set(2_000, 61, 0.25);
+        let queries = clustered_set(20, 62, 0.25);
+
+        let with_bound = build_seeded(&data, 2_000, RotationKind::FhtKac, 42);
+        let mut without_bound = with_bound.params.clone();
+        without_bound.use_error_bound = false;
+        // Rebuild the same index with the bound disabled.
+        let mut no_bound = IVFRaBitQIndex::new(SEEDED_DIM, without_bound).unwrap();
+        let ids: Vec<u32> = (0..2_000u32).collect();
+        no_bound.add_batch(&ids, &data).unwrap();
+        no_bound.build().unwrap();
+
+        let mut pruned_total = 0usize;
+        for q in 0..20 {
+            let query = &queries[q * SEEDED_DIM..(q + 1) * SEEDED_DIM];
+            let (bounded, stats) = with_bound.search_with_stats(query, 10, 8).unwrap();
+            let unbounded = no_bound.search_with_ef(query, 10, 8).unwrap();
+            assert_eq!(bounded, unbounded, "bound changed results at query {q}");
+            pruned_total += stats.pruned_by_bound;
+            assert_eq!(
+                stats.candidates_scanned,
+                stats.pruned_by_bound + stats.exact_reranks,
+                "candidate accounting does not add up"
+            );
+        }
+        assert!(pruned_total > 0, "bound never pruned anything");
     }
 }

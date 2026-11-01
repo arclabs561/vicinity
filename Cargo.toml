@@ -194,6 +194,11 @@ path = "examples/rabitq_demo.rs"
 required-features = ["rabitq", "hnsw", "quantization"]
 
 [[example]]
+name = "rabitq_rotation_ablation"
+path = "examples/rabitq_rotation_ablation.rs"
+required-features = ["ivf_rabitq"]
+
+[[example]]
 name = "symphonyqg_demo"
 path = "examples/symphonyqg_demo.rs"
 required-features = ["hnsw", "rabitq", "quantization"]
