@@ -1420,8 +1420,10 @@ mod tests {
         let result = IVFAVQIndex::new(0, IVFAVQParams::default());
         assert!(result.is_err());
         match result.unwrap_err() {
-            RetrieveError::InvalidParameter(_) => {}
-            other => panic!("Expected InvalidParameter, got {:?}", other),
+            RetrieveError::InvalidConfig {
+                field: "dimension", ..
+            } => {}
+            other => panic!("Expected InvalidConfig for dimension, got {other:?}"),
         }
     }
 
