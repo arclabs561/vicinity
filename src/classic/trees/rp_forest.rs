@@ -6,8 +6,8 @@
 //! method-family names (`rptree`) rather than vendor/library names.
 //!
 //! Algorithm:
-//! - Forest of independent random projection trees
-//! - Random hyperplane splits at each node
+//! - Forest of independent two-means trees
+//! - Two-means hyperplane splits at each node, retried when too imbalanced
 //! - Multiple trees improve recall through ensemble search
 //! - Memory-mapped index support (optional)
 //! - Thread-safe search
@@ -41,10 +41,29 @@ const RP_FOREST_FORMAT_VERSION: u32 = 1;
 const FRONTIER_RESERVE: usize = 4_096;
 const DEFAULT_RP_FOREST_SEED: u64 = 0xA24B_AED4_963E_E407;
 
+/// Candidate assignments the two-means fit makes per split attempt.
+///
+/// This is the reference implementation's value: the fit samples points with
+/// replacement rather than sweeping the node, which keeps a split's cost
+/// independent of how many points the node holds.
+const TWO_MEANS_ITERATIONS: usize = 200;
+
+/// Split attempts before the most balanced attempt is accepted.
+const SPLIT_ATTEMPTS: usize = 3;
+
+/// A split is accepted outright when its larger child holds less than this
+/// fraction of the node's points.
+const SPLIT_MAX_IMBALANCE: f32 = 0.95;
+
+/// Above this imbalance no attempt is usable: the split leaves (at least) one
+/// side effectively empty, so the node becomes a leaf instead of recursing.
+const SPLIT_GIVE_UP_IMBALANCE: f32 = 0.99;
+
 /// Random Projection Tree Forest index.
 ///
 /// Uses a forest of independent random projection trees for approximate
-/// nearest neighbor search. Each tree partitions space using random hyperplanes.
+/// nearest neighbor search. Each tree partitions space with hyperplanes fitted
+/// by two-means to its own points.
 ///
 #[derive(Deserialize, Serialize)]
 pub struct RpForestIndex {
@@ -111,22 +130,59 @@ enum TreeNode {
 }
 
 /// Random projection tree parameters.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+///
+/// The derived `Default` leaves [`Self::max_leaf_size`] at `0`, which selects
+/// the dimension-derived leaf size rather than a hardcoded cap.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct RPTreeParams {
-    /// Maximum points per leaf
+    /// Maximum points per leaf, or `0` to derive it from the dimension with
+    /// [`derived_leaf_size`] (the default).
     pub max_leaf_size: usize,
+}
+
+impl RPTreeParams {
+    /// Leaf capacity to build with for `dimension`.
+    ///
+    /// A configured [`Self::max_leaf_size`] always wins; `0` is the sentinel for
+    /// the dimension-derived default, which keeps existing
+    /// `RPTreeParams { max_leaf_size: n }` callers working unchanged.
+    #[must_use]
+    pub fn leaf_size(&self, dimension: usize) -> usize {
+        if self.max_leaf_size == 0 {
+            derived_leaf_size(dimension)
+        } else {
+            self.max_leaf_size
+        }
+    }
+}
+
+/// Leaf capacity derived from the dimension, matching the sibling
+/// implementation this family is measured against.
+///
+/// That layout stores one node per fixed-size block: a descendant count, two
+/// child slots, and room for one `f32`-per-dimension vector. A leaf reuses the
+/// block *after* the descendant count as a list of `u32` ids, so the number of
+/// ids that fit is
+///
+/// ```text
+/// (two child slots + dimension floats) / one id
+/// = (2 * size_of::<u32>() + dimension * size_of::<f32>()) / size_of::<u32>()
+/// = 2 + dimension
+/// ```
+///
+/// because `f32` and `u32` are both four bytes. At `d = 96` that is 98 ids per
+/// leaf, versus the flat 10 this family used to hardcode, so the leaf structure
+/// — and the overshoot a budget pays when a leaf is opened — matches the
+/// reference implementation's.
+#[must_use]
+pub fn derived_leaf_size(dimension: usize) -> usize {
+    2 + dimension * std::mem::size_of::<f32>() / std::mem::size_of::<u32>()
 }
 
 #[derive(Deserialize, Serialize)]
 struct RpForestSnapshot {
     version: u32,
     index: RpForestIndex,
-}
-
-impl Default for RPTreeParams {
-    fn default() -> Self {
-        Self { max_leaf_size: 10 }
-    }
 }
 
 impl RpForestIndex {
@@ -270,7 +326,7 @@ impl RpForestIndex {
         Ok(RPTree { root })
     }
 
-    /// Build tree recursively. Each call independently samples a fresh random hyperplane.
+    /// Build tree recursively. Each call fits its own two-means split.
     fn build_tree_recursive(
         &self,
         indices: &[u32],
@@ -281,53 +337,28 @@ impl RpForestIndex {
         }
 
         // Leaf node if small enough
-        if indices.len() <= self.params.tree_params.max_leaf_size {
+        if indices.len() <= self.params.tree_params.leaf_size(self.dimension) {
             return Ok(Some(TreeNode::Leaf {
                 indices: indices.to_vec(),
             }));
         }
 
-        // Generate a fresh random hyperplane for this split
         use rand::rngs::StdRng;
-        use rand::Rng;
         use rand::SeedableRng;
 
+        // One seeded stream per node: the fit and any retries draw from it in a
+        // fixed order, so a build is reproducible for a given seed.
         let mut rng = StdRng::seed_from_u64(seed);
-        let mut hyperplane = Vec::with_capacity(self.dimension);
-        let mut norm = 0.0f32;
-        for _ in 0..self.dimension {
-            let val = rng.random::<f32>() * 2.0 - 1.0;
-            norm += val * val;
-            hyperplane.push(val);
-        }
-        let norm = norm.sqrt();
-        if norm > 0.0 {
-            for val in &mut hyperplane {
-                *val /= norm;
-            }
-        }
-
-        // Split by hyperplane
-        let mut left_indices = Vec::new();
-        let mut right_indices = Vec::new();
-
-        for &idx in indices {
-            let vec = self.get_vector(idx as usize);
-            let projection = simd::dot(vec, &hyperplane);
-            if projection < 0.0 {
-                left_indices.push(idx);
-            } else {
-                right_indices.push(idx);
-            }
-        }
-
-        // Degenerate split: all points went to one side (e.g., duplicate or collinear vectors).
-        // Fall back to a leaf rather than recursing infinitely.
-        if left_indices.is_empty() || right_indices.is_empty() {
+        let Some((hyperplane, left_indices, right_indices)) =
+            self.two_means_split(indices, &mut rng)
+        else {
+            // No usable hyperplane (e.g. duplicate points, where every centroid
+            // pair collapses to one): keep the points together as a leaf rather
+            // than recursing forever.
             return Ok(Some(TreeNode::Leaf {
                 indices: indices.to_vec(),
             }));
-        }
+        };
 
         // Each child independently picks its own split hyperplane
         let left = self.build_tree_recursive(&left_indices, child_seed(seed, 0))?;
@@ -343,6 +374,128 @@ impl RpForestIndex {
                 indices: Vec::new(),
             })),
         }))
+    }
+
+    /// Fit a two-means split to `indices` and partition them by it.
+    ///
+    /// Attempts up to [`SPLIT_ATTEMPTS`] fits, taking the first whose larger
+    /// child holds less than [`SPLIT_MAX_IMBALANCE`] of the node. Returns `None`
+    /// when no attempt yields a usable hyperplane, which happens when the points
+    /// are duplicates or collinear enough that both centroids collapse onto one
+    /// another; the caller then keeps them together as a leaf.
+    ///
+    /// Unlike the reference implementation this never falls back to random
+    /// sides: a random partition is not a hyperplane, so `far_child_dot_bound`
+    /// would no longer bound it. The most balanced attempt is kept instead when
+    /// it still separates the node, and only an effectively-empty side (above
+    /// [`SPLIT_GIVE_UP_IMBALANCE`]) becomes a leaf.
+    fn two_means_split(
+        &self,
+        indices: &[u32],
+        rng: &mut rand::rngs::StdRng,
+    ) -> Option<(Vec<f32>, Vec<u32>, Vec<u32>)> {
+        let mut best: Option<(f32, Vec<f32>, Vec<u32>, Vec<u32>)> = None;
+        for _ in 0..SPLIT_ATTEMPTS {
+            // A collapsed fit (all points on one centroid) uses up an attempt but
+            // must not discard a balanced one an earlier attempt already found.
+            let Some(normal) = self.two_means_normal(indices, rng) else {
+                continue;
+            };
+            let (left, right) = self.partition_on(indices, &normal);
+            if left.is_empty() || right.is_empty() {
+                continue;
+            }
+            let imbalance = split_imbalance(left.len(), right.len());
+            if imbalance < SPLIT_MAX_IMBALANCE {
+                return Some((normal, left, right));
+            }
+            if best.as_ref().is_none_or(|(b, ..)| imbalance < *b) {
+                best = Some((imbalance, normal, left, right));
+            }
+        }
+        match best {
+            Some((imbalance, normal, left, right)) if imbalance <= SPLIT_GIVE_UP_IMBALANCE => {
+                Some((normal, left, right))
+            }
+            _ => None,
+        }
+    }
+
+    /// Route every id in `indices` by the sign of `dot(v, normal)`.
+    ///
+    /// Points exactly on the plane (`dot == 0`) go right, deterministically. Both
+    /// branches of the tree are therefore non-empty only when the plane actually
+    /// separates the node, which the caller checks.
+    fn partition_on(&self, indices: &[u32], normal: &[f32]) -> (Vec<u32>, Vec<u32>) {
+        let mut left = Vec::with_capacity(indices.len() / 2);
+        let mut right = Vec::with_capacity(indices.len() / 2);
+        for &idx in indices {
+            if simd::dot(self.get_vector(idx as usize), normal) < 0.0 {
+                left.push(idx);
+            } else {
+                right.push(idx);
+            }
+        }
+        (left, right)
+    }
+
+    /// Angular two-means: seed two centroids from distinct points, then move
+    /// them toward [`TWO_MEANS_ITERATIONS`] randomly sampled points of the node,
+    /// weighting each candidate's distance by how many points its centroid
+    /// already owns so the two groups stay balanced.
+    ///
+    /// The returned normal is `p - q`, unit length. For the angular metric the
+    /// decision boundary between two centroids passes through the origin:
+    /// `dot(u, p) > dot(u, q)` iff `dot(u, p - q) > 0`. So the split is a
+    /// hyperplane through the origin and the stored threshold stays `0.0` —
+    /// the exact shape [`far_child_dot_bound`] is derived for. A non-zero
+    /// threshold would also be sound (that bound takes one), but it would route
+    /// by a rule the angular comparison does not justify.
+    fn two_means_normal(&self, indices: &[u32], rng: &mut rand::rngs::StdRng) -> Option<Vec<f32>> {
+        use rand::Rng as _;
+
+        let count = indices.len();
+        if count < 2 {
+            return None;
+        }
+        let i = rng.random_range(0..count);
+        let mut j = rng.random_range(0..count - 1);
+        if j >= i {
+            j += 1;
+        }
+        let mut p = unit_or_zero(self.get_vector(indices[i] as usize));
+        let mut q = unit_or_zero(self.get_vector(indices[j] as usize));
+        let (mut p_count, mut q_count) = (1usize, 1usize);
+
+        for _ in 0..TWO_MEANS_ITERATIONS {
+            let v = self.get_vector(indices[rng.random_range(0..count)] as usize);
+            let norm = simd::dot(v, v).max(0.0).sqrt();
+            if !norm.is_finite() || norm <= 0.0 {
+                continue;
+            }
+            // Weighting by the owned count is the reference implementation's
+            // balancing heuristic: a centroid with more points resists taking
+            // another one, which is what keeps the split from collapsing.
+            let d_p = p_count as f32 * angular_distance(&p, v);
+            let d_q = q_count as f32 * angular_distance(&q, v);
+            if d_p < d_q {
+                blend_toward(&mut p, v, norm, p_count);
+                p_count += 1;
+            } else if d_q < d_p {
+                blend_toward(&mut q, v, norm, q_count);
+                q_count += 1;
+            }
+        }
+
+        let mut normal: Vec<f32> = p.iter().zip(&q).map(|(a, b)| a - b).collect();
+        let norm = simd::dot(&normal, &normal).max(0.0).sqrt();
+        if !norm.is_finite() || norm <= 0.0 {
+            return None;
+        }
+        for x in &mut normal {
+            *x /= norm;
+        }
+        Some(normal)
     }
 
     /// Search for k nearest neighbors.
@@ -435,7 +588,7 @@ impl RpForestIndex {
             }
         }
 
-        let leaf_size = self.params.tree_params.max_leaf_size;
+        let leaf_size = self.params.tree_params.leaf_size(self.dimension);
         let room = search_k.saturating_add(leaf_size);
         let mut candidates: Vec<u32> = Vec::with_capacity(room);
         let mut seen: HashSet<u32> = HashSet::with_capacity(room);
@@ -611,9 +764,18 @@ impl Ord for TraversalEntry<'_> {
 ///
 /// For unit-normalised data (`R = Q = 1`) this reduces to
 /// `t beta + sqrt((1 - t^2)(1 - beta^2))`. With `t = 0`, which is what this
-/// build currently stores, that is the sine of the angle between the query and
-/// the split normal, and it goes negative once the query and the far side are
-/// more than a right angle apart.
+/// build stores, that is the sine of the angle between the query and the split
+/// normal, and it goes negative once the query and the far side are more than a
+/// right angle apart.
+///
+/// The build stores `t = 0` by construction, not by approximation: the split
+/// normal is the difference of two angular centroids, and the angular decision
+/// boundary between centroids `p` and `q` is `dot(u, p) = dot(u, q)`, i.e. the
+/// plane through the origin orthogonal to `p - q`. The offset the general
+/// derivation above carries is therefore exactly zero. If a future split rule
+/// stores a non-zero offset, this function already takes it as `threshold`; no
+/// change is needed here, but the build must keep routing with the same
+/// `projection < threshold` rule that search uses.
 fn far_child_dot_bound(
     beta: f32,
     threshold: f32,
@@ -676,6 +838,51 @@ impl TreeNode {
 
 fn boxed_node_bytes(node: &TreeNode) -> usize {
     std::mem::size_of::<TreeNode>() + node.owned_bytes()
+}
+
+/// Larger child's share of a split, in `[0.5, 1]`.
+///
+/// The epsilon is the reference implementation's guard against `0/0` on an
+/// empty node.
+fn split_imbalance(left: usize, right: usize) -> f32 {
+    let total = (left + right) as f32;
+    let share = left as f32 / (total + 1e-9);
+    share.max(1.0 - share)
+}
+
+/// `2 - 2 cos(x, y)`, the angular distance used to assign points to centroids.
+///
+/// Zero-length operands are a cosine of zero by construction, matching the
+/// reference implementation rather than producing a NaN.
+fn angular_distance(x: &[f32], y: &[f32]) -> f32 {
+    let xx = simd::dot(x, x);
+    let yy = simd::dot(y, y);
+    let xy = simd::dot(x, y);
+    let ppqq = xx * yy;
+    if ppqq > 0.0 {
+        2.0 - 2.0 * xy / ppqq.sqrt()
+    } else {
+        2.0
+    }
+}
+
+/// `v / |v|`, or `v` unchanged when it is zero.
+fn unit_or_zero(v: &[f32]) -> Vec<f32> {
+    let norm = simd::dot(v, v).max(0.0).sqrt();
+    if norm > 0.0 && norm.is_finite() {
+        v.iter().map(|x| x / norm).collect()
+    } else {
+        v.to_vec()
+    }
+}
+
+/// Move `centroid` one step toward the unit vector along `v`, keeping it the
+/// mean of the `owned` points it already represents.
+fn blend_toward(centroid: &mut [f32], v: &[f32], v_norm: f32, owned: usize) {
+    let owned = owned as f32;
+    for (c, x) in centroid.iter_mut().zip(v) {
+        *c = (*c * owned + x / v_norm) / (owned + 1.0);
+    }
 }
 
 fn tree_seed(tree_idx: usize) -> u64 {
@@ -840,7 +1047,8 @@ mod tests {
 
     #[test]
     fn test_degenerate_split_does_not_recurse_infinitely() {
-        // All vectors identical → every random hyperplane sends all points to one side.
+        // All vectors identical → both centroids are that same point, so the
+        // fit collapses and no split normal exists.
         // Regression guard: the degenerate-split guard must fall back to a leaf node
         // rather than recursing until stack overflow.
         let params = RpForestParams {
@@ -1135,6 +1343,389 @@ mod tests {
                 *x -= projection * c;
             }
         }
+        let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        for x in &mut v {
+            *x /= norm;
+        }
+        v
+    }
+
+    /// Random vectors with norms spread over `[0.2, 2.0]`, so the bound is
+    /// exercised with `R != 1` rather than only on the unit-normalised contract.
+    fn seeded_scaled_vectors(n: usize, dim: usize, seed: u64) -> Vec<Vec<f32>> {
+        let mut rng = StdRng::seed_from_u64(seed);
+        (0..n)
+            .map(|_| {
+                let scale = 0.2 + 1.8 * rng.random::<f32>();
+                (0..dim)
+                    .map(|_| (rng.random::<f32>() * 2.0 - 1.0) * scale)
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Every id in `node`, for checking a bound against the true maximum dot.
+    fn subtree_ids(node: &TreeNode, out: &mut Vec<u32>) {
+        match node {
+            TreeNode::Leaf { indices } => out.extend_from_slice(indices),
+            TreeNode::Internal { left, right, .. } => {
+                subtree_ids(left, out);
+                subtree_ids(right, out);
+            }
+        }
+    }
+
+    fn subtree_max_dot(node: &TreeNode, vectors: &[Vec<f32>], query: &[f32]) -> f32 {
+        let mut ids = Vec::new();
+        subtree_ids(node, &mut ids);
+        ids.iter()
+            .map(|&i| simd::dot(query, &vectors[i as usize]))
+            .fold(f32::NEG_INFINITY, f32::max)
+    }
+
+    /// Walk every split and assert the bound the traversal would assign to the
+    /// far child is at least the largest dot actually inside it.
+    ///
+    /// This is the property the priority queue relies on: a subtree parked with
+    /// `bound` cannot contain a vector closer than one expanded with a larger
+    /// bound. A two-means normal is still a hyperplane through the origin, so
+    /// this must hold with `threshold = 0` and with non-unit vectors.
+    fn assert_bounds_cover(
+        node: &TreeNode,
+        vectors: &[Vec<f32>],
+        query: &[f32],
+        radius: f32,
+        radius_sq: f32,
+        query_norm: f32,
+        query_norm_sq: f32,
+        inherited: f32,
+    ) {
+        let TreeNode::Internal {
+            hyperplane,
+            threshold,
+            left,
+            right,
+        } = node
+        else {
+            return;
+        };
+        let projection = simd::dot(query, hyperplane);
+        let near_is_left = projection < *threshold;
+        let (near, far, far_is_upper) = if near_is_left {
+            (left.as_ref(), right.as_ref(), true)
+        } else {
+            (right.as_ref(), left.as_ref(), false)
+        };
+        let far_bound = far_child_dot_bound(
+            projection,
+            *threshold,
+            radius,
+            radius_sq,
+            query_norm,
+            query_norm_sq,
+            far_is_upper,
+        )
+        .min(inherited);
+        let far_max = subtree_max_dot(far, vectors, query);
+        assert!(
+            far_bound.is_finite(),
+            "bound must stay finite for finite input (projection={projection}, t={threshold})"
+        );
+        assert!(
+            far_max <= far_bound + 1e-4,
+            "far child holds dot {far_max} but was parked at bound {far_bound} \
+             (projection={projection}, t={threshold}, far_is_upper={far_is_upper})"
+        );
+        assert!(
+            subtree_max_dot(near, vectors, query) <= inherited + 1e-4,
+            "near child exceeded the inherited bound {inherited}"
+        );
+        assert_bounds_cover(
+            near,
+            vectors,
+            query,
+            radius,
+            radius_sq,
+            query_norm,
+            query_norm_sq,
+            inherited,
+        );
+        assert_bounds_cover(
+            far,
+            vectors,
+            query,
+            radius,
+            radius_sq,
+            query_norm,
+            query_norm_sq,
+            far_bound,
+        );
+    }
+
+    #[test]
+    fn two_means_bound_covers_every_far_child() {
+        for dim in [3usize, 8, 32] {
+            for seed in [1u64, 7] {
+                let vectors = seeded_scaled_vectors(700, dim, seed);
+                let index = forest(&vectors, dim, 3, 0);
+                for query in seeded_scaled_vectors(6, dim, seed + 100).iter() {
+                    let query_norm_sq = simd::dot(query, query);
+                    let query_norm = query_norm_sq.max(0.0).sqrt();
+                    let radius_sq = index.max_sq_norm.max(0.0);
+                    let radius = radius_sq.sqrt();
+                    // The traversal starts every root at `+inf` and immediately
+                    // tightens to `R * Q`; start there so the root's near-child
+                    // check is the same Cauchy-Schwarz bound search uses.
+                    let root_bound = radius * query_norm;
+                    for tree in &index.trees {
+                        if let Some(root) = tree.root.as_ref() {
+                            assert_bounds_cover(
+                                root,
+                                &vectors,
+                                query,
+                                radius,
+                                radius_sq,
+                                query_norm,
+                                query_norm_sq,
+                                root_bound,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn split_partition_covers_every_point_once() {
+        // A split that drops or duplicates an id would hide a vector from every
+        // query regardless of budget. Check the partition directly, including
+        // on the duplicate-heavy data that forces the leaf fallback.
+        let dim = 12;
+        let n = 900;
+        let mut vectors = seeded_unit_vectors(n, dim, 41);
+        // Repeat a block of points so degenerate splits are in play.
+        for i in 0..120 {
+            vectors[i + 300] = vectors[i].clone();
+            vectors[i + 600] = vectors[i].clone();
+        }
+        let index = forest(&vectors, dim, 4, 0);
+        for tree in &index.trees {
+            let mut ids = Vec::new();
+            subtree_ids(tree.root.as_ref().unwrap(), &mut ids);
+            ids.sort_unstable();
+            assert_eq!(
+                ids,
+                (0..n as u32).collect::<Vec<_>>(),
+                "tree is not a partition of the index"
+            );
+        }
+    }
+
+    /// Assert every stored split satisfies the bound's preconditions: a unit
+    /// normal and a plane through the origin.
+    fn assert_split_preconditions(node: &TreeNode) {
+        if let TreeNode::Internal {
+            hyperplane,
+            threshold,
+            left,
+            right,
+        } = node
+        {
+            let norm = simd::dot(hyperplane, hyperplane).sqrt();
+            assert!(
+                (norm - 1.0).abs() < 1e-4,
+                "split normal is not unit length ({norm})"
+            );
+            assert_eq!(*threshold, 0.0, "two-means splits are through the origin");
+            assert_split_preconditions(left);
+            assert_split_preconditions(right);
+        }
+    }
+
+    #[test]
+    fn split_guard_never_returns_a_degenerate_partition() {
+        // 999 duplicates plus one far outlier: a two-means fit either collapses
+        // (both centroids on the duplicate) or isolates the outlier, which the
+        // 0.99 give-up threshold rejects. Either way the node must stay a leaf
+        // rather than recurse, and every id must remain reachable.
+        let dim = 8;
+        let mut vectors = vec![vec![0.0f32; dim]; 999];
+        for v in &mut vectors {
+            v[0] = 1.0;
+        }
+        let mut outlier = vec![0.0f32; dim];
+        outlier[1] = 1.0;
+        vectors.push(outlier);
+
+        let index = forest(&vectors, dim, 2, 0);
+        for tree in &index.trees {
+            let mut ids = Vec::new();
+            subtree_ids(tree.root.as_ref().unwrap(), &mut ids);
+            ids.sort_unstable();
+            assert_eq!(
+                ids,
+                (0..vectors.len() as u32).collect::<Vec<_>>(),
+                "points lost on the degenerate split"
+            );
+            assert_split_preconditions(tree.root.as_ref().unwrap());
+        }
+        let got = index.search(&vectors[999], 1).unwrap();
+        assert_eq!(got[0].0, 999, "the outlier must still be retrievable");
+    }
+
+    /// Walk a subtree, returning `(descendant count, leaf count, depth)`.
+    fn subtree_shape(node: &TreeNode) -> (usize, usize, usize) {
+        match node {
+            TreeNode::Leaf { indices } => (indices.len(), 1, 0),
+            TreeNode::Internal { left, right, .. } => {
+                let (ln, ll, ld) = subtree_shape(left);
+                let (rn, rl, rd) = subtree_shape(right);
+                (ln + rn, ll + rl, 1 + ld.max(rd))
+            }
+        }
+    }
+
+    fn collect_split_stats(
+        node: &TreeNode,
+        imbalances: &mut Vec<f32>,
+        leaf_sizes: &mut Vec<usize>,
+        depths: &mut Vec<(usize, usize)>,
+        depth: usize,
+    ) {
+        match node {
+            TreeNode::Leaf { indices } => {
+                leaf_sizes.push(indices.len());
+                depths.push((depth, indices.len()));
+            }
+            TreeNode::Internal { left, right, .. } => {
+                let (ln, ..) = subtree_shape(left);
+                let (rn, ..) = subtree_shape(right);
+                let total = (ln + rn) as f32;
+                let f = ln as f32 / (total + 1e-9);
+                imbalances.push(f.max(1.0 - f));
+                collect_split_stats(left, imbalances, leaf_sizes, depths, depth + 1);
+                collect_split_stats(right, imbalances, leaf_sizes, depths, depth + 1);
+            }
+        }
+    }
+
+    /// Every internal node's point set, for re-fitting and counting attempts.
+    fn internal_node_sets(node: &TreeNode, out: &mut Vec<Vec<u32>>) {
+        if let TreeNode::Internal { left, right, .. } = node {
+            let mut ids = Vec::new();
+            subtree_ids(left, &mut ids);
+            subtree_ids(right, &mut ids);
+            out.push(ids);
+            internal_node_sets(left, out);
+            internal_node_sets(right, out);
+        }
+    }
+
+    fn pct(sorted: &[f32], p: f32) -> f32 {
+        if sorted.is_empty() {
+            return 0.0;
+        }
+        let i = ((sorted.len() - 1) as f32 * p).round() as usize;
+        sorted[i]
+    }
+
+    /// Measurement, not a gate: the imbalance and occupancy of the splits the
+    /// current rule produces on the two distributions the parity harness uses.
+    ///
+    /// The leaf cap is pinned to 98 (= `derived_leaf_size(96)`) so that runs
+    /// before and after a split-rule change describe the same node set.
+    #[test]
+    #[ignore = "measurement; run with --ignored --nocapture"]
+    fn report_split_balance() {
+        let dim = 96;
+        let n = 10_000;
+        let mut rng = StdRng::seed_from_u64(0x2026_1031);
+        let uniform = seeded_unit_vectors(n, dim, 0x2026_1031);
+        let centres: Vec<Vec<f32>> = (0..16).map(|_| unit_gauss(&mut rng, dim)).collect();
+        let clustered: Vec<Vec<f32>> = (0..n)
+            .map(|_| {
+                let c = &centres[rng.random_range(0..centres.len())];
+                let mut v: Vec<f32> = c.iter().map(|x| x + 0.30 * gauss(&mut rng)).collect();
+                let norm = v.iter().map(|a| a * a).sum::<f32>().sqrt();
+                for x in &mut v {
+                    *x /= norm;
+                }
+                v
+            })
+            .collect();
+
+        for (name, vectors) in [("uniform", uniform), ("clustered16", clustered)] {
+            let index = forest(&vectors, dim, 10, 98);
+            let mut imbalances = Vec::new();
+            let mut leaf_sizes = Vec::new();
+            let mut depths = Vec::new();
+            for tree in &index.trees {
+                if let Some(root) = tree.root.as_ref() {
+                    collect_split_stats(root, &mut imbalances, &mut leaf_sizes, &mut depths, 0);
+                }
+            }
+            imbalances.sort_by(f32::total_cmp);
+            let over = imbalances.iter().filter(|i| **i >= 0.95).count();
+            let max_leaf = leaf_sizes.iter().copied().max().unwrap_or(0);
+            let over_leaf = leaf_sizes.iter().filter(|l| **l > 98).count();
+            let max_depth = depths.iter().map(|(d, _)| *d).max().unwrap_or(0);
+            let mean = imbalances.iter().sum::<f32>() / imbalances.len().max(1) as f32;
+
+            // How often the 0.95 guard has to reject an attempt: re-fit each
+            // internal node's point set and count attempts to acceptance.
+            let mut sets = Vec::new();
+            for tree in &index.trees {
+                if let Some(root) = tree.root.as_ref() {
+                    internal_node_sets(root, &mut sets);
+                }
+            }
+            let mut fit_rng = StdRng::seed_from_u64(0xBEEF);
+            let mut accepted_at = [0usize; SPLIT_ATTEMPTS];
+            let mut never_balanced = 0usize;
+            for ids in &sets {
+                let mut accepted = false;
+                for slot in &mut accepted_at {
+                    let Some(normal) = index.two_means_normal(ids, &mut fit_rng) else {
+                        continue;
+                    };
+                    let (l, r) = index.partition_on(ids, &normal);
+                    if split_imbalance(l.len(), r.len()) < SPLIT_MAX_IMBALANCE {
+                        *slot += 1;
+                        accepted = true;
+                        break;
+                    }
+                }
+                if !accepted {
+                    never_balanced += 1;
+                }
+            }
+            let attempts: Vec<String> = accepted_at.iter().map(usize::to_string).collect();
+
+            println!(
+                "{name}: splits={} imbalance mean={mean:.3} p50={:.3} p90={:.3} max={:.3} \
+                 frac>=0.95={:.3} | leaves={} mean={:.1} max={max_leaf} over_cap={over_leaf} \
+                 max_depth={max_depth} | refit accepted at attempt {} (1..3), never={never_balanced}",
+                imbalances.len(),
+                pct(&imbalances, 0.50),
+                pct(&imbalances, 0.90),
+                pct(&imbalances, 1.0),
+                over as f32 / imbalances.len().max(1) as f32,
+                leaf_sizes.len(),
+                leaf_sizes.iter().sum::<usize>() as f32 / leaf_sizes.len().max(1) as f32,
+                attempts.join("/"),
+            );
+        }
+    }
+
+    fn gauss(rng: &mut StdRng) -> f32 {
+        let u1 = rng.random::<f32>().max(f32::MIN_POSITIVE);
+        let u2 = rng.random::<f32>();
+        (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos()
+    }
+
+    fn unit_gauss(rng: &mut StdRng, dim: usize) -> Vec<f32> {
+        let mut v: Vec<f32> = (0..dim).map(|_| gauss(rng)).collect();
         let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
         for x in &mut v {
             *x /= norm;
