@@ -378,11 +378,13 @@ required-features = ["rptree"]
 
 # Large-scale tier harness. Deliberately a sibling of `all_families`, not a
 # mode of it: above 10M points the dataset must live on disk, ground truth is
-# cached rather than recomputed, and the run needs resource guardrails.
+# cached rather than recomputed, and the run needs resource guardrails. hnsw is
+# the in-RAM graph and diskann is built from the same mapped rows then searched
+# through its file-backed searcher, so the disk column is a real read path.
 [[example]]
 name = "large_scale"
 path = "examples/large_scale.rs"
-required-features = ["large-scale", "hnsw"]
+required-features = ["large-scale", "hnsw", "diskann"]
 
 [profile.release]
 lto = "thin"
