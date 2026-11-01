@@ -414,7 +414,7 @@ impl FilteredGraphIndex {
                     (id, d)
                 })
                 .collect();
-            scored.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+            scored.sort_unstable_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
             scored.truncate(k);
             scored
                 .into_iter()
@@ -422,7 +422,10 @@ impl FilteredGraphIndex {
                 .collect()
         };
 
-        results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+        // Ties must not depend on `HashSet` iteration order (which is seeded
+        // per process) or on which branch ran: break them by doc_id, as the
+        // other index families do.
+        results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
         Ok(results)
     }
 
@@ -1150,6 +1153,7 @@ use crate::distance::FloatOrd;
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -1494,5 +1498,318 @@ mod tests {
     fn empty_index_errors() {
         let mut idx = FilteredGraphIndex::new(8, FilteredGraphParams::default()).unwrap();
         assert!(idx.build().is_err());
+    }
+
+    // ── Properties: filtered beam ────────────────────────────────────────────
+
+    /// One predicate over an integer attribute, with a test-side matcher that
+    /// mirrors the module's semantics.
+    #[derive(Clone, Debug)]
+    enum Probe {
+        Eq(i64),
+        Lt(i64),
+        Le(i64),
+        Gt(i64),
+        Ge(i64),
+        In(Vec<i64>),
+    }
+
+    impl Probe {
+        fn to_predicate(&self, attr: &str) -> Predicate {
+            let attr = attr.to_string();
+            match self {
+                Probe::Eq(value) => Predicate::Eq(attr, AttrValue::Int(*value)),
+                Probe::Lt(value) => Predicate::Lt(attr, AttrValue::Int(*value)),
+                Probe::Le(value) => Predicate::Le(attr, AttrValue::Int(*value)),
+                Probe::Gt(value) => Predicate::Gt(attr, AttrValue::Int(*value)),
+                Probe::Ge(value) => Predicate::Ge(attr, AttrValue::Int(*value)),
+                Probe::In(values) => {
+                    Predicate::In(attr, values.iter().map(|&v| AttrValue::Int(v)).collect())
+                }
+            }
+        }
+
+        fn matches(&self, value: i64) -> bool {
+            match self {
+                Probe::Eq(bound) => value == *bound,
+                Probe::Lt(bound) => value < *bound,
+                Probe::Le(bound) => value <= *bound,
+                Probe::Gt(bound) => value > *bound,
+                Probe::Ge(bound) => value >= *bound,
+                Probe::In(values) => values.contains(&value),
+            }
+        }
+    }
+
+    /// Filter shape: one predicate on `bucket`, an AND, or an OR whose second
+    /// child is a predicate on `flag`.
+    #[derive(Clone, Debug)]
+    enum Shape {
+        Single(Probe),
+        And(Probe, Probe),
+        Or(Probe, Probe),
+    }
+
+    impl Shape {
+        fn to_filter(&self) -> Filter {
+            match self {
+                Shape::Single(pred) => Filter::Clause(pred.to_predicate("bucket")),
+                Shape::And(first, second) => Filter::And(vec![
+                    Filter::Clause(first.to_predicate("bucket")),
+                    Filter::Clause(second.to_predicate("flag")),
+                ]),
+                Shape::Or(first, second) => Filter::Or(vec![
+                    Filter::Clause(first.to_predicate("bucket")),
+                    Filter::Clause(second.to_predicate("flag")),
+                ]),
+            }
+        }
+
+        fn matches(&self, bucket: i64, flag: i64) -> bool {
+            match self {
+                Shape::Single(pred) => pred.matches(bucket),
+                Shape::And(first, second) => first.matches(bucket) && second.matches(flag),
+                Shape::Or(first, second) => first.matches(bucket) || second.matches(flag),
+            }
+        }
+    }
+
+    fn probe_strategy() -> impl Strategy<Value = Probe> {
+        prop_oneof![
+            (0i64..10).prop_map(Probe::Eq),
+            (0i64..10).prop_map(Probe::Lt),
+            (0i64..10).prop_map(Probe::Le),
+            (0i64..10).prop_map(Probe::Gt),
+            (0i64..10).prop_map(Probe::Ge),
+            proptest::collection::vec(0i64..10, 0..3).prop_map(Probe::In),
+        ]
+    }
+
+    fn shape_strategy() -> impl Strategy<Value = Shape> {
+        prop_oneof![
+            probe_strategy().prop_map(Shape::Single),
+            (probe_strategy(), probe_strategy())
+                .prop_map(|(first, second)| Shape::And(first, second)),
+            (probe_strategy(), probe_strategy())
+                .prop_map(|first_and_second| Shape::Or(first_and_second.0, first_and_second.1)),
+        ]
+    }
+
+    struct Dataset {
+        index: FilteredGraphIndex,
+        /// Vectors exactly as the index stored them (post-normalization).
+        stored: Vec<Vec<f32>>,
+        bucket: Vec<i64>,
+        flag: Vec<i64>,
+        doc_ids: Vec<u32>,
+    }
+
+    impl Dataset {
+        fn position(&self, doc_id: u32) -> usize {
+            self.doc_ids
+                .iter()
+                .position(|&id| id == doc_id)
+                .expect("search returned an id that was never added")
+        }
+    }
+
+    /// Build a filtered-graph index over `n` random vectors with two integer
+    /// attributes. `duplicate_stride > 0` copies every strided vector from the
+    /// one before it, so exact distance ties are present.
+    fn build_dataset(
+        n: usize,
+        dim: usize,
+        ef_search: usize,
+        seed: u64,
+        duplicate_stride: usize,
+    ) -> Dataset {
+        let mut raw = make_vectors(n, dim, seed);
+        if duplicate_stride > 0 {
+            for i in (duplicate_stride..n).step_by(duplicate_stride) {
+                for d in 0..dim {
+                    raw[i * dim + d] = raw[(i - duplicate_stride) * dim + d];
+                }
+            }
+        }
+
+        let params = FilteredGraphParams {
+            max_degree: 16,
+            ef_construction: 40,
+            ef_search,
+            alpha: 1.2,
+        };
+        let mut index = FilteredGraphIndex::new(dim, params).unwrap();
+
+        // Reversed doc_ids: results must carry external ids, not positions.
+        let doc_ids: Vec<u32> = (0..n).map(|i| 10_000 + (n - 1 - i) as u32).collect();
+        let mut stored = Vec::with_capacity(n);
+        let mut bucket = Vec::with_capacity(n);
+        let mut flag = Vec::with_capacity(n);
+
+        for i in 0..n {
+            let vector = &raw[i * dim..(i + 1) * dim];
+            let bucket_value = ((i * 7) % 10) as i64;
+            let flag_value = (i % 2) as i64;
+            let mut attrs = HashMap::new();
+            attrs.insert("bucket".to_string(), AttrValue::Int(bucket_value));
+            attrs.insert("flag".to_string(), AttrValue::Int(flag_value));
+            index
+                .add_slice(doc_ids[i], vector, attrs)
+                .expect("valid vector shape");
+            stored.push(super::normalize(vector));
+            bucket.push(bucket_value);
+            flag.push(flag_value);
+        }
+        index.build().unwrap();
+
+        Dataset {
+            index,
+            stored,
+            bucket,
+            flag,
+            doc_ids,
+        }
+    }
+
+    /// A non-zero random query in the dataset's distribution.
+    fn random_query(dim: usize, seed: u64) -> Vec<f32> {
+        let mut query = make_vectors(1, dim, seed ^ 0x9E37_79B9);
+        query[0] += 1.0;
+        query
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(96))]
+
+        /// (a) Every returned id satisfies the predicate, and (c) two identical
+        /// searches return identical results — including when duplicate vectors
+        /// create exact distance ties that `k` cuts through. Ties must not
+        /// depend on `HashSet` iteration order or on the beam's arrival order.
+        #[test]
+        fn filtered_results_honour_predicate_and_determinism(
+            dim in 2usize..=8,
+            n in 8usize..=60,
+            ef_search in 1usize..=60,
+            shape in shape_strategy(),
+            seed in any::<u64>(),
+            k in 1usize..=10,
+            duplicate_stride in 0usize..=3,
+        ) {
+            let data = build_dataset(n, dim, ef_search, seed, duplicate_stride);
+            let filter = shape.to_filter();
+            let query = random_query(dim, seed);
+            let results = data.index.search_filtered(&query, k, &filter).unwrap();
+
+            // (a) predicate closure.
+            for (doc_id, _) in &results {
+                let pos = data.position(*doc_id);
+                prop_assert!(
+                    shape.matches(data.bucket[pos], data.flag[pos]),
+                    "doc_id {} (bucket={}, flag={}) does not satisfy {:?}",
+                    doc_id,
+                    data.bucket[pos],
+                    data.flag[pos],
+                    filter
+                );
+            }
+
+            // (c) determinism.
+            let again = data.index.search_filtered(&query, k, &filter).unwrap();
+            prop_assert_eq!(
+                &again,
+                &results,
+                "two identical filtered searches disagreed (n={}, k={}, ef_search={})",
+                n,
+                k,
+                ef_search
+            );
+        }
+
+        /// (b) At least `min(k, matches)` results come back when the beam
+        /// covers the whole graph (`ef_search == n`), so post-filtering cannot
+        /// silently starve the result set.
+        ///
+        /// This floor is *not* guaranteed for narrower beams: post-filtering a
+        /// bounded beam can return fewer results than match, and even none.
+        /// Measured counterexample while writing this test — n=37, dim=2,
+        /// `ef_search=1`, k=1, `And(In(bucket,[5]), Eq(flag,1))` with 4 matches
+        /// — returned 0 results. That is inherent to post-filtering (the
+        /// reason ACORN/Filtered-DiskANN build predicate-aware traversal), so
+        /// it is reported rather than asserted here.
+        #[test]
+        fn filtered_result_count_floor_when_beam_covers_graph(
+            dim in 2usize..=8,
+            n in 8usize..=60,
+            shape in shape_strategy(),
+            seed in any::<u64>(),
+            k in 1usize..=10,
+        ) {
+            let data = build_dataset(n, dim, n, seed, 0);
+            let filter = shape.to_filter();
+            let query = random_query(dim, seed);
+            let results = data.index.search_filtered(&query, k, &filter).unwrap();
+
+            let matches = (0..n)
+                .filter(|&i| shape.matches(data.bucket[i], data.flag[i]))
+                .count();
+            prop_assert!(
+                results.len() >= k.min(matches),
+                "returned {} results, expected at least min(k={}, matches={}) = {} \
+                 (n={}, ef_search={})",
+                results.len(),
+                k,
+                matches,
+                k.min(matches),
+                n,
+                n
+            );
+        }
+
+        /// (d) With a beam wide enough to visit the whole graph, post-filtering
+        /// must equal brute force over the predicate: same ids in the same
+        /// order, with the same distances.
+        #[test]
+        fn full_beam_equals_brute_force_over_predicate(
+            dim in 2usize..=8,
+            n in 8usize..=60,
+            shape in shape_strategy(),
+            seed in any::<u64>(),
+            k in 1usize..=10,
+        ) {
+            // ef_search = n: the beam visits every node, so the candidate pool
+            // covers every predicate match.
+            let data = build_dataset(n, dim, n, seed, 0);
+            let filter = shape.to_filter();
+            let query = random_query(dim, seed);
+            let normalized_query = super::normalize(&query);
+
+            let mut expected: Vec<(u32, f32)> = (0..n)
+                .filter(|&i| shape.matches(data.bucket[i], data.flag[i]))
+                .map(|i| {
+                    (
+                        data.doc_ids[i],
+                        cosine_distance_normalized(&normalized_query, &data.stored[i]),
+                    )
+                })
+                .collect();
+            expected.sort_unstable_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+            expected.truncate(k);
+
+            let actual = data.index.search_filtered(&query, k, &filter).unwrap();
+            prop_assert_eq!(
+                actual.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+                expected.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+                "filtered search disagreed with brute force (n={}, k={}, filter={:?})",
+                n,
+                k,
+                filter
+            );
+            for ((_, actual_distance), (_, expected_distance)) in actual.iter().zip(&expected) {
+                prop_assert!(
+                    (actual_distance - expected_distance).abs() <= 1e-6,
+                    "distance mismatch: {actual_distance} vs {expected_distance}"
+                );
+            }
+        }
     }
 }

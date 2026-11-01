@@ -439,6 +439,7 @@ fn child_seed(seed: u64, branch: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     fn build_index(n: usize, dim: usize) -> RpForestIndex {
         let params = RpForestParams {
@@ -604,5 +605,184 @@ mod tests {
         index.build().unwrap();
         let results = index.search(&[1.0, 0.0, 0.0, 0.0], 5).unwrap();
         assert!(!results.is_empty());
+    }
+
+    // ── Properties: threshold routing ────────────────────────────────────────
+
+    /// Deterministic pseudo-random vector with components in `[-1, 1)`.
+    fn random_vector(dim: usize, state: &mut u64) -> Vec<f32> {
+        (0..dim)
+            .map(|_| {
+                *state = state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1);
+                ((*state >> 33) as f32 / (1u64 << 31) as f32) - 1.0
+            })
+            .collect()
+    }
+
+    /// First internal node in a tree, as `(hyperplane, threshold)`.
+    fn first_internal(node: &TreeNode) -> Option<(&[f32], f32)> {
+        match node {
+            TreeNode::Leaf { .. } => None,
+            TreeNode::Internal {
+                hyperplane,
+                threshold,
+                ..
+            } => Some((hyperplane.as_slice(), *threshold)),
+        }
+    }
+
+    /// A query whose projection on `hyperplane` is exactly zero, built from two
+    /// non-zero coordinates so the products cancel exactly in binary floating
+    /// point. `None` when the hyperplane has fewer than two non-zero entries.
+    fn on_threshold_query(hyperplane: &[f32]) -> Option<Vec<f32>> {
+        let mut non_zero = hyperplane
+            .iter()
+            .enumerate()
+            .filter(|(_, value)| **value != 0.0);
+        let (i, &hi) = non_zero.next()?;
+        let (j, &hj) = non_zero.next()?;
+        let mut query = vec![0.0; hyperplane.len()];
+        query[i] = -hj;
+        query[j] = hi;
+        Some(query)
+    }
+
+    /// Brute-force top-k with the forest's own scoring (`1 - dot`), ties broken
+    /// by ascending doc_id.
+    fn brute_force_top_k(
+        data: &[Vec<f32>],
+        doc_ids: &[u32],
+        query: &[f32],
+        k: usize,
+    ) -> Vec<(u32, f32)> {
+        let mut scored: Vec<(u32, f32)> = data
+            .iter()
+            .zip(doc_ids)
+            .map(|(vector, &doc_id)| (doc_id, 1.0 - simd::dot(query, vector)))
+            .collect();
+        scored.sort_unstable_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+        scored.truncate(k);
+        scored
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(128))]
+
+        /// A query that lands exactly on a split threshold (`dot(q, w) == 0`)
+        /// must route the same way every time, and the forest must answer it
+        /// identically after a persistence round trip. The `<` versus `<=`
+        /// comparison at the split decides this case, so a flipped comparison
+        /// under serialization or a second call fails here.
+        #[test]
+        fn on_threshold_query_routes_deterministically(
+            dim in 2usize..=8,
+            n in 4usize..=40,
+            max_leaf_size in 1usize..=3,
+            num_trees in 1usize..=4,
+            seed in any::<u64>(),
+            k in 1usize..=10,
+        ) {
+            let mut state = seed | 1;
+            let data: Vec<Vec<f32>> =
+                (0..n).map(|_| random_vector(dim, &mut state)).collect();
+            let params = RpForestParams {
+                num_trees,
+                tree_params: RPTreeParams { max_leaf_size },
+            };
+            let mut index = RpForestIndex::new(dim, params).unwrap();
+            for (i, vector) in data.iter().enumerate() {
+                index.add(10_000 + i as u32, vector.clone()).unwrap();
+            }
+            index.build().unwrap();
+
+            let Some((hyperplane, _threshold)) = index
+                .trees
+                .iter()
+                .filter_map(|tree| tree.root.as_ref())
+                .find_map(first_internal)
+            else {
+                // Every split degenerated to a leaf, so there is no split plane.
+                prop_assume!(false, "no internal node in {} trees", num_trees);
+                unreachable!()
+            };
+            let Some(query) = on_threshold_query(hyperplane) else {
+                // A one-dimensional random projection direction cannot be
+                // cancelled with two coordinates.
+                prop_assume!(false, "hyperplane has fewer than two non-zero entries");
+                unreachable!()
+            };
+            prop_assert_eq!(
+                simd::dot(&query, hyperplane),
+                0.0,
+                "constructed query is not exactly on the split plane"
+            );
+
+            let first = index.search(&query, k).unwrap();
+            let second = index.search(&query, k).unwrap();
+            prop_assert_eq!(&second, &first, "identical search disagreed with itself");
+
+            let dir = tempfile::tempdir().unwrap();
+            index.save_to_dir(dir.path()).unwrap();
+            let loaded = RpForestIndex::load_from_dir(dir.path()).unwrap();
+            prop_assert_eq!(
+                &loaded.search(&query, k).unwrap(),
+                &first,
+                "routing on the split plane changed after persistence"
+            );
+        }
+
+        /// When the candidate pool covers every leaf (here: `n <= max_leaf_size`,
+        /// so each tree root is a single leaf holding every vector), the forest
+        /// must return exactly brute force, including the tie order.
+        #[test]
+        fn full_leaf_coverage_matches_brute_force(
+            dim in 2usize..=8,
+            n in 1usize..=12,
+            leaf_slack in 0usize..=4,
+            num_trees in 1usize..=4,
+            seed in any::<u64>(),
+            duplicate_last in any::<bool>(),
+            k in 1usize..=20,
+        ) {
+            let max_leaf_size = n + leaf_slack;
+            let mut state = seed | 1;
+            let mut data: Vec<Vec<f32>> =
+                (0..n).map(|_| random_vector(dim, &mut state)).collect();
+            if duplicate_last && n > 1 {
+                data[n - 1] = data[0].clone();
+            }
+            let doc_ids: Vec<u32> = (0..n).map(|i| 2_000 + (n - 1 - i) as u32).collect();
+
+            let params = RpForestParams {
+                num_trees,
+                tree_params: RPTreeParams { max_leaf_size },
+            };
+            let mut index = RpForestIndex::new(dim, params).unwrap();
+            for (vector, &doc_id) in data.iter().zip(&doc_ids) {
+                index.add(doc_id, vector.clone()).unwrap();
+            }
+            index.build().unwrap();
+
+            for tree in &index.trees {
+                prop_assert!(
+                    matches!(tree.root, Some(TreeNode::Leaf { .. })),
+                    "n={n} <= max_leaf_size={max_leaf_size} must build a single leaf"
+                );
+            }
+
+            let mut query = random_vector(dim, &mut state);
+            query[0] += 1.0; // never the all-zero query
+            let expected = brute_force_top_k(&data, &doc_ids, &query, k);
+            let actual = index.search(&query, k).unwrap();
+            prop_assert_eq!(
+                &actual,
+                &expected,
+                "forest with full leaf coverage disagreed with brute force (k={}, n={})",
+                k,
+                n
+            );
+        }
     }
 }

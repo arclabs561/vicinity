@@ -407,6 +407,7 @@ fn child_seed(seed: u64, branch: u64) -> u64 {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     fn build_index() -> RPTreeIndex {
         let mut index = RPTreeIndex::new(4, RPTreeParams::default()).unwrap();
@@ -448,5 +449,103 @@ mod tests {
             index.search(&query, 8).unwrap(),
             loaded.search(&query, 8).unwrap()
         );
+    }
+
+    // ── Property: pruning must never change the exact top-k ──────────────────
+
+    /// Brute-force top-k scored exactly like `search`: cosine distance over the
+    /// unnormalized query, ties broken by ascending doc_id.
+    fn brute_force_top_k(
+        data: &[Vec<f32>],
+        doc_ids: &[u32],
+        query: &[f32],
+        k: usize,
+    ) -> Vec<(u32, f32)> {
+        let mut scored: Vec<(u32, f32)> = data
+            .iter()
+            .zip(doc_ids)
+            .map(|(vector, &doc_id)| {
+                (
+                    doc_id,
+                    crate::distance::cosine_distance_normalized(query, vector),
+                )
+            })
+            .collect();
+        scored.sort_unstable_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+        scored.truncate(k);
+        scored
+    }
+
+    /// Deterministic pseudo-random vector with components in `[-1, 1)`.
+    fn random_vector(dim: usize, state: &mut u64) -> Vec<f32> {
+        (0..dim)
+            .map(|_| {
+                *state = state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1);
+                ((*state >> 33) as f32 / (1u64 << 31) as f32) - 1.0
+            })
+            .collect()
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(128))]
+
+        /// Whatever bound the traversal prunes with must be exact:
+        /// `search(q, k)` equals brute force over the same scoring for every
+        /// `k` in 1..=20, including the `(distance, doc_id)` tie order. A bound
+        /// that drops a candidate whose distance is <= the current k-th
+        /// distance fails here, and so does a split that misroutes data points.
+        #[test]
+        fn search_equals_brute_force_for_every_k(
+            dim in 1usize..=8,
+            n in 1usize..=60,
+            max_leaf_size in 1usize..=8,
+            max_depth in 1usize..=10,
+            seed in any::<u64>(),
+            duplicate_last in any::<bool>(),
+            query_from_data in any::<bool>(),
+            k in 1usize..=20,
+        ) {
+            let mut state = seed | 1;
+            let mut data: Vec<Vec<f32>> =
+                (0..n).map(|_| random_vector(dim, &mut state)).collect();
+            if duplicate_last && n > 1 {
+                // Exact distance ties: tie order must fall back to doc_id.
+                data[n - 1] = data[0].clone();
+            }
+            // Reversed doc_ids: tie order cannot fall out of insertion order.
+            let doc_ids: Vec<u32> = (0..n).map(|i| 5_000 + (n - 1 - i) as u32).collect();
+
+            let mut index =
+                RPTreeIndex::new(dim, RPTreeParams { max_leaf_size, max_depth }).unwrap();
+            for (vector, &doc_id) in data.iter().zip(&doc_ids) {
+                index.add(doc_id, vector.clone()).unwrap();
+            }
+            index.build().unwrap();
+
+            let query = if query_from_data {
+                // A stored point: distance 0, so it must come first.
+                data[(seed as usize) % n].clone()
+            } else {
+                let mut query = random_vector(dim, &mut state);
+                query[0] += 1.0; // never the all-zero query
+                query
+            };
+
+            let expected = brute_force_top_k(&data, &doc_ids, &query, k);
+            let actual = index.search(&query, k).unwrap();
+            prop_assert_eq!(
+                &actual,
+                &expected,
+                "search(q, {}) disagreed with brute force (n={}, dim={}, \
+                 max_leaf_size={}, max_depth={})",
+                k,
+                n,
+                dim,
+                max_leaf_size,
+                max_depth
+            );
+        }
     }
 }
