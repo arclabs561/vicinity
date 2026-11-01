@@ -29,7 +29,13 @@ fn dataset(case: &Case, seed: u64) -> Vec<Vec<f32>> {
     let centres: Vec<Vec<f32>> = match case.shape {
         Shape::Uniform => Vec::new(),
         Shape::Clustered => (0..16)
-            .map(|_| normalize(&(0..case.dim).map(|_| rng.random::<f32>() - 0.5).collect::<Vec<f32>>()))
+            .map(|_| {
+                normalize(
+                    &(0..case.dim)
+                        .map(|_| rng.random::<f32>() - 0.5)
+                        .collect::<Vec<f32>>(),
+                )
+            })
             .collect(),
     };
     (0..case.n)
@@ -147,7 +153,18 @@ fn ann_matrix() {
                     }
                 );
                 use vicinity::hnsw::HNSWIndex;
-                let mut index = HNSWIndex::new(dim, 16, 32).unwrap();
+                // Construction quality dominates at scale: the default
+                // ef_construction is fine for 10k and visibly weak at 100k, so
+                // this is a knob of the benchmark, not a hidden default.
+                let efc: usize = std::env::var("ANN_MATRIX_EFC")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(200);
+                let mut index = HNSWIndex::builder(dim)
+                    .m(16)
+                    .ef_construction(efc)
+                    .build()
+                    .unwrap();
                 for (i, v) in db.iter().enumerate() {
                     index.add(i as u32, v.clone()).unwrap();
                 }
@@ -158,7 +175,14 @@ fn ann_matrix() {
                         &expected,
                         &queries,
                         &db,
-                        |q| index.search(q, 10, ef).unwrap().into_iter().map(|(i, _)| i).collect(),
+                        |q| {
+                            index
+                                .search(q, 10, ef)
+                                .unwrap()
+                                .into_iter()
+                                .map(|(i, _)| i)
+                                .collect()
+                        },
                     );
                 }
                 let options = usearch::IndexOptions {
@@ -181,7 +205,15 @@ fn ann_matrix() {
                         &expected,
                         &queries,
                         &db,
-                        |q| uindex.search(q, 10).unwrap().keys.iter().map(|k| *k as u32).collect(),
+                        |q| {
+                            uindex
+                                .search(q, 10)
+                                .unwrap()
+                                .keys
+                                .iter()
+                                .map(|k| *k as u32)
+                                .collect()
+                        },
                     );
                 }
             }
