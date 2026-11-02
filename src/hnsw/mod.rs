@@ -147,6 +147,14 @@ pub(crate) mod construction;
 pub(crate) mod graph;
 #[cfg(feature = "hnsw")]
 mod search;
+#[cfg(feature = "hnsw")]
+pub mod segment_searcher;
+#[cfg(feature = "hnsw")]
+pub use segment_searcher::{HNSWSegmentOpenStats, HNSWSegmentSearcher};
+// Re-export the cache config so the searcher's public `open` signature is
+// nameable from outside the crate without enabling the `diskann` feature.
+#[cfg(feature = "hnsw")]
+pub use crate::file_io::{FileCacheConfig, FileCacheStats};
 
 #[cfg(feature = "hnsw")]
 pub use graph::{
