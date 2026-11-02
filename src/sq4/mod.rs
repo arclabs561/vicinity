@@ -289,15 +289,16 @@ impl SQ4Index {
             query.to_vec()
         };
 
-        // Asymmetric L2 scan: decode 4-bit codes on the fly, compute distance to float query.
+        // Asymmetric L2 scan over 4-bit codes. The per-dimension table is built
+        // once here; the scan reads it instead of decoding each code into floats.
         let candidates = k * self.params.rerank_factor;
         let candidates = candidates.min(n);
 
+        let lut = build_sq4_lut(&query_norm, &self.mins, &self.steps, d);
         let mut dists: Vec<(usize, f32)> = Vec::with_capacity(n);
         for i in 0..n {
             let code = &self.codes[i * bytes_per_vec..(i + 1) * bytes_per_vec];
-            let dist = asymmetric_l2_sq4(&query_norm, code, &self.mins, &self.steps, d);
-            dists.push((i, dist));
+            dists.push((i, asymmetric_l2_sq4_lut(code, &lut, d)));
         }
 
         // Partial sort to get top candidates.
@@ -387,6 +388,54 @@ pub(crate) fn quantize_4bit(val: f32, min: f32, inv_scale: f32) -> u8 {
 
 /// Asymmetric L2 distance: float query vs 4-bit packed codes.
 /// Decodes on the fly and accumulates squared differences.
+/// Per-dimension lookup table: `lut[j * 16 + c]` is the squared error of
+/// decoding dimension `j` as code `c`.
+///
+/// Built once per query (`dim * 16` entries) so the scan does a table read and
+/// one add per dimension instead of a decode, a subtract and two multiplies.
+fn build_sq4_lut(query: &[f32], mins: &[f32], steps: &[f32], dim: usize) -> Vec<f32> {
+    let mut lut = vec![0.0f32; dim * 16];
+    for j in 0..dim {
+        for c in 0..16 {
+            let decoded = mins[j] + (c as f32) * steps[j];
+            let delta = query[j] - decoded;
+            lut[j * 16 + c] = delta * delta;
+        }
+    }
+    lut
+}
+
+/// Accumulate a packed 4-bit code against a prebuilt table.
+///
+/// The accumulation is paired and shaped exactly like
+/// [`asymmetric_l2_sq4`]'s, so the two produce bit-identical sums; a test
+/// asserts that over random data rather than trusting it.
+#[inline]
+fn asymmetric_l2_sq4_lut(code: &[u8], lut: &[f32], dim: usize) -> f32 {
+    let mut sum = 0.0f32;
+    let pairs = dim / 2;
+
+    for p in 0..pairs {
+        let byte = code[p];
+        let lo = (byte & 0x0F) as usize;
+        let hi = (byte >> 4) as usize;
+        sum += lut[(2 * p) * 16 + lo] + lut[(2 * p + 1) * 16 + hi];
+    }
+
+    if !dim.is_multiple_of(2) {
+        let lo = (code[pairs] & 0x0F) as usize;
+        sum += lut[(dim - 1) * 16 + lo];
+    }
+
+    sum
+}
+
+/// Scalar reference: decode the code into floats and subtract.
+///
+/// Kept as the oracle the table path is tested against. It is what the scan used
+/// to call, so a test that compares them is a test that the optimisation did not
+/// change any distance.
+#[cfg(test)]
 fn asymmetric_l2_sq4(query: &[f32], code: &[u8], mins: &[f32], steps: &[f32], dim: usize) -> f32 {
     let mut sum = 0.0f32;
     let pairs = dim / 2;
@@ -418,6 +467,44 @@ fn asymmetric_l2_sq4(query: &[f32], code: &[u8], mins: &[f32], steps: &[f32], di
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The table path must not change a single distance: it replaces the same
+    /// per-dimension arithmetic with a lookup, so any drift is a bug rather than
+    /// a tolerance question. Compared bitwise, over odd and even dimensions and
+    /// codes that use the full nibble range.
+    #[test]
+    fn lut_scan_matches_the_scalar_reference_bitwise() {
+        let mut state = 0x5EED_5A4D_u64;
+        let mut next = || {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            (state >> 33) as f32 / (u32::MAX >> 1) as f32 - 0.5
+        };
+        for dim in [1usize, 2, 3, 7, 8, 31, 32, 96, 97, 128] {
+            let n = 64;
+            let mut vectors = Vec::with_capacity(n * dim);
+            for _ in 0..n * dim {
+                vectors.push(next());
+            }
+            let mut index = SQ4Index::new(dim, SQ4Params::default()).unwrap();
+            let ids: Vec<u32> = (0..n as u32).collect();
+            index.add_batch(&ids, &vectors).unwrap();
+            index.build().unwrap();
+
+            let query: Vec<f32> = (0..dim).map(|_| next()).collect();
+            let lut = build_sq4_lut(&query, &index.mins, &index.steps, dim);
+            let bytes_per_vec = dim.div_ceil(2);
+            for i in 0..n {
+                let code = &index.codes[i * bytes_per_vec..(i + 1) * bytes_per_vec];
+                let reference = asymmetric_l2_sq4(&query, code, &index.mins, &index.steps, dim);
+                let table = asymmetric_l2_sq4_lut(code, &lut, dim);
+                assert_eq!(
+                    reference.to_bits(),
+                    table.to_bits(),
+                    "dim {dim}, vector {i}: table path drifted from the reference"
+                );
+            }
+        }
+    }
 
     #[test]
     fn pack_unpack_roundtrip() {
