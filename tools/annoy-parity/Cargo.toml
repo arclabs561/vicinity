@@ -1,0 +1,17 @@
+[package]
+name = "annoy-parity"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Measurement harness: the rptree family against Spotify's Annoy"
+license = "Apache-2.0"
+
+# Own workspace root, like `tools/annoy-sys`. This crate exists so the C++ Annoy
+# shim never appears in `vicinity`'s published manifest: `cargo publish` rejects
+# a path dependency without a version, and the shim is deliberately unpublished.
+[workspace]
+
+[dependencies]
+annoy-sys = { path = "../annoy-sys" }
+rand = "0.9"
+vicinity = { path = "../..", features = ["rptree"] }

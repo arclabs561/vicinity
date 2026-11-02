@@ -5,10 +5,14 @@
 //! Only a loose recall floor is asserted, so a regression that breaks the family
 //! outright fails while ordinary variation does not.
 //!
-//! Run with:
+//! Run from the repository root:
 //! ```text
-//! cargo test --release --features annoy-bench --test annoy_parity -- --ignored --nocapture
+//! cargo test --release --manifest-path tools/annoy-parity/Cargo.toml -- --ignored --nocapture
 //! ```
+//!
+//! This lives outside `vicinity`'s manifest on purpose: it links a local C++
+//! shim that is `publish = false`, and a path dependency without a version in
+//! the parent manifest blocks `cargo publish` outright.
 //!
 //! Both sides see the same L2-normalized vectors, so Annoy's `angular` metric
 //! and this crate's `1 - dot(q, v)` cosine are the same ordering.
@@ -19,7 +23,6 @@
 //! to Annoy's `search_k`. The build leaf size stays structural — it caps how many
 //! ids one leaf contributes — so the table reports the resolved cap per row.
 
-#![cfg(all(feature = "annoy-bench", feature = "rptree"))]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::collections::HashSet;
