@@ -161,6 +161,32 @@ impl HNSWSegmentWriter {
 
         Ok(())
     }
+
+    /// Write an HNSW index plus the AoS vector sidecar.
+    ///
+    /// Calls [`Self::write_hnsw_index`] and additionally writes
+    /// `vectors_aos.bin`, where each vector's `dimension` components are
+    /// contiguous. [`HNSWSegmentSearcher`](crate::hnsw::segment_searcher::HNSWSegmentSearcher)
+    /// prefers this sidecar: one AoS vector fits in a single cache block,
+    /// while the dimension-major `vectors.bin` needs up to `dimension` block
+    /// reads for the same vector.
+    ///
+    /// The sidecar duplicates the vector bytes (the same data as `vectors.bin`
+    /// in a different order) in exchange for cache-friendly reads.
+    pub fn write_hnsw_index_aos(&mut self, index: &HNSWIndex) -> PersistenceResult<()> {
+        self.write_hnsw_index(index)?;
+
+        let segment_dir = format!("segments/segment_hnsw_{}", self.segment_id);
+        let aos_path = format!("{}/vectors_aos.bin", segment_dir);
+        let mut aos_file = self.directory.create_file(&aos_path)?;
+        // `HNSWIndex::vectors` is already AoS in internal id order, which is
+        // the order the searcher needs for layer neighbour ids.
+        for value in &index.vectors {
+            aos_file.write_all(&value.to_le_bytes())?;
+        }
+        aos_file.flush()?;
+        Ok(())
+    }
 }
 
 /// HNSW segment reader for loading graphs from disk.
@@ -661,5 +687,44 @@ mod tests {
             .unwrap()
             .iter()
             .all(|&(doc_id, _)| doc_id != 137));
+    }
+
+    #[test]
+    fn aos_sidecar_roundtrips_through_segment_searcher() {
+        use crate::persistence::directory::FsDirectory;
+
+        let dimension = 8;
+        let params = HNSWParams {
+            m: 8,
+            m_max: 16,
+            ef_construction: 64,
+            ef_search: 50,
+            metric: crate::distance::DistanceMetric::L2,
+            seed: Some(7),
+            ..Default::default()
+        };
+        let mut index = HNSWIndex::with_params(dimension, params).unwrap();
+        for internal in 0..256u32 {
+            let vector: Vec<f32> = (0..dimension)
+                .map(|d| ((internal as usize * 31 + d * 17) % 97) as f32 / 97.0)
+                .collect();
+            index.add(internal * 3 + 1, vector).unwrap();
+        }
+        index.build().unwrap();
+        let query = index.get_vector(37).to_vec();
+        let expected = index.search(&query, 10, 40).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut writer = HNSWSegmentWriter::new(Box::new(FsDirectory::new(dir.path()).unwrap()), 9);
+        writer.write_hnsw_index_aos(&index).unwrap();
+
+        let segment = dir.path().join("segments/segment_hnsw_9");
+        let mut searcher = crate::hnsw::HNSWSegmentSearcher::open(
+            &segment,
+            crate::hnsw::FileCacheConfig::with_budget(1 << 20),
+        )
+        .unwrap();
+        assert!(!searcher.uses_soa_fallback());
+        assert_eq!(searcher.search(&query, 10, 40).unwrap(), expected);
     }
 }

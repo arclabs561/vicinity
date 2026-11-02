@@ -172,7 +172,12 @@ pub mod prt;
 
 pub mod distance;
 pub mod distance_stats;
-#[cfg(any(feature = "diskann", feature = "ivf_pq", feature = "ivf_avq"))]
+#[cfg(any(
+    feature = "diskann",
+    feature = "ivf_pq",
+    feature = "ivf_avq",
+    feature = "hnsw"
+))]
 pub(crate) mod file_io;
 pub mod filtering;
 #[cfg(any(
