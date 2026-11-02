@@ -162,13 +162,22 @@ positional reads.
 
 Ranked by coverage gained per unit of risk.
 
-1. **Sparse upper layers by default.** Measured at −55% resident memory with no
-   recall or latency change (above). The machinery exists; the work is making it
-   the default without breaking the snapshot format, and then extending it to
-   layer 0.
-2. **`HNSWSegmentSearcher`.** Offsets table plus a reader over the existing
-   files. Turns the default family into a file-searchable one and gives the
-   10k–1M rows a column they can be compared on.
+1. **Sparse upper layers, as an explicit build step rather than a default.**
+   Measured at −55% resident memory with no recall or latency change (above).
+   It cannot simply become the default: freezing a layer makes it read-only
+   (`NeighborStorage::FrozenCsr` has no mutable path), so `delete_with_repair`
+   and the batch repair both return `Unsupported`, and an index that is still
+   being inserted into cannot use it. What it needs is a named call —
+   `freeze_upper_layers()` after the last insert — and, if incremental use
+   matters, a `thaw()` that rebuilds uncompressed lists. Saving is not the
+   constraint: the writer walks node ids and emits an empty list for nodes absent
+   from a layer, so a compacted segment is still dense by id on disk and reads
+   back like any other (the segment searcher has a test for exactly that).
+   Layer 0 is the larger half and is untouched by the flag.
+2. **`HNSWSegmentSearcher`.** Done: offsets table plus a reader over the existing
+   files, preferring an AoS vector sidecar. Turns the default family into a
+   file-searchable one. Measured at 100k x 96: 39 µs resident against 104 µs
+   file-backed at a 64 MiB cache (2.7x), 518 µs at 4 MiB (12.3x).
 3. **`storage_mode` in every harness row.** Cheap, and without it the audit
    above is a manual reading of family names.
 4. **Shared, thread-safe block cache.** Removes the N× cache multiplication and
