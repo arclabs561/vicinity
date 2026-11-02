@@ -823,7 +823,11 @@ impl FilteredGraphIndex {
             return Vec::new();
         }
 
-        let mut visited: HashSet<u32> = HashSet::new();
+        let entry = self.medoid;
+        // Bitset instead of a HashSet: one clear per query (n/64 words) beats
+        // a hash insert per candidate, and the graph search is memory-bound.
+        let mut visited = VisitedBits::new(n);
+        visited.mark(entry);
         let mut frontier: BinaryHeap<std::cmp::Reverse<(FloatOrd, u32)>> = BinaryHeap::new();
         // Bounded best-set, worst candidate on top. The previous version kept
         // every visited candidate in a Vec and re-sorted it on each pop, which
@@ -835,9 +839,7 @@ impl FilteredGraphIndex {
         // few of its members.
         let pool = ef.saturating_mul(4).max(ef);
 
-        let entry = self.medoid;
         let entry_dist = cosine_distance_normalized(query, self.get_vector(entry as usize));
-        visited.insert(entry);
         frontier.push(std::cmp::Reverse((FloatOrd(entry_dist), entry)));
         best.push((FloatOrd(entry_dist), entry));
 
@@ -852,7 +854,7 @@ impl FilteredGraphIndex {
             }
 
             for &nb in &self.neighbors[current_id as usize] {
-                if visited.insert(nb) {
+                if visited.mark(nb) {
                     let d = cosine_distance_normalized(query, self.get_vector(nb as usize));
                     frontier.push(std::cmp::Reverse((FloatOrd(d), nb)));
                     if best.len() < pool {
@@ -866,7 +868,7 @@ impl FilteredGraphIndex {
                 }
             }
 
-            if visited.len() > pool * 10 {
+            if visited.count > pool * 10 {
                 break;
             }
         }
@@ -1172,6 +1174,38 @@ fn read_u32(reader: &mut impl Read) -> Result<u32, RetrieveError> {
 use crate::distance::FloatOrd;
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
+
+/// Fixed-size visited bitset, reused per query by clearing in place.
+struct VisitedBits {
+    words: Vec<u64>,
+    count: usize,
+}
+
+impl VisitedBits {
+    fn new(len: usize) -> Self {
+        Self {
+            words: vec![0; len.div_ceil(64)],
+            count: 0,
+        }
+    }
+
+    /// Mark `id`; returns true when it was not already set.
+    fn mark(&mut self, id: u32) -> bool {
+        let word = (id / 64) as usize;
+        let bit = 1u64 << (id % 64);
+        let words = &mut self.words;
+        if word >= words.len() {
+            return false;
+        }
+        if words[word] & bit == 0 {
+            words[word] |= bit;
+            self.count += 1;
+            true
+        } else {
+            false
+        }
+    }
+}
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
