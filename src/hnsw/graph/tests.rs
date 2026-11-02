@@ -2485,10 +2485,12 @@ fn search_knn_uses_the_builder_ef() {
 /// Deleting a tenth of the index must not eat the `ef` budget.
 ///
 /// Before the admission split, the beam filled its result set with any node it
-/// reached, tombstones included, and stopped once that set was full. At 10%
-/// deleted and `ef = 10` the search returned **zero** results and recall@10 was
-/// 0.090 on a seeded 5k set; at `ef = 64` it returned 6 of 10. The fix admits a
-/// candidate to a result slot only when it is live, so `ef` counts live results.
+/// reached, tombstones included, and stopped once that set was full, so `ef`
+/// counted dead results and fewer than `k` live neighbours came back. The fix
+/// admits a candidate to a result slot only when it is live, so `ef` counts live
+/// results. The numbers this test measures are printed on every run and are not
+/// restated here, because a number written into a doc comment outlives the run
+/// that produced it.
 ///
 /// The floor here is a regression guard, not a target: it is far below what the
 /// current code reaches because the point is to fail loudly if tombstones ever
@@ -2584,5 +2586,44 @@ fn tombstones_keep_recall_when_a_tenth_of_the_index_is_deleted() {
             "ef={ef} recall@10 was {recall:.3} with 10% deleted (floor {floor}): \
              tombstones are consuming result slots"
         );
+    }
+}
+
+/// The in-place permutation must agree with the obvious copy-based one.
+///
+/// `reorder_for_locality` used to build `new_vectors` and a replacement
+/// `Vec<NeighborList>`; it now swaps cycles so the peak does not double. A wrong
+/// cycle walk is silent, so this checks the helper against the naive definition
+/// on every rotation plus a few scrambled permutations.
+#[test]
+fn permute_in_place_matches_the_copy() {
+    for n in 1..=12usize {
+        for shift in 0..n {
+            let perm: Vec<u32> = (0..n).map(|i| ((i + shift) % n) as u32).collect();
+            let data: Vec<u32> = (0..n as u32).collect();
+            let mut naive = vec![0u32; n];
+            for (old, item) in data.iter().enumerate() {
+                naive[perm[old] as usize] = *item;
+            }
+            let mut actual = data.clone();
+            crate::hnsw::graph::permute_in_place(&mut actual, &perm);
+            assert_eq!(actual, naive, "n={n} shift={shift}");
+        }
+        // A scrambled permutation with fixed seed: exercises multiple cycles.
+        let mut perm: Vec<u32> = (0..n as u32).collect();
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        for i in (1..n).rev() {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let j = (state >> 33) as usize % (i + 1);
+            perm.swap(i, j);
+        }
+        let data: Vec<u32> = (0..n as u32).collect();
+        let mut naive = vec![0u32; n];
+        for (old, item) in data.iter().enumerate() {
+            naive[perm[old] as usize] = *item;
+        }
+        let mut actual = data.clone();
+        crate::hnsw::graph::permute_in_place(&mut actual, &perm);
+        assert_eq!(actual, naive, "scrambled n={n}");
     }
 }

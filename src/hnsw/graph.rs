@@ -13,6 +13,39 @@ use std::sync::Mutex;
 
 pub(crate) type NeighborList = SmallVec<[u32; 32]>;
 
+/// Apply a permutation in place: the element at `i` moves to `p[i]`.
+///
+/// `p` must be a permutation of `0..len` and is consumed (it ends as the
+/// identity). Cycle-following costs one swap per out-of-place element and no
+/// second buffer, which is what keeps a 1M-point reorder from doubling the
+/// vector block.
+fn permute_in_place<T>(data: &mut [T], p: &[u32]) {
+    debug_assert_eq!(data.len(), p.len());
+    let mut p: Vec<u32> = p.to_vec();
+    for i in 0..data.len() {
+        while p[i] as usize != i {
+            let j = p[i] as usize;
+            data.swap(i, j);
+            p.swap(i, j);
+        }
+    }
+}
+
+/// [`permute_in_place`] for a flat array of `len * stride` values.
+fn permute_strided_in_place(values: &mut [f32], stride: usize, p: &[u32]) {
+    debug_assert_eq!(values.len(), p.len() * stride);
+    let mut p: Vec<u32> = p.to_vec();
+    for i in 0..p.len() {
+        while p[i] as usize != i {
+            let j = p[i] as usize;
+            for k in 0..stride {
+                values.swap(i * stride + k, j * stride + k);
+            }
+            p.swap(i, j);
+        }
+    }
+}
+
 /// HNSW index for approximate nearest neighbor search.
 ///
 /// Implements the Hierarchical Navigable Small World algorithm (Malkov & Yashunin, 2016)
@@ -592,6 +625,40 @@ impl Layer {
     ///
     /// Used by `reorder_for_locality` to update neighbor references after
     /// reordering the vector/doc_id arrays.
+    /// Remap neighbour ids and reorder the lists themselves, in place.
+    ///
+    /// `remap_ids` allocates a replacement `Vec<NeighborList>` for the whole
+    /// layer (about 136 B/point on layer 0). Remapping the ids first makes the
+    /// ids and the positions agree, so a single cycle walk does both jobs with
+    /// swaps and no second buffer.
+    pub(crate) fn remap_ids_in_place(&mut self, old_to_new: &[u32], new_size: usize) {
+        match &mut self.storage {
+            NeighborStorage::Uncompressed(neighbors) => {
+                for list in neighbors.iter_mut() {
+                    list.retain_mut(|nb| {
+                        let old = *nb as usize;
+                        if old >= old_to_new.len() {
+                            return false;
+                        }
+                        *nb = old_to_new[old];
+                        (*nb as usize) < new_size
+                    });
+                }
+                permute_in_place(neighbors, old_to_new);
+            }
+            // The compressed and CSR layouts are not built through `build()`
+            // and keep their own remap path.
+            #[cfg(any(feature = "id-compression", feature = "compact-hnsw"))]
+            _ => self.remap_ids(old_to_new, new_size),
+        }
+    }
+
+    // Only the compressed and CSR layouts need the allocating path; with both
+    // features off, `remap_ids_in_place` handles every storage variant.
+    #[cfg_attr(
+        not(any(feature = "id-compression", feature = "compact-hnsw")),
+        allow(dead_code)
+    )]
     pub(crate) fn remap_ids(&mut self, old_to_new: &[u32], new_size: usize) {
         match &mut self.storage {
             NeighborStorage::Uncompressed(neighbors) => {
@@ -2180,33 +2247,18 @@ impl HNSWIndex {
             old_to_new[old_idx as usize] = new_idx as u32;
         }
 
-        // Permute vectors (flat array, stride = dim)
-        let mut new_vectors = vec![0.0f32; self.vectors.len()];
-        for (new_idx, &old_idx) in new_order.iter().enumerate() {
-            let old_start = old_idx as usize * dim;
-            let new_start = new_idx * dim;
-            new_vectors[new_start..new_start + dim]
-                .copy_from_slice(&self.vectors[old_start..old_start + dim]);
-        }
-        self.vectors = new_vectors;
+        // Permute in place. A copy would double the vector block for the whole
+        // permutation step: at 1M x 96 that is ~366 MiB of peak RSS for a
+        // rearrangement that can be done by swapping cycles.
+        permute_strided_in_place(&mut self.vectors, dim, &old_to_new);
+        permute_in_place(&mut self.doc_ids, &old_to_new);
+        permute_in_place(&mut self.layer_assignments, &old_to_new);
 
-        // Permute doc_ids
-        let new_doc_ids: Vec<u32> = new_order
-            .iter()
-            .map(|&old| self.doc_ids[old as usize])
-            .collect();
-        self.doc_ids = new_doc_ids;
-
-        // Permute layer_assignments
-        let new_assignments: Vec<u8> = new_order
-            .iter()
-            .map(|&old| self.layer_assignments[old as usize])
-            .collect();
-        self.layer_assignments = new_assignments;
-
-        // Remap all neighbor lists in all layers
+        // Remap and reorder each layer's neighbor lists in place: remapping the
+        // ids first makes the list positions and the ids agree, so the same
+        // cycle walk works for both.
         for layer in &mut self.layers {
-            layer.remap_ids(&old_to_new, n);
+            layer.remap_ids_in_place(&old_to_new, n);
         }
 
         // Tombstones set by delete() before build() hold pre-reorder IDs.
