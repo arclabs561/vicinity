@@ -275,13 +275,21 @@ impl BinaryFlatIndex {
         })?;
         let n = self.num_vectors;
 
-        // Scan all codes with asymmetric distance.
+        // Rotate once, score n codes. `asymmetric_distance` rotates the query
+        // inside every call, so the scan used to pay n matvecs of
+        // `projected_dim x dim` on top of the n code comparisons.
+        let rotated = q.rotate_query(query).map_err(|e| {
+            RetrieveError::InvalidParameter(format!("binary quantizer rotate: {e}"))
+        })?;
         let mut scores: Vec<(f32, usize)> = (0..n)
             .map(|i| {
                 let code = &self.codes[i * self.code_len..(i + 1) * self.code_len];
-                // asymmetric_distance only errors on dimension mismatch, which
-                // we've already validated above.
-                let dist = q.asymmetric_distance(query, code).unwrap_or(f32::INFINITY);
+                // Only fails on a length mismatch, which cannot happen here:
+                // the codes were written by this quantizer and the slice is
+                // exactly `code_len` long.
+                let dist = q
+                    .asymmetric_distance_prerotated(&rotated, code)
+                    .unwrap_or(f32::INFINITY);
                 (dist, i)
             })
             .collect();

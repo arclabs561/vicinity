@@ -57,9 +57,15 @@
 //! 5. **Search**: probe nearest centroids, scan clusters with RaBitQ approximate
 //!    distances, skip candidates the error bound excludes, exact-rerank survivors
 //!
-//! Built non-compacted indexes can be saved with `IVFRaBitQIndex::save_to_dir()`
-//! and restored with `IVFRaBitQIndex::load_from_dir()`. The current format
-//! reloads into memory and rebuilds edge codes from raw vectors.
+//! Any built index can be saved with `IVFRaBitQIndex::save_to_dir()` and
+//! restored with `IVFRaBitQIndex::load_from_dir()`, including one that has been
+//! [`compact`](IVFRaBitQIndex::compact)ed. A live index writes its raw vectors
+//! and rebuilds the codes on load, which keeps exact reranking across a reload.
+//! A compacted index writes the quantized codes instead: smaller on disk, and it
+//! reloads into the same memory shape, but it can only score approximately
+//! because there are no vectors left to recompute from. The code file carries an
+//! FNV-1a checksum, because a flipped bit inside an edge code decodes to a
+//! different valid code and nothing else in the format would notice.
 //!
 //! # Rotation
 //!
@@ -123,8 +129,10 @@ use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-const IVFRABITQ_FORMAT_VERSION: u32 = 2;
+const IVFRABITQ_FORMAT_VERSION: u32 = 3;
 const IVFRABITQ_CLUSTERS_MAGIC: &[u8; 8] = b"IVFRBQCL";
+/// Header magic for the persisted RaBitQ edge codes.
+const IVFRABITQ_CODES_MAGIC: &[u8; 8] = b"IVFRBQCD";
 static IVFRABITQ_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Which rotation the index applies before quantizing residuals.
@@ -235,6 +243,10 @@ struct IVFRaBitQManifest {
     padded_dim: usize,
     num_vectors: usize,
     params: PersistedIVFRaBitQParams,
+    /// Bytes in one persisted edge code. Present from format version 3, where
+    /// the codes are stored rather than re-derived; absent from version 2 files.
+    #[serde(default)]
+    edge_code_len: usize,
 }
 
 /// A cluster (inverted list) storing RaBitQ-quantized residual vectors.
@@ -531,21 +543,36 @@ impl IVFRaBitQIndex {
         self.compacted = true;
     }
 
+    /// Bytes one persisted edge code occupies.
+    ///
+    /// Fixed by the working dimension and the bit width, so a code file is a
+    /// dense array with no per-vector offset table.
+    fn edge_code_len(&self) -> usize {
+        let ex_bits = self.params.total_bits.saturating_sub(1);
+        qntz::rabitq::EDGE_CODE_HEADER_LEN
+            + qntz::rabitq::CODE_HEADER_LEN
+            + self.padded_dim.div_ceil(8)
+            + (self.padded_dim * ex_bits).div_ceil(8)
+    }
+
     /// Save a built IVF-RaBitQ index to a directory.
     ///
-    /// The format is rebuild-on-load: it stores normalized raw vectors, cluster
-    /// membership and centroids, then recomputes the RaBitQ edge codes when the
-    /// index is opened. [`Self::compact`] drops exactly the raw vectors that
-    /// rebuild needs, so a compacted index has no input left to write.
+    /// Two shapes are written, and which one is chosen is the point of the
+    /// format:
     ///
-    /// The codes are not the obstacle: `qntz::rabitq::EdgeQuantizedVector`
-    /// exposes its fields for inspection. It is `#[non_exhaustive]` with no
-    /// public constructor, though, so an index cannot assemble one from bytes it
-    /// read back, and an `EdgeQuantizedVector` is only meaningful if its codes
-    /// were built against a zero centroid and its `ip_parent_rot_codes` matches
-    /// the parent used for the residual. Persisting codes therefore needs a
-    /// constructor or serde derive in `qntz`, plus a versioned, checksummed
-    /// format that accepts trusting the file rather than re-deriving it.
+    /// - **Live index.** Raw vectors, ids, centroids and cluster membership, with
+    ///   `edge_code_len = 0`. Codes are recomputed on load, so the file stays as
+    ///   small as the vectors it was built from and exact reranking survives a
+    ///   reload.
+    /// - **Compacted index.** [`Self::compact`] frees the f32 corpus, and this
+    ///   writes the quantized edge codes themselves (`codes.bin`) instead. The
+    ///   file is smaller than the live one (codes are 1-4 bits per dimension
+    ///   against 32) and reloads into the same memory shape, but a reloaded
+    ///   compacted index can only score approximately.
+    ///
+    /// Before this, saving a compacted index was refused, which left the family
+    /// whose selling point is a fixed memory budget as the one family that could
+    /// not be written to disk in that form.
     pub fn save_to_dir(&self, output_dir: impl AsRef<Path>) -> Result<(), RetrieveError> {
         if !self.built {
             return Err(RetrieveError::NotBuilt {
@@ -554,11 +581,16 @@ impl IVFRaBitQIndex {
             });
         }
         let expected_vector_len = checked_batch_len(self.num_vectors, self.dimension)?;
-        if self.compacted || self.vectors.len() != expected_vector_len {
-            return Err(RetrieveError::Unsupported {
-                feature: "saving a compacted IVF-RaBitQ index",
-                hint: "save before compact(), or rebuild the index",
-            });
+        let has_vectors = !self.compacted && self.vectors.len() == expected_vector_len;
+        if !has_vectors && !self.vectors.is_empty() {
+            return Err(RetrieveError::InvalidParameter(format!(
+                "IVF-RaBitQ raw vectors hold {} values, expected {} for {} vectors of {} \
+                 dimensions",
+                self.vectors.len(),
+                expected_vector_len,
+                self.num_vectors,
+                self.dimension
+            )));
         }
 
         let output_dir = output_dir.as_ref();
@@ -571,13 +603,23 @@ impl IVFRaBitQIndex {
             padded_dim: self.padded_dim,
             num_vectors: self.num_vectors,
             params: PersistedIVFRaBitQParams::from(&params),
+            edge_code_len: if has_vectors { 0 } else { self.edge_code_len() },
         };
 
         write_json_atomic(&output_dir.join("manifest.json"), &manifest)?;
-        write_f32_atomic(&output_dir.join("raw_vectors.bin"), &self.vectors)?;
+        if has_vectors {
+            write_f32_atomic(&output_dir.join("raw_vectors.bin"), &self.vectors)?;
+        }
         write_u32_atomic(&output_dir.join("doc_ids.bin"), &self.doc_ids)?;
         write_f32_atomic(&output_dir.join("centroids.bin"), &self.centroids)?;
         write_cluster_ids_atomic(&output_dir.join("clusters.bin"), &self.clusters)?;
+        if !has_vectors {
+            write_codes_atomic(
+                &output_dir.join("codes.bin"),
+                &self.clusters,
+                self.edge_code_len(),
+            )?;
+        }
 
         Ok(())
     }
@@ -591,7 +633,8 @@ impl IVFRaBitQIndex {
         let centroid_len =
             checked_len(manifest.params.num_clusters, manifest.dimension, "centroid")?;
 
-        let params = manifest.params.into_params();
+        let total_bits = manifest.params.total_bits;
+        let params = manifest.params.clone().into_params();
         let mut index = Self::new(manifest.dimension, params)?;
         if index.padded_dim != manifest.padded_dim {
             return Err(RetrieveError::FormatError(format!(
@@ -601,7 +644,6 @@ impl IVFRaBitQIndex {
             )));
         }
         index.num_vectors = manifest.num_vectors;
-        index.vectors = read_f32_exact(&input_dir.join("raw_vectors.bin"), raw_vector_len)?;
         index.doc_ids = read_u32_exact(&input_dir.join("doc_ids.bin"), manifest.num_vectors)?;
         index.centroids = read_f32_exact(&input_dir.join("centroids.bin"), centroid_len)?;
         let cluster_indices = read_cluster_ids(
@@ -610,7 +652,34 @@ impl IVFRaBitQIndex {
             manifest.num_vectors,
         )?;
         index.rebuild_coarse_quantizer()?;
-        index.rebuild_quantized_clusters(cluster_indices)?;
+
+        if manifest.edge_code_len == 0 {
+            // Live index: the codes are re-derived from the vectors, which is
+            // also what lets a reloaded index rerank exactly.
+            index.vectors = read_f32_exact(&input_dir.join("raw_vectors.bin"), raw_vector_len)?;
+            let expected = index.edge_code_len();
+            let _ = expected;
+            index.rebuild_quantized_clusters(cluster_indices)?;
+            index.compacted = false;
+        } else {
+            if manifest.edge_code_len != index.edge_code_len() {
+                return Err(RetrieveError::FormatError(format!(
+                    "IVF-RaBitQ edge code length mismatch: manifest says {}, this build \
+                     produces {} for {} padded dimensions at {} bits",
+                    manifest.edge_code_len,
+                    index.edge_code_len(),
+                    manifest.padded_dim,
+                    total_bits
+                )));
+            }
+            index.clusters = read_codes(
+                &input_dir.join("codes.bin"),
+                cluster_indices,
+                manifest.edge_code_len,
+            )?;
+            index.vectors = Vec::new();
+            index.compacted = true;
+        }
         index.built = true;
         Ok(index)
     }
@@ -908,7 +977,9 @@ impl IVFRaBitQIndex {
 }
 
 fn validate_manifest(manifest: &IVFRaBitQManifest) -> Result<(), RetrieveError> {
-    if manifest.version != IVFRABITQ_FORMAT_VERSION {
+    // Version 2 files predate `edge_code_len` and always carry raw vectors;
+    // version 3 may carry edge codes instead. Both load.
+    if manifest.version != 2 && manifest.version != IVFRABITQ_FORMAT_VERSION {
         return Err(RetrieveError::FormatError(format!(
             "unsupported IVF-RaBitQ format version {}",
             manifest.version
@@ -950,6 +1021,126 @@ fn checked_len(count: usize, dimension: usize, label: &str) -> Result<usize, Ret
     count.checked_mul(dimension).ok_or_else(|| {
         RetrieveError::FormatError(format!("IVF-RaBitQ {label} length overflows usize"))
     })
+}
+
+/// FNV-1a, used to detect payload corruption.
+///
+/// A code is self-describing enough to reject a truncated or mislabelled file,
+/// but a flipped bit inside an edge code decodes to a *different valid code*, so
+/// without a checksum that class of damage is silent. That matters here because
+/// a reloaded compacted index has no f32 vectors to recompute from.
+fn fnv1a64(bytes: &[u8], mut state: u64) -> u64 {
+    for &byte in bytes {
+        state ^= u64::from(byte);
+        state = state.wrapping_mul(0x0000_0100_0000_01B3);
+    }
+    state
+}
+
+fn write_codes_atomic(
+    path: &Path,
+    clusters: &[Cluster],
+    edge_len: usize,
+) -> Result<(), RetrieveError> {
+    write_atomic(path, |writer| {
+        writer.write_all(IVFRABITQ_CODES_MAGIC)?;
+        let mut hash = 0xCBF2_9CE4_8422_2325u64;
+        let mut write_hashed =
+            |writer: &mut BufWriter<std::fs::File>, bytes: &[u8]| -> std::io::Result<()> {
+                hash = fnv1a64(bytes, hash);
+                writer.write_all(bytes)
+            };
+        write_hashed(writer, &(edge_len as u64).to_le_bytes())?;
+        write_hashed(writer, &(clusters.len() as u64).to_le_bytes())?;
+        for cluster in clusters {
+            write_hashed(writer, &(cluster.quantized.len() as u64).to_le_bytes())?;
+            for edge in &cluster.quantized {
+                let bytes = edge.to_bytes();
+                debug_assert_eq!(bytes.len(), edge_len);
+                write_hashed(writer, &bytes)?;
+            }
+        }
+        drop(write_hashed);
+        writer.write_all(&hash.to_le_bytes())?;
+        Ok(())
+    })
+}
+
+/// Read persisted edge codes, pairing them with the cluster membership from
+/// `clusters.bin`.
+///
+/// The counts must agree exactly: an edge code cannot be matched back to a
+/// vector id, so a mismatch is unrecoverable rather than a warning.
+fn read_codes(
+    path: &Path,
+    cluster_indices: Vec<Vec<u32>>,
+    edge_len: usize,
+) -> Result<Vec<Cluster>, RetrieveError> {
+    let bytes = std::fs::read(path)?;
+    if bytes.len() < IVFRABITQ_CODES_MAGIC.len() + 8 {
+        return Err(RetrieveError::FormatError(
+            "IVF-RaBitQ code file is too short to hold a header".into(),
+        ));
+    }
+    if &bytes[0..8] != IVFRABITQ_CODES_MAGIC {
+        return Err(RetrieveError::FormatError(
+            "invalid IVF-RaBitQ code file magic".into(),
+        ));
+    }
+    let body_end = bytes.len() - 8;
+    let stored_hash = match bytes[body_end..].try_into() {
+        Ok(raw) => u64::from_le_bytes(raw),
+        Err(_) => {
+            return Err(RetrieveError::FormatError(
+                "IVF-RaBitQ code file has no complete checksum trailer".into(),
+            ))
+        }
+    };
+    if fnv1a64(&bytes[8..body_end], 0xCBF2_9CE4_8422_2325u64) != stored_hash {
+        return Err(RetrieveError::FormatError(
+            "IVF-RaBitQ code file failed its checksum: the payload is corrupt".into(),
+        ));
+    }
+    let mut reader = BufReader::new(std::io::Cursor::new(&bytes[8..body_end]));
+    let declared_edge_len = usize_from_u64(read_u64(&mut reader)?, "edge code length")?;
+    if declared_edge_len != edge_len {
+        return Err(RetrieveError::FormatError(format!(
+            "edge code length mismatch: file says {declared_edge_len}, manifest implies {edge_len}"
+        )));
+    }
+    let cluster_count = usize_from_u64(read_u64(&mut reader)?, "cluster count")?;
+    if cluster_count != cluster_indices.len() {
+        return Err(RetrieveError::FormatError(format!(
+            "code cluster count {} does not match {} membership lists",
+            cluster_count,
+            cluster_indices.len()
+        )));
+    }
+
+    let mut clusters = Vec::with_capacity(cluster_count);
+    let mut buf = vec![0u8; edge_len];
+    for (cluster_idx, indices) in cluster_indices.into_iter().enumerate() {
+        let count = usize_from_u64(read_u64(&mut reader)?, "cluster code count")?;
+        if count != indices.len() {
+            return Err(RetrieveError::FormatError(format!(
+                "cluster {cluster_idx} has {count} codes but {} member vectors",
+                indices.len()
+            )));
+        }
+        let mut quantized = Vec::with_capacity(count);
+        for _ in 0..count {
+            reader.read_exact(&mut buf)?;
+            let edge = qntz::rabitq::EdgeQuantizedVector::from_bytes(&buf).map_err(|e| {
+                RetrieveError::FormatError(format!("corrupt IVF-RaBitQ edge code: {e}"))
+            })?;
+            quantized.push(edge);
+        }
+        clusters.push(Cluster {
+            vector_indices: indices,
+            quantized,
+        });
+    }
+    Ok(clusters)
 }
 
 fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), RetrieveError> {
@@ -1458,9 +1649,12 @@ mod tests {
     }
 
     #[test]
-    fn save_rejects_compacted_index() {
+    fn compacted_index_persists_and_reloads() {
+        // The whole point of the code format: an index that dropped its f32
+        // corpus to save memory can still be written to disk and reopened into
+        // the same memory shape.
         let dim = 32;
-        let n = 100;
+        let n = 200;
         let data = make_vectors(n, dim, 102);
         let doc_ids: Vec<u32> = (0..n as u32).collect();
 
@@ -1477,9 +1671,111 @@ mod tests {
         index.compact();
 
         let dir = tempfile::tempdir().unwrap();
-        let err = index.save_to_dir(dir.path()).unwrap_err();
+        index.save_to_dir(dir.path()).unwrap();
         assert!(
-            err.to_string().contains("compacted IVF-RaBitQ"),
+            dir.path().join("codes.bin").exists(),
+            "a compacted index writes codes"
+        );
+        assert!(
+            !dir.path().join("raw_vectors.bin").exists(),
+            "a compacted index has no raw vectors to write"
+        );
+
+        let loaded = IVFRaBitQIndex::load_from_dir(dir.path()).unwrap();
+        assert_eq!(loaded.num_vectors, index.num_vectors);
+        assert!(loaded.compacted, "a code-only file reloads compacted");
+        assert!(loaded.vectors.is_empty());
+
+        // Every query that the compacted index answered, the reloaded one must
+        // answer identically: same codes, same clusters, same scoring.
+        for q in 0..10 {
+            let query = &data[q * dim..(q + 1) * dim];
+            let before = index.search(query, 5).unwrap();
+            let after = loaded.search(query, 5).unwrap();
+            assert_eq!(
+                before.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+                after.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+                "query {q} changed neighbour ids across a reload"
+            );
+            for ((_, a), (_, b)) in before.iter().zip(after.iter()) {
+                assert_eq!(a, b, "query {q} changed distances across a reload");
+            }
+        }
+    }
+
+    #[test]
+    fn code_file_corruption_is_rejected() {
+        let dim = 32;
+        let n = 100;
+        let data = make_vectors(n, dim, 111);
+        let doc_ids: Vec<u32> = (0..n as u32).collect();
+        let params = IVFRaBitQParams {
+            num_clusters: 4,
+            nprobe: 4,
+            total_bits: 4,
+            seed: 111,
+            ..IVFRaBitQParams::default()
+        };
+        let mut index = IVFRaBitQIndex::new(dim, params).unwrap();
+        index.add_batch(&doc_ids, &data).unwrap();
+        index.build().unwrap();
+        index.compact();
+        let dir = tempfile::tempdir().unwrap();
+        index.save_to_dir(dir.path()).unwrap();
+
+        // Flip a byte inside the payload (past the two u64s and the magic-less
+        // per-cluster counts, so this lands in an edge code).
+        let path = dir.path().join("codes.bin");
+        let mut bytes = std::fs::read(&path).unwrap();
+        let last = bytes.len() - 1;
+        bytes[last] ^= 0xFF;
+        std::fs::write(&path, &bytes).unwrap();
+
+        let err = match IVFRaBitQIndex::load_from_dir(dir.path()) {
+            Ok(_) => panic!("a corrupted code file must not load"),
+            Err(err) => err,
+        };
+        assert!(
+            matches!(err, RetrieveError::FormatError(_)),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn tampered_edge_code_len_is_rejected() {
+        let dim = 32;
+        let n = 100;
+        let data = make_vectors(n, dim, 112);
+        let doc_ids: Vec<u32> = (0..n as u32).collect();
+        let params = IVFRaBitQParams {
+            num_clusters: 4,
+            nprobe: 4,
+            total_bits: 4,
+            seed: 112,
+            ..IVFRaBitQParams::default()
+        };
+        let mut index = IVFRaBitQIndex::new(dim, params).unwrap();
+        index.add_batch(&doc_ids, &data).unwrap();
+        index.build().unwrap();
+        index.compact();
+        let dir = tempfile::tempdir().unwrap();
+        index.save_to_dir(dir.path()).unwrap();
+
+        let manifest_path = dir.path().join("manifest.json");
+        let text = std::fs::read_to_string(&manifest_path).unwrap();
+        let mut value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let original = value["edge_code_len"]
+            .as_u64()
+            .expect("edge_code_len present");
+        value["edge_code_len"] = serde_json::json!(original + 1);
+        std::fs::write(&manifest_path, value.to_string()).unwrap();
+
+        let err = match IVFRaBitQIndex::load_from_dir(dir.path()) {
+            Ok(_) => panic!("a tampered token length must not load"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("edge code length mismatch"),
             "unexpected error: {err}"
         );
     }
@@ -1566,6 +1862,7 @@ mod tests {
             &IVFRaBitQManifest {
                 padded_dim: 64,
                 version: IVFRABITQ_FORMAT_VERSION,
+                edge_code_len: 0,
                 dimension: 32,
                 num_vectors: 10,
                 params: PersistedIVFRaBitQParams {
@@ -1597,6 +1894,7 @@ mod tests {
             &IVFRaBitQManifest {
                 padded_dim: 64,
                 version: IVFRABITQ_FORMAT_VERSION,
+                edge_code_len: 0,
                 dimension: 32,
                 num_vectors: 10,
                 params: PersistedIVFRaBitQParams {
@@ -1628,6 +1926,7 @@ mod tests {
             &IVFRaBitQManifest {
                 padded_dim: 64,
                 version: IVFRABITQ_FORMAT_VERSION,
+                edge_code_len: 0,
                 dimension: 2,
                 num_vectors: usize::MAX,
                 params: PersistedIVFRaBitQParams {
@@ -1659,6 +1958,7 @@ mod tests {
             &IVFRaBitQManifest {
                 padded_dim: 64,
                 version: IVFRABITQ_FORMAT_VERSION,
+                edge_code_len: 0,
                 dimension: 2,
                 num_vectors: 1,
                 params: PersistedIVFRaBitQParams {
