@@ -549,6 +549,29 @@ impl FingerIndex {
     /// Keep candidate `c` if no already-selected neighbor `s` satisfies
     /// `alpha * d(query, c) <= d(s, c)` -- i.e. the selected neighbor is not
     /// too much closer to `c` than the query is.
+    /// Keep only the `ef` closest of a streaming candidate set.
+    ///
+    /// Replaces sorting the whole candidate list on every expansion just to read
+    /// its `ef`-th entry: the max-heap's peek is that entry, and popping costs
+    /// `O(log ef)`.
+    fn keep_closest(best: &mut BinaryHeap<(FloatOrd, u32)>, id: u32, dist: f32, ef: usize) -> f32 {
+        if best.len() < ef {
+            best.push((FloatOrd(dist), id));
+            // No cutoff until the pool is full, so early neighbours are never
+            // pruned by a cutoff that is not the ef-th distance yet.
+            return f32::INFINITY;
+        }
+        if let Some(&(FloatOrd(worst), _)) = best.peek() {
+            if dist < worst {
+                best.pop();
+                best.push((FloatOrd(dist), id));
+            }
+        }
+        best.peek()
+            .map(|(FloatOrd(worst), _)| *worst)
+            .unwrap_or(f32::INFINITY)
+    }
+
     fn rng_prune(&self, _query_vec: &[f32], candidates: &[(u32, f32)]) -> Vec<(u32, f32)> {
         let mut sorted = candidates.to_vec();
         sorted.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
@@ -620,22 +643,25 @@ impl FingerIndex {
             };
 
             let mut frontier: BinaryHeap<std::cmp::Reverse<(FloatOrd, u32)>> = BinaryHeap::new();
+            // The full candidate list is kept, because it feeds `rng_prune`,
+            // which wants a wider pool than the cutoff looks at. A separate
+            // bounded heap supplies the cutoff so the list is never sorted
+            // inside the loop.
             let mut candidates: Vec<(u32, f32)> = Vec::new();
+            let mut cutoff_heap: BinaryHeap<(FloatOrd, u32)> = BinaryHeap::with_capacity(ef + 1);
 
             let entry = self.medoid;
             let entry_dist = cosine_distance_normalized(query, self.get_vector(entry as usize));
             visited_insert(entry);
             frontier.push(std::cmp::Reverse((FloatOrd(entry_dist), entry)));
             candidates.push((entry, entry_dist));
+            let mut worst_dist = Self::keep_closest(&mut cutoff_heap, entry, entry_dist, ef);
 
             let mut visited_count = 1usize;
 
             while let Some(std::cmp::Reverse((FloatOrd(cur_dist), cur_id))) = frontier.pop() {
-                if candidates.len() >= ef {
-                    candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
-                    if cur_dist > candidates[ef - 1].1 * 1.5 {
-                        break;
-                    }
+                if cutoff_heap.len() >= ef && cur_dist > worst_dist * 1.5 {
+                    break;
                 }
 
                 let neighbors = &self.neighbors[cur_id as usize];
@@ -651,6 +677,7 @@ impl FingerIndex {
                         visited_count += 1;
                         let d = cosine_distance_normalized(query, self.get_vector(nb as usize));
                         candidates.push((nb, d));
+                        worst_dist = Self::keep_closest(&mut cutoff_heap, nb, d, ef);
                         frontier.push(std::cmp::Reverse((FloatOrd(d), nb)));
                     }
                 }
@@ -711,9 +738,10 @@ impl FingerIndex {
             };
 
             let mut frontier: BinaryHeap<std::cmp::Reverse<(FloatOrd, u32)>> = BinaryHeap::new();
-            let mut candidates: Vec<(u32, f32)> = Vec::new();
+            // The `ef` best candidates, never sorted until the search ends.
+            let mut best: BinaryHeap<(FloatOrd, u32)> = BinaryHeap::with_capacity(ef + 1);
 
-            // Current worst (k-th best) distance among candidates.
+            // Current worst (ef-th best) distance among candidates.
             // Initialised to infinity so the first few neighbors are never pruned.
             let mut worst_dist = f32::INFINITY;
 
@@ -721,16 +749,14 @@ impl FingerIndex {
             let entry_dist = cosine_distance_normalized(query, self.get_vector(entry as usize));
             visited_insert(entry);
             frontier.push(std::cmp::Reverse((FloatOrd(entry_dist), entry)));
-            candidates.push((entry, entry_dist));
+            Self::keep_closest(&mut best, entry, entry_dist, ef);
 
             let mut visited_count = 1usize;
 
             while let Some(std::cmp::Reverse((FloatOrd(cur_dist), cur_id))) = frontier.pop() {
                 // Early exit: current node is farther than all top-ef candidates.
-                if candidates.len() >= ef {
-                    candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
-                    let cutoff = candidates[ef - 1].1;
-                    worst_dist = cutoff;
+                if best.len() >= ef {
+                    let cutoff = worst_dist;
                     if cur_dist > cutoff * 1.5 {
                         break;
                     }
@@ -764,14 +790,8 @@ impl FingerIndex {
                     }
 
                     let d = cosine_distance_normalized(query, self.get_vector(nb as usize));
-                    candidates.push((nb, d));
+                    worst_dist = Self::keep_closest(&mut best, nb, d, ef);
                     frontier.push(std::cmp::Reverse((FloatOrd(d), nb)));
-
-                    // Update worst_dist if the candidate pool is full.
-                    if candidates.len() >= ef {
-                        candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
-                        worst_dist = candidates[ef - 1].1;
-                    }
                 }
 
                 if visited_count > ef * 10 {
@@ -779,6 +799,8 @@ impl FingerIndex {
                 }
             }
 
+            let mut candidates: Vec<(u32, f32)> =
+                best.into_iter().map(|(FloatOrd(d), id)| (id, d)).collect();
             candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
             candidates.dedup_by_key(|c| c.0);
             candidates
