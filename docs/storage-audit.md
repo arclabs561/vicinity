@@ -38,7 +38,7 @@ Evidence is the module named in each row; `save`/`load` means a public
 | `diskann` | yes (generation dir) | **yes**: `DiskANNSearcher`, `DiskANNPageSearcher` | yes, 64 MiB default, 4 KiB blocks | Two layouts (plain record, page-aligned) × two read paths. |
 | `ivf_pq` | yes | **yes**: `IVFPQFileSearcher` | yes | Codes and raw vectors on disk; centroids and `doc_ids` in RAM. |
 | `ivf_avq` | yes | **yes**: `IVFAVQFileSearcher` | yes | Partitions and raw vectors on disk; centroids and `doc_ids` in RAM. |
-| `ivf_rabitq` | yes | no | n/a | `compact()` drops the f32 corpus, after which `save_to_dir` fails. A compacted index cannot be persisted at all. |
+| `ivf_rabitq` | yes | no | n/a | Two shapes from format v3: a live index writes vectors and rebuilds codes on load; a compacted index writes `codes.bin` and reloads compacted. The code file carries a checksum, because a flipped bit decodes to a different valid code. |
 | `vamana`, `nsg`, `nsw`, `sng`, `emg`, `finger`, `pipnn`, `fresh_graph` | yes | no | n/a | Snapshot → heap. |
 | `curator`, `filtered_graph`, `range_filtered`, `lsh`, `rp_quant`, `binary_index`, `sq4` | yes | no | n/a | Snapshot → heap. |
 | `kdtree`, `balltree`, `rptree`, `rp_forest`, `kmeans_tree` | yes | no | n/a | Snapshot → heap. |
@@ -111,24 +111,19 @@ positional reads.
    of duplicated blocks, and serialising queries through one `&mut` would cap
    throughput at one core.
 
-5. **RaBitQ cannot be persisted after compaction.** `compact()` frees the f32
-   corpus and then `save_to_dir` fails (`benchmarks/README.md`, "RaBitQ at a
-   fixed memory budget"). The reason is not that the codes are unserialisable.
-   An `EdgeQuantizedVector` holds a `QuantizedVector` built against a *zero*
-   centroid plus one scalar, `ip_parent_rot_codes`, which precomputes
-   `⟨R·u, codes + cb⟩` for the parent `u` (`qntz/src/rabitq.rs:850-872`). Both
-   are derived quantities: given the residual `R·(v−u)` and `R·u` they are
-   cheap to compute, and given only the codes you cannot check that either
-   invariant holds. The current file format is rebuild-on-load — it writes
-   `raw_vectors.bin`, `centroids.bin` and cluster membership and recomputes the
-   codes at load — so `compact()` removes the format's only input.
-   Persisting the codes instead is possible in principle (the fields are `pub`),
-   but `EdgeQuantizedVector` is `#[non_exhaustive]`, so nothing outside `qntz`
-   can construct one from bytes; that needs a constructor or a serde derive in
-   `qntz`, plus a format version and a checksum, because a load path that trusts
-   the file cannot re-validate the invariants. The family whose entire selling
-   point is a fixed memory budget is the one that cannot be written to disk in
-   that form.
+5. **RaBitQ could not be persisted after compaction** — fixed, and worth
+   recording because the reason was widely mis-stated. It was not that the codes
+   were unserialisable: `compact()` frees the f32 corpus, and the format was
+   rebuild-on-load, so the only input it had was gone. Serialising the codes
+   needed `qntz` to own the codec, since an `EdgeQuantizedVector` is only
+   meaningful if its codes were built against a zero centroid and its
+   `ip_parent_rot_codes` belongs to the parent used for the residual, and the
+   type is `#[non_exhaustive]` with no public constructor. `qntz` 0.3.0 adds
+   `to_bytes` / `from_bytes` on both types; `vicinity` format v3 writes
+   `codes.bin` for a compacted index and reloads it compacted. The derived
+   `codes` vector is recomputed on load rather than stored, and the file carries
+   an FNV-1a checksum, because a flipped bit inside an edge code decodes to a
+   different valid code and nothing else in the format would notice.
 
 6. **No family compresses at rest.** Index files are raw `f32` vectors and `u32`
    ids. That is the right default for latency, but it means disk bytes ≈ corpus
@@ -160,8 +155,10 @@ Ranked by coverage gained per unit of risk.
    above is a manual reading of family names.
 4. **Shared, thread-safe block cache.** Removes the N× cache multiplication and
    the single-writer bottleneck; needed before any parallel file-backed claim.
-5. **RaBitQ code persistence.** Unblocks the fixed-memory tier, but it is a
-   format decision inside `qntz`, not a reader.
+5. ~~**RaBitQ code persistence.**~~ Done. `qntz` 0.3.0 exposes the codec and
+   `ivf_rabitq` format v3 writes `codes.bin`; the fixed-memory tier can now be
+   written to disk. The next item for this family is a file-searchable reader,
+   not a writer.
 6. **Out-of-core build.** The only item that changes the 100M answer, and by far
    the largest: sharded construction plus cross-shard stitching, as DiskANN does
    with k-means partitions and a merge pass.
