@@ -1768,6 +1768,12 @@ fn build_hnsw(path: &Path, count: u64, dim: usize, batch: usize) -> Res<vicinity
     let params = HNSWParams {
         metric: DistanceMetric::Cosine,
         seed: Some(HNSW_SEED),
+        // Upper layers hold 1/16, 1/256 ... of the nodes, but the default
+        // layout allocates a full-width neighbour slot for every node in every
+        // layer. Freezing them into eligible-node CSR is the storage change
+        // this flag measures; ANN_COMPACT_UPPER=1 turns it on.
+        #[cfg(feature = "compact-hnsw")]
+        compact_upper_layers: std::env::var_os("ANN_COMPACT_UPPER").is_some(),
         ..HNSWParams::default()
     };
     let mut index = HNSWIndex::with_params(dim, params).map_err(string_err)?;
@@ -2211,7 +2217,7 @@ fn write_jsonl(path: &Path, rows: &[Row], args: &Args, gt_cache: &Path, dataset:
         "{{\"_meta\":true,\"schema\":1,\"harness\":\"large_scale\",\"n\":{},\"dim\":{},\
          \"k\":{},\"queries\":{},\"dataset\":\"{}\",\"tier\":\"{}\",\"seed\":\"0x{SEED:016X}\",\
          \"mmap\":true,\"large_scale\":true,\"batch\":{},\"families\":\"{}\",\
-         \"diskann_cache_mib\":{},\"distance_stats\":{},\"max_points\":{},\
+         \"diskann_cache_mib\":{},\"distance_stats\":{},\"compact_upper\":{},\"max_points\":{},\
          \"budget_seconds\":{},\"vicinity\":\"{}\",\"gt_cache\":\"{}\",\"data_file\":\"{}\"}}",
         args.points,
         args.dim,
@@ -2223,6 +2229,7 @@ fn write_jsonl(path: &Path, rows: &[Row], args: &Args, gt_cache: &Path, dataset:
         families.join(","),
         args.diskann_cache_mib,
         cfg!(feature = "distance-stats"),
+        cfg!(feature = "compact-hnsw") && std::env::var_os("ANN_COMPACT_UPPER").is_some(),
         args.max_points,
         json_num(args.budget_seconds, 1),
         env!("CARGO_PKG_VERSION"),

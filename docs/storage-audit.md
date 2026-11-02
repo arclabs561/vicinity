@@ -71,10 +71,27 @@ form holds 136 B of inline neighbour slots *per node per layer*: a
 — plus a `doc_id → index` hash map and `Vec` growth slack. At 1M with the five
 or six layers a 1M build produces, that is roughly 700–800 MiB of slots, of which
 only the few percent of nodes assigned above layer 0 can ever hold an edge.
-A flat CSR layer, or a sparse allocation per layer, recovers most of it; the
-machinery already exists for the *upper* layers (`FrozenCsr`, the
-`compact-hnsw` feature, `HNSWIndex::compact_upper_layers`), but it is off by
-default and does not touch layer 0.
+
+That is not an estimate any more. Building the same 1M index with
+`compact_upper_layers` on (upper layers frozen into eligible-node CSR, edges at
+their actual degree) and off, same seed, same corpus, same ground truth:
+
+| `ef` | recall (off / on) | p50 µs (off / on) | index MiB (off / on) |
+| ---: | --- | --- | --- |
+| 50 | 0.4784 / 0.4784 | 124.0 / 125.3 | 1231.8 / **549.8** |
+| 200 | 0.8074 / 0.8074 | 386.9 / 385.2 | 1231.8 / **549.8** |
+| 800 | 0.9690 / 0.9690 | 1237.2 / 1239.5 | 1231.8 / **549.8** |
+
+Identical recall at every point, p50 within 1%, build 55.4 s against 54.2 s, and
+**55% less resident memory**: 0.55 KiB/point that was never data. Rows in
+`benchmarks/large-scale-1m-hnsw-{layout,compact}.jsonl`.
+
+Process RSS does not fall with it (2111 MiB either way), because the freed
+per-node allocations go back to the allocator rather than to the OS. That is a
+measurement trap: a change can halve the index and leave `ps` unchanged.
+
+The same trick applies to layer 0, which the `compact-hnsw` feature deliberately
+does not touch, and it is off by default even for the upper layers.
 
 **DiskANN is the only family whose disk number is honest.** In RAM it is 507 MiB
 for the same 1M, 1.21 KiB/point against HNSW's 2.09, because it stores one layer
@@ -145,9 +162,10 @@ positional reads.
 
 Ranked by coverage gained per unit of risk.
 
-1. **Sparse upper layers by default.** Contained change, no format change, cuts
-   resident memory by an estimated 0.5–0.7 KiB/point at 1M. Verify with the
-   existing memory tests and re-record the 1M row.
+1. **Sparse upper layers by default.** Measured at −55% resident memory with no
+   recall or latency change (above). The machinery exists; the work is making it
+   the default without breaking the snapshot format, and then extending it to
+   layer 0.
 2. **`HNSWSegmentSearcher`.** Offsets table plus a reader over the existing
    files. Turns the default family into a file-searchable one and gives the
    10k–1M rows a column they can be compared on.

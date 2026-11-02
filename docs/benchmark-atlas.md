@@ -1,6 +1,6 @@
 # Benchmark atlas
 
-Status: current, 2026-11-01 at `9a6f615`. Every figure is generated from a
+Status: current, 2026-11-01. Every figure is generated from a
 committed rows file by [`scripts/plot_atlas.py`](../scripts/plot_atlas.py);
 none is hand-drawn, and each carries its source and protocol in the image.
 
@@ -186,6 +186,21 @@ exists only where a `distance-stats` build has been run, and the columns that ar
 empty across a whole row are families whose row set predates a field. An empty
 cell is "not measured", never "zero".
 
+### 12. The layout behind every memory number
+
+[layout-upper-layers.svg](plots/atlas/layout-upper-layers.svg)
+
+The same 1M HNSW index built twice: default layout, and with upper layers frozen
+into eligible-node CSR. Recall is identical at `ef` 50/200/800, p50 is within 1%,
+and the index is **1231.8 MiB against 549.8 MiB** (−55%). The memory was never
+data: every layer allocated a 136-byte inline neighbour slot for every node, and
+only a few percent of nodes live above layer 0.
+
+Two things this figure is here to prevent. A memory claim measured by process
+RSS would have shown *no change* (2111 MiB either way), because the freed
+allocations return to the allocator rather than the OS. And a claim that the
+resident size is inherent to HNSW is false: the serialized form of the same graph
+is 470 MiB, which is what the compact layout approaches.
 ### 13. External libraries, with repeats
 
 [external-repeats-fashion20k.svg](plots/atlas/external-repeats-fashion20k.svg)

@@ -632,7 +632,9 @@ def fig_single_family(out: Path) -> None:
     """One family across the datasets where only it was measured."""
     files = {
         "GloVe-100 (1.18M, 100d)": ROOT / "docs" / "glove-100-angular.jsonl",
-        "Fashion-MNIST (60k, 784d)": ROOT / "docs" / "fashion-mnist-784-euclidean.jsonl",
+        "Fashion-MNIST (60k, 784d)": (
+            ROOT / "docs" / "fashion-mnist-784-euclidean.jsonl"
+        ),
     }
     fig, ax = plt.subplots(figsize=(8, 5))
     plotted = 0
@@ -640,7 +642,11 @@ def fig_single_family(out: Path) -> None:
         if not path.exists():
             continue
         rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
-        rows = [r for r in rows if not r.get("_meta") and r.get("recall_at_10") is not None]
+        rows = [
+            r
+            for r in rows
+            if not r.get("_meta") and r.get("recall_at_10") is not None
+        ]
         if not rows:
             continue
         rows.sort(key=lambda r: r["recall_at_10"])
@@ -668,6 +674,69 @@ def fig_single_family(out: Path) -> None:
         ),
         fontsize=9,
         loc="left",
+    )
+    finish(fig, out)
+
+
+def fig_layout(out: Path) -> None:
+    """Same graph, two resident layouts."""
+    files = {
+        "default layout": ROOT / "benchmarks" / "large-scale-1m-hnsw-layout.jsonl",
+        "upper layers frozen": (
+            ROOT / "benchmarks" / "large-scale-1m-hnsw-compact.jsonl"
+        ),
+    }
+    loaded: dict[str, list[dict]] = {}
+    for label, path in files.items():
+        if not path.exists():
+            return
+        loaded[label] = [
+            json.loads(line)
+            for line in path.read_text().splitlines()
+            if line.strip()
+        ]
+
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.4))
+    ax = axes[0]
+    names = list(loaded)
+    mem = [next(r for r in loaded[name] if not r.get("_meta"))["mem_mib"] for name in names]
+    bars = ax.bar(names, mem, color=COLOR_CYCLE[: len(names)], width=0.5)
+    for bar, value in zip(bars, mem, strict=True):
+        ax.annotate(f"{value:.0f} MiB", (bar.get_x() + bar.get_width() / 2, value),
+                    ha="center", va="bottom", fontsize=9)
+    ax.set_ylabel("index memory (MiB), 1M points")
+    ax.set_ylim(0, max(mem) * 1.18)
+    ax.grid(axis="y", alpha=0.25)
+    ax.set_title("resident size", fontsize=8, loc="left")
+
+    ax = axes[1]
+    for idx, (name, rows) in enumerate(loaded.items()):
+        points = sorted(
+            (r for r in rows if not r.get("_meta")),
+            key=lambda r: r["knob_value"],
+        )
+        ax.plot(
+            [p["knob_value"] for p in points],
+            [p["p50_us"] for p in points],
+            marker="o",
+            linewidth=1.5,
+            color=COLOR_CYCLE[idx % len(COLOR_CYCLE)],
+            label=name,
+        )
+    ax.set_xscale("log")
+    ax.set_xlabel("ef_search (log)")
+    ax.set_ylabel("p50 latency, µs")
+    ax.grid(alpha=0.25)
+    ax.legend(fontsize=7, frameon=False)
+    ax.set_title("query cost is unchanged", fontsize=8, loc="left")
+    fig.suptitle(
+        subtitle(
+            "benchmarks/large-scale-1m-hnsw-{layout,compact}.jsonl",
+            "1M clustered: freezing upper layers into eligible-node CSR",
+        ),
+        fontsize=9,
+        x=0.01,
+        ha="left",
     )
     finish(fig, out)
 
@@ -786,6 +855,7 @@ def main() -> None:
             fig_real(name, rows, OUT / f"real-{name}.png", extra)
     fig_external_repeats(OUT / "external-repeats-fashion20k.svg")
     fig_single_family(OUT / "single-family-datasets.svg")
+    fig_layout(OUT / "layout-upper-layers.svg")
     fig_seeds(OUT / "seed-variance.png")
 
 
