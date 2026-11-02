@@ -50,6 +50,59 @@ impl Default for LSHParams {
     }
 }
 
+/// Dense visited set with a generation counter.
+///
+/// LSH ids are dense (`0..num_vectors`), so a byte per vector is the right
+/// shape. Clearing it per query is what makes it useful: bumping a generation
+/// is O(1), where `vec![false; n]` zeroes a megabyte per query at 1M points.
+#[derive(Debug, Default)]
+struct DenseVisited {
+    marks: Vec<u32>,
+    generation: u32,
+}
+
+impl DenseVisited {
+    /// Prepare for a new search over `num_nodes` ids.
+    fn begin(&mut self, num_nodes: usize) {
+        if self.marks.len() < num_nodes {
+            // Resizing keeps the old marks in the slots below the previous
+            // length, so they must be cleared before generation restarts at 1:
+            // otherwise a mark left by an earlier query would read as visited
+            // and silently drop candidates. This is the one path where the
+            // whole array is touched, and it runs once per index growth.
+            self.marks.resize(num_nodes, 0);
+            self.marks.fill(0);
+            self.generation = 1;
+            return;
+        }
+        match self.generation.checked_add(1) {
+            Some(next) => self.generation = next,
+            None => {
+                // u32 overflow after 4 billion queries on one thread: reset.
+                self.marks.fill(0);
+                self.generation = 1;
+            }
+        }
+    }
+
+    /// Mark `id` visited. Returns `true` if it was not already visited.
+    fn visit(&mut self, id: u32) -> bool {
+        let idx = id as usize;
+        debug_assert!(idx < self.marks.len(), "LSH visited id {id} out of bounds");
+        if self.marks[idx] == self.generation {
+            false
+        } else {
+            self.marks[idx] = self.generation;
+            true
+        }
+    }
+}
+
+thread_local! {
+    static THREAD_VISITED: std::cell::RefCell<DenseVisited> =
+        std::cell::RefCell::new(DenseVisited::default());
+}
+
 /// Cross-polytope LSH index for approximate nearest neighbor search.
 ///
 /// Uses random rotations + cross-polytope vertex selection for angular-distance-sensitive
@@ -271,30 +324,40 @@ impl CrossPolytopeLSHIndex {
             });
         }
 
-        // Collect candidate set from all tables using multiprobe.
+        if k == 0 {
+            return Ok(Vec::new());
+        }
+
+        // Collect the candidate set from all tables using multiprobe. The
+        // visited set is a per-thread generation counter rather than a fresh
+        // `vec![false; n]`, which cost a megabyte of zeroing per query at 1M
+        // points and dwarfed the work the query actually did.
         let mut candidates = Vec::new();
-        let mut seen = vec![false; self.num_vectors];
+        THREAD_VISITED.with(|cell| {
+            let mut visited = cell.borrow_mut();
+            visited.begin(self.num_vectors);
+            for (table_idx, hasher) in self.hashers.iter().enumerate() {
+                // hash_ranked returns the top-k vertices sorted by coordinate
+                // magnitude, which is exactly the multiprobe set.
+                let probes = hasher
+                    .hash_ranked(query, self.params.num_probes)
+                    .unwrap_or_default();
 
-        for (table_idx, hasher) in self.hashers.iter().enumerate() {
-            // hash_ranked returns the top-k vertices sorted by coordinate magnitude,
-            // which is exactly the multiprobe set.
-            let probes = hasher
-                .hash_ranked(query, self.params.num_probes)
-                .unwrap_or_default();
-
-            for bucket_id in probes {
-                if let Some(ids) = self.tables[table_idx].get(&bucket_id) {
-                    for &id in ids {
-                        if !seen[id as usize] {
-                            seen[id as usize] = true;
-                            candidates.push(id);
+                for bucket_id in probes {
+                    if let Some(ids) = self.tables[table_idx].get(&bucket_id) {
+                        for &id in ids {
+                            if visited.visit(id) {
+                                candidates.push(id);
+                            }
                         }
                     }
                 }
             }
-        }
+        });
 
-        // Exact distance computation on candidates.
+        // Exact distance computation on candidates, then select rather than
+        // sort: the candidate set is the whole probed bucket contents, which is
+        // usually far larger than k.
         let mut results: Vec<(u32, f32)> = candidates
             .iter()
             .map(|&id| {
@@ -303,8 +366,12 @@ impl CrossPolytopeLSHIndex {
             })
             .collect();
 
+        let keep = k.min(results.len());
+        if keep < results.len() {
+            results.select_nth_unstable_by(keep, |a, b| a.1.total_cmp(&b.1));
+            results.truncate(keep);
+        }
         results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
-        results.truncate(k);
         Ok(results)
     }
 
@@ -447,6 +514,60 @@ mod tests {
         dists.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
         dists.truncate(k);
         dists
+    }
+
+    /// The visited set is reused across queries on a thread. A leak in either
+    /// direction changes results: a stale mark drops a candidate, a missing one
+    /// duplicates a candidate.
+    #[test]
+    fn repeated_queries_are_idempotent() {
+        let dim = 8;
+        let data = clustered_data(4, 32, dim);
+        let params = LSHParams {
+            num_tables: 6,
+            num_probes: 3,
+            seed: Some(7),
+        };
+        let mut index = CrossPolytopeLSHIndex::new(dim, params).unwrap();
+        index.add_vectors(&data).unwrap();
+        index.build().unwrap();
+
+        let mut query = vec![0.0f32; dim];
+        query.copy_from_slice(&data[0..dim]);
+
+        let first = index.search(&query, 5).unwrap();
+        for _ in 0..16 {
+            let again = index.search(&query, 5).unwrap();
+            assert_eq!(
+                again.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+                first.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+                "a reused visited set changed the neighbours"
+            );
+            assert_eq!(again.len(), first.len());
+        }
+    }
+
+    /// Growing the set restarts the generation, so marks left over from a
+    /// smaller index must be cleared first. Without the clear, an id visited at
+    /// generation 1 by the smaller index reads as visited at generation 1 in the
+    /// larger one and is dropped from every result.
+    #[test]
+    fn growing_the_visited_set_clears_stale_marks() {
+        let mut visited = DenseVisited::default();
+        visited.begin(16);
+        for id in 0..8 {
+            assert!(visited.visit(id), "first query marks {id}");
+        }
+        assert!(!visited.visit(3), "3 was already marked in this generation");
+
+        // A larger index on the same thread: 3 must be visitable again.
+        visited.begin(64);
+        assert!(
+            visited.visit(3),
+            "a stale mark from the smaller index survived the growth"
+        );
+        assert!(visited.visit(40), "freshly added slots start unvisited");
+        assert!(!visited.visit(40), "and then behave normally");
     }
 
     fn lsh_snapshot_dir() -> tempfile::TempDir {
