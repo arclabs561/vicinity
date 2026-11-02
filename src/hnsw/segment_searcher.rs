@@ -1,7 +1,7 @@
 //! File-backed HNSW segment searcher.
 //!
 //! [`HNSWSegmentSearcher`] answers k-NN queries directly over the files a
-//! [`HNSWSegmentWriter`](crate::persistence::hnsw::HNSWSegmentWriter) wrote
+//! `HNSWSegmentWriter` wrote
 //! into `segments/segment_hnsw_<id>/`, without loading the graph or the full
 //! vector matrix into the heap. It mirrors
 //! [`HNSWIndex::search`](crate::hnsw::HNSWIndex::search) layer by layer so that
@@ -22,7 +22,7 @@
 //!   [`FileCacheConfig`].
 //!
 //! None of that is the graph: neighbour ids are never held, only the offset at
-//! which each node's neighbour list starts. [`Self::resident_bytes`] reports
+//! which each node's neighbour list starts. [`HNSWSegmentSearcher::resident_bytes`] reports
 //! the total.
 //!
 //! # Vector layout: AoS sidecar by default
@@ -38,11 +38,11 @@
 //!
 //! Because of that, [`HNSWSegmentSearcher::open`] prefers an AoS sidecar,
 //! `vectors_aos.bin`, written by
-//! [`HNSWSegmentWriter::write_hnsw_index_aos`](crate::persistence::hnsw::HNSWSegmentWriter::write_hnsw_index_aos).
+//! `HNSWSegmentWriter::write_hnsw_index_aos`.
 //! One AoS vector is contiguous, so a single cache block usually holds it.
 //! If the sidecar is absent the searcher falls back to the SoA `vectors.bin`
 //! so legacy segments still answer queries, but
-//! [`Self::uses_soa_fallback`] then reports `true`.
+//! [`HNSWSegmentSearcher::uses_soa_fallback`] then reports `true`.
 //!
 //! # Threading and cache ownership
 //!
