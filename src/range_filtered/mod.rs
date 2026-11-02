@@ -78,6 +78,12 @@ pub struct RangeFilteredParams {
     pub hnsw_ef_construction: usize,
     /// Search ef parameter.
     pub ef_search: usize,
+    /// RNG seed for the inner HNSW's layer assignment.
+    ///
+    /// Fixed by default so a built index — and therefore a benchmark row — is
+    /// reproducible. `None` restores thread-local randomness, which makes two
+    /// builds of the same data produce different graphs.
+    pub seed: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -85,6 +91,12 @@ struct PersistedRangeFilteredParams {
     hnsw_m: usize,
     hnsw_ef_construction: usize,
     ef_search: usize,
+    #[serde(default = "default_range_seed")]
+    seed: Option<u64>,
+}
+
+fn default_range_seed() -> Option<u64> {
+    Some(0x5EED_5EED)
 }
 
 impl From<&RangeFilteredParams> for PersistedRangeFilteredParams {
@@ -93,6 +105,7 @@ impl From<&RangeFilteredParams> for PersistedRangeFilteredParams {
             hnsw_m: params.hnsw_m,
             hnsw_ef_construction: params.hnsw_ef_construction,
             ef_search: params.ef_search,
+            seed: params.seed,
         }
     }
 }
@@ -103,6 +116,7 @@ impl PersistedRangeFilteredParams {
             hnsw_m: self.hnsw_m,
             hnsw_ef_construction: self.hnsw_ef_construction,
             ef_search: self.ef_search,
+            seed: self.seed,
         }
     }
 }
@@ -121,6 +135,7 @@ impl Default for RangeFilteredParams {
             hnsw_m: 16,
             hnsw_ef_construction: 200,
             ef_search: 100,
+            seed: Some(0x5EED_5EED),
         }
     }
 }
@@ -143,6 +158,13 @@ pub struct RangeFilteredIndex {
     num_vectors: usize,
     /// Points sorted by attribute (populated during build).
     sorted_points: Vec<AttributedPoint>,
+    /// `doc_id` -> attribute, so a range check is a lookup rather than a scan.
+    ///
+    /// `sorted_points` is attribute-ordered, which answers "which points are in
+    /// [lo, hi]" but not "is this doc id in range". Post-filtering asked the
+    /// second question once per candidate, and answered it by scanning all n
+    /// points: O(n) per candidate, O(k n) per query.
+    attribute_by_doc: std::collections::HashMap<u32, f64>,
     /// Unsorted points (pre-build staging).
     staging: Vec<(u32, Vec<f32>, f64)>,
 
@@ -167,6 +189,7 @@ impl RangeFilteredIndex {
             vectors: Vec::new(),
             num_vectors: 0,
             sorted_points: Vec::new(),
+            attribute_by_doc: std::collections::HashMap::new(),
             staging: Vec::new(),
             #[cfg(feature = "hnsw")]
             full_index: None,
@@ -226,6 +249,12 @@ impl RangeFilteredIndex {
             }
         }
 
+        self.attribute_by_doc = self
+            .sorted_points
+            .iter()
+            .map(|p| (p.doc_id, p.attribute))
+            .collect();
+
         self.rebuild_full_index()?;
         self.built = true;
         Ok(())
@@ -233,11 +262,14 @@ impl RangeFilteredIndex {
 
     #[cfg(feature = "hnsw")]
     fn rebuild_full_index(&mut self) -> Result<(), RetrieveError> {
-        let mut hnsw = crate::hnsw::HNSWIndex::builder(self.dimension)
+        let mut builder = crate::hnsw::HNSWIndex::builder(self.dimension)
             .m(self.params.hnsw_m)
             .ef_construction(self.params.hnsw_ef_construction)
-            .auto_normalize(false)
-            .build()?;
+            .auto_normalize(false);
+        if let Some(seed) = self.params.seed {
+            builder = builder.seed(seed);
+        }
+        let mut hnsw = builder.build()?;
 
         for (rank, point) in self.sorted_points.iter().enumerate() {
             let vec = self.get_vector(rank);
@@ -303,6 +335,11 @@ impl RangeFilteredIndex {
             manifest.num_vectors * manifest.dimension,
         )?;
         index.sorted_points = read_points(&input_dir.join("points.bin"), manifest.num_vectors)?;
+        index.attribute_by_doc = index
+            .sorted_points
+            .iter()
+            .map(|p| (p.doc_id, p.attribute))
+            .collect();
         index.rebuild_full_index()?;
         index.built = true;
         Ok(index)
@@ -350,12 +387,12 @@ impl RangeFilteredIndex {
 
         let ef = self.params.ef_search.max(k);
 
-        // Build attribute lookup: doc_id -> attribute
-        // sorted_points is small; linear scan per result is acceptable.
+        // Attribute lookup: one hash read per candidate instead of a scan of
+        // every point in the index.
         let in_range = |doc_id: u32| -> bool {
-            self.sorted_points
-                .iter()
-                .any(|p| p.doc_id == doc_id && p.attribute >= lo && p.attribute <= hi)
+            self.attribute_by_doc
+                .get(&doc_id)
+                .is_some_and(|attribute| *attribute >= lo && *attribute <= hi)
         };
 
         // Search with extra candidates, then post-filter by attribute range
@@ -402,7 +439,14 @@ impl RangeFilteredIndex {
         #[cfg(not(feature = "hnsw"))]
         let graph_bytes = 0;
 
+        // One bucket per entry, rounded up to a power of two by the map, plus a
+        // key and a value per slot. Reported so the trade against the O(n) scan
+        // it replaced is visible rather than hidden.
+        let attribute_map_bytes = self.attribute_by_doc.capacity()
+            * (std::mem::size_of::<u32>() + std::mem::size_of::<f64>());
+
         let metadata_bytes = self.sorted_points.capacity() * std::mem::size_of::<AttributedPoint>()
+            + attribute_map_bytes
             + self.staging.capacity() * std::mem::size_of::<(u32, Vec<f32>, f64)>()
             + self
                 .staging
@@ -610,6 +654,7 @@ mod tests {
                 hnsw_m: 8,
                 hnsw_ef_construction: 50,
                 ef_search: 50,
+                ..RangeFilteredParams::default()
             },
         )
         .unwrap();
@@ -645,6 +690,7 @@ mod tests {
                 hnsw_m: 8,
                 hnsw_ef_construction: 50,
                 ef_search: 50,
+                ..RangeFilteredParams::default()
             },
         )
         .unwrap();
@@ -661,6 +707,64 @@ mod tests {
     }
 
     #[test]
+    fn range_check_is_a_lookup_not_a_scan() {
+        // Post-filtering used to ask "is this doc id in range" once per candidate
+        // and answer it by scanning every point in the index. The map makes it a
+        // hash read, so the behaviour that matters is that a doc id outside the
+        // index is simply out of range rather than a panic, and that an exact
+        // boundary is inclusive on both ends.
+        let dim = 4;
+        let params = RangeFilteredParams::default();
+        let mut index = RangeFilteredIndex::new(dim, params).unwrap();
+        for i in 0..32u32 {
+            let v = vec![i as f32 + 0.5, 1.0, 0.0, 0.0];
+            index.add(i, v, i as f64).unwrap();
+        }
+        index.build().unwrap();
+
+        let query = vec![1.0f32, 0.0, 0.0, 0.0];
+
+        // Both boundaries are inclusive.
+        let inclusive = index.range_search(&query, 40, 5.0, 9.0).unwrap();
+        assert_eq!(inclusive.len(), 5, "attributes 5..=9 are five points");
+        for (doc_id, _) in &inclusive {
+            assert!(
+                (5..=9).contains(&(*doc_id as i64)),
+                "doc {doc_id} out of range"
+            );
+        }
+
+        // A range with no members returns nothing rather than scanning forever.
+        let empty = index.range_search(&query, 10, 100.0, 200.0).unwrap();
+        assert!(empty.is_empty(), "no point has an attribute in 100..=200");
+    }
+
+    #[test]
+    fn default_params_build_a_reproducible_index() {
+        // The inner HNSW's layer assignment is random unless seeded, and the
+        // builder had no way to pass a seed, so two builds of identical data
+        // produced different graphs and different recall — a benchmark row
+        // that could not be reproduced. The default seed makes the row stable.
+        let build = || {
+            let dim = 16;
+            let mut index = RangeFilteredIndex::new(dim, RangeFilteredParams::default()).unwrap();
+            for i in 0..256u32 {
+                let v: Vec<f32> = (0..dim)
+                    .map(|j| ((i * 31 + j as u32) as f32 * 0.01).sin())
+                    .collect();
+                index.add(i, v, (i % 10) as f64).unwrap();
+            }
+            index.build().unwrap();
+            let query: Vec<f32> = (0..dim).map(|j| (j as f32 * 0.1).cos()).collect();
+            index.range_search(&query, 20, 2.0, 7.0).unwrap()
+        };
+        let first = build();
+        let second = build();
+        assert_eq!(first, second, "same params must build the same index");
+        assert!(!first.is_empty());
+    }
+
+    #[test]
     fn narrow_range_returns_subset() {
         let dim = 16;
         let mut index = RangeFilteredIndex::new(
@@ -669,6 +773,7 @@ mod tests {
                 hnsw_m: 8,
                 hnsw_ef_construction: 50,
                 ef_search: 50,
+                ..RangeFilteredParams::default()
             },
         )
         .unwrap();
@@ -702,6 +807,7 @@ mod tests {
                 hnsw_m: 8,
                 hnsw_ef_construction: 50,
                 ef_search: 50,
+                ..RangeFilteredParams::default()
             },
         )
         .unwrap();
@@ -726,6 +832,7 @@ mod tests {
                 hnsw_m: 8,
                 hnsw_ef_construction: 50,
                 ef_search: 50,
+                ..RangeFilteredParams::default()
             },
         )
         .unwrap();

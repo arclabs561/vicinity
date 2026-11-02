@@ -298,6 +298,7 @@ pub struct HNSWBuilder {
     metric: DistanceMetric,
     #[cfg(feature = "compact-hnsw")]
     compact_upper_layers: bool,
+    seed: Option<u64>,
 }
 
 /// Exact logical occupancy of one HNSW layer.
@@ -362,6 +363,17 @@ impl HNSWBuilder {
         self
     }
 
+    /// Seed the random number generator used for layer assignment.
+    ///
+    /// `HNSWParams::seed` documented this, but the builder had no way to reach
+    /// it, so every builder-constructed index drew from the thread-local RNG and
+    /// produced a different graph on every run. That makes a benchmark row
+    /// unreproducible and a recall difference unattributable.
+    pub fn seed(mut self, seed: u64) -> Self {
+        self.seed = Some(seed);
+        self
+    }
+
     /// Build the index.
     pub fn build(self) -> Result<HNSWIndex, RetrieveError> {
         let m_max = self.m_max.unwrap_or(2 * self.m); // Paper: m_max0 = 2*M
@@ -373,6 +385,7 @@ impl HNSWBuilder {
             ef_search: self.ef_search,
             auto_normalize: self.auto_normalize,
             metric: self.metric,
+            seed: self.seed,
             #[cfg(feature = "compact-hnsw")]
             compact_upper_layers: self.compact_upper_layers,
             ..Default::default()
@@ -842,6 +855,7 @@ impl HNSWIndex {
             metric: DistanceMetric::Cosine,
             #[cfg(feature = "compact-hnsw")]
             compact_upper_layers: false,
+            seed: None,
         }
     }
 
