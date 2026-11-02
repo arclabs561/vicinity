@@ -82,9 +82,17 @@ sweep point cannot quietly get worse while another improves.
 One run is not a measurement of a tail. `--runs 3` (or repeated `--current`
 files) takes the per-row median before comparing, which keeps a regression that
 moves every run and drops a one-run scheduling spike. The invariants the gate
-depends on are fixed: `hnsw` builds with `seed = Some(42)` and
-`ivf_rabitq`'s k-means uses `params.seed`, so recall is a property of the code
-rather than of the entropy pool.
+depends on are fixed: `all_families` builds `hnsw` with `SEED`
+(`0x4641_4D49_4C59`) and `ivf_rabitq`'s k-means uses `params.seed`, so recall is
+a property of the code rather than of the entropy pool.
+
+That sentence used to claim a seed the harness did not pass: `build_hnsw` called
+`HNSWIndex::builder(..)` with no seed, and the builder had no setter to pass one
+with, so every run built a different graph. Two runs of the same binary over the
+same data differed in 23 of 49 recall values, with spreads up to 0.010 — twice
+the 0.005 gate, which was therefore racing the RNG it claimed not to depend on.
+Both are fixed; the same two runs now differ in 0 of 49. Rows committed before
+the fix are one valid draw, not the graph a re-run will build.
 
 Improvements are printed in a table and never fail the run. A row present in the
 baseline but missing from the run is a failure by default: a family silently

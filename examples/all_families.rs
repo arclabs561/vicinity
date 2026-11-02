@@ -1659,10 +1659,15 @@ fn build_hnsw(vectors: &[Vec<f32>], dim: usize, _knob: usize) -> Result<Box<dyn 
     use vicinity::distance::DistanceMetric;
     use vicinity::hnsw::HNSWIndex;
 
+    // HNSW draws layer assignments from the thread-local RNG unless seeded, so
+    // without this every run builds a different graph and the published rows are
+    // not reproducible: two runs of this example differed in 23 of 49 recall
+    // values before the seed was passed.
     let mut index = HNSWIndex::builder(dim)
         .m(16)
         .ef_construction(200)
         .metric(DistanceMetric::Cosine)
+        .seed(SEED)
         .build()
         .map_err(to_string_err)?;
     for (i, vector) in vectors.iter().enumerate() {

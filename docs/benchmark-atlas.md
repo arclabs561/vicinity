@@ -177,6 +177,12 @@ plotted rather than assumed away: a 0.005 regression gate smaller than the seed
 spread would be measuring the RNG. The gate is set at 0.005 because that is the
 spread on the same fixture.
 
+Since then the harness seeds its build, so a published row is a fixed graph
+rather than one draw: two runs of the same binary went from differing in 23 of
+49 recall values to differing in none. This figure stays the record of how far a
+*different* seed would move the same index, which is what a reader comparing
+against an independent run needs to know.
+
 ### 11. What is actually measured
 
 [metric-coverage-10k.svg](plots/atlas/metric-coverage-10k.svg)
