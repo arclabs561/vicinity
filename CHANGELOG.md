@@ -18,8 +18,43 @@ These source changes are not assigned to a package release here.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-02
+
+### Changed
+
+- **Dependency: `qntz` 0.2 -> 0.3.** `quantization::rabitq` and
+  `quantization::ternary` re-export `qntz`, so this is a breaking change for
+  anyone naming those types. `qntz::VQuantError` gained `MalformedCode` and is
+  now `#[non_exhaustive]`, so exhaustive matches need a fallback arm.
+- `binary_index` rotates the query once per search instead of once per
+  candidate. `BinaryQuantizer::asymmetric_distance` re-ran a
+  `projected_dim x dim` matvec on every call, so a scan paid n rotations on top
+  of n code comparisons: 1.33x to 1.99x faster on 96-dimension data, 20x to 24x
+  at 768 dimensions, recall identical.
+- `finger` reads its pruning cutoff from a bounded heap instead of sorting the
+  whole candidate list on every expansion. Search p50 geomean 20.8x (1.7x to
+  185x) and build 2.2x to 30.9x faster, recall identical in all seven benchmark
+  domains, because the cutoff is the same number either way.
+- `sq4` scans with a per-dimension lookup table instead of decoding each code
+  into floats. Every measured row improved (geomean 1.23x) and distances are
+  bit-identical to the scalar path, which is kept as the test oracle. At 10k
+  clustered it is now 329 us against a 316 us exact scan: still not faster than
+  not indexing, but at parity while holding 8x fewer bytes.
+- `lsh` reuses a per-thread visited set with a generation counter instead of
+  allocating and zeroing `vec![false; num_vectors]` per query. Geomean 1.29x at
+  10k; the removed work is O(n) per query, so the gain grows with the index.
+- `store` caches the unflushed buffer's HNSW graph and invalidates it on write
+  instead of rebuilding it on every query. Every mutating path bumps the epoch,
+  including `checkpoint`, which flushes the buffer.
+
 ### Added
 
+- `IVFRaBitQIndex::save_to_dir` accepts a compacted index. Format v3 writes
+  `codes.bin` for a compacted index (dense, since an edge code's length is fixed
+  by dimension and bit width) and reloads it compacted; a live index still
+  writes raw vectors and rebuilds the codes on load. The code file carries an
+  FNV-1a checksum, because a flipped bit inside an edge code decodes to a
+  different valid code. Version 2 files still load.
 - `RpForestIndex` search walks the forest from one global best-bound frontier
   instead of descending to one leaf per tree, and stops on a candidate-id
   budget: `search_with_budget` takes it explicitly, `search_with_budget_stats`
