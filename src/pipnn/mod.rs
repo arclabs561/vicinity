@@ -798,23 +798,25 @@ impl PipnnIndex {
             };
 
             let mut frontier: BinaryHeap<std::cmp::Reverse<(FloatOrd, u32)>> = BinaryHeap::new();
+            // The candidate list is returned whole; the cutoff comes from a
+            // bounded heap so the list is never sorted inside the loop.
             let mut candidates: Vec<(u32, f32)> = Vec::new();
+            let mut cutoff_heap: BinaryHeap<(FloatOrd, u32)> = BinaryHeap::with_capacity(ef + 1);
 
             let entry = self.medoid;
             let entry_dist = cosine_distance_normalized(query, self.get_vector(entry as usize));
             visited_insert(entry);
             frontier.push(std::cmp::Reverse((FloatOrd(entry_dist), entry)));
             candidates.push((entry, entry_dist));
+            let mut worst_dist =
+                crate::graph_utils::keep_closest(&mut cutoff_heap, entry, entry_dist, ef);
 
             let mut visited_count = 1usize;
 
             while let Some(std::cmp::Reverse((FloatOrd(current_dist), current_id))) = frontier.pop()
             {
-                if candidates.len() >= ef {
-                    candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
-                    if current_dist > candidates[ef - 1].1 * 1.5 {
-                        break;
-                    }
+                if cutoff_heap.len() >= ef && current_dist > worst_dist * 1.5 {
+                    break;
                 }
 
                 let neighbors = &self.neighbors[current_id as usize];
@@ -830,6 +832,8 @@ impl PipnnIndex {
                         visited_count += 1;
                         let dist =
                             cosine_distance_normalized(query, self.get_vector(neighbor as usize));
+                        worst_dist =
+                            crate::graph_utils::keep_closest(&mut cutoff_heap, neighbor, dist, ef);
                         candidates.push((neighbor, dist));
                         frontier.push(std::cmp::Reverse((FloatOrd(dist), neighbor)));
                     }
