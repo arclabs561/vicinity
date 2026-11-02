@@ -1565,6 +1565,88 @@ mod tests {
         assert_eq!(stats.layers, index.layers.len());
     }
 
+    /// End-to-end latency at a size where the layout matters.
+    ///
+    /// Ignored by default: it builds a 100k index (tens of seconds in release)
+    /// and is a measurement, not a gate.
+    #[test]
+    #[ignore = "measurement: builds a 100k index and times 200 queries"]
+    fn segment_searcher_100k_latency() {
+        use std::time::Instant;
+
+        let (n, dimension, queries, k, ef) = (100_000usize, 96usize, 200usize, 10usize, 50usize);
+        let index = build_index(n, dimension, DistanceMetric::L2, false);
+        let dir = tempfile::tempdir().unwrap();
+        write_segment(dir.path(), &index, true);
+        let segment = dir.path().join("segments/segment_hnsw_0");
+        let budget_mib: usize = std::env::var("SEG_CACHE_MIB")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(64);
+        let mut searcher =
+            HNSWSegmentSearcher::open(&segment, FileCacheConfig::with_budget(budget_mib << 20))
+                .unwrap();
+        assert!(
+            !searcher.uses_soa_fallback(),
+            "this run measures the AoS path"
+        );
+        assert_eq!(
+            searcher
+                .search(&lcg_vector(7, dimension), k, ef)
+                .unwrap()
+                .len(),
+            k
+        );
+
+        let probes: Vec<Vec<f32>> = (0..queries)
+            .map(|q| lcg_vector(10_000_000 + q as u64, dimension))
+            .collect();
+
+        let mut resident = Vec::with_capacity(queries);
+        for q in &probes {
+            let t = Instant::now();
+            let got = index.search(q, k, ef).unwrap();
+            resident.push(t.elapsed().as_micros() as u64);
+            assert_eq!(got.len(), k);
+        }
+
+        let mut file_backed = Vec::with_capacity(queries);
+        for q in &probes {
+            let t = Instant::now();
+            let got = searcher.search(q, k, ef).unwrap();
+            file_backed.push(t.elapsed().as_micros() as u64);
+            assert_eq!(got.len(), k);
+        }
+
+        let p50 = |v: &mut Vec<u64>| -> u64 {
+            v.sort_unstable();
+            v[v.len() / 2]
+        };
+        let (r, f) = (p50(&mut resident), p50(&mut file_backed));
+
+        let segment_bytes: u64 = [
+            "layers.bin",
+            "vectors.bin",
+            "vectors_aos.bin",
+            "doc_ids.bin",
+        ]
+        .iter()
+        .filter_map(|name| std::fs::metadata(segment.join(name)).ok())
+        .map(|m| m.len())
+        .sum();
+
+        eprintln!(
+            "100k x {dimension}, k={k}, ef={ef}, {queries} queries, {budget_mib} MiB cache: \
+             resident p50 {r} us, file-backed p50 {f} us ({:.1}x), \
+             hit rate {:.2}, structural {} B, offsets {} entries, segment {} MiB",
+            f as f64 / r.max(1) as f64,
+            searcher.cache_stats().hit_rate(),
+            searcher.structural_bytes(),
+            searcher.offsets_table_entries(),
+            segment_bytes / (1 << 20)
+        );
+    }
+
     /// Micro-benchmark: read one vector from a dimension-major file versus an
     /// AoS file through the same block cache.
     ///
