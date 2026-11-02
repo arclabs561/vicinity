@@ -13,6 +13,9 @@
   domain and tier, with the protocol and the caveats behind each one.
 - [storage-audit.md](storage-audit.md): per-family snapshot, file-search and
   cache support, and where the resident memory actually goes.
+- [scale-and-parity-plan.md](scale-and-parity-plan.md): the competitive set in
+  three categories, and the ordered plan for the scales and comparisons this
+  repository cannot yet show.
 - [benchmark-results.md](benchmark-results.md): recall/QPS tables
   and analysis across datasets.
 - [datasets.md](datasets.md): ANN benchmark datasets, download
