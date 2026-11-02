@@ -15,7 +15,7 @@ same sizes, so comparisons are between families rather than between benchmarks.
 
 ```toml
 [dependencies]
-vicinity = { version = "0.11.2", features = ["hnsw", "serde"] }   # serde adds save_to_file/load_from_file
+vicinity = { version = "0.12.0", features = ["hnsw", "serde"] }   # serde adds save_to_file/load_from_file
 ```
 
 ```rust
@@ -254,7 +254,7 @@ Other families and their status are in the [algorithm catalogue](docs/algorithms
 
 ## Status
 
-Latest release: 0.11.2 (2026-10-31, crates.io). MSRV 1.94. The crate's own code
+Latest release: 0.12.0 (2026-11-02, crates.io). MSRV 1.94. The crate's own code
 is `#![forbid(unsafe_code)]`; dependencies including Pulp and the benchmark
 allocator are not, so this is not a transitive guarantee.
 
