@@ -2985,6 +2985,7 @@ fn run_range_filtered(
         hnsw_m: 16,
         hnsw_ef_construction: 200,
         ef_search: 100,
+        ..RangeFilteredParams::default()
     };
 
     if !cfg.json {

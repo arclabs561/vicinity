@@ -671,6 +671,7 @@ fn build_range_filtered_index(
         hnsw_m: 16,
         hnsw_ef_construction: 100,
         ef_search: cfg.ef_search,
+        ..RangeFilteredParams::default()
     };
     let mut index = RangeFilteredIndex::new(cfg.dim, params).expect("range index init failed");
     for (id, vector) in vectors.iter().enumerate() {
