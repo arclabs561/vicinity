@@ -216,6 +216,10 @@ ids, distances = index.search(vectors[0], k=2)
 print(ids.tolist())
 ```
 
+```text
+[0, 1]
+```
+
 [`examples/python/02_batch_and_recall.py`](examples/python/02_batch_and_recall.py)
 shows batch search and recall measurement.
 
