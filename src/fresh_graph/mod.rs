@@ -1007,7 +1007,13 @@ impl FreshGraphIndex {
 
             // Min-heap on distance
             let mut frontier: BinaryHeap<std::cmp::Reverse<(FloatOrd, u32)>> = BinaryHeap::new();
+            // The full candidate list is kept because callers prune it with
+            // different rules; the cutoff comes from a bounded heap so the list
+            // is never sorted inside the loop.
             let mut candidates: Vec<(u32, f32)> = Vec::new();
+            let mut cutoff_heap: BinaryHeap<(FloatOrd, u32)> = BinaryHeap::with_capacity(ef + 1);
+            // Assigned by whichever entry branch runs, then updated per insert.
+            let mut worst_dist: f32;
 
             let entry = self.entry_point;
             if exclude == Some(entry) {
@@ -1020,6 +1026,7 @@ impl FreshGraphIndex {
                     visited_insert(alt);
                     frontier.push(std::cmp::Reverse((FloatOrd(d), alt)));
                     candidates.push((alt, d));
+                    worst_dist = crate::graph_utils::keep_closest(&mut cutoff_heap, alt, d, ef);
                 } else {
                     return Vec::new();
                 }
@@ -1028,6 +1035,8 @@ impl FreshGraphIndex {
                 visited_insert(entry);
                 frontier.push(std::cmp::Reverse((FloatOrd(entry_dist), entry)));
                 candidates.push((entry, entry_dist));
+                worst_dist =
+                    crate::graph_utils::keep_closest(&mut cutoff_heap, entry, entry_dist, ef);
             }
 
             let mut visited_count = candidates.len();
@@ -1035,11 +1044,8 @@ impl FreshGraphIndex {
             while let Some(std::cmp::Reverse((FloatOrd(current_dist), current_id))) = frontier.pop()
             {
                 // Early termination: current node is worse than the ef-th best candidate
-                if candidates.len() >= ef {
-                    candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
-                    if current_dist > candidates[ef - 1].1 * 1.5 {
-                        break;
-                    }
+                if cutoff_heap.len() >= ef && current_dist > worst_dist * 1.5 {
+                    break;
                 }
 
                 let neighbors = &self.neighbors[current_id as usize];
@@ -1059,6 +1065,8 @@ impl FreshGraphIndex {
                         visited_count += 1;
                         let dist =
                             cosine_distance_normalized(query, self.get_vector(neighbor as usize));
+                        worst_dist =
+                            crate::graph_utils::keep_closest(&mut cutoff_heap, neighbor, dist, ef);
                         candidates.push((neighbor, dist));
                         frontier.push(std::cmp::Reverse((FloatOrd(dist), neighbor)));
                     }

@@ -8,6 +8,39 @@
 #![allow(dead_code)]
 
 use smallvec::{Array, SmallVec};
+use std::collections::BinaryHeap;
+
+/// Keep only the `size` closest entries of a streaming candidate set.
+///
+/// Returns the current cutoff: the `size`-th smallest distance, or infinity
+/// while the set still has room. A beam search needs exactly that number to
+/// decide when to stop, and reading it by sorting the whole candidate list on
+/// every expansion is what this replaces: the max-heap's peek is the same value,
+/// a pop-and-push is `O(log size)`.
+///
+/// `FloatOrd` is the crate's total order over `f32`, so equal distances never
+/// make the heap nondeterministic.
+pub(crate) fn keep_closest(
+    best: &mut BinaryHeap<(crate::distance::FloatOrd, u32)>,
+    id: u32,
+    dist: f32,
+    size: usize,
+) -> f32 {
+    use crate::distance::FloatOrd;
+    if best.len() < size {
+        best.push((FloatOrd(dist), id));
+        // No cutoff until the pool is full, so early neighbours are never
+        // pruned by a cutoff that is not the size-th distance yet.
+        return f32::INFINITY;
+    }
+    if let Some(&(FloatOrd(worst), _)) = best.peek() {
+        if dist < worst {
+            best.pop();
+            best.push((FloatOrd(dist), id));
+        }
+    }
+    best.peek().map(|entry| entry.0 .0).unwrap_or(f32::INFINITY)
+}
 
 /// Build a kNN graph using NN-descent (Dong et al., 2011).
 ///

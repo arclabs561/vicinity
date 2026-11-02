@@ -549,29 +549,6 @@ impl FingerIndex {
     /// Keep candidate `c` if no already-selected neighbor `s` satisfies
     /// `alpha * d(query, c) <= d(s, c)` -- i.e. the selected neighbor is not
     /// too much closer to `c` than the query is.
-    /// Keep only the `ef` closest of a streaming candidate set.
-    ///
-    /// Replaces sorting the whole candidate list on every expansion just to read
-    /// its `ef`-th entry: the max-heap's peek is that entry, and popping costs
-    /// `O(log ef)`.
-    fn keep_closest(best: &mut BinaryHeap<(FloatOrd, u32)>, id: u32, dist: f32, ef: usize) -> f32 {
-        if best.len() < ef {
-            best.push((FloatOrd(dist), id));
-            // No cutoff until the pool is full, so early neighbours are never
-            // pruned by a cutoff that is not the ef-th distance yet.
-            return f32::INFINITY;
-        }
-        if let Some(&(FloatOrd(worst), _)) = best.peek() {
-            if dist < worst {
-                best.pop();
-                best.push((FloatOrd(dist), id));
-            }
-        }
-        best.peek()
-            .map(|(FloatOrd(worst), _)| *worst)
-            .unwrap_or(f32::INFINITY)
-    }
-
     fn rng_prune(&self, _query_vec: &[f32], candidates: &[(u32, f32)]) -> Vec<(u32, f32)> {
         let mut sorted = candidates.to_vec();
         sorted.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
@@ -655,7 +632,8 @@ impl FingerIndex {
             visited_insert(entry);
             frontier.push(std::cmp::Reverse((FloatOrd(entry_dist), entry)));
             candidates.push((entry, entry_dist));
-            let mut worst_dist = Self::keep_closest(&mut cutoff_heap, entry, entry_dist, ef);
+            let mut worst_dist =
+                crate::graph_utils::keep_closest(&mut cutoff_heap, entry, entry_dist, ef);
 
             let mut visited_count = 1usize;
 
@@ -677,7 +655,7 @@ impl FingerIndex {
                         visited_count += 1;
                         let d = cosine_distance_normalized(query, self.get_vector(nb as usize));
                         candidates.push((nb, d));
-                        worst_dist = Self::keep_closest(&mut cutoff_heap, nb, d, ef);
+                        worst_dist = crate::graph_utils::keep_closest(&mut cutoff_heap, nb, d, ef);
                         frontier.push(std::cmp::Reverse((FloatOrd(d), nb)));
                     }
                 }
@@ -749,7 +727,7 @@ impl FingerIndex {
             let entry_dist = cosine_distance_normalized(query, self.get_vector(entry as usize));
             visited_insert(entry);
             frontier.push(std::cmp::Reverse((FloatOrd(entry_dist), entry)));
-            Self::keep_closest(&mut best, entry, entry_dist, ef);
+            crate::graph_utils::keep_closest(&mut best, entry, entry_dist, ef);
 
             let mut visited_count = 1usize;
 
@@ -790,7 +768,7 @@ impl FingerIndex {
                     }
 
                     let d = cosine_distance_normalized(query, self.get_vector(nb as usize));
-                    worst_dist = Self::keep_closest(&mut best, nb, d, ef);
+                    worst_dist = crate::graph_utils::keep_closest(&mut best, nb, d, ef);
                     frontier.push(std::cmp::Reverse((FloatOrd(d), nb)));
                 }
 
