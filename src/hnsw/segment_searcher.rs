@@ -58,13 +58,15 @@
 //! InnerProduct return [`RetrieveError::Unsupported`] instead of silently
 //! applying a different metric.
 //!
-//! # Save-format limitations
+//! # Layer layout
 //!
-//! The searcher expects the default dense layer layout: every layer stores
-//! `num_vectors` neighbour-list records indexed by internal node id. Segments
-//! saved from a `compact-hnsw` index store only eligible upper-layer nodes and
-//! therefore cannot be addressed by internal id; opening one returns a format
-//! error that names the limitation.
+//! Every layer stores `num_vectors` neighbour-list records indexed by internal
+//! node id, with an empty list for a node that does not occur at that layer.
+//! That holds for a `compact-hnsw` index too: the compaction is a resident-memory
+//! layout (CSR over eligible nodes), but the writer walks node ids and emits an
+//! empty list for the rest, so the file stays addressable by id. A compacted
+//! segment therefore reads like any other; what compaction changes is the
+//! in-memory shape, not the save format.
 
 use std::borrow::Cow;
 use std::collections::BinaryHeap;
@@ -242,13 +244,6 @@ impl HNSWSegmentSearcher {
         // ── params.bin ──────────────────────────────────────────────────────
         let params = read_file(&dir.join("params.bin"))?;
         let params = parse_params(&params)?;
-        if params.compact_upper_layers {
-            return Err(RetrieveError::Unsupported {
-                feature: "compact-hnsw upper-layer layout",
-                hint: "the file-backed searcher addresses neighbour lists by internal node id; \
-                       rebuild without compact_upper_layers",
-            });
-        }
         let metric = match params.metric {
             DistanceMetric::L2 => DistanceMetric::L2,
             DistanceMetric::Cosine => DistanceMetric::Cosine,
@@ -924,7 +919,6 @@ fn prune_unpromising_candidates(
 struct ParsedParams {
     metric: DistanceMetric,
     auto_normalize: bool,
-    compact_upper_layers: bool,
 }
 
 fn parse_metadata(bytes: &[u8]) -> Result<(usize, usize, bool), RetrieveError> {
@@ -992,11 +986,9 @@ fn parse_params(bytes: &[u8]) -> Result<ParsedParams, RetrieveError> {
         None => DistanceMetric::Cosine,
     };
     let auto_normalize = bytes.get(25).copied().unwrap_or(0) != 0;
-    let compact_upper_layers = bytes.get(26).copied().unwrap_or(0) != 0;
     Ok(ParsedParams {
         metric,
         auto_normalize,
-        compact_upper_layers,
     })
 }
 
@@ -1479,6 +1471,48 @@ mod tests {
             let actual = searcher.search(&query, 10, 50).unwrap();
             assert_eq!(actual, expected);
             assert!(actual.iter().all(|&(doc_id, _)| doc_id != deleted));
+        }
+    }
+
+    #[cfg(feature = "compact-hnsw")]
+    #[test]
+    fn compacted_upper_layers_are_readable_from_disk() {
+        // Compaction changes the resident layout (CSR over eligible nodes) but
+        // the writer still emits one record per internal node id, with an empty
+        // list for nodes absent from the layer. The searcher treats such a
+        // segment like any other, so an index can be compact in memory and still
+        // be served from disk.
+        let (n, dimension) = (400usize, 12usize);
+        let params = HNSWParams {
+            m: 8,
+            m_max: 16,
+            ef_construction: 64,
+            ef_search: 50,
+            metric: DistanceMetric::L2,
+            seed: Some(42),
+            compact_upper_layers: true,
+            ..HNSWParams::default()
+        };
+        let mut index = HNSWIndex::with_params(dimension, params).unwrap();
+        for internal in 0..n as u32 {
+            index
+                .add(internal * 7 + 3, lcg_vector(internal as u64 + 1, dimension))
+                .unwrap();
+        }
+        index.build().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        write_segment(dir.path(), &index, true);
+        let segment = dir.path().join("segments/segment_hnsw_0");
+        let mut searcher =
+            HNSWSegmentSearcher::open(&segment, FileCacheConfig::with_budget(1 << 20)).unwrap();
+        assert!(!searcher.uses_soa_fallback());
+
+        for q in [0usize, 37, 200, 399] {
+            let query = index.vectors[q * dimension..(q + 1) * dimension].to_vec();
+            let expected = index.search(&query, 10, 50).unwrap();
+            let actual = searcher.search(&query, 10, 50).unwrap();
+            assert_eq!(actual, expected, "compacted segment query {q} disagreed");
         }
     }
 
