@@ -281,6 +281,14 @@ the recall-versus-LID effect the synthetic domains also show.
     cross-checks its cached truth against f32 and f64 brute force and prints the
     top-10 overlap; a truth file whose key does not match is an error, never a
     silent reuse.
+16. **A build-time beam that stops on a node count is not a beam.** Stopping the
+    insert search after `beam_width * 2` visited nodes spent the budget on
+    whichever heap branch popped first. With a neighbour cap that also refused
+    better edges once full, `InPlaceIndex` built at 0.572 recall against an exact
+    scan (n=2000, d=32, `max_degree` 16) while HNSW on the same corpus scored
+    1.000. Distance-bounded stop plus worst-edge replacement: 0.988. The insert
+    path has its own recall test now, because "search returns results" is not a
+    construction test.
 
 ## What has no plot, and why
 
