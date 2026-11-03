@@ -2587,6 +2587,64 @@ mod tests {
     }
 
     #[test]
+    fn full_probe_equals_an_exhaustive_adc_scan() {
+        // `nprobe = num_clusters` visits every list, so the result must equal an
+        // exhaustive scan over the reconstructed (quantized) vectors. The audit
+        // found no full-effort test for any family, which is why an empty
+        // filtered result could sit unnoticed.
+        let dim = 16;
+        let n = 256;
+        use rand::{Rng, SeedableRng};
+        let mut rng = rand::rngs::StdRng::seed_from_u64(4242);
+
+        // 32 clusters of 8 vectors keeps every list below the FastScan batch
+        // threshold, so this compares against exact ADC rather than against the
+        // uint8-LUT approximation that large lists use.
+        let params = IVFPQParams {
+            num_clusters: 32,
+            num_codebooks: 4,
+            codebook_size: 16,
+            nprobe: 32,
+            seed: 7,
+            ..IVFPQParams::default()
+        };
+        let mut index = IVFPQIndex::new(dim, params).unwrap();
+        let unit = |mut v: Vec<f32>| {
+            let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-12);
+            for x in &mut v {
+                *x /= norm;
+            }
+            v
+        };
+        for i in 0..n {
+            let v: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
+            index.add(60_000 + i as u32, unit(v)).unwrap();
+        }
+        index.build().unwrap();
+
+        let query = unit((0..dim).map(|_| rng.random::<f32>()).collect());
+        let k = 10;
+        let got = index.search(&query, k).unwrap();
+
+        // Brute force iterates internal ids and maps through doc_ids: a build
+        // reorder makes `60_000 + i` the wrong label for internal index i.
+        let mut exact: Vec<(u32, f32)> = (0..n)
+            .map(|i| {
+                let v = index.reconstruct(i).unwrap();
+                let d: f32 = query.iter().zip(&v).map(|(a, b)| (a - b) * (a - b)).sum();
+                (index.doc_ids[i], d)
+            })
+            .collect();
+        exact.sort_unstable_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+        let want: Vec<u32> = exact.iter().take(k).map(|(id, _)| *id).collect();
+        let have: Vec<u32> = got.iter().map(|(id, _)| *id).collect();
+        assert_eq!(
+            have, want,
+            "nprobe = num_clusters must be exact over the codes"
+        );
+    }
+
+    #[test]
     fn filtered_search_widens_past_nprobe_instead_of_returning_fewer_than_matches() {
         // With nprobe = 1, a filter whose matches sit in a cluster the query does
         // not probe used to return an empty result, which is indistinguishable
