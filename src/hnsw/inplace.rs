@@ -53,7 +53,7 @@ impl Default for InPlaceConfig {
     fn default() -> Self {
         Self {
             max_degree: 32,
-            beam_width: 64,
+            beam_width: 128,
             alpha: 1.2,
             max_in_neighbors: 64,
             enable_back_edges: true,
@@ -1175,6 +1175,95 @@ mod tests {
         // Insert should reuse slot
         let id3 = index.insert(vec![5.0, 6.0]).unwrap();
         assert_eq!(id3, id1, "Should reuse deleted slot");
+    }
+
+    /// A recycled slot must behave like a new node.
+    ///
+    /// Recycling replaces the node wholesale, which drops its own out-edges, but
+    /// incoming edges from live nodes still name the slot and now resolve to the
+    /// new vector. hnswlib has the same property with `allow_replace_deleted`
+    /// (it repairs only the replaced node's neighbours, `hnswalg.h:1109`). The
+    /// consequence is measurable rather than theoretical: after churn, recall
+    /// against an exact scan is the check that stale edges have not rotted the
+    /// graph. Annoy's `accuracy_test.py` asserts floors per dataset; this is the
+    /// same idea on a fixture this crate controls.
+    #[test]
+    fn recall_survives_slot_recycling() {
+        let dim = 16;
+        let mut index = InPlaceIndex::new(
+            dim,
+            InPlaceConfig {
+                max_degree: 16,
+                beam_width: 128,
+                ..Default::default()
+            },
+        );
+
+        let mut seed: u64 = 99;
+        let mut next = || -> f32 {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((seed >> 33) as f32) / (u32::MAX as f32) * 2.0 - 1.0
+        };
+        let mut random_vector = || (0..dim).map(|_| next()).collect::<Vec<f32>>();
+
+        let mut live: std::collections::HashMap<u32, Vec<f32>> = std::collections::HashMap::new();
+        for _ in 0..600 {
+            let vector = random_vector();
+            let id = index.insert(vector.clone()).unwrap();
+            live.insert(id, vector);
+        }
+
+        // Churn a third of the corpus: delete, then insert replacements that
+        // recycle the freed slots.
+        let victims: Vec<u32> = live.keys().copied().filter(|id| id % 3 == 0).collect();
+        for id in &victims {
+            index.delete(*id).unwrap();
+            live.remove(id);
+        }
+        for _ in 0..victims.len() {
+            let vector = random_vector();
+            let id = index.insert(vector.clone()).unwrap();
+            live.insert(id, vector);
+        }
+        assert_eq!(index.len(), live.len());
+        assert_eq!(
+            index.stats().free_slots,
+            0,
+            "replacements should consume every free slot"
+        );
+
+        let mut hits = 0usize;
+        let queries = 40;
+        let k = 10;
+        for _ in 0..queries {
+            let query = random_vector();
+            let mut exact: Vec<(f32, u32)> = live
+                .iter()
+                .map(|(id, vector)| {
+                    let dist: f32 = vector
+                        .iter()
+                        .zip(&query)
+                        .map(|(a, b)| (a - b) * (a - b))
+                        .sum();
+                    (dist, *id)
+                })
+                .collect();
+            exact.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+            let expected: std::collections::HashSet<u32> =
+                exact.iter().take(k).map(|(_, id)| *id).collect();
+
+            let found = index.search(&query, k).unwrap();
+            hits += found.iter().filter(|(id, _)| expected.contains(id)).count();
+        }
+
+        let recall = hits as f32 / (queries * k) as f32;
+        assert!(
+            recall >= 0.97,
+            "recall after slot recycling was {recall:.3} ({hits}/{})",
+            queries * k
+        );
     }
 
     #[cfg(feature = "serde")]
