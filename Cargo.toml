@@ -10,13 +10,14 @@ documentation = "https://docs.rs/vicinity"
 license = "MIT OR Apache-2.0"
 keywords = ["ann", "hnsw", "vector-search", "similarity", "nearest-neighbor"]
 categories = ["algorithms", "science"]
-exclude = ["data/", "benches/", "benchmarks/", "docs/", "scripts/", ".github/"]
+exclude = ["data/", "benches/", "benchmarks/", "docs/", "scripts/", "fuzz/", ".github/"]
 
 [workspace]
 # The `tools/` crates (two C++ shims and the harnesses that use them) are
 # self-contained crates with their own workspace roots; keep them out of this
 # package's workspace and out of the published manifest.
 exclude = [
+  "fuzz",
   "tools/annoy-sys",
   "tools/annoy-parity",
   "tools/hnswlib-sys",

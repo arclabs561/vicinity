@@ -136,3 +136,17 @@ py-stubtest: py-build
 
 # Full Python QA: build + lint + format + typecheck + stubtest + test
 py-qa: py-build py-lint py-fmt py-typecheck py-stubtest py-test
+
+# ─── Mutation testing and fuzzing ────────────────────────────────────────────
+
+# Run one shard of mutation testing (e.g. `just mutants 1/8`). Nightly, not a PR gate.
+mutants shard="1/8":
+    cargo mutants --shard {{shard}} --no-times
+
+# Fuzz the HNSW segment metadata parser for 60 seconds.
+fuzz seconds="60":
+    cargo +nightly fuzz run segment_metadata -- -max_total_time={{seconds}}
+
+# Build the fuzz target without running it (what CI checks).
+fuzz-build:
+    cargo +nightly fuzz build segment_metadata
