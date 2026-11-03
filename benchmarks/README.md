@@ -6,6 +6,10 @@ against it.
 
 - `baseline.jsonl` — one committed run of `examples/all_families.rs`, produced
   by `--json`. It is the bar.
+- `hnswlib-parity-100k.jsonl`, `hnswlib-parity-1m.jsonl` — the same row schema,
+  emitted by `tools/parity-rows`: `vicinity` HNSW against the vendored C++
+  hnswlib (and USearch at 100k) on clustered16, build-only timing. Separate from
+  the ratchet baseline; see `tools/parity-rows/README.md` for the protocol.
 - `../scripts/ratchet.py` — runs the harness (or reads a JSONL produced
   elsewhere), compares row by row, and exits non-zero when a gated metric
   regresses past its tolerance.

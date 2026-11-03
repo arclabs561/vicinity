@@ -1,0 +1,19 @@
+[package]
+name = "hnswlib-sys"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Benchmark-only C++ shim around hnswlib's HierarchicalNSW<float>"
+license = "Apache-2.0"
+links = "hnswlib"
+
+# Own workspace root, like `tools/annoy-sys`: this crate is a path dependency of
+# the measurement harness and must never be absorbed into the parent workspace
+# or its published manifest.
+[workspace]
+
+[lib]
+crate-type = ["rlib"]
+
+[build-dependencies]
+cc = "1"

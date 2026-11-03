@@ -13,10 +13,15 @@ categories = ["algorithms", "science"]
 exclude = ["data/", "benches/", "benchmarks/", "docs/", "scripts/", ".github/"]
 
 [workspace]
-# `tools/annoy-sys` (the C++ shim) and `tools/annoy-parity` (the harness that
-# uses it) are self-contained crates with their own workspace roots; keep them
-# out of this package's workspace and out of the published manifest.
-exclude = ["tools/annoy-sys", "tools/annoy-parity"]
+# The `tools/` crates (two C++ shims and the harnesses that use them) are
+# self-contained crates with their own workspace roots; keep them out of this
+# package's workspace and out of the published manifest.
+exclude = [
+  "tools/annoy-sys",
+  "tools/annoy-parity",
+  "tools/hnswlib-sys",
+  "tools/parity-rows",
+]
 
 [patch.crates-io]
 innr = { git = "https://github.com/arclabs561/innr.git", rev = "392736772688262ce5f89f51db6b08a8167b8262" }
