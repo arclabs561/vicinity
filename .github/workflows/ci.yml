@@ -74,17 +74,24 @@ jobs:
         run: cargo nextest run --no-default-features --features hnsw,sq8
       - name: Test (lemur)
         run: cargo nextest run --no-default-features --features lemur
-      # `--all-features` includes `python`, and pyo3 links libpython at test
-      # link time; the runner image has the interpreter but not the dev library,
-      # so the job failed with `unable to find library -lpython3.12`.
-      - name: Python headers for the pyo3 feature
+      # `--all-features` includes `python`, and pyo3 links libpython at test link
+      # time. The runner image carries the interpreter but not the development
+      # library, so the link failed with `unable to find library -lpython3.12`.
+      # The binding has its own job; this one tests every feature except it, and
+      # derives the list from cargo metadata so it cannot drift.
+      - name: Test (all features except the python binding, lib only)
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq python3-dev libpython3.12-dev
-          ls -l /usr/lib/x86_64-linux-gnu/libpython3* || true
-          python3 --version
-      - name: Test (all features, lib only)
-        run: cargo nextest run --lib --all-features
+          FEATURES=$(python3 - <<'PY'
+          import json, subprocess
+          meta = json.loads(subprocess.run(
+              ["cargo", "metadata", "--no-deps", "--format-version", "1"],
+              capture_output=True, text=True).stdout)
+          names = [f for f in meta["packages"][0]["features"] if f != "python"]
+          print(",".join(sorted(names)))
+          PY
+          )
+          echo "features without python: $FEATURES"
+          cargo nextest run --lib --features "$FEATURES"
         env:
           RUSTFLAGS: ""
       - name: Test (all-feature integration coverage)
