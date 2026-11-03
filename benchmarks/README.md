@@ -408,6 +408,14 @@ GiB short`). Free space on this volume moved between 55 and 174 GiB during the
 measurement window, and the 35.8 GiB 100M corpus was then written for real and
 scanned in 45.8 s, so disk is a host-state blocker, not a structural one.
 
+The budget is checked per query as well as per phase, and rows are written after
+every family. A 10M DiskANN run showed why: the builds landed on schedule (HNSW
+1731 s against an 1800 s estimate, DiskANN 1792 s against 1626 s), and then the
+file-backed sweep spent hours in `pread` because a 4.9 GiB index does not fit a
+64 MiB block cache. Query sweeps are deliberately absent from the estimate; they
+are bounded by the per-query deadline instead, and a run that stops at the budget
+keeps every row it finished.
+
 RAM is structural, and the harness checks it before the time budget because a
 longer budget cannot move it. 100M refuses like this on this host:
 

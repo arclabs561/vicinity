@@ -298,6 +298,9 @@ fn run() -> Res<()> {
         estimate.persist,
         args.budget_seconds
     );
+    println!(
+        "note: query sweeps are not in the estimate. Each sweep stops at the budget, checked          per query, and rows for completed families are written as they land."
+    );
     if let Some(refusal) = memory_refusal(&args) {
         return Err(refusal);
     }
@@ -371,6 +374,18 @@ fn run() -> Res<()> {
     println!();
 
     let mut rows: Vec<Row> = Vec::new();
+    // Rows are flushed after every family, not only at the end: a tier run can
+    // hit the wall-clock budget inside a file-backed sweep, and the work already
+    // done must survive that. The per-query deadline is what stops a single
+    // sweep from consuming the whole budget between two of these flushes.
+    let json_path = match &args.json {
+        Some(path) if !path.as_os_str().is_empty() => path.clone(),
+        _ => root.join("rows").join(default_rows_name(&args)),
+    };
+    let deadline = started + std::time::Duration::from_secs_f64(args.budget_seconds);
+    const BUDGET_HIT: &str =
+        "stopping at --budget-seconds; rows for the families already measured are written";
+
     let mut index_disk_mib_total = 0.0f64;
     let batch = effective_batch(&args);
     let exact_timed = exact_p50.max(f64::MIN_POSITIVE);
@@ -427,13 +442,17 @@ fn run() -> Res<()> {
                         println!("{refusal}");
                         break 'families;
                     }
-                    let stats = evaluate(
+                    let Some(stats) = evaluate(
                         |query, k, ef| index.search(query, k, ef).map_err(string_err),
                         &queries,
                         &truth,
                         args.k,
                         ef,
-                    );
+                        Some(deadline),
+                    ) else {
+                        println!("{BUDGET_HIT}");
+                        break 'families;
+                    };
                     push_rows(
                         &mut rows,
                         family.name(),
@@ -492,13 +511,17 @@ fn run() -> Res<()> {
                         println!("{refusal}");
                         break 'families;
                     }
-                    let stats = evaluate(
+                    let Some(stats) = evaluate(
                         |query, k, ef| index.search(query, k, ef).map_err(string_err),
                         &queries,
                         &truth,
                         args.k,
                         ef,
-                    );
+                        Some(deadline),
+                    ) else {
+                        println!("{BUDGET_HIT}");
+                        break 'families;
+                    };
                     in_ram_recall.push((ef, stats.recall));
                     push_rows(
                         &mut rows,
@@ -543,13 +566,17 @@ fn run() -> Res<()> {
                         println!("{refusal}");
                         break 'families;
                     }
-                    let stats = evaluate(
+                    let Some(stats) = evaluate(
                         |query, k, ef| searcher.search(query, k, ef).map_err(string_err),
                         &queries,
                         &truth,
                         args.k,
                         ef,
-                    );
+                        Some(deadline),
+                    ) else {
+                        println!("{BUDGET_HIT}");
+                        break 'families;
+                    };
                     if let Some((_, resident)) =
                         in_ram_recall.iter().find(|(value, _)| *value == ef)
                     {
@@ -593,13 +620,15 @@ fn run() -> Res<()> {
                 );
             }
         }
+        write_jsonl(&json_path, &rows, &args, &gt_path, dataset_path.as_path())?;
+        println!(
+            "rows written: {} ({} family/families)",
+            rows.len(),
+            args.families.len()
+        );
     }
 
     print_rows(&rows, args.points, args.dim, args.gt_queries);
-    let json_path = match &args.json {
-        Some(path) if !path.as_os_str().is_empty() => path.clone(),
-        _ => root.join("rows").join(default_rows_name(&args)),
-    };
     write_jsonl(&json_path, &rows, &args, &gt_path, dataset_path.as_path())?;
     println!(
         "wall clock: {:.1}s; total dataset+index on disk: {:.1} MiB",
@@ -2012,13 +2041,21 @@ struct Stats {
 /// keeps each family's real call signature (`&self` vs `&mut self`) out of the
 /// measurement code. Five untimed warm-up queries run first; with a block
 /// cache that is what makes the timed rows steady-state rather than cold.
+/// Run the query sweep for one `ef`, or stop at the wall-clock budget.
+///
+/// The budget is checked per query rather than per `ef`: at 10M a single sweep
+/// of a file-backed index is I/O bound and can outlast the whole budget, and
+/// stopping between sweeps means the operator waits hours to learn it was too
+/// slow. A sweep that stops early returns `None`, so no partial-recall row is
+/// ever written.
 fn evaluate<F>(
     mut search: F,
     queries: &[Vec<f32>],
     truth: &[Vec<u32>],
     k: usize,
     ef: usize,
-) -> Stats
+    deadline: Option<Instant>,
+) -> Option<Stats>
 where
     F: FnMut(&[f32], usize, usize) -> Result<Vec<(u32, f32)>, String>,
 {
@@ -2033,6 +2070,9 @@ where
     vicinity::distance_stats::reset_distance_count();
     let loop_start = Instant::now();
     for (query, expected) in queries.iter().zip(truth.iter()) {
+        if deadline.is_some_and(|limit| Instant::now() > limit) {
+            return None;
+        }
         let start = Instant::now();
         match search(query, k, ef) {
             Ok(results) => {
@@ -2054,7 +2094,7 @@ where
     let total_s = loop_start.elapsed().as_secs_f64();
     let dists = vicinity::distance_stats::take_distance_count();
     let denominator = (queries.len() * k) as f64;
-    Stats {
+    Some(Stats {
         recall: hits as f64 / denominator,
         p50: percentile(&mut latencies.clone(), 50.0),
         p95: percentile(&mut latencies.clone(), 95.0),
@@ -2070,7 +2110,7 @@ where
         },
         errors,
         first_error,
-    }
+    })
 }
 
 // ---------------------------------------------------------------------------
