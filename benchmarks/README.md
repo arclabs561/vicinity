@@ -663,6 +663,12 @@ Rows in [`sift-128-hnsw-1m.jsonl`](sift-128-hnsw-1m.jsonl), measured with
 ground truth. Build 232.6 s; recall 0.873 / 0.942 / 0.977 / 0.992 at
 `ef = 40 / 80 / 160 / 320`, with p50 63 / 108 / 189 / 342 µs.
 
+A second row, [`sift-128-symphonyqg-1m.jsonl`](sift-128-symphonyqg-1m.jsonl),
+runs the RaBitQ-based graph (`symphony_qg_vr`, `ef_search` 80/160/320, build
+765.3 s): recall 0.995 / 0.999 / 0.999 at p50 259 / 474 / 860 µs. HNSW is about
+four times faster at lower recall; the quantized graph buys recall with compute,
+which is the trade the theory survey predicted for RaBitQ-derived traversal.
+
 This is the first real Euclidean corpus in the committed rows. The synthetic
 `uniform` domain is the harder one at the same size (0.294 at `ef = 200` at 1M),
 which is the point of keeping both: SIFT's LID is about 20, not 96.
