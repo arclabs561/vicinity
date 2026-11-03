@@ -402,7 +402,7 @@ measured 1M rows and say so.
 | 100k | 36.6 MiB measured | 46.3 MiB measured | 49.6 MiB measured | 375 MiB measured | 32-49 s measured | the index starts to dwarf the corpus; the ef/recall curve is stable; file-backed search costs 1.4-2.1x the resident p50 at the same ef | anything about a corpus that does not fit in RAM |
 | 1M | 366 MiB measured | 470 MiB measured | 496 MiB measured | 2.9 GiB measured | 196 s (hnsw) / 282 s (both) measured | build cost and RSS become the interesting numbers; uniform recall collapses; the file path's miss rate becomes visible (81%) | that recall is tier-invariant; it is not (below) |
 | 3M | 1.1 GiB measured | 1.4 GiB measured | ~1.5 GiB est. | 6.9 GiB measured | 390 s measured (hnsw) | the collapse continues: 0.971 (100k) -> 0.649 (1M) -> 0.425 (3M) at the same ef=800; recall still crosses 0.95, at ~ef 8000 | DiskANN at 3M: not run (another ~1.5 GiB index and ~7 min of build for a family that is already 0.6 recall behind HNSW on clustered at 1M) |
-| 10M | 3.6 GiB | ~4.7 GiB | ~5.0 GiB | ~26 GiB est. | ~30 min est. | the design once the index exceeds RAM | behaviour once the index exceeds RAM |
+| 10M | 3.66 GiB measured | 4942 MiB measured | 4959 MiB measured | 14.5 GiB measured | 3763 s measured (both families) | the first tier where both indexes exceed a 64 MiB cache: the file path costs 9.6x at `ef = 3200`, and recall on `uniform` falls to 0.071 at `ef = 200` | behaviour once the index exceeds RAM; 100M still needs sharding |
 | 100M | 35.8 GiB measured (written here) | ~45 GiB est. | ~48 GiB est. | ~199 GiB est. | ~4 h est. | only on a host with >199 GiB RAM; the 500-query exact scan itself takes 45.8 s measured | single-machine behaviour above 1B |
 | 1B | 358 GiB est. | ~450 GiB est. | ~480 GiB est. | ~2.0 TiB est. | ~1.7 days est., if it fit | only with an out-of-core build (none exists here); ids fit u32 (1B < 2^32) | that any family in this crate can be built at this tier on one machine |
 
@@ -437,7 +437,7 @@ own resource; a 20M run fits RAM but not the default hour, so the time refusal
 names the build.
 
 **Recall@10 is not tier-invariant.** At a fixed `ef = 200`, `uniform` falls
-0.981 (10k) → 0.705 (100k) → 0.294 (1M), because i.i.d. uniform points in 96
+0.981 (10k) → 0.705 (100k) → 0.294 (1M) → 0.071 (10M), because i.i.d. uniform points in 96
 dimensions have LID ≈ 96 and their neighbour distances concentrate; the exact
 top-10 becomes an increasingly arbitrary sample of a large near-tie set.
 `clustered` also falls (0.991 at 100k → 0.807 at 1M) because each of the 16

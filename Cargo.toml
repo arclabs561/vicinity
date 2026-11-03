@@ -215,6 +215,13 @@ name = "symphonyqg_demo"
 path = "examples/symphonyqg_demo.rs"
 required-features = ["hnsw", "rabitq", "quantization"]
 
+# Sharded, file-backed construction: the shape that makes 100M a build-peak
+# question rather than a single-graph question.
+[[example]]
+name = "sharded_tier"
+path = "examples/sharded_tier.rs"
+required-features = ["hnsw", "persistence"]
+
 [[example]]
 name = "evoc_demo"
 path = "examples/evoc_demo.rs"
