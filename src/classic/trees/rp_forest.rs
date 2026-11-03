@@ -506,7 +506,19 @@ impl RpForestIndex {
     /// Uses Annoy's default candidate budget, `k * num_trees`. Call
     /// [`Self::search_with_budget`] to trade recall for latency explicitly.
     pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>, RetrieveError> {
-        self.search_with_budget(query, k, k.saturating_mul(self.params.num_trees))
+        // One leaf per tree is the floor that makes a forest an ensemble. The
+        // budget is counted in ids, and a single leaf can hold all of it: at a
+        // leaf size of 100 and k = 10 the first leaf alone satisfies the old
+        // `k * num_trees` budget, so the whole search happened inside one tree
+        // and recall at that leaf size fell from 0.247 to 0.092 while p50 fell
+        // 57 us to 13. Scaling the default budget by the resolved leaf size
+        // keeps the number of leaves visited at `num_trees` for any leaf size,
+        // while the best-first order still decides which ones.
+        let leaf = self.params.tree_params.leaf_size(self.dimension);
+        let budget = k
+            .saturating_mul(self.params.num_trees)
+            .max(self.params.num_trees.saturating_mul(k.max(leaf)));
+        self.search_with_budget(query, k, budget)
     }
 
     /// Search for k nearest neighbors with an explicit candidate budget.
