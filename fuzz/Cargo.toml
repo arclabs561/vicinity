@@ -1,0 +1,22 @@
+[package]
+name = "vicinity-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.vicinity]
+path = ".."
+features = ["hnsw", "persistence"]
+
+[[bin]]
+name = "segment_metadata"
+path = "fuzz_targets/segment_metadata.rs"
+test = false
+doc = false
+bench = false

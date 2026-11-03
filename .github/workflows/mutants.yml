@@ -1,0 +1,47 @@
+name: Mutants
+
+# Mutation testing over the kernels a surviving mutant would mislead:
+# pq_simd (packed codes and the u16 accumulator bound), filtered_graph
+# (selectivity dispatch and the min(k, matches) contract), file_io (block-cache
+# accounting). Scoped by mutants.toml; eight shards keep each job under an hour.
+#
+# Monthly, never on pull requests: a full run is hours of compute and the signal
+# is a hole in the tests, not a wrong diff. Standard GitHub-hosted minutes are
+# free for a public repository, so the cost is wall-clock and runner occupancy,
+# not money; four shards keep that bounded. The cheaper place to run this is a
+# local `just mutants <shard>` on the 16-core workstation, which is where it
+# should be used before changing a kernel.
+on:
+  schedule:
+    - cron: "23 6 1 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mutants:
+    name: Shard ${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ["1/4", "2/4", "3/4", "4/4"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "stable"
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
+      - run: cargo install cargo-mutants --locked
+      - run: cargo mutants --shard "${{ matrix.shard }}" --no-times -j 4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: mutants-${{ strategy.job-index }}
+          path: mutants.out/
+          if-no-files-found: ignore
+          retention-days: 30

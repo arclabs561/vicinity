@@ -1,0 +1,23 @@
+# Mutation testing config for `cargo mutants`.
+#
+# This is not a pull-request gate: a full run over the graph modules produces
+# thousands of mutants and takes hours. It runs on a nightly schedule in shards,
+# and the config names the modules where a surviving mutant means a real hole:
+#
+#   * pq_simd.rs        packed-code kernels and the u16 accumulator bound
+#   * filtered_graph/   selectivity dispatch and the min(k, matches) contract
+#   * file_io.rs        block-cache accounting, which every file-backed row uses
+#
+# `just mutants 1/8` runs one shard; the nightly workflow fans out all eight.
+examine_globs = [
+  "src/pq_simd.rs",
+  "src/filtered_graph/mod.rs",
+  "src/file_io.rs",
+]
+# Test modules and generated code are not the product surface.
+exclude_globs = [
+  "src/**/tests*.rs",
+  "src/**/tests/**",
+]
+test_args = ["--features", "hnsw,filtered_graph,ivf_pq,persistence,sq4"]
+timeout_multiplier = 4.0

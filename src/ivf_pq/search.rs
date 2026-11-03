@@ -1480,44 +1480,69 @@ impl IVFPQIndex {
             operation: "search",
         })?;
 
-        for (cluster_idx, _) in &cluster_distances {
-            let cluster = &self.clusters[*cluster_idx];
-
-            // Skip cluster if it doesn't contain any vectors matching the filter
-            if (cluster.filter_bitmask & filter_bit) == 0 {
-                continue;
-            }
-
-            // Compute query residual in-place
-            let centroid = self.get_centroid(*cluster_idx);
-            for (i, (q, c)) in query.iter().zip(centroid.iter()).enumerate() {
-                query_residual[i] = q - c;
-            }
-
-            pq.compute_adc_table_into(&query_residual, &mut adc_table)?;
-
-            // Search vectors in this cluster, filtering by metadata
-            if let Some(ref metadata_store) = self.metadata {
-                let ids = cluster.get_ids_ref();
-                for &vector_idx in ids.as_ref() {
-                    let actual_doc_id = self.doc_ids[vector_idx as usize];
-                    if metadata_store.matches(actual_doc_id, filter) {
-                        let start = vector_idx as usize * self.params.num_codebooks;
-                        let end = start + self.params.num_codebooks;
-                        let codes = &self.quantized_codes[start..end];
-
-                        #[cfg(feature = "distance-stats")]
-                        crate::distance_stats::note_distance();
-                        let dist = pq.distance_with_table(&adc_table, codes);
-                        candidates.push((actual_doc_id, dist));
-                    }
+        // Probe the nprobe nearest clusters first. If that leaves fewer than k
+        // matches while the filter does have matches elsewhere, widen the scan
+        // to every remaining cluster instead of returning a short result: a
+        // filter whose matches sit below nprobe would otherwise be
+        // indistinguishable from a filter that matches nothing.
+        //
+        // FAISS does the equivalent by lifting its scan budget
+        // (`IndexIVF.cpp:597`, `ensure_topk_full`); the HNSW and filtered-graph
+        // paths in this crate take the same fallback (PR #100, #102).
+        let mut order: Vec<usize> = cluster_distances.iter().map(|(c, _)| *c).collect();
+        let mut scanned = vec![false; self.clusters.len()];
+        loop {
+            for &cluster_idx in &order {
+                if scanned[cluster_idx] {
+                    continue;
                 }
-            } else {
-                return Err(RetrieveError::NotBuilt {
-                    component: "filter metadata store",
-                    operation: "search",
-                });
+                scanned[cluster_idx] = true;
+
+                let cluster = &self.clusters[cluster_idx];
+
+                // Skip cluster if it doesn't contain any vectors matching the filter
+                if (cluster.filter_bitmask & filter_bit) == 0 {
+                    continue;
+                }
+
+                // Compute query residual in-place
+                let centroid = self.get_centroid(cluster_idx);
+                for (i, (q, c)) in query.iter().zip(centroid.iter()).enumerate() {
+                    query_residual[i] = q - c;
+                }
+
+                pq.compute_adc_table_into(&query_residual, &mut adc_table)?;
+
+                // Search vectors in this cluster, filtering by metadata
+                if let Some(ref metadata_store) = self.metadata {
+                    let ids = cluster.get_ids_ref();
+                    for &vector_idx in ids.as_ref() {
+                        let actual_doc_id = self.doc_ids[vector_idx as usize];
+                        if metadata_store.matches(actual_doc_id, filter) {
+                            let start = vector_idx as usize * self.params.num_codebooks;
+                            let end = start + self.params.num_codebooks;
+                            let codes = &self.quantized_codes[start..end];
+
+                            #[cfg(feature = "distance-stats")]
+                            crate::distance_stats::note_distance();
+                            let dist = pq.distance_with_table(&adc_table, codes);
+                            candidates.push((actual_doc_id, dist));
+                        }
+                    }
+                } else {
+                    return Err(RetrieveError::NotBuilt {
+                        component: "filter metadata store",
+                        operation: "search",
+                    });
+                }
             }
+
+            if candidates.len() >= k || order.len() == self.clusters.len() {
+                break;
+            }
+            // Widen: every cluster, nearest first, with the probed ones skipped
+            // above. One extra pass covers the whole index.
+            order = (0..self.clusters.len()).collect();
         }
 
         Ok(finish_top_k_by_distance(candidates, k))
@@ -2559,6 +2584,106 @@ mod tests {
             loaded.search_with_filter(&query, 10, &filter).unwrap(),
             before
         );
+    }
+
+    #[test]
+    fn full_probe_equals_an_exhaustive_adc_scan() {
+        // `nprobe = num_clusters` visits every list, so the result must equal an
+        // exhaustive scan over the reconstructed (quantized) vectors. The audit
+        // found no full-effort test for any family, which is why an empty
+        // filtered result could sit unnoticed.
+        let dim = 16;
+        let n = 256;
+        use rand::{Rng, SeedableRng};
+        let mut rng = rand::rngs::StdRng::seed_from_u64(4242);
+
+        // 32 clusters of 8 vectors keeps every list below the FastScan batch
+        // threshold, so this compares against exact ADC rather than against the
+        // uint8-LUT approximation that large lists use.
+        let params = IVFPQParams {
+            num_clusters: 32,
+            num_codebooks: 4,
+            codebook_size: 16,
+            nprobe: 32,
+            seed: 7,
+            ..IVFPQParams::default()
+        };
+        let mut index = IVFPQIndex::new(dim, params).unwrap();
+        let unit = |mut v: Vec<f32>| {
+            let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-12);
+            for x in &mut v {
+                *x /= norm;
+            }
+            v
+        };
+        for i in 0..n {
+            let v: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
+            index.add(60_000 + i as u32, unit(v)).unwrap();
+        }
+        index.build().unwrap();
+
+        let query = unit((0..dim).map(|_| rng.random::<f32>()).collect());
+        let k = 10;
+        let got = index.search(&query, k).unwrap();
+
+        // Brute force iterates internal ids and maps through doc_ids: a build
+        // reorder makes `60_000 + i` the wrong label for internal index i.
+        let mut exact: Vec<(u32, f32)> = (0..n)
+            .map(|i| {
+                let v = index.reconstruct(i).unwrap();
+                let d: f32 = query.iter().zip(&v).map(|(a, b)| (a - b) * (a - b)).sum();
+                (index.doc_ids[i], d)
+            })
+            .collect();
+        exact.sort_unstable_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+        let want: Vec<u32> = exact.iter().take(k).map(|(id, _)| *id).collect();
+        let have: Vec<u32> = got.iter().map(|(id, _)| *id).collect();
+        assert_eq!(
+            have, want,
+            "nprobe = num_clusters must be exact over the codes"
+        );
+    }
+
+    #[test]
+    fn filtered_search_widens_past_nprobe_instead_of_returning_fewer_than_matches() {
+        // With nprobe = 1, a filter whose matches sit in a cluster the query does
+        // not probe used to return an empty result, which is indistinguishable
+        // from "no document matches". The fallback scans the remaining clusters
+        // when the probe leaves fewer than k hits.
+        let dim = 16;
+        let n = 240;
+        use rand::{Rng, SeedableRng};
+        let mut rng = rand::rngs::StdRng::seed_from_u64(77);
+
+        let params = IVFPQParams {
+            num_clusters: 8,
+            num_codebooks: 4,
+            codebook_size: 16,
+            nprobe: 1,
+            seed: 919,
+            ..IVFPQParams::default()
+        };
+        let mut index = IVFPQIndex::with_filtering(dim, params, "tag").unwrap();
+        for i in 0..n {
+            let doc_id = 50_000 + i as u32;
+            let v: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
+            index.add(doc_id, v).unwrap();
+            let mut metadata = crate::filtering::DocumentMetadata::new();
+            let tag = if i < 3 { 0i64 } else { 1i64 };
+            metadata.insert("tag".to_string(), crate::filtering::MetadataValue::Int(tag));
+            index.add_metadata(doc_id, metadata).unwrap();
+        }
+        index.build().unwrap();
+
+        let query: Vec<f32> = (0..dim).map(|_| rng.random::<f32>()).collect();
+        let filter = crate::filtering::MetadataFilter::equals("tag", 0i64);
+        let results = index.search_with_filter(&query, 5, &filter).unwrap();
+        assert_eq!(
+            results.len(),
+            3,
+            "three documents carry the tag; nprobe must not hide them"
+        );
+        assert!(results.iter().all(|(doc_id, _)| *doc_id < 50_003));
     }
 
     #[test]

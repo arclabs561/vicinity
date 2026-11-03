@@ -185,6 +185,9 @@ struct Args {
     max_points: u64,
     budget_seconds: f64,
     gt_only: bool,
+    /// Generate the dataset and stop. Used by `scripts/prepare_data.py`, which
+    /// writes the checksum manifest without needing a second generator.
+    prepare_only: bool,
     /// `None` = verify when the tier is small enough to afford it.
     verify_gt: Option<bool>,
     reuse_gt: bool,
@@ -216,6 +219,7 @@ impl Default for Args {
             max_points: 20_000_000,
             budget_seconds: 3600.0,
             gt_only: false,
+            prepare_only: false,
             verify_gt: None,
             reuse_gt: true,
             persist: true,
@@ -298,6 +302,9 @@ fn run() -> Res<()> {
         estimate.persist,
         args.budget_seconds
     );
+    println!(
+        "note: query sweeps are not in the estimate. Each sweep stops at the budget, checked          per query, and rows for completed families are written as they land."
+    );
     if let Some(refusal) = memory_refusal(&args) {
         return Err(refusal);
     }
@@ -331,6 +338,24 @@ fn run() -> Res<()> {
         bytes_to_mib(generation.bytes)
     );
     println!();
+
+    if args.prepare_only {
+        // Stop before ground truth: preparing data must not depend on the query
+        // set. The checksum manifest is written by scripts/prepare_data.py so
+        // the format's provenance lives in one place.
+        println!(
+            "prepared: {} ({:.1} MiB, {} rows, dim {})",
+            dataset_path.display(),
+            bytes_to_mib(
+                std::fs::metadata(&dataset_path)
+                    .map(|m| m.len())
+                    .unwrap_or(0)
+            ),
+            args.points,
+            args.dim
+        );
+        return Ok(());
+    }
 
     // Ground truth: cached across invocations, computed by a parallel shard
     // scan on a miss.
@@ -371,6 +396,18 @@ fn run() -> Res<()> {
     println!();
 
     let mut rows: Vec<Row> = Vec::new();
+    // Rows are flushed after every family, not only at the end: a tier run can
+    // hit the wall-clock budget inside a file-backed sweep, and the work already
+    // done must survive that. The per-query deadline is what stops a single
+    // sweep from consuming the whole budget between two of these flushes.
+    let json_path = match &args.json {
+        Some(path) if !path.as_os_str().is_empty() => path.clone(),
+        _ => root.join("rows").join(default_rows_name(&args)),
+    };
+    let deadline = started + std::time::Duration::from_secs_f64(args.budget_seconds);
+    const BUDGET_HIT: &str =
+        "stopping at --budget-seconds; rows for the families already measured are written";
+
     let mut index_disk_mib_total = 0.0f64;
     let batch = effective_batch(&args);
     let exact_timed = exact_p50.max(f64::MIN_POSITIVE);
@@ -427,13 +464,17 @@ fn run() -> Res<()> {
                         println!("{refusal}");
                         break 'families;
                     }
-                    let stats = evaluate(
+                    let Some(stats) = evaluate(
                         |query, k, ef| index.search(query, k, ef).map_err(string_err),
                         &queries,
                         &truth,
                         args.k,
                         ef,
-                    );
+                        Some(deadline),
+                    ) else {
+                        println!("{BUDGET_HIT}");
+                        break 'families;
+                    };
                     push_rows(
                         &mut rows,
                         family.name(),
@@ -492,13 +533,17 @@ fn run() -> Res<()> {
                         println!("{refusal}");
                         break 'families;
                     }
-                    let stats = evaluate(
+                    let Some(stats) = evaluate(
                         |query, k, ef| index.search(query, k, ef).map_err(string_err),
                         &queries,
                         &truth,
                         args.k,
                         ef,
-                    );
+                        Some(deadline),
+                    ) else {
+                        println!("{BUDGET_HIT}");
+                        break 'families;
+                    };
                     in_ram_recall.push((ef, stats.recall));
                     push_rows(
                         &mut rows,
@@ -543,13 +588,17 @@ fn run() -> Res<()> {
                         println!("{refusal}");
                         break 'families;
                     }
-                    let stats = evaluate(
+                    let Some(stats) = evaluate(
                         |query, k, ef| searcher.search(query, k, ef).map_err(string_err),
                         &queries,
                         &truth,
                         args.k,
                         ef,
-                    );
+                        Some(deadline),
+                    ) else {
+                        println!("{BUDGET_HIT}");
+                        break 'families;
+                    };
                     if let Some((_, resident)) =
                         in_ram_recall.iter().find(|(value, _)| *value == ef)
                     {
@@ -593,13 +642,15 @@ fn run() -> Res<()> {
                 );
             }
         }
+        write_jsonl(&json_path, &rows, &args, &gt_path, dataset_path.as_path())?;
+        println!(
+            "rows written: {} ({} family/families)",
+            rows.len(),
+            args.families.len()
+        );
     }
 
     print_rows(&rows, args.points, args.dim, args.gt_queries);
-    let json_path = match &args.json {
-        Some(path) if !path.as_os_str().is_empty() => path.clone(),
-        _ => root.join("rows").join(default_rows_name(&args)),
-    };
     write_jsonl(&json_path, &rows, &args, &gt_path, dataset_path.as_path())?;
     println!(
         "wall clock: {:.1}s; total dataset+index on disk: {:.1} MiB",
@@ -740,6 +791,7 @@ fn parse_args() -> Res<Args> {
             }
             "--out" => args.json = Some(PathBuf::from(take_value(&argv, &mut index, &flag)?)),
             "--gt-only" => args.gt_only = true,
+            "--prepare-only" => args.prepare_only = true,
             "--verify-gt" => args.verify_gt = Some(true),
             "--no-verify-gt" => args.verify_gt = Some(false),
             "--regenerate-gt" => args.reuse_gt = false,
@@ -815,6 +867,7 @@ fn print_usage() {
            --max-points <n>       hard ceiling (default 20000000)\n\
            --budget-seconds <s>   refuse an estimate above this (default 3600)\n\
            --gt-only              compute/reuse ground truth, then stop\n\
+           --prepare-only         write the dataset, then stop (scripts/prepare_data.py)\n\
            --regenerate-gt        ignore an existing cache and recompute\n\
            --verify-gt / --no-verify-gt  force/disable the f32+f64 cross-check\n\
            --no-persist           skip the postcard index snapshot (hnsw only;\n\
@@ -2012,13 +2065,21 @@ struct Stats {
 /// keeps each family's real call signature (`&self` vs `&mut self`) out of the
 /// measurement code. Five untimed warm-up queries run first; with a block
 /// cache that is what makes the timed rows steady-state rather than cold.
+/// Run the query sweep for one `ef`, or stop at the wall-clock budget.
+///
+/// The budget is checked per query rather than per `ef`: at 10M a single sweep
+/// of a file-backed index is I/O bound and can outlast the whole budget, and
+/// stopping between sweeps means the operator waits hours to learn it was too
+/// slow. A sweep that stops early returns `None`, so no partial-recall row is
+/// ever written.
 fn evaluate<F>(
     mut search: F,
     queries: &[Vec<f32>],
     truth: &[Vec<u32>],
     k: usize,
     ef: usize,
-) -> Stats
+    deadline: Option<Instant>,
+) -> Option<Stats>
 where
     F: FnMut(&[f32], usize, usize) -> Result<Vec<(u32, f32)>, String>,
 {
@@ -2033,6 +2094,9 @@ where
     vicinity::distance_stats::reset_distance_count();
     let loop_start = Instant::now();
     for (query, expected) in queries.iter().zip(truth.iter()) {
+        if deadline.is_some_and(|limit| Instant::now() > limit) {
+            return None;
+        }
         let start = Instant::now();
         match search(query, k, ef) {
             Ok(results) => {
@@ -2054,7 +2118,7 @@ where
     let total_s = loop_start.elapsed().as_secs_f64();
     let dists = vicinity::distance_stats::take_distance_count();
     let denominator = (queries.len() * k) as f64;
-    Stats {
+    Some(Stats {
         recall: hits as f64 / denominator,
         p50: percentile(&mut latencies.clone(), 50.0),
         p95: percentile(&mut latencies.clone(), 95.0),
@@ -2070,7 +2134,7 @@ where
         },
         errors,
         first_error,
-    }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -2220,13 +2284,29 @@ fn write_jsonl(path: &Path, rows: &[Row], args: &Args, gt_cache: &Path, dataset:
     }
     let mut out = String::new();
     let families: Vec<&str> = args.families.iter().map(|family| family.name()).collect();
+    // Provenance the ratchet reads: the timing gate needs host, cores and the
+    // one-minute load to decide whether a timing comparison means anything.
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(0);
+    let load1 = std::fs::read_to_string("/proc/loadavg")
+        .ok()
+        .and_then(|text| text.split_whitespace().next()?.parse::<f64>().ok());
+    let host = std::env::var("RUNNER_OS")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .unwrap_or_else(|_| std::env::consts::OS.to_string());
     let _ = writeln!(
         out,
-        "{{\"_meta\":true,\"schema\":1,\"harness\":\"large_scale\",\"n\":{},\"dim\":{},\
+        "{{\"_meta\":true,\"schema\":1,\"harness\":\"large_scale\",\"host\":\"{host}\",\
+         \"cores\":{cores},\"load1\":{},\"n\":{},\"dim\":{},\
          \"k\":{},\"queries\":{},\"dataset\":\"{}\",\"tier\":\"{}\",\"seed\":\"0x{SEED:016X}\",\
          \"mmap\":true,\"large_scale\":true,\"batch\":{},\"families\":\"{}\",\
          \"diskann_cache_mib\":{},\"distance_stats\":{},\"compact_upper\":{},\"max_points\":{},\
          \"budget_seconds\":{},\"vicinity\":\"{}\",\"gt_cache\":\"{}\",\"data_file\":\"{}\"}}",
+        match load1 {
+            Some(value) => format!("{value:.2}"),
+            None => "null".to_string(),
+        },
         args.points,
         args.dim,
         args.k,

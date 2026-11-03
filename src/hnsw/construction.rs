@@ -631,8 +631,9 @@ pub fn construct_graph_parallel(
             .collect();
 
         // Phase 2: sequential edge commit (fast: just edge insertion + forward prune).
+        let mut touched: Vec<(u8, u32)> = Vec::new();
         for result in search_results {
-            commit_edges(index, &result, dist_fn);
+            commit_edges(index, &result, dist_fn, &mut touched);
 
             let current_layer = index.layer_assignments[result.current_id] as usize;
             if current_layer > (global_entry_layer as usize) {
@@ -641,8 +642,11 @@ pub fn construct_graph_parallel(
             }
         }
 
-        // Phase 3: parallel pruning of overweight reverse neighbors.
-        prune_overweight_nodes(index, dist_fn);
+        // Phase 3: parallel pruning of the reverse neighbours this batch grew.
+        // Deduplicate first: a popular node is touched by many inserts.
+        touched.sort_unstable();
+        touched.dedup();
+        prune_overweight_nodes(index, dist_fn, &touched);
     }
 
     Ok(())
@@ -831,7 +835,12 @@ fn search_for_neighbors(
 /// Commit phase: add edges from search results to the graph (sequential).
 /// Only adds edges and prunes the current node -- reverse pruning is deferred.
 #[cfg(feature = "parallel")]
-fn commit_edges(index: &mut HNSWIndex, result: &SearchResult, dist_fn: fn(&[f32], &[f32]) -> f32) {
+fn commit_edges(
+    index: &mut HNSWIndex,
+    result: &SearchResult,
+    dist_fn: fn(&[f32], &[f32]) -> f32,
+    touched: &mut Vec<(u8, u32)>,
+) {
     let current_id = result.current_id;
     let current_vector = get_vector(&index.vectors, index.dimension, current_id);
 
@@ -854,6 +863,7 @@ fn commit_edges(index: &mut HNSWIndex, result: &SearchResult, dist_fn: fn(&[f32]
             let rev = &mut neighbors_vec[neighbor_id as usize];
             if !rev.contains(&(current_id as u32)) {
                 rev.push(current_id as u32);
+                touched.push((layer_idx as u8, neighbor_id));
             }
         }
 
@@ -882,11 +892,19 @@ fn commit_edges(index: &mut HNSWIndex, result: &SearchResult, dist_fn: fn(&[f32]
     }
 }
 
-/// Prune all overweight neighbor lists after a batch of insertions.
-/// This is done in parallel since each node's pruning is independent.
+/// Prune the neighbour lists a batch actually grew.
+///
+/// This used to scan every node in every layer after every batch, which is
+/// O(n) work per batch and therefore O(n^2 / batch) over a build. At 100M with
+/// batches of 4096 that is about 2.4e12 length checks that can never find an
+/// overweight node the batch did not create. `touched` is the set of
+/// (layer, node) reverse edges the batch appended to, already deduplicated.
 #[cfg(feature = "parallel")]
-fn prune_overweight_nodes(index: &mut HNSWIndex, dist_fn: fn(&[f32], &[f32]) -> f32) {
-    let num_vectors = index.num_vectors;
+fn prune_overweight_nodes(
+    index: &mut HNSWIndex,
+    dist_fn: fn(&[f32], &[f32]) -> f32,
+    touched: &[(u8, u32)],
+) {
     let dimension = index.dimension;
     let diversification = index.params.neighborhood_diversification.clone();
     let m = index.params.m;
@@ -897,8 +915,11 @@ fn prune_overweight_nodes(index: &mut HNSWIndex, dist_fn: fn(&[f32], &[f32]) -> 
         let layer = &mut index.layers[layer_idx];
         let neighbors_vec = layer.get_neighbors_mut();
 
-        // Collect IDs of overweight nodes.
-        let overweight: Vec<usize> = (0..num_vectors)
+        // Only nodes this batch touched can have grown past the cap.
+        let overweight: Vec<usize> = touched
+            .iter()
+            .filter(|(touched_layer, _)| *touched_layer as usize == layer_idx)
+            .map(|(_, node)| *node as usize)
             .filter(|&id| neighbors_vec[id].len() > m_actual)
             .collect();
 

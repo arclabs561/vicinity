@@ -1,0 +1,50 @@
+name: Nightly
+
+# Suites that do not fit a pull-request budget, and a short fuzz run.
+#
+# filtered_recall alone takes about 9.5 minutes; the segment-metadata fuzz target
+# needs a nightly toolchain. Neither is a PR gate, and both are cheap enough to
+# run every night.
+on:
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  filtered-recall:
+    name: Filtered recall sweep
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: "stable"
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
+      - run: cargo test --all-features --test filtered_recall
+
+  fuzz:
+    name: Segment parser fuzz (60 s)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: "nightly"
+      - run: cargo install cargo-fuzz --locked
+      - run: cargo +nightly fuzz run segment_metadata -- -max_total_time=60 -rss_limit_mb=2048
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts/
+          if-no-files-found: ignore
+          retention-days: 30

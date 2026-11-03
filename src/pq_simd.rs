@@ -503,6 +503,19 @@ impl PackedCodes4bit {
     }
 }
 
+/// Largest number of 4-bit subquantizers whose uint8 LUT sums fit a `u16`.
+///
+/// Every term is at most 255 and both block kernels accumulate in `u16`, so the
+/// budget is `65535 / 255 = 257` codebooks. FAISS's FastScan enforces the same
+/// bound from the other side: its LUT scale carries a `(65535 - 0.5M)` headroom
+/// term so a uint16 accumulator cannot overflow across `M` terms
+/// (`faiss/utils/quantize_lut.cpp:63-73`). We scale per global range instead, so
+/// the headroom has to be a hard limit rather than a scale factor.
+///
+/// `d = 96` with `dsub = 2` gives `M = 48`, so normal embeddings are far below
+/// it; a caller building `dsub = 1` codes at `d = 512` would not be.
+pub const FASTSCAN_MAX_CODEBOOKS: usize = 65535 / 255;
+
 /// Quantize a float32 LUT to uint8 for SIMD integer accumulation.
 ///
 /// The LUT has shape `[num_codebooks][16]` (4-bit PQ = 16 centroids).
@@ -712,6 +725,11 @@ fn fastscan_batch_quantized(
     offset: f32,
 ) -> Vec<f32> {
     let num_codebooks = packed.num_codebooks;
+    assert!(
+        num_codebooks <= FASTSCAN_MAX_CODEBOOKS,
+        "FastScan accumulates LUT terms in u16: {num_codebooks} codebooks would overflow \
+         (at most {FASTSCAN_MAX_CODEBOOKS}). Use a wider accumulator or fewer subquantizers."
+    );
     let num_blocks = packed.num_blocks();
     let bpb = packed.bytes_per_block();
 
@@ -753,6 +771,40 @@ fn fastscan_batch_quantized(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The u16 accumulator must be exact at the largest legal codebook count.
+    ///
+    /// Worst case: every LUT entry is 255, so each vector's sum is
+    /// `255 * codebooks`. At 257 that is 65535, the largest u16, and no term
+    /// wraps. This is arithmetic, not timing, so it either holds or it does not.
+    #[test]
+    fn fastscan_u16_accumulator_is_exact_at_the_codebook_limit() {
+        let codebooks = FASTSCAN_MAX_CODEBOOKS;
+        let num_vectors = 32;
+        let codes = vec![0u8; num_vectors * codebooks];
+        let packed = PackedCodes4bit::pack(&codes, num_vectors, codebooks);
+        let lut = vec![255u8; codebooks * 16];
+
+        let accum = fastscan_block_portable(packed.block_data(0), &lut, codebooks);
+        assert_eq!(accum.len(), 32);
+        assert!(
+            accum.iter().all(|&value| value == 65_535),
+            "expected every lane to reach exactly 65535, got {:?}",
+            &accum[..4]
+        );
+    }
+
+    /// One codebook past the limit is refused, not silently wrapped.
+    #[test]
+    #[should_panic(expected = "would overflow")]
+    fn fastscan_refuses_more_codebooks_than_the_u16_accumulator_holds() {
+        let codebooks = FASTSCAN_MAX_CODEBOOKS + 1;
+        let num_vectors = 32;
+        let codes = vec![0u8; num_vectors * codebooks];
+        let packed = PackedCodes4bit::pack(&codes, num_vectors, codebooks);
+        let lut = vec![1.0f32; codebooks * 16];
+        let _ = fastscan_batch_flat(&packed, &lut);
+    }
 
     fn create_test_lut(num_codebooks: usize, codebook_size: usize) -> Vec<Vec<f32>> {
         (0..num_codebooks)

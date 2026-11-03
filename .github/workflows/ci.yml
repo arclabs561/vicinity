@@ -74,19 +74,42 @@ jobs:
         run: cargo nextest run --no-default-features --features hnsw,sq8
       - name: Test (lemur)
         run: cargo nextest run --no-default-features --features lemur
-      - name: Test (all features, lib only)
-        run: cargo nextest run --lib --all-features
+      # `--all-features` includes `python`, and pyo3 links libpython at link time.
+      # The runner image carries the interpreter but not the development library
+      # (`libpython3.12-dev` does not exist there), so both all-feature steps
+      # failed with `unable to find library -lpython3.12`. The binding has its own
+      # pyvicinity job; these steps cover every feature except it, and derive the
+      # list from cargo metadata so the covered set cannot drift.
+      - name: Derive the feature list without the python binding
+        run: |
+          FEATURES=$(python3 - <<'PY'
+          import json, subprocess
+          meta = json.loads(subprocess.run(
+              ["cargo", "metadata", "--no-deps", "--format-version", "1"],
+              capture_output=True, text=True).stdout)
+          names = [f for f in meta["packages"][0]["features"] if f != "python"]
+          print(",".join(sorted(names)))
+          PY
+          )
+          echo "features without python: $FEATURES"
+          echo "VICINITY_FEATURES=$FEATURES" >> "$GITHUB_ENV"
+      - name: Test (all features except the python binding, lib only)
+        run: cargo nextest run --lib --features "$VICINITY_FEATURES"
         env:
           RUSTFLAGS: ""
       - name: Test (all-feature integration coverage)
         run: >
-          cargo nextest run --all-features
+          cargo nextest run --features "$VICINITY_FEATURES"
           --test prop_ann_universal
           --test cross_algorithm_consistency
           --test correctness_regression
           --test recall_ground_truth
           --test diskann_persistence_test
           --test search_regressions
+          --test persistence_robustness
+          --test prop_deletion
+          --test prop_persistence
+          --test eval_e2e
         env:
           RUSTFLAGS: ""
       # nextest does not support doctests yet (nextest-rs/nextest#16).
@@ -109,7 +132,7 @@ jobs:
           cargo bench --bench hnsw_search --no-default-features --features hnsw,parallel -- hnsw_query_shapes --test
           cargo run --no-default-features --features sparse_mips --release --example sparse_mips_benchmark -- \
             /tmp/vicinity-sparse-ci
-          cargo run --all-features --release --example ann_benchmark -- \
+          cargo run --features "$VICINITY_FEATURES" --release --example ann_benchmark -- \
             /tmp/vicinity-ann-ci \
             --all-dense --require-complete --ef-search 10 --search-k 10 \
             --tree-leaf-sizes 4 --tree-depths 8 --rp-num-trees 3 \
@@ -121,7 +144,7 @@ jobs:
       - name: representative-scale HNSW quality gate
         run: |
           python scripts/generate_ann_smoke_data.py /tmp/vicinity-ann-ci-scale --train 2048 --test 64 --dim 32 --k 10
-          cargo run --all-features --release --example ann_benchmark -- \
+          cargo run --features "$VICINITY_FEATURES" --release --example ann_benchmark -- \
             /tmp/vicinity-ann-ci-scale --algo hnsw --ef-search 64 --search-k 10 \
             --snapshot-load --batch --json --fresh --results /tmp/vicinity-ann-ci-scale.jsonl
           python - <<'PY'

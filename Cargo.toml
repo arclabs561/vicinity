@@ -10,13 +10,14 @@ documentation = "https://docs.rs/vicinity"
 license = "MIT OR Apache-2.0"
 keywords = ["ann", "hnsw", "vector-search", "similarity", "nearest-neighbor"]
 categories = ["algorithms", "science"]
-exclude = ["data/", "benches/", "benchmarks/", "docs/", "scripts/", ".github/"]
+exclude = ["data/", "benches/", "benchmarks/", "docs/", "scripts/", "fuzz/", ".github/"]
 
 [workspace]
 # The `tools/` crates (two C++ shims and the harnesses that use them) are
 # self-contained crates with their own workspace roots; keep them out of this
 # package's workspace and out of the published manifest.
 exclude = [
+  "fuzz",
   "tools/annoy-sys",
   "tools/annoy-parity",
   "tools/hnswlib-sys",
@@ -211,6 +212,20 @@ required-features = ["ivf_rabitq"]
 name = "symphonyqg_demo"
 path = "examples/symphonyqg_demo.rs"
 required-features = ["hnsw", "rabitq", "quantization"]
+
+# Sharded, file-backed construction: the shape that makes 100M a build-peak
+# question rather than a single-graph question.
+# Equal selectivity, opposite alignment: the hardness axis a selectivity sweep
+# alone cannot see.
+[[example]]
+name = "filtered_alignment"
+path = "examples/filtered_alignment.rs"
+required-features = ["hnsw", "filtered_graph"]
+
+[[example]]
+name = "sharded_tier"
+path = "examples/sharded_tier.rs"
+required-features = ["hnsw", "persistence"]
 
 [[example]]
 name = "evoc_demo"
