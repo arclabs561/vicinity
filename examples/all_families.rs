@@ -120,6 +120,7 @@ struct Family {
 struct Row {
     dataset: &'static str,
     family: &'static str,
+    storage_mode: &'static str,
     knob: &'static str,
     knob_value: usize,
     recall: f64,
@@ -1130,6 +1131,21 @@ fn run_family(family: &Family, dataset: &Dataset) -> Result<Vec<Row>, String> {
     Ok(rows)
 }
 
+/// Where a family's answers come from.
+///
+/// Every family in this harness is resident: the file-backed variants live in
+/// `large_scale`, where they are separate families. Naming it in the row means
+/// an audit does not have to read family names to tell which one it is looking
+/// at, and a future file-backed variant is one match arm rather than a
+/// convention.
+fn storage_mode_for(name: &str) -> &'static str {
+    if name.ends_with("-file") || name.ends_with("_file") {
+        "file"
+    } else {
+        "resident"
+    }
+}
+
 fn row_for(
     family: &Family,
     dataset: &Dataset,
@@ -1142,6 +1158,7 @@ fn row_for(
     Row {
         dataset: dataset.name,
         family: family.name,
+        storage_mode: storage_mode_for(family.name),
         knob: family.knob,
         knob_value: knob,
         recall: stats.recall,
@@ -1349,11 +1366,12 @@ fn rows_to_jsonl(rows: &[Row], datasets: &[Dataset]) -> String {
         let lid = dataset.map_or(f64::NAN, |d| d.lid);
         let _ = writeln!(
             out,
-            "{{\"family\":\"{}\",\"dataset\":\"{}\",\"knob\":\"{}\",\"knob_value\":{},\
+            "{{\"family\":\"{}\",\"storage_mode\":\"{}\",\"dataset\":\"{}\",\"knob\":\"{}\",\"knob_value\":{},\
              \"recall\":{},\"p50_us\":{},\"p95_us\":{},\"p99_us\":{},\
              \"qps\":{},\"dists_per_query\":{},\"build_s\":{},\"mem_mib\":{},\
              \"ratio\":{},\"dim\":{},\"lid\":{}}}",
             row.family,
+            row.storage_mode,
             row.dataset,
             row.knob,
             row.knob_value,
