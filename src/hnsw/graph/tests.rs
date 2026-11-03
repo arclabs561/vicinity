@@ -1743,13 +1743,6 @@ proptest::proptest! {
     #[test]
     fn prop_repair_degree_and_deleted_links(n in 60usize..140, divisor in 2u32..6) {
         let dim = 8;
-        let params = HNSWParams {
-            m: 8,
-            m_max: 16,
-            ef_construction: 60,
-            seed: Some(11),
-            ..HNSWParams::default()
-        };
         let mut index = HNSWIndex::with_params(
             dim,
             HNSWParams {
