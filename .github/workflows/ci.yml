@@ -78,7 +78,11 @@ jobs:
       # link time; the runner image has the interpreter but not the dev library,
       # so the job failed with `unable to find library -lpython3.12`.
       - name: Python headers for the pyo3 feature
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq python3-dev
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq python3-dev libpython3.12-dev
+          ls -l /usr/lib/x86_64-linux-gnu/libpython3* || true
+          python3 --version
       - name: Test (all features, lib only)
         run: cargo nextest run --lib --all-features
         env:
