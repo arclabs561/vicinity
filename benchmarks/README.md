@@ -631,6 +631,17 @@ stops it and the number that would clear it.
 | 100M | RAM: 2.09 KiB/point measured at 1M gives 199 GiB for the HNSW build against 128 GiB installed, and the harness refuses with that number (ceiling ≈55M points). Disk is not the blocker any more: the 35.8 GiB corpus was generated on this volume and the 500-query exact scan over 100M rows took 45.8 s (1092 M comparisons/s). | >199 GiB of RAM, or a family whose build is out-of-core. Time is ≈4 h at the measured 1.2-1.6e-4 s/point; the 20M default already estimates 6899 s against a 3600 s budget. |
 | 1B | Disk: dataset 358 GiB + both indexes ≈934 GiB = 1.26 TB against a 7.3 TB volume with 174 GiB free. RAM: 2.09 KiB/point × 1B = 2.0 TiB for the build. Ids still fit (`u32` holds 1B). | 1.26 TB of fast disk and 2.0+ TiB of RAM, or an out-of-core builder plus a file-backed ground-truth scan. The scan itself is the cheap part: at the measured 1092 M rows/s it is ≈8 min. |
 
+## Real corpus: SIFT-128 at 1M
+
+Rows in [`sift-128-hnsw-1m.jsonl`](sift-128-hnsw-1m.jsonl), measured with
+`hnsw` (`m=16`, `ef_construction=200`), `k=10`, 10k queries and the dataset's own
+ground truth. Build 232.6 s; recall 0.873 / 0.942 / 0.977 / 0.992 at
+`ef = 40 / 80 / 160 / 320`, with p50 63 / 108 / 189 / 342 µs.
+
+This is the first real Euclidean corpus in the committed rows. The synthetic
+`uniform` domain is the harder one at the same size (0.294 at `ef = 200` at 1M),
+which is the point of keeping both: SIFT's LID is about 20, not 96.
+
 ## External libraries, one protocol
 
 Rows in [`hnswlib-parity-100k.jsonl`](hnswlib-parity-100k.jsonl) and
