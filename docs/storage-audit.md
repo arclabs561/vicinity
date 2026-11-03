@@ -178,8 +178,9 @@ Ranked by coverage gained per unit of risk.
    files, preferring an AoS vector sidecar. Turns the default family into a
    file-searchable one. Measured at 100k x 96: 39 µs resident against 104 µs
    file-backed at a 64 MiB cache (2.7x), 518 µs at 4 MiB (12.3x).
-3. **`storage_mode` in every harness row.** Cheap, and without it the audit
-   above is a manual reading of family names.
+3. **`storage_mode` in every harness row.** Done: both harnesses emit
+   `resident` or `file` per row, so telling a file-backed measurement from a
+   resident one no longer means decoding `diskann-file` by eye.
 4. **Shared, thread-safe block cache.** Removes the N× cache multiplication and
    the single-writer bottleneck; needed before any parallel file-backed claim.
 5. ~~**RaBitQ code persistence.**~~ Done. `qntz` 0.3.0 exposes the codec and
