@@ -195,6 +195,13 @@ def read_jsonl(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]], list[s
                     f"{record.get('family', '?')}: {record.get('error', '?')}"
                 )
             else:
+                # The harness has emitted the recall field under both names:
+                # `recall_at_10` in the committed baseline, `recall` since the
+                # row schema was widened. Normalise on load so one gate reads
+                # both, rather than silently comparing against None and calling
+                # every row a regression.
+                if "recall_at_10" not in record and "recall" in record:
+                    record["recall_at_10"] = record["recall"]
                 rows.append(record)
     return meta, rows, failures
 
