@@ -203,57 +203,86 @@ impl InPlaceIndex {
             node.out_neighbors = neighbors.clone();
         }
 
-        // Update in-neighbor lists and potentially add back-edges
-        // Collect back-edge candidates first to avoid borrow issues
-        let mut back_edge_candidates: Vec<(u32, bool)> = Vec::new();
+        // Update in-neighbor lists and potentially add back-edges.
+        //
+        // A neighbour that is already at `max_degree` used to refuse every new
+        // edge, including one closer than its worst existing edge, so the graph
+        // froze at whatever edges the first inserts happened to create. That is
+        // the whole difference between HNSW's pruning and this: at capacity,
+        // replace the worst edge when the new one is better. Measured at n=2000,
+        // d=32, max_degree 16, beam 64: recall 0.572 before, 0.864 with this
+        // alone, 0.988 together with the construction beam below.
+        enum BackEdge {
+            Skip,
+            Add,
+            Replace(usize),
+        }
+
+        let mut back_edge_candidates: Vec<(u32, BackEdge)> = Vec::new();
 
         for &neighbor_id in &neighbors {
-            let should_add_back_edge = if self.config.enable_back_edges {
-                // Get neighbor info without mutable borrow
-                if let Some(Some(neighbor)) = self.nodes.get(neighbor_id as usize) {
-                    if neighbor.out_neighbors.len() < self.config.max_degree {
+            let decision = if self.config.enable_back_edges {
+                match self.nodes.get(neighbor_id as usize) {
+                    Some(Some(neighbor)) => {
                         let dist_to_new = euclidean_distance(&neighbor.vector, &vector);
-                        let worst_neighbor_dist = neighbor
-                            .out_neighbors
-                            .iter()
-                            .filter_map(|&n| {
-                                self.nodes
-                                    .get(n as usize)
-                                    .and_then(|opt| opt.as_ref())
-                                    .map(|node| euclidean_distance(&neighbor.vector, &node.vector))
-                            })
-                            .fold(0.0f32, f32::max);
-
-                        dist_to_new < worst_neighbor_dist
-                            || neighbor.out_neighbors.len() < self.config.max_degree / 2
-                    } else {
-                        false
+                        let mut worst: Option<(usize, f32)> = None;
+                        for (slot, &other) in neighbor.out_neighbors.iter().enumerate() {
+                            if let Some(Some(node)) = self.nodes.get(other as usize) {
+                                let d = euclidean_distance(&neighbor.vector, &node.vector);
+                                if worst.is_none_or(|(_, w)| d > w) {
+                                    worst = Some((slot, d));
+                                }
+                            }
+                        }
+                        let at_capacity = neighbor.out_neighbors.len() >= self.config.max_degree;
+                        match (at_capacity, worst) {
+                            (false, Some((_, w))) => {
+                                if dist_to_new < w
+                                    || neighbor.out_neighbors.len() < self.config.max_degree / 2
+                                {
+                                    BackEdge::Add
+                                } else {
+                                    BackEdge::Skip
+                                }
+                            }
+                            (false, None) => BackEdge::Add,
+                            (true, Some((slot, w))) => {
+                                if dist_to_new < w {
+                                    BackEdge::Replace(slot)
+                                } else {
+                                    BackEdge::Skip
+                                }
+                            }
+                            (true, None) => BackEdge::Skip,
+                        }
                     }
-                } else {
-                    false
+                    _ => BackEdge::Skip,
                 }
             } else {
-                false
+                BackEdge::Skip
             };
-            back_edge_candidates.push((neighbor_id, should_add_back_edge));
+            back_edge_candidates.push((neighbor_id, decision));
         }
 
         // Now apply mutations
-        for (neighbor_id, should_add_back_edge) in back_edge_candidates {
+        for (neighbor_id, decision) in back_edge_candidates {
+            let added = !matches!(decision, BackEdge::Skip);
             if let Some(ref mut neighbor) = self.nodes[neighbor_id as usize] {
                 // Add to in-neighbor list
                 if neighbor.in_neighbors.len() < self.config.max_in_neighbors {
                     neighbor.in_neighbors.push(id);
                 }
 
-                // Add back-edge if appropriate
-                if should_add_back_edge {
-                    neighbor.out_neighbors.push(id);
+                // Add or replace the back-edge.
+                match decision {
+                    BackEdge::Skip => {}
+                    BackEdge::Add => neighbor.out_neighbors.push(id),
+                    BackEdge::Replace(slot) => neighbor.out_neighbors[slot] = id,
                 }
             }
 
-            // Update our in-neighbors if back-edge was added
-            if should_add_back_edge {
+            // Update our in-neighbors if a back-edge was added or replaced
+            if added {
                 if let Some(ref mut new_node) = self.nodes[id as usize] {
                     if new_node.in_neighbors.len() < self.config.max_in_neighbors {
                         new_node.in_neighbors.push(neighbor_id);
@@ -497,49 +526,78 @@ impl InPlaceIndex {
             return Vec::new();
         }
 
+        // A proper beam: the stop and admission bounds come from the
+        // beam-width-th best distance, exactly as in `search`. This used to
+        // stop after `beam_width * 2` visited nodes regardless of whether the
+        // frontier still held closer ones, which spent the budget on whichever
+        // branch the heap happened to pop first and left the neighbour lists
+        // built from a partial view of the neighbourhood.
+        let width = self.config.beam_width;
         let mut visited: HashSet<u32> = HashSet::new();
         let mut candidates: BinaryHeap<Candidate> = BinaryHeap::new();
-        let mut results: Vec<(u32, f32)> = Vec::new();
+        let mut results: BinaryHeap<Candidate> = BinaryHeap::new();
 
         let entry_dist = self.distance_to_vector(entry, query);
         candidates.push(Candidate {
             id: entry,
             distance: -entry_dist,
         });
+        if !matches!(self.nodes.get(entry as usize), Some(Some(n)) if n.is_deleted()) {
+            results.push(Candidate {
+                id: entry,
+                distance: entry_dist,
+            });
+        }
         visited.insert(entry);
 
-        while let Some(Candidate { id: current, .. }) = candidates.pop() {
+        while let Some(Candidate {
+            id: current,
+            distance: neg,
+        }) = candidates.pop()
+        {
+            let current_dist = -neg;
+            let worst = results.peek().map(|c| c.distance).unwrap_or(f32::INFINITY);
+            if results.len() >= width && current_dist > worst {
+                break;
+            }
+
             if let Some(Some(node)) = self.nodes.get(current as usize) {
                 if node.is_deleted() {
                     continue;
                 }
-
-                let dist = self.distance_to_vector(current, query);
-                results.push((current, dist));
-
                 for &neighbor in &node.out_neighbors {
-                    if visited.insert(neighbor) {
-                        if let Some(Some(nb)) = self.nodes.get(neighbor as usize) {
-                            if !nb.is_deleted() {
-                                let d = self.distance_to_vector(neighbor, query);
-                                candidates.push(Candidate {
-                                    id: neighbor,
-                                    distance: -d,
-                                });
-                            }
-                        }
+                    if !visited.insert(neighbor) {
+                        continue;
+                    }
+                    let Some(Some(nb_node)) = self.nodes.get(neighbor as usize) else {
+                        continue;
+                    };
+                    if nb_node.is_deleted() {
+                        continue;
+                    }
+                    let dist = self.distance_to_vector(neighbor, query);
+                    let worst = results.peek().map(|c| c.distance).unwrap_or(f32::INFINITY);
+                    if results.len() < width || dist < worst {
+                        insert_bounded_result(
+                            &mut results,
+                            width,
+                            Candidate {
+                                id: neighbor,
+                                distance: dist,
+                            },
+                        );
+                        candidates.push(Candidate {
+                            id: neighbor,
+                            distance: -dist,
+                        });
                     }
                 }
             }
-
-            if visited.len() >= self.config.beam_width * 2 {
-                break;
-            }
         }
 
-        results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
-        results.truncate(self.config.beam_width);
-        results
+        let mut out: Vec<(u32, f32)> = results.drain().map(|c| (c.id, c.distance)).collect();
+        out.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+        out
     }
 
     /// Select diverse neighbors with alpha-pruning.
@@ -1262,6 +1320,70 @@ mod tests {
         assert!(
             recall >= 0.97,
             "recall after slot recycling was {recall:.3} ({hits}/{})",
+            queries * k
+        );
+    }
+
+    /// Insertion must produce a graph whose own search is accurate.
+    ///
+    /// This is the check the old build could not pass. It stopped the candidate
+    /// beam after `beam_width * 2` visited nodes and refused every back-edge to
+    /// a neighbour already at `max_degree`, so the graph froze at the edges the
+    /// first inserts happened to create: 0.572 recall at n=2000, d=32 against an
+    /// exact scan, while HNSW on the same fixture scored 1.000. With the
+    /// distance-bounded beam and the worst-edge replacement, 0.988. The fixture
+    /// here is smaller so the test stays under a second; the floor is 0.99
+    /// because the fixed build measures 1.000 on it and the old one measured
+    /// below 0.96.
+    #[test]
+    fn construction_reaches_high_recall_on_a_fixture() {
+        let dim = 16;
+        let n = 800;
+        let mut seed: u64 = 17;
+        let mut next = || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((seed >> 33) as f32) / (u32::MAX as f32) * 2.0 - 1.0
+        };
+        let data: Vec<Vec<f32>> = (0..n).map(|_| (0..dim).map(|_| next()).collect()).collect();
+
+        let mut index = InPlaceIndex::new(
+            dim,
+            InPlaceConfig {
+                max_degree: 16,
+                beam_width: 64,
+                ..Default::default()
+            },
+        );
+        for vector in &data {
+            index.insert(vector.clone()).unwrap();
+        }
+
+        let k = 10;
+        let queries = 40;
+        let mut hits = 0usize;
+        for q in 0..queries {
+            let query = &data[(q * 29) % n];
+            let mut exact: Vec<(f32, u32)> = data
+                .iter()
+                .enumerate()
+                .map(|(i, v)| {
+                    let d: f32 = v.iter().zip(query).map(|(a, b)| (a - b) * (a - b)).sum();
+                    (d, i as u32)
+                })
+                .collect();
+            exact.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+            let want: std::collections::HashSet<u32> =
+                exact.iter().take(k).map(|(_, i)| *i).collect();
+            let got = index.search(query, k).unwrap();
+            hits += got.iter().filter(|(id, _)| want.contains(id)).count();
+        }
+
+        let recall = hits as f32 / (queries * k) as f32;
+        assert!(
+            recall >= 0.99,
+            "construction recall was {recall:.3} ({hits}/{}), expected >= 0.99",
             queries * k
         );
     }
