@@ -338,6 +338,11 @@ required-features = ["sparse_mips"]
 # the harness can drive; run it with `--features distance-stats` too when the
 # baseline should carry `dists_per_query` (see `benchmarks/README.md`).
 [[example]]
+name = "inplace_construction"
+path = "examples/inplace_construction.rs"
+required-features = ["hnsw"]
+
+[[example]]
 name = "all_families"
 path = "examples/all_families.rs"
 required-features = [
