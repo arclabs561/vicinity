@@ -650,11 +650,12 @@ the matches are near the query and **zero** when they are far, at the same
 selectivity and a higher latency. That is the hardness axis a selectivity sweep
 cannot see.
 
-One number is not explained and is under investigation: `filtered_graph` takes
-371 µs on the aligned partition and 6 µs on the anti one, at 5.6% and 3.0%
-selectivity. Both are below the 10% threshold that selects the exact scan, so the
-two should cost roughly the same per point. The rows are committed as an
-instrument, not as a claim about the strategy dispatch.
+The latency asymmetry between the two modes is a per-point cost effect, not a
+dispatch bug: the harness now also times its own exact scan, and
+`filtered_graph` tracks it (0.6x on aligned, 0.13-0.2x on anti). Per point, the
+aligned partition costs about five times more to scan than the anti one on this
+host, and absolute times moved by 3-4x between runs under load. Compare the two
+modes by recall at the same run, not by absolute microseconds across runs.
 
 ## Real corpus: SIFT-128 at 1M
 

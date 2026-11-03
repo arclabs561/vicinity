@@ -178,6 +178,7 @@ fn main() {
             let mut filtered_us = Vec::new();
             let mut post_us = Vec::new();
             let mut bucket_total = 0usize;
+            let mut exact_us: Vec<f64> = Vec::new();
             let mut used = 0usize;
 
             for query in queries.iter() {
@@ -191,7 +192,9 @@ fn main() {
                 }
                 bucket_total += bucket_size;
                 used += 1;
+                let scan_start = Instant::now();
                 let want = exact_filtered(&points, &buckets, bucket, query);
+                exact_us.push(scan_start.elapsed().as_secs_f64() * 1e6);
                 let filter = Filter::Clause(vicinity::filtered_graph::Predicate::Eq(
                     "bucket".to_string(),
                     AttrValue::Int(bucket),
@@ -233,10 +236,13 @@ fn main() {
             filtered_us.sort_by(|a, b| a.total_cmp(b));
             post_us.sort_by(|a, b| a.total_cmp(b));
             let filtered_p50 = filtered_us[filtered_us.len() / 2];
+            exact_us.sort_by(|a, b| a.total_cmp(b));
+            let exact_p50 = exact_us[exact_us.len() / 2];
             let post_p50 = post_us[post_us.len() / 2];
             println!(
                 "{mode} ef={ef}: filtered_graph {filtered_recall:.3} ({filtered_p50:.0} us) | \
-                 post-filter {post_recall:.3} ({post_p50:.0} us) | overfetch {mean_overfetch:.1}"
+                 post-filter {post_recall:.3} ({post_p50:.0} us) | own scan {exact_p50:.0} us | \
+                 overfetch {mean_overfetch:.1}"
             );
             let _ = writeln!(
                 rows,
