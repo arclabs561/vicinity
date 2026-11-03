@@ -1,0 +1,17 @@
+{"_meta":true,"schema":1,"harness":"filtered_alignment","n":100000,"dim":96,"k":10,"queries":100,"buckets":20,"clustered":true,"generator":"clustered16 sigma 0.25"}
+{"family":"filtered_graph","dataset":"aligned@100000","knob":"ef","knob_value":40,"recall":0.9728,"p50_us":370.7,"overfetch":4.79,"bucket_size":5587,"selectivity":0.0559}
+{"family":"postfilter","dataset":"aligned@100000","knob":"ef","knob_value":40,"recall":0.3272,"p50_us":78.0,"overfetch":4.79,"bucket_size":5587,"selectivity":0.0559}
+{"family":"filtered_graph","dataset":"aligned@100000","knob":"ef","knob_value":100,"recall":0.9728,"p50_us":376.3,"overfetch":9.02,"bucket_size":5587,"selectivity":0.0559}
+{"family":"postfilter","dataset":"aligned@100000","knob":"ef","knob_value":100,"recall":0.4609,"p50_us":139.3,"overfetch":9.02,"bucket_size":5587,"selectivity":0.0559}
+{"family":"filtered_graph","dataset":"aligned@100000","knob":"ef","knob_value":200,"recall":0.9728,"p50_us":370.7,"overfetch":14.35,"bucket_size":5587,"selectivity":0.0559}
+{"family":"postfilter","dataset":"aligned@100000","knob":"ef","knob_value":200,"recall":0.5620,"p50_us":216.8,"overfetch":14.35,"bucket_size":5587,"selectivity":0.0559}
+{"family":"filtered_graph","dataset":"aligned@100000","knob":"ef","knob_value":400,"recall":0.9728,"p50_us":369.3,"overfetch":26.23,"bucket_size":5587,"selectivity":0.0559}
+{"family":"postfilter","dataset":"aligned@100000","knob":"ef","knob_value":400,"recall":0.6163,"p50_us":316.7,"overfetch":26.23,"bucket_size":5587,"selectivity":0.0559}
+{"family":"filtered_graph","dataset":"anti@100000","knob":"ef","knob_value":40,"recall":0.9919,"p50_us":7.4,"overfetch":0.00,"bucket_size":2962,"selectivity":0.0296}
+{"family":"postfilter","dataset":"anti@100000","knob":"ef","knob_value":40,"recall":0.0000,"p50_us":60.0,"overfetch":0.00,"bucket_size":2962,"selectivity":0.0296}
+{"family":"filtered_graph","dataset":"anti@100000","knob":"ef","knob_value":100,"recall":0.9919,"p50_us":6.6,"overfetch":0.00,"bucket_size":2962,"selectivity":0.0296}
+{"family":"postfilter","dataset":"anti@100000","knob":"ef","knob_value":100,"recall":0.0000,"p50_us":108.7,"overfetch":0.00,"bucket_size":2962,"selectivity":0.0296}
+{"family":"filtered_graph","dataset":"anti@100000","knob":"ef","knob_value":200,"recall":0.9919,"p50_us":5.9,"overfetch":0.00,"bucket_size":2962,"selectivity":0.0296}
+{"family":"postfilter","dataset":"anti@100000","knob":"ef","knob_value":200,"recall":0.0000,"p50_us":166.6,"overfetch":0.00,"bucket_size":2962,"selectivity":0.0296}
+{"family":"filtered_graph","dataset":"anti@100000","knob":"ef","knob_value":400,"recall":0.9919,"p50_us":5.2,"overfetch":0.00,"bucket_size":2962,"selectivity":0.0296}
+{"family":"postfilter","dataset":"anti@100000","knob":"ef","knob_value":400,"recall":0.0000,"p50_us":254.8,"overfetch":0.00,"bucket_size":2962,"selectivity":0.0296}

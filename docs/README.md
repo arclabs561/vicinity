@@ -16,6 +16,10 @@
 - [scale-and-parity-plan.md](scale-and-parity-plan.md): the competitive set in
   three categories, and the ordered plan for the scales and comparisons this
   repository cannot yet show.
+- [data-preparation.md](data-preparation.md): how every benchmark dataset is
+  produced, what the manifest records, and which public benchmark is alive.
+- [sharded-scale-plan.md](sharded-scale-plan.md): what sharding buys for 100M
+  and 1B, and the first measurement of it.
 - [competitor-implementations.md](competitor-implementations.md): what hnswlib,
   usearch and annoy actually do, what their tests assert, and which of those
   techniques are worth copying here.

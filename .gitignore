@@ -25,6 +25,9 @@ __pycache__/
 # QA reports (generated)
 qa/
 
+# Firecrawl's scrape cache
+.firecrawl/
+
 # Local archive (research notes, drafts)
 _archive/
 
@@ -40,3 +43,9 @@ cargo-flamegraph.trace/
 !docs/plots/atlas/*.svg
 Cargo.lock
 /semver-checks/
+
+# cargo-fuzz build output
+fuzz/target/
+fuzz/corpus/
+fuzz/artifacts/
+mutants.out/

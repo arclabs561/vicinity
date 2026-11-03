@@ -1699,6 +1699,112 @@ fn test_delete_with_repair_excludes_from_results() {
     );
 }
 
+/// At full effort the graph search must equal the exact scan.
+///
+/// `ef >= n` visits every node, so the top-k ids must match brute force exactly.
+/// The audit found no test for this, which is why a filtered branch could return
+/// nothing without anything failing.
+#[test]
+fn search_at_full_effort_equals_the_exact_scan() {
+    // `ef = n` visits every node reachable from the entry point, so on the
+    // connected 200-point fixture it must reproduce brute force exactly.
+    // Brute force iterates *internal* ids and maps to doc ids: `build()`
+    // performs a locality reorder, so `get_vector(doc_id)` is not the vector
+    // that search ranks for that doc.
+    let (index, query) = build_test_index();
+    let n = index.num_vectors;
+    let k = 10;
+
+    let mut exact: Vec<(u32, f32)> = (0..n)
+        .map(|internal| {
+            (
+                index.doc_ids[internal],
+                crate::distance::cosine_distance(&query, index.get_vector(internal)),
+            )
+        })
+        .collect();
+    exact.sort_unstable_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+    let want: Vec<u32> = exact.iter().take(k).map(|(id, _)| *id).collect();
+
+    let got: Vec<u32> = index
+        .search(&query, k, n)
+        .unwrap()
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
+    assert_eq!(got, want, "ef = n must reproduce the exact top-{k}");
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig { cases: 16, ..Default::default() })]
+
+    /// Repair refills each layer to the degree the build uses, and never leaves
+    /// an edge to a deleted node, for any delete set.
+    #[test]
+    fn prop_repair_degree_and_deleted_links(n in 60usize..140, divisor in 2u32..6) {
+        let dim = 8;
+        let mut index = HNSWIndex::with_params(
+            dim,
+            HNSWParams {
+                m: 8,
+                m_max: 16,
+                ef_construction: 60,
+                metric: crate::distance::DistanceMetric::L2,
+                seed: Some(11),
+                ..HNSWParams::default()
+            },
+        )
+        .unwrap();
+        for id in 0..n as u32 {
+            let vector: Vec<f32> = (0..dim)
+                .map(|d| ((id as usize * 29 + d * 13) % 97) as f32 / 97.0)
+                .collect();
+            index.add(id, vector).unwrap();
+        }
+        index.build().unwrap();
+
+        let ids: Vec<u32> = (0..n as u32).filter(|id| id % divisor == 0).collect();
+        index.delete_batch_with_repair(&ids).unwrap();
+
+        for (layer_idx, layer) in index.layers.iter().enumerate() {
+            let limit = if layer_idx == 0 { 16 } else { 8 };
+            for node in 0..layer.len() as u32 {
+                let neighbors = layer.get_neighbors(node);
+                proptest::prop_assert!(neighbors.len() <= limit);
+                for &neighbor in neighbors.iter() {
+                    proptest::prop_assert!(!index.tombstones.is_deleted(neighbor as usize));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn batch_repair_respects_the_upper_layer_degree() {
+    // The build caps layer 0 at `m_max` and every upper layer at `m`
+    // (`construction.rs:896`). Repair refilled to `m_max` on every layer, so a
+    // repaired upper layer could hold twice the edges the build would allow.
+    let (mut index, _query) = build_test_index();
+    let ids: Vec<u32> = (0..6).collect();
+    index.delete_batch_with_repair(&ids).unwrap();
+
+    let m = index.params.m;
+    for (layer_idx, layer) in index.layers.iter().enumerate() {
+        let limit = if layer_idx == 0 {
+            index.params.m_max
+        } else {
+            m
+        };
+        for node in 0..layer.len() as u32 {
+            let degree = layer.get_neighbors(node).len();
+            assert!(
+                degree <= limit,
+                "layer {layer_idx} node {node} has {degree} edges, limit {limit}"
+            );
+        }
+    }
+}
+
 #[test]
 fn repair_leaves_no_link_to_a_deleted_node() {
     let (mut index, _q) = build_test_index();
@@ -2512,6 +2618,54 @@ fn filtered_search_does_not_count_tombstones_towards_ef() {
         "10 live members remain; tombstones must not exhaust the ef budget"
     );
     assert!(results.iter().all(|(doc_id, _)| *doc_id >= 190));
+}
+
+#[test]
+fn category_search_fills_k_from_the_exact_scan_when_the_graph_underfills() {
+    // A category whose nodes sit in a component the traversal never reaches used
+    // to return whatever the visited set happened to contain, which is both
+    // short and HashSet-ordered. The contract is min(k, category size).
+    use crate::filtering::{DocumentMetadata, MetadataFilter, MetadataValue};
+
+    let dim = 8;
+    let n = 120u32;
+    let mut index = HNSWIndex::with_filtering(dim, 8, 16, "group").unwrap();
+    let mut state = 0x5EED_C0DEu64;
+    let mut category_of = Vec::new();
+    for id in 0..n {
+        let category = id % 3;
+        category_of.push(category);
+        let mut metadata = DocumentMetadata::new();
+        metadata.insert("group".into(), MetadataValue::from(category));
+        index.add_metadata(id, metadata).unwrap();
+        let v = crate::distance::normalize(&parity_vector(&mut state, dim));
+        index.add(id, v).unwrap();
+    }
+    index.build().unwrap();
+    let query = crate::distance::normalize(&parity_vector(&mut state, dim));
+
+    for category in 0..3u32 {
+        let members = category_of.iter().filter(|&&c| c == category).count();
+        let filter = MetadataFilter::equals("group", category);
+        let want = 40.min(members);
+        let first = index.search_with_filter(&query, 40, 16, &filter).unwrap();
+        let second = index.search_with_filter(&query, 40, 16, &filter).unwrap();
+        assert_eq!(
+            first.len(),
+            want,
+            "category {category} has {members} members"
+        );
+        assert_eq!(
+            first, second,
+            "tie order must be deterministic across calls"
+        );
+        assert!(
+            first.iter().all(|(doc_id, _)| {
+                category_of.get(*doc_id as usize).copied() == Some(category)
+            }),
+            "category {category} returned a foreign document"
+        );
+    }
 }
 
 /// The builder's `ef_search` must be the default the convenience search uses;

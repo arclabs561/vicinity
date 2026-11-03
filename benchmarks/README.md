@@ -14,6 +14,12 @@ against it.
   elsewhere), compares row by row, and exits non-zero when a gated metric
   regresses past its tolerance.
 
+## Preparing data
+
+Every dataset behind a row is produced by `scripts/prepare_data.py`; it records a
+sha256 manifest and `verify` recomputes it. See
+[`docs/data-preparation.md`](../docs/data-preparation.md).
+
 ## Protocol
 
 The harness is the single protocol every family is measured on:
@@ -396,7 +402,7 @@ measured 1M rows and say so.
 | 100k | 36.6 MiB measured | 46.3 MiB measured | 49.6 MiB measured | 375 MiB measured | 32-49 s measured | the index starts to dwarf the corpus; the ef/recall curve is stable; file-backed search costs 1.4-2.1x the resident p50 at the same ef | anything about a corpus that does not fit in RAM |
 | 1M | 366 MiB measured | 470 MiB measured | 496 MiB measured | 2.9 GiB measured | 196 s (hnsw) / 282 s (both) measured | build cost and RSS become the interesting numbers; uniform recall collapses; the file path's miss rate becomes visible (81%) | that recall is tier-invariant; it is not (below) |
 | 3M | 1.1 GiB measured | 1.4 GiB measured | ~1.5 GiB est. | 6.9 GiB measured | 390 s measured (hnsw) | the collapse continues: 0.971 (100k) -> 0.649 (1M) -> 0.425 (3M) at the same ef=800; recall still crosses 0.95, at ~ef 8000 | DiskANN at 3M: not run (another ~1.5 GiB index and ~7 min of build for a family that is already 0.6 recall behind HNSW on clustered at 1M) |
-| 10M | 3.6 GiB | ~4.7 GiB | ~5.0 GiB | ~26 GiB est. | ~30 min est. | the design once the index exceeds RAM | behaviour once the index exceeds RAM |
+| 10M | 3.66 GiB measured | 4942 MiB measured | 4959 MiB measured | 14.5 GiB measured | 3763 s measured (both families) | the first tier where both indexes exceed a 64 MiB cache: the file path costs 9.6x at `ef = 3200`, and recall on `uniform` falls to 0.071 at `ef = 200` | behaviour once the index exceeds RAM; 100M still needs sharding |
 | 100M | 35.8 GiB measured (written here) | ~45 GiB est. | ~48 GiB est. | ~199 GiB est. | ~4 h est. | only on a host with >199 GiB RAM; the 500-query exact scan itself takes 45.8 s measured | single-machine behaviour above 1B |
 | 1B | 358 GiB est. | ~450 GiB est. | ~480 GiB est. | ~2.0 TiB est. | ~1.7 days est., if it fit | only with an out-of-core build (none exists here); ids fit u32 (1B < 2^32) | that any family in this crate can be built at this tier on one machine |
 
@@ -407,6 +413,14 @@ more of dataset plus about 93.3 GiB for the hnsw+diskann index files ... 70.2
 GiB short`). Free space on this volume moved between 55 and 174 GiB during the
 measurement window, and the 35.8 GiB 100M corpus was then written for real and
 scanned in 45.8 s, so disk is a host-state blocker, not a structural one.
+
+The budget is checked per query as well as per phase, and rows are written after
+every family. A 10M DiskANN run showed why: the builds landed on schedule (HNSW
+1731 s against an 1800 s estimate, DiskANN 1792 s against 1626 s), and then the
+file-backed sweep spent hours in `pread` because a 4.9 GiB index does not fit a
+64 MiB block cache. Query sweeps are deliberately absent from the estimate; they
+are bounded by the per-query deadline instead, and a run that stops at the budget
+keeps every row it finished.
 
 RAM is structural, and the harness checks it before the time budget because a
 longer budget cannot move it. 100M refuses like this on this host:
@@ -423,7 +437,7 @@ own resource; a 20M run fits RAM but not the default hour, so the time refusal
 names the build.
 
 **Recall@10 is not tier-invariant.** At a fixed `ef = 200`, `uniform` falls
-0.981 (10k) → 0.705 (100k) → 0.294 (1M), because i.i.d. uniform points in 96
+0.981 (10k) → 0.705 (100k) → 0.294 (1M) → 0.071 (10M), because i.i.d. uniform points in 96
 dimensions have LID ≈ 96 and their neighbour distances concentrate; the exact
 top-10 becomes an increasingly arbitrary sample of a large near-tie set.
 `clustered` also falls (0.991 at 100k → 0.807 at 1M) because each of the 16
@@ -617,6 +631,49 @@ stops it and the number that would clear it.
 | 100M | RAM: 2.09 KiB/point measured at 1M gives 199 GiB for the HNSW build against 128 GiB installed, and the harness refuses with that number (ceiling ≈55M points). Disk is not the blocker any more: the 35.8 GiB corpus was generated on this volume and the 500-query exact scan over 100M rows took 45.8 s (1092 M comparisons/s). | >199 GiB of RAM, or a family whose build is out-of-core. Time is ≈4 h at the measured 1.2-1.6e-4 s/point; the 20M default already estimates 6899 s against a 3600 s budget. |
 | 1B | Disk: dataset 358 GiB + both indexes ≈934 GiB = 1.26 TB against a 7.3 TB volume with 174 GiB free. RAM: 2.09 KiB/point × 1B = 2.0 TiB for the build. Ids still fit (`u32` holds 1B). | 1.26 TB of fast disk and 2.0+ TiB of RAM, or an out-of-core builder plus a file-backed ground-truth scan. The scan itself is the cheap part: at the measured 1092 M rows/s it is ≈8 min. |
 
+## Filtered hardness: same selectivity, opposite alignment
+
+Rows in [`filtered-alignment-100k.jsonl`](filtered-alignment-100k.jsonl), from
+`examples/filtered_alignment.rs`. 100k clustered 96-d points, 20 partitions, 100
+queries, `k=10`. A query's aligned partition is its nearest centre, its anti
+partition its farthest, so both are the same size and only the geometry differs.
+
+| mode | family | recall@10 | p50 | overfetch |
+| --- | --- | ---: | ---: | ---: |
+| aligned | filtered_graph | 0.973 | 371 µs | — |
+| aligned | post-filter (ef 400) | 0.616 | 317 µs | 26.2 |
+| anti | filtered_graph | 0.992 | 6 µs | — |
+| anti | post-filter (ef 400) | 0.000 | 255 µs | 0.0 |
+
+The post-filter column is the finding: at 5.6% selectivity it reaches 0.62 when
+the matches are near the query and **zero** when they are far, at the same
+selectivity and a higher latency. That is the hardness axis a selectivity sweep
+cannot see.
+
+The latency asymmetry between the two modes is a per-point cost effect, not a
+dispatch bug: the harness now also times its own exact scan, and
+`filtered_graph` tracks it (0.6x on aligned, 0.13-0.2x on anti). Per point, the
+aligned partition costs about five times more to scan than the anti one on this
+host, and absolute times moved by 3-4x between runs under load. Compare the two
+modes by recall at the same run, not by absolute microseconds across runs.
+
+## Real corpus: SIFT-128 at 1M
+
+Rows in [`sift-128-hnsw-1m.jsonl`](sift-128-hnsw-1m.jsonl), measured with
+`hnsw` (`m=16`, `ef_construction=200`), `k=10`, 10k queries and the dataset's own
+ground truth. Build 232.6 s; recall 0.873 / 0.942 / 0.977 / 0.992 at
+`ef = 40 / 80 / 160 / 320`, with p50 63 / 108 / 189 / 342 µs.
+
+A second row, [`sift-128-symphonyqg-1m.jsonl`](sift-128-symphonyqg-1m.jsonl),
+runs the RaBitQ-based graph (`symphony_qg_vr`, `ef_search` 80/160/320, build
+765.3 s): recall 0.995 / 0.999 / 0.999 at p50 259 / 474 / 860 µs. HNSW is about
+four times faster at lower recall; the quantized graph buys recall with compute,
+which is the trade the theory survey predicted for RaBitQ-derived traversal.
+
+This is the first real Euclidean corpus in the committed rows. The synthetic
+`uniform` domain is the harder one at the same size (0.294 at `ef = 200` at 1M),
+which is the point of keeping both: SIFT's LID is about 20, not 96.
+
 ## External libraries, one protocol
 
 Rows in [`hnswlib-parity-100k.jsonl`](hnswlib-parity-100k.jsonl) and
@@ -654,9 +711,10 @@ Build: vicinity 24.7 s, hnswlib 29.0 s, USearch 22.8 s.
 
 Build: vicinity 554.6 s, hnswlib 735.2 s.
 
-The recall gap is **0.03 to 0.08 absolute in vicinity's favour at every `ef` on
-both tiers**, and the p50 gap grows with `ef` (1.4x at `ef = 10`, 2.1x at
-`ef = 400`). Two caveats keep this from being a clean win:
+The recall gap is **0.03 to 0.08 absolute in vicinity's favour through most of
+both sweeps**, shrinking to 0.0016 at the top of the 100k sweep (`ef = 400`: 0.9988
+against 0.9972), where both graphs are near the ceiling. The p50 gap grows
+with `ef` (1.4x at `ef = 10`, 2.1x at `ef = 400`). Two caveats keep this from being a clean win:
 
 - **This hnswlib commit has no NEON path.** On Apple Silicon it runs scalar
   while both Rust sides use NEON, so part of the latency gap is vectorisation,

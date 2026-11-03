@@ -1360,6 +1360,38 @@ fn rows_to_jsonl(rows: &[Row], datasets: &[Dataset]) -> String {
     }
 
     let mut out = String::new();
+
+    // The first line is provenance, not a measurement. `scripts/ratchet.py`
+    // reads `host`, `cores` and `load1` from it to decide whether a timing
+    // comparison is meaningful on this machine at all; without them the gate
+    // can only gate recall and coverage, which is what the CI baseline did
+    // before this line existed.
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(0);
+    let load1 = std::fs::read_to_string("/proc/loadavg")
+        .ok()
+        .and_then(|text| text.split_whitespace().next()?.parse::<f64>().ok());
+    let host = std::env::var("RUNNER_OS")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .unwrap_or_else(|_| std::env::consts::OS.to_string());
+    let families: std::collections::BTreeSet<&str> = rows.iter().map(|row| row.family).collect();
+    let named: std::collections::BTreeSet<&str> = rows.iter().map(|row| row.dataset).collect();
+    let _ = writeln!(
+        out,
+        "{{\"_meta\":true,\"schema\":1,\"harness\":\"all_families\",\"host\":\"{host}\",\
+         \"cores\":{cores},\"load1\":{},\"families\":\"{}\",\"datasets\":\"{}\",\
+         \"distance_stats\":{},\"vicinity\":\"{}\"}}",
+        match load1 {
+            Some(value) => format!("{value:.2}"),
+            None => "null".to_string(),
+        },
+        families.into_iter().collect::<Vec<_>>().join(","),
+        named.into_iter().collect::<Vec<_>>().join(","),
+        cfg!(feature = "distance-stats"),
+        env!("CARGO_PKG_VERSION"),
+    );
+
     for row in rows {
         let dataset = datasets.iter().find(|d| d.name == row.dataset);
         let dim = dataset.map_or(0, |d| d.dim);

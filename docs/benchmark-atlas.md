@@ -251,7 +251,9 @@ at 1M, 0.185 vs 0.157 through 0.914 vs 0.882, with p50 39 vs 62 µs through 708 
 1270 µs. Build: 24.7 vs 29.0 s at 100k, 554.6 vs 735.2 s at 1M. USearch sits
 between them on recall at 100k (0.385 to 0.997) with its own 22.8 s build.
 
-The recall gap is 0.03 to 0.08 absolute; the p50 gap is not purely graph quality,
+The recall gap is 0.03 to 0.08 absolute through most of the sweep, narrowing to
+0.0016 at `ef = 400` at 100k where both are near the ceiling; the p50 gap is not
+purely graph quality,
 because the pinned hnswlib commit has no NEON path and runs scalar on Apple
 Silicon while both Rust sides use NEON. Read the figure for shape, not for a
 speed claim, and read the rows for the numbers.

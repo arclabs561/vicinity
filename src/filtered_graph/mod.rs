@@ -1329,6 +1329,57 @@ mod tests {
     /// scan when the filtered path under-delivers (`hnsw/builder.rs:1734`). The
     /// invariant is cheap to state: `len == min(k, matches)`.
     #[test]
+    fn low_selectivity_branch_is_exact() {
+        // Below the 10% threshold the strategy is a brute-force scan over the
+        // matching ids, so recall against the exact filtered top-k is 1.0 by
+        // construction. If it is not, the branch is not doing what it says.
+        let dim = 8;
+        let n = 200usize;
+        let matches = 10usize;
+        let data = make_vectors(n, dim, 31);
+        let mut idx = FilteredGraphIndex::new(
+            dim,
+            FilteredGraphParams {
+                max_degree: 12,
+                ef_construction: 30,
+                ef_search: 30,
+                alpha: 1.2,
+            },
+        )
+        .unwrap();
+        for i in 0..n {
+            let mut attrs = HashMap::new();
+            let bucket = if i < matches { 0 } else { 1 };
+            attrs.insert("bucket".to_string(), AttrValue::Int(bucket));
+            idx.add_slice(i as u32, &data[i * dim..(i + 1) * dim], attrs)
+                .unwrap();
+        }
+        idx.build().unwrap();
+
+        // The index normalizes on insert and normalizes the query, so the exact
+        // scan has to compare in the same space.
+        let normalize = |v: &[f32]| {
+            let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-12);
+            v.iter().map(|x| x / norm).collect::<Vec<f32>>()
+        };
+        let query = normalize(&data[..dim]);
+        let filter = Filter::Clause(Predicate::Eq("bucket".to_string(), AttrValue::Int(0)));
+        let got = idx.search_filtered(&query, 5, &filter).unwrap();
+
+        let mut exact: Vec<(u32, f32)> = (0..matches)
+            .map(|i| {
+                let v = normalize(&data[i * dim..(i + 1) * dim]);
+                let d: f32 = query.iter().zip(&v).map(|(a, b)| (a - b) * (a - b)).sum();
+                (i as u32, d)
+            })
+            .collect();
+        exact.sort_unstable_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+        let want: Vec<u32> = exact.iter().take(5).map(|(id, _)| *id).collect();
+        let have: Vec<u32> = got.iter().map(|(id, _)| *id).collect();
+        assert_eq!(have, want, "5% selectivity must be an exact filtered scan");
+    }
+
+    #[test]
     fn filtered_search_fills_k_when_matches_exist() {
         let dim = 16;
         let n = 600;
