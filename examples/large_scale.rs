@@ -2286,7 +2286,9 @@ fn write_jsonl(path: &Path, rows: &[Row], args: &Args, gt_cache: &Path, dataset:
     let families: Vec<&str> = args.families.iter().map(|family| family.name()).collect();
     // Provenance the ratchet reads: the timing gate needs host, cores and the
     // one-minute load to decide whether a timing comparison means anything.
-    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(0);
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(0);
     let load1 = std::fs::read_to_string("/proc/loadavg")
         .ok()
         .and_then(|text| text.split_whitespace().next()?.parse::<f64>().ok());
