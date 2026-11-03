@@ -436,6 +436,32 @@ fn build_test_index() -> (HNSWIndex, Vec<f32>) {
     (index, q)
 }
 
+/// Concurrent search over one shared index returns the same answers.
+///
+/// Annoy's `threading_test.py` and usearch's GIL tests both assert this, and the
+/// storage audit found by reading that our file-backed cache takes `&mut self`
+/// while the resident index does not. The resident claim is cheap to test and
+/// expensive to discover wrong inside a server, so it is tested here rather than
+/// only documented.
+#[test]
+fn concurrent_search_over_one_index_returns_identical_results() {
+    let (index, q) = build_test_index();
+    let expected = index.search(&q, 10, 50).unwrap();
+    let index = &index;
+    let expected = &expected;
+
+    std::thread::scope(|scope| {
+        for _ in 0..8 {
+            let q = &q;
+            scope.spawn(move || {
+                for _ in 0..32 {
+                    assert_eq!(&index.search(q.as_slice(), 10, 50).unwrap(), expected);
+                }
+            });
+        }
+    });
+}
+
 #[test]
 fn test_search_adaptive_conservative_matches_search() {
     let (index, q) = build_test_index();

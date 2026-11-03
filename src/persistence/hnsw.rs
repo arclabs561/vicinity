@@ -606,6 +606,70 @@ mod tests {
         assert_eq!(r1[0].0, 7);
     }
 
+    /// A reload must not change answers, not even by one id.
+    ///
+    /// hnswlib asserts exactly this (`bindings_test_recall.py:98` compares
+    /// recall before and after a reload). The other segment tests check top-1
+    /// ids and tombstone flags, which would not notice a reordered or truncated
+    /// result set. This one compares every id and distance of every result, both
+    /// through `load_index` and through the file-backed searcher.
+    #[test]
+    fn segment_reload_returns_identical_results() {
+        use crate::persistence::directory::FsDirectory;
+
+        let dimension = 8;
+        let params = HNSWParams {
+            m: 8,
+            m_max: 16,
+            ef_construction: 64,
+            ef_search: 50,
+            metric: crate::distance::DistanceMetric::L2,
+            seed: Some(11),
+            ..Default::default()
+        };
+        let mut index = HNSWIndex::with_params(dimension, params).unwrap();
+        for doc_id in 0..400u32 {
+            let vector: Vec<f32> = (0..dimension)
+                .map(|d| ((doc_id as usize * 41 + d * 29) % 211) as f32 / 211.0)
+                .collect();
+            index.add(doc_id, vector).unwrap();
+        }
+        index.build().unwrap();
+
+        let queries: Vec<Vec<f32>> = (0..40u32)
+            .map(|q| {
+                (0..dimension)
+                    .map(|d| ((q as usize * 73 + d * 19) % 197) as f32 / 197.0)
+                    .collect()
+            })
+            .collect();
+        let expected: Vec<_> = queries
+            .iter()
+            .map(|query| index.search(query, 10, 50).unwrap())
+            .collect();
+
+        let dir = tempfile::tempdir().unwrap();
+        HNSWSegmentWriter::new(Box::new(FsDirectory::new(dir.path()).unwrap()), 11)
+            .write_hnsw_index(&index)
+            .unwrap();
+        let segment = dir.path().join("segments/segment_hnsw_11");
+
+        let resident = HNSWSegmentReader::load(Box::new(FsDirectory::new(dir.path()).unwrap()), 11)
+            .unwrap()
+            .load_index()
+            .unwrap();
+        let mut searcher = crate::hnsw::HNSWSegmentSearcher::open(
+            &segment,
+            crate::hnsw::FileCacheConfig::with_budget(1 << 20),
+        )
+        .unwrap();
+
+        for (query, want) in queries.iter().zip(&expected) {
+            assert_eq!(&resident.search(query, 10, 50).unwrap(), want);
+            assert_eq!(&searcher.search(query, 10, 50).unwrap(), want);
+        }
+    }
+
     #[test]
     fn test_hnsw_segment_preserves_tombstones() {
         let dim = 4;
