@@ -74,12 +74,13 @@ jobs:
         run: cargo nextest run --no-default-features --features hnsw,sq8
       - name: Test (lemur)
         run: cargo nextest run --no-default-features --features lemur
-      # `--all-features` includes `python`, and pyo3 links libpython at test link
-      # time. The runner image carries the interpreter but not the development
-      # library, so the link failed with `unable to find library -lpython3.12`.
-      # The binding has its own job; this one tests every feature except it, and
-      # derives the list from cargo metadata so it cannot drift.
-      - name: Test (all features except the python binding, lib only)
+      # `--all-features` includes `python`, and pyo3 links libpython at link time.
+      # The runner image carries the interpreter but not the development library
+      # (`libpython3.12-dev` does not exist there), so both all-feature steps
+      # failed with `unable to find library -lpython3.12`. The binding has its own
+      # pyvicinity job; these steps cover every feature except it, and derive the
+      # list from cargo metadata so the covered set cannot drift.
+      - name: Derive the feature list without the python binding
         run: |
           FEATURES=$(python3 - <<'PY'
           import json, subprocess
@@ -91,12 +92,14 @@ jobs:
           PY
           )
           echo "features without python: $FEATURES"
-          cargo nextest run --lib --features "$FEATURES"
+          echo "VICINITY_FEATURES=$FEATURES" >> "$GITHUB_ENV"
+      - name: Test (all features except the python binding, lib only)
+        run: cargo nextest run --lib --features "$VICINITY_FEATURES"
         env:
           RUSTFLAGS: ""
       - name: Test (all-feature integration coverage)
         run: >
-          cargo nextest run --all-features
+          cargo nextest run --features "$VICINITY_FEATURES"
           --test prop_ann_universal
           --test cross_algorithm_consistency
           --test correctness_regression
