@@ -196,6 +196,12 @@ struct Args {
     /// graph while inserting and cost build time; 4096 is the library default
     /// and loses recall when a batch is a large share of the set.
     batch: usize,
+    /// Build the graph as `K` independently built shards, one resident at a
+    /// time, instead of one graph. Bounds the build peak to one shard, which is
+    /// the only way a tier above this host's RAM is buildable locally.
+    shards: usize,
+    /// Partitions to probe per query in sharded mode (nearest centroid first).
+    nprobe: Vec<usize>,
     json: Option<PathBuf>,
     self_test: bool,
 }
@@ -224,6 +230,8 @@ impl Default for Args {
             reuse_gt: true,
             persist: true,
             batch: 4096,
+            shards: 1,
+            nprobe: vec![1, 2, 4],
             json: None,
             self_test: false,
         }
@@ -379,6 +387,10 @@ fn run() -> Res<()> {
     if args.gt_only {
         println!("--gt-only: stopping before any index is built");
         return Ok(());
+    }
+
+    if args.shards > 1 {
+        return run_sharded(dataset_path.as_path(), &queries, &truth, &args);
     }
 
     let elapsed = started.elapsed().as_secs_f64();
@@ -754,6 +766,20 @@ fn parse_args() -> Res<Args> {
                 let value = take_value(&argv, &mut index, &flag)?;
                 args.domain = Domain::parse(&value)?;
             }
+            "--shards" => {
+                args.shards = parse_usize(&take_value(&argv, &mut index, &flag)?)?;
+            }
+            "--nprobe" => {
+                args.nprobe = take_value(&argv, &mut index, &flag)?
+                    .split(',')
+                    .map(|value| {
+                        value
+                            .trim()
+                            .parse::<usize>()
+                            .map_err(|err| format!("--nprobe: {err}"))
+                    })
+                    .collect::<Result<Vec<usize>, _>>()?;
+            }
             "--families" => {
                 let value = take_value(&argv, &mut index, &flag)?;
                 let families = value
@@ -868,6 +894,8 @@ fn print_usage() {
            --budget-seconds <s>   refuse an estimate above this (default 3600)\n\
            --gt-only              compute/reuse ground truth, then stop\n\
            --prepare-only         write the dataset, then stop (scripts/prepare_data.py)\n\
+           --shards K             build K shards, one resident at a time (default 1)\n\
+           --nprobe a,b,c         shards probed per query in sharded mode\n\
            --regenerate-gt        ignore an existing cache and recompute\n\
            --verify-gt / --no-verify-gt  force/disable the f32+f64 cross-check\n\
            --no-persist           skip the postcard index snapshot (hnsw only;\n\
@@ -1897,6 +1925,299 @@ fn build_diskann(
     }
     index.build_parallel(batch).map_err(string_err)?;
     Ok(index)
+}
+
+/// Squared L2 between a row and centroid `c` of a flat centroid array.
+fn centroid_distance(row: &[f32], centroids: &[f32], dim: usize, c: usize) -> f32 {
+    row.iter()
+        .zip(&centroids[c * dim..(c + 1) * dim])
+        .map(|(a, b)| (a - b) * (a - b))
+        .sum()
+}
+
+/// Shard ids for the `nprobe` nearest centroids, nearest first.
+fn nearest_centroids(query: &[f32], centroids: &[f32], dim: usize, nprobe: usize) -> Vec<usize> {
+    let shards = centroids.len() / dim;
+    let mut all: Vec<(f32, usize)> = (0..shards)
+        .map(|c| (centroid_distance(query, centroids, dim, c), c))
+        .collect();
+    all.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+    all.into_iter()
+        .take(nprobe.min(shards))
+        .map(|(_, c)| c)
+        .collect()
+}
+
+/// k-means on a bounded sample: k-means++ seeding, four Lloyd iterations.
+fn train_centroids(sample: &[Vec<f32>], dim: usize, k: usize, seed: u64) -> Vec<f32> {
+    let mut state = seed | 1;
+    let mut next = || {
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1);
+        state
+    };
+    let mut centres: Vec<Vec<f32>> = Vec::with_capacity(k);
+    if sample.is_empty() {
+        return vec![0.0; k * dim];
+    }
+    centres.push(sample[(next() >> 33) as usize % sample.len()].clone());
+    while centres.len() < k {
+        let mut best = (0usize, f32::NEG_INFINITY);
+        for _ in 0..64 {
+            let candidate = (next() >> 33) as usize % sample.len();
+            let nearest = centres
+                .iter()
+                .map(|c| {
+                    sample[candidate]
+                        .iter()
+                        .zip(c)
+                        .map(|(a, b)| (a - b) * (a - b))
+                        .sum::<f32>()
+                })
+                .fold(f32::INFINITY, f32::min);
+            if nearest > best.1 {
+                best = (candidate, nearest);
+            }
+        }
+        centres.push(sample[best.0].clone());
+    }
+
+    let mut flat: Vec<f32> = centres.concat();
+    for _ in 0..4 {
+        let mut sums = vec![0f64; k * dim];
+        let mut counts = vec![0usize; k];
+        for point in sample {
+            let mut best = (f32::INFINITY, 0usize);
+            for c in 0..k {
+                let d: f32 = point
+                    .iter()
+                    .zip(&flat[c * dim..(c + 1) * dim])
+                    .map(|(a, b)| (a - b) * (a - b))
+                    .sum();
+                if d < best.0 {
+                    best = (d, c);
+                }
+            }
+            counts[best.1] += 1;
+            for d in 0..dim {
+                sums[best.1 * dim + d] += f64::from(point[d]);
+            }
+        }
+        for c in 0..k {
+            if counts[c] == 0 {
+                continue;
+            }
+            for d in 0..dim {
+                flat[c * dim + d] = (sums[c * dim + d] / counts[c] as f64) as f32;
+            }
+        }
+    }
+    flat
+}
+
+/// Build `K` shards, one resident at a time, and query `nprobe` of them.
+///
+/// The whole point is the peak: one shard of `n / K` rows instead of one graph
+/// of `n`, which is what makes a tier above this host's RAM buildable locally.
+/// Shards are built sequentially; a query's probe set is known from the
+/// centroids before the first build, so each shard's results are merged into a
+/// per-query accumulator and the shard is dropped immediately.
+fn run_sharded(path: &Path, queries: &[Vec<f32>], truth: &[Vec<u32>], args: &Args) -> Res<()> {
+    use vicinity::distance::DistanceMetric;
+    use vicinity::hnsw::{HNSWIndex, HNSWParams};
+
+    let dataset = DatasetFile::open(path)?;
+    let count = dataset.count();
+    let dim = dataset.dim();
+    let shards = args.shards;
+    if shards > u16::MAX as usize {
+        return Err(format!(
+            "--shards {shards} exceeds the u16 assignment limit"
+        ));
+    }
+    let nprobes: Vec<usize> = if args.nprobe.is_empty() {
+        vec![1]
+    } else {
+        args.nprobe.clone()
+    };
+    println!(
+        "sharded build: {count} rows into {shards} shards, dim {dim}, k={}",
+        args.k
+    );
+
+    // Centroids from a stride sample: deterministic, bounded, and independent of
+    // the query set.
+    let target = 20_000u64.min(count);
+    let stride = (count / target).max(1);
+    let mut sample: Vec<Vec<f32>> = Vec::new();
+    let mut row = 0u64;
+    while row < count && sample.len() < target as usize {
+        sample.push(dataset.row(row).to_vec());
+        row += stride;
+    }
+    let centroids = train_centroids(&sample, dim, shards, 0x5EED_1000);
+    drop(sample);
+
+    let mut assignment: Vec<u16> = Vec::with_capacity(count as usize);
+    for id in 0..count {
+        let mut best = (f32::INFINITY, 0usize);
+        for c in 0..shards {
+            let d = centroid_distance(dataset.row(id), &centroids, dim, c);
+            if d < best.0 {
+                best = (d, c);
+            }
+        }
+        assignment.push(best.1 as u16);
+    }
+    let mut sizes = vec![0usize; shards];
+    for &shard in &assignment {
+        sizes[shard as usize] += 1;
+    }
+    println!(
+        "shard sizes: min {}, max {}, mean {}",
+        sizes.iter().min().copied().unwrap_or(0),
+        sizes.iter().max().copied().unwrap_or(0),
+        count as usize / shards
+    );
+
+    // Probe sets are fixed before the first build.
+    let probes: Vec<Vec<Vec<usize>>> = nprobes
+        .iter()
+        .map(|&np| {
+            queries
+                .iter()
+                .map(|q| nearest_centroids(q, &centroids, dim, np))
+                .collect()
+        })
+        .collect();
+
+    // accumulators[p][e][q] = merged top-k across probed shards; timings[p][e][q]
+    // sums each shard's search time, which is what a parallel probe would cost.
+    let mut accum: Vec<Vec<Vec<Vec<(u32, f32)>>>> = nprobes
+        .iter()
+        .map(|_| vec![vec![Vec::new(); queries.len()]; args.ef.len()])
+        .collect();
+    let mut timings: Vec<Vec<Vec<f64>>> = nprobes
+        .iter()
+        .map(|_| vec![vec![0.0; queries.len()]; args.ef.len()])
+        .collect();
+
+    let params = HNSWParams {
+        m: 16,
+        ef_construction: 200,
+        metric: DistanceMetric::L2,
+        seed: Some(HNSW_SEED),
+        ..HNSWParams::default()
+    };
+
+    let build_start = Instant::now();
+    let mut max_shard_build = 0.0f64;
+    let mut max_shard_rss = 0.0f64;
+    for shard in 0..shards {
+        let shard_start = Instant::now();
+        let rss_before = rss_mib();
+        let mut graph = HNSWIndex::with_params(dim, params.clone()).map_err(string_err)?;
+        for id in 0..count {
+            if assignment[id as usize] as usize == shard {
+                graph
+                    .add_slice(id as u32, dataset.row(id))
+                    .map_err(string_err)?;
+            }
+        }
+        graph.build_parallel(args.batch).map_err(string_err)?;
+        let build_s = shard_start.elapsed().as_secs_f64();
+        max_shard_build = max_shard_build.max(build_s);
+        if let (Some(before), Some(after)) = (rss_before, rss_mib()) {
+            max_shard_rss = max_shard_rss.max(after - before);
+        }
+        println!("shard {shard}: {} rows, build {build_s:.1}s", sizes[shard]);
+
+        for (p, _) in nprobes.iter().enumerate() {
+            for (e, &ef) in args.ef.iter().enumerate() {
+                for (q, query) in queries.iter().enumerate() {
+                    if !probes[p][q].contains(&shard) {
+                        continue;
+                    }
+                    let started = Instant::now();
+                    let found = graph.search(query, args.k, ef).map_err(string_err)?;
+                    timings[p][e][q] += started.elapsed().as_secs_f64() * 1e6;
+                    let acc = &mut accum[p][e][q];
+                    acc.extend(found);
+                    acc.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+                    acc.truncate(args.k);
+                }
+            }
+        }
+        drop(graph);
+    }
+    let total_build = build_start.elapsed().as_secs_f64();
+    println!(
+        "sharded build done: {total_build:.0}s total, max shard {max_shard_build:.0}s, \
+         peak shard rss +{max_shard_rss:.0} MiB"
+    );
+
+    let mut rows = String::new();
+    let mut table = String::new();
+    for (p, &np) in nprobes.iter().enumerate() {
+        for (e, &ef) in args.ef.iter().enumerate() {
+            let mut hits = 0usize;
+            let mut latencies: Vec<f64> = Vec::with_capacity(queries.len());
+            for (q, want) in truth.iter().enumerate() {
+                hits += accum[p][e][q]
+                    .iter()
+                    .filter(|(id, _)| want.iter().take(args.k).any(|w| w == id))
+                    .count();
+                latencies.push(timings[p][e][q]);
+            }
+            latencies.sort_by(|a, b| a.total_cmp(b));
+            let recall = hits as f64 / (queries.len() * args.k) as f64;
+            let p50 = latencies[latencies.len() / 2];
+            table.push_str(&format!(
+                "| hnsw-sharded | nprobe={np} ef={ef} | {recall:.3} | {p50:.1} | {} |\n",
+                sizes.iter().max().copied().unwrap_or(0)
+            ));
+            rows.push_str(&format!(
+                "{{\"family\":\"hnsw-sharded\",\"storage_mode\":\"resident\",\
+                 \"dataset\":\"{}@{}m\",\"knob\":\"nprobe\",\"knob_value\":{np},\
+                 \"recall\":{recall:.4},\"p50_us\":{p50:.1},\"build_s\":{max_shard_build:.1},\
+                 \"shards\":{shards},\"ef\":{ef},\"n\":{count},\"dim\":{dim}}}\n",
+                args.domain.name(),
+                count / 1_000_000
+            ));
+        }
+    }
+    println!();
+    println!("| family | knob | recall@k | p50 us | largest shard |");
+    println!("| --- | --- | ---: | ---: | ---: |");
+    print!("{table}");
+
+    if let Some(path) = &args.json {
+        let meta = format!(
+            "{{\"_meta\":true,\"schema\":1,\"harness\":\"large_scale_sharded\",\
+             \"n\":{count},\"dim\":{dim},\"k\":{},\"queries\":{},\"dataset\":\"{}\",\
+             \"tier\":\"{}\",\"shards\":{shards},\"seed\":\"0x{HNSW_SEED:016X}\",\
+             \"distance_stats\":false,\"partition\":\"kmeans on a stride sample\"}}\n",
+            args.k,
+            queries.len(),
+            args.domain.name(),
+            tier_label(count)
+        );
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|err| format!("cannot create {}: {err}", parent.display()))?;
+            }
+        }
+        std::fs::write(path, meta + &rows)
+            .map_err(|err| format!("cannot write {}: {err}", path.display()))?;
+        println!(
+            "wrote {} sharded rows to {}",
+            nprobes.len() * args.ef.len(),
+            path.display()
+        );
+    }
+    Ok(())
 }
 
 /// Save into a fresh directory and return the bytes the searcher will read.
