@@ -785,7 +785,7 @@ mod tests {
         let packed = PackedCodes4bit::pack(&codes, num_vectors, codebooks);
         let lut = vec![255u8; codebooks * 16];
 
-        let accum = fastscan_block_portable(&packed.block_data(0), &lut, codebooks);
+        let accum = fastscan_block_portable(packed.block_data(0), &lut, codebooks);
         assert_eq!(accum.len(), 32);
         assert!(
             accum.iter().all(|&value| value == 65_535),
