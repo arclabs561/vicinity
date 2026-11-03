@@ -120,6 +120,7 @@ struct Family {
 struct Row {
     dataset: &'static str,
     family: &'static str,
+    storage_mode: &'static str,
     knob: &'static str,
     knob_value: usize,
     recall: f64,
@@ -177,12 +178,18 @@ struct Skipped {
 }
 
 fn main() {
-    // Optional positional filter: `all_families ivf_pq` or
-    // `all_families hnsw,balltree` reruns just those families.
-    let only: Vec<String> = std::env::args()
-        .nth(1)
-        .map(|arg| arg.split(',').map(str::to_string).collect())
-        .unwrap_or_default();
+    // `--json` makes stdout the JSONL rows and silences the human report, which
+    // is what `scripts/ratchet.py` captures. Anything else is a positional
+    // family filter: `all_families ivf_pq` or `all_families hnsw,balltree`.
+    let mut json = false;
+    let mut only: Vec<String> = Vec::new();
+    for arg in std::env::args().skip(1) {
+        if arg == "--json" {
+            json = true;
+        } else {
+            only.extend(arg.split(',').map(str::to_string));
+        }
+    }
     let datasets = build_datasets();
     let families: Vec<Family> = families()
         .into_iter()
@@ -191,49 +198,53 @@ fn main() {
     let mut rows: Vec<Row> = Vec::new();
     let mut failures: Vec<(String, String)> = Vec::new();
 
-    println!("# All-family ANN benchmark");
-    println!();
-    println!("k={K} queries={N_QUERIES} seed=0x{SEED:016X} metric=cosine (all rows L2-normalised)");
-    println!();
-    println!("## Domains");
-    println!();
-    println!("| domain | n | dim | LID p50 [p10-p90] | separation | stands in for |");
-    println!("| --- | ---: | ---: | ---: | ---: | --- |");
-    for dataset in &datasets {
+    if !json {
+        println!("# All-family ANN benchmark");
+        println!();
         println!(
-            "| {} | {} | {} | {:.1} [{:.1}-{:.1}] | {:.2} | {} |",
-            dataset.name,
-            dataset.base.len(),
-            dataset.dim,
-            dataset.lid,
-            dataset.lid_low,
-            dataset.lid_high,
-            dataset.separation,
-            dataset.description
+            "k={K} queries={N_QUERIES} seed=0x{SEED:016X} metric=cosine (all rows L2-normalised)"
         );
-    }
-    println!();
-    if datasets.iter().any(|dataset| dataset.name == "fvecs") {
+        println!();
+        println!("## Domains");
+        println!();
+        println!("| domain | n | dim | LID p50 [p10-p90] | separation | stands in for |");
+        println!("| --- | ---: | ---: | ---: | ---: | --- |");
+        for dataset in &datasets {
+            println!(
+                "| {} | {} | {} | {:.1} [{:.1}-{:.1}] | {:.2} | {} |",
+                dataset.name,
+                dataset.base.len(),
+                dataset.dim,
+                dataset.lid,
+                dataset.lid_low,
+                dataset.lid_high,
+                dataset.separation,
+                dataset.description
+            );
+        }
+        println!();
+        if datasets.iter().any(|dataset| dataset.name == "fvecs") {
+            println!(
+                "note: `fvecs` reuses the first {N_QUERIES} base rows as queries, so each query \
+                 matches itself and recall@10 has a {:.1} floor.",
+                1.0 / K as f64
+            );
+            println!();
+        }
+
+        for dataset in &datasets {
+            println!(
+                "exact linear scan p50 on `{}`: {:.1} us/query",
+                dataset.name, dataset.exact_p50_us
+            );
+        }
+        println!();
         println!(
-            "note: `fvecs` reuses the first {N_QUERIES} base rows as queries, so each query \
-             matches itself and recall@10 has a {:.1} floor.",
-            1.0 / K as f64
+            "1/ratio@10 = exact-scan p50 / family p50 (time-based, as in ann-benchmarks); \
+             QPS = queries / total timed-loop seconds; p50/p95/p99 are per-query wall clock."
         );
         println!();
     }
-
-    for dataset in &datasets {
-        println!(
-            "exact linear scan p50 on `{}`: {:.1} us/query",
-            dataset.name, dataset.exact_p50_us
-        );
-    }
-    println!();
-    println!(
-        "1/ratio@10 = exact-scan p50 / family p50 (time-based, as in ann-benchmarks); \
-         QPS = queries / total timed-loop seconds; p50/p95/p99 are per-query wall clock."
-    );
-    println!();
 
     for dataset in &datasets {
         for family in &families {
@@ -248,11 +259,15 @@ fn main() {
         }
     }
 
-    print_rows(&rows, &datasets);
-    print_ranking(&rows, &datasets);
-    print_at_recall(&rows, &datasets, 0.95);
-    print_sweeps(&families);
-    print_skipped(&failures);
+    if json {
+        write_jsonl_stdout(&rows, &datasets);
+    } else {
+        print_rows(&rows, &datasets);
+        print_ranking(&rows, &datasets);
+        print_at_recall(&rows, &datasets, 0.95);
+        print_sweeps(&families);
+        print_skipped(&failures);
+    }
     if let Ok(path) = std::env::var("ANN_JSONL") {
         write_jsonl(&path, &rows, &datasets);
     }
@@ -1116,6 +1131,21 @@ fn run_family(family: &Family, dataset: &Dataset) -> Result<Vec<Row>, String> {
     Ok(rows)
 }
 
+/// Where a family's answers come from.
+///
+/// Every family in this harness is resident: the file-backed variants live in
+/// `large_scale`, where they are separate families. Naming it in the row means
+/// an audit does not have to read family names to tell which one it is looking
+/// at, and a future file-backed variant is one match arm rather than a
+/// convention.
+fn storage_mode_for(name: &str) -> &'static str {
+    if name.ends_with("-file") || name.ends_with("_file") {
+        "file"
+    } else {
+        "resident"
+    }
+}
+
 fn row_for(
     family: &Family,
     dataset: &Dataset,
@@ -1128,6 +1158,7 @@ fn row_for(
     Row {
         dataset: dataset.name,
         family: family.name,
+        storage_mode: storage_mode_for(family.name),
         knob: family.knob,
         knob_value: knob,
         recall: stats.recall,
@@ -1311,7 +1342,12 @@ fn print_sweeps(families: &[Family]) {
 /// Writes one JSON object per row, in the field names `scripts/benefits.py`
 /// reads, so `ANN_JSONL=rows.jsonl` feeds the benefit profile directly. `dim`
 /// and `lid` are extra context the script ignores.
-fn write_jsonl(path: &str, rows: &[Row], datasets: &[Dataset]) {
+/// Render the rows as JSONL.
+///
+/// Split out from [`write_jsonl`] so `--json` can put the same bytes on stdout:
+/// `scripts/ratchet.py` captures stdout, and a file-only writer meant it got the
+/// human report instead and failed with "invalid JSON: line 1 column 1".
+fn rows_to_jsonl(rows: &[Row], datasets: &[Dataset]) -> String {
     use std::fmt::Write as _;
 
     /// JSON has no NaN/Infinity, and `benefits.py` would fail to parse them.
@@ -1330,11 +1366,12 @@ fn write_jsonl(path: &str, rows: &[Row], datasets: &[Dataset]) {
         let lid = dataset.map_or(f64::NAN, |d| d.lid);
         let _ = writeln!(
             out,
-            "{{\"family\":\"{}\",\"dataset\":\"{}\",\"knob\":\"{}\",\"knob_value\":{},\
+            "{{\"family\":\"{}\",\"storage_mode\":\"{}\",\"dataset\":\"{}\",\"knob\":\"{}\",\"knob_value\":{},\
              \"recall\":{},\"p50_us\":{},\"p95_us\":{},\"p99_us\":{},\
              \"qps\":{},\"dists_per_query\":{},\"build_s\":{},\"mem_mib\":{},\
              \"ratio\":{},\"dim\":{},\"lid\":{}}}",
             row.family,
+            row.storage_mode,
             row.dataset,
             row.knob,
             row.knob_value,
@@ -1351,12 +1388,28 @@ fn write_jsonl(path: &str, rows: &[Row], datasets: &[Dataset]) {
             num(lid, 3),
         );
     }
+    out
+}
+
+fn write_jsonl(path: &str, rows: &[Row], datasets: &[Dataset]) {
+    let out = rows_to_jsonl(rows, datasets);
     match std::fs::write(path, out) {
         Ok(()) => println!(
             "wrote {} rows to {path} (scripts/benefits.py {path})",
             rows.len()
         ),
         Err(err) => eprintln!("cannot write ANN_JSONL={path}: {err}"),
+    }
+}
+
+/// Write the JSONL rows to stdout, which is the `--json` contract.
+fn write_jsonl_stdout(rows: &[Row], datasets: &[Dataset]) {
+    use std::io::Write as _;
+    let out = rows_to_jsonl(rows, datasets);
+    let stdout = std::io::stdout();
+    let mut lock = stdout.lock();
+    if let Err(err) = lock.write_all(out.as_bytes()) {
+        eprintln!("cannot write JSONL to stdout: {err}");
     }
 }
 

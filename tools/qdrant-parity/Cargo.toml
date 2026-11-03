@@ -1,0 +1,13 @@
+[package]
+name = "qdrant-parity"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Same-corpus comparison: in-process HNSW against a Qdrant server"
+license = "Apache-2.0"
+
+# Own workspace root, like the other benchmark-only crates under tools/.
+[workspace]
+
+[dependencies]
+vicinity = { path = "../..", features = ["hnsw"] }

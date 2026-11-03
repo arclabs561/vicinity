@@ -212,9 +212,11 @@ artifact (30 days). To move the baseline onto the runner's hardware:
 The harness also answers a second question: what each method is *for*, rather
 than which one wins one table.
 
-- A rows file — one JSON object per measurement (family, dataset, knob, recall,
-  p50/p95/p99, qps, build_s, mem_mib, dists_per_query, and capability flags
-  `exact`, `supports_update`, `supports_filter`). It is generated, not committed;
+- A rows file — one JSON object per measurement (family, storage_mode, dataset,
+  knob, recall, p50/p95/p99, qps, build_s, mem_mib, dists_per_query, and
+  capability flags `exact`, `supports_update`, `supports_filter`).
+  `storage_mode` is `resident` or `file`, so a file-backed row is identified by
+  the row rather than by its family name. It is generated, not committed;
   `baseline.jsonl` is the one rows file that is.
 - `scripts/benefits.py` — turns those rows into a per-method *benefit profile*:
   the best row per family, the leader on each axis, the Pareto front on

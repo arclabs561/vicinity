@@ -1,5 +1,6 @@
 /target
-/tools/*/target/
+# The benchmark crates under tools/ are their own workspaces.
+tools/*/target
 .cargo/
 .claude/
 .cursor/

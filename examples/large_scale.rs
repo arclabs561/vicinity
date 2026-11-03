@@ -2079,6 +2079,9 @@ where
 
 struct Row {
     family: &'static str,
+    /// Heap or file cache. `diskann-file` is a different row, not a naming
+    /// convention a reader has to decode.
+    storage_mode: &'static str,
     dataset: String,
     knob: &'static str,
     knob_value: usize,
@@ -2127,6 +2130,11 @@ fn push_rows(
 ) {
     rows.push(Row {
         family,
+        storage_mode: if family.ends_with("-file") {
+            "file"
+        } else {
+            "resident"
+        },
         dataset: format!("{}@{}", args.domain.name(), tier_label(args.points)),
         knob,
         knob_value,
@@ -2239,12 +2247,13 @@ fn write_jsonl(path: &Path, rows: &[Row], args: &Args, gt_cache: &Path, dataset:
     for row in rows {
         let _ = writeln!(
             out,
-            "{{\"family\":\"{}\",\"dataset\":\"{}\",\"knob\":\"{}\",\"knob_value\":{},\
+            "{{\"family\":\"{}\",\"storage_mode\":\"{}\",\"dataset\":\"{}\",\"knob\":\"{}\",\"knob_value\":{},\
              \"recall_at_10\":{},\"recall\":{},\"inverse_ratio\":{},\"ratio\":{},\
              \"p50_us\":{},\"p95_us\":{},\"p99_us\":{},\"qps\":{},\"dists_per_query\":{},\
              \"build_s\":{},\"mem_mib\":{},\"rss_mib\":{},\"index_disk_mib\":{},\"persist_s\":{},\
              \"n\":{},\"dim\":{},\"gt_verified\":{},\"gt_cache\":\"{}\"}}",
             row.family,
+            row.storage_mode,
             row.dataset,
             row.knob,
             row.knob_value,

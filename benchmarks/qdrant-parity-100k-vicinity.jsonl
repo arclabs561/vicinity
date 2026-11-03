@@ -1,0 +1,6 @@
+{"family":"vicinity_hnsw","dataset":"uniform@100000","knob":"ef_search","knob_value":10,"recall":0.1795,"p50_us":19.0,"p95_us":34.0,"p99_us":44.0,"qps":48614.5,"build_s":31.96,"dim":96,"category":"embedded"}
+{"family":"vicinity_hnsw","dataset":"uniform@100000","knob":"ef_search","knob_value":20,"recall":0.2795,"p50_us":49.0,"p95_us":76.0,"p99_us":89.0,"qps":20580.4,"build_s":31.96,"dim":96,"category":"embedded"}
+{"family":"vicinity_hnsw","dataset":"uniform@100000","knob":"ef_search","knob_value":50,"recall":0.4595,"p50_us":64.0,"p95_us":88.0,"p99_us":100.0,"qps":14935.4,"build_s":31.96,"dim":96,"category":"embedded"}
+{"family":"vicinity_hnsw","dataset":"uniform@100000","knob":"ef_search","knob_value":100,"recall":0.6265,"p50_us":107.0,"p95_us":121.0,"p99_us":130.0,"qps":9300.6,"build_s":31.96,"dim":96,"category":"embedded"}
+{"family":"vicinity_hnsw","dataset":"uniform@100000","knob":"ef_search","knob_value":200,"recall":0.7750,"p50_us":204.0,"p95_us":221.0,"p99_us":236.0,"qps":4881.5,"build_s":31.96,"dim":96,"category":"embedded"}
+{"family":"vicinity_hnsw","dataset":"uniform@100000","knob":"ef_search","knob_value":400,"recall":0.8850,"p50_us":400.0,"p95_us":433.0,"p99_us":448.0,"qps":2479.9,"build_s":31.96,"dim":96,"category":"embedded"}
