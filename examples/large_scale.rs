@@ -2114,7 +2114,7 @@ fn run_sharded(path: &Path, queries: &[Vec<f32>], truth: &[Vec<u32>], args: &Arg
     let build_start = Instant::now();
     let mut max_shard_build = 0.0f64;
     let mut max_shard_rss = 0.0f64;
-    for shard in 0..shards {
+    for (shard, &shard_size) in sizes.iter().enumerate() {
         let shard_start = Instant::now();
         let rss_before = rss_mib();
         let mut graph = HNSWIndex::with_params(dim, params.clone()).map_err(string_err)?;
