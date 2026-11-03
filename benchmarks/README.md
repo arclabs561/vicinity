@@ -631,6 +631,31 @@ stops it and the number that would clear it.
 | 100M | RAM: 2.09 KiB/point measured at 1M gives 199 GiB for the HNSW build against 128 GiB installed, and the harness refuses with that number (ceiling ≈55M points). Disk is not the blocker any more: the 35.8 GiB corpus was generated on this volume and the 500-query exact scan over 100M rows took 45.8 s (1092 M comparisons/s). | >199 GiB of RAM, or a family whose build is out-of-core. Time is ≈4 h at the measured 1.2-1.6e-4 s/point; the 20M default already estimates 6899 s against a 3600 s budget. |
 | 1B | Disk: dataset 358 GiB + both indexes ≈934 GiB = 1.26 TB against a 7.3 TB volume with 174 GiB free. RAM: 2.09 KiB/point × 1B = 2.0 TiB for the build. Ids still fit (`u32` holds 1B). | 1.26 TB of fast disk and 2.0+ TiB of RAM, or an out-of-core builder plus a file-backed ground-truth scan. The scan itself is the cheap part: at the measured 1092 M rows/s it is ≈8 min. |
 
+## Filtered hardness: same selectivity, opposite alignment
+
+Rows in [`filtered-alignment-100k.jsonl`](filtered-alignment-100k.jsonl), from
+`examples/filtered_alignment.rs`. 100k clustered 96-d points, 20 partitions, 100
+queries, `k=10`. A query's aligned partition is its nearest centre, its anti
+partition its farthest, so both are the same size and only the geometry differs.
+
+| mode | family | recall@10 | p50 | overfetch |
+| --- | --- | ---: | ---: | ---: |
+| aligned | filtered_graph | 0.973 | 371 µs | — |
+| aligned | post-filter (ef 400) | 0.616 | 317 µs | 26.2 |
+| anti | filtered_graph | 0.992 | 6 µs | — |
+| anti | post-filter (ef 400) | 0.000 | 255 µs | 0.0 |
+
+The post-filter column is the finding: at 5.6% selectivity it reaches 0.62 when
+the matches are near the query and **zero** when they are far, at the same
+selectivity and a higher latency. That is the hardness axis a selectivity sweep
+cannot see.
+
+One number is not explained and is under investigation: `filtered_graph` takes
+371 µs on the aligned partition and 6 µs on the anti one, at 5.6% and 3.0%
+selectivity. Both are below the 10% threshold that selects the exact scan, so the
+two should cost roughly the same per point. The rows are committed as an
+instrument, not as a claim about the strategy dispatch.
+
 ## Real corpus: SIFT-128 at 1M
 
 Rows in [`sift-128-hnsw-1m.jsonl`](sift-128-hnsw-1m.jsonl), measured with

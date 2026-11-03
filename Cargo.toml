@@ -218,6 +218,13 @@ required-features = ["hnsw", "rabitq", "quantization"]
 
 # Sharded, file-backed construction: the shape that makes 100M a build-peak
 # question rather than a single-graph question.
+# Equal selectivity, opposite alignment: the hardness axis a selectivity sweep
+# alone cannot see.
+[[example]]
+name = "filtered_alignment"
+path = "examples/filtered_alignment.rs"
+required-features = ["hnsw", "filtered_graph"]
+
 [[example]]
 name = "sharded_tier"
 path = "examples/sharded_tier.rs"
