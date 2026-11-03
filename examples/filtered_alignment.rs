@@ -81,7 +81,11 @@ fn query_buckets(query: &[f32], centres: &[Vec<f32>]) -> (i64, i64) {
         .iter()
         .enumerate()
         .map(|(c, centre)| {
-            let d: f32 = query.iter().zip(centre).map(|(a, b)| (a - b) * (a - b)).sum();
+            let d: f32 = query
+                .iter()
+                .zip(centre)
+                .map(|(a, b)| (a - b) * (a - b))
+                .sum();
             (d, c as i64)
         })
         .collect();

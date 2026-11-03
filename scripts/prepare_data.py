@@ -35,6 +35,7 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -216,17 +217,17 @@ def cmd_synthetic(args) -> int:
 
 def cmd_public(args) -> int:
     root = data_root()
-    command = [
-        sys.executable,
-        str(REPO / "scripts" / "download_ann_benchmarks.py"),
-        args.dataset,
-    ]
+    # The downloader declares its dependencies in PEP 723 metadata, so it must
+    # run under `uv run`; calling it with this interpreter fails on `requests`.
+    script = str(REPO / "scripts" / "download_ann_benchmarks.py")
+    output = root / "ann-benchmarks"
+    if shutil.which("uv"):
+        command = ["uv", "run", "--quiet", script, args.dataset, "--output", str(output)]
+    else:
+        command = [sys.executable, script, args.dataset, "--output", str(output)]
     env = dict(os.environ, ANN_DATA_ROOT=str(root))
     subprocess.run(command, cwd=REPO, env=env, check=True)
-    directory = root / "ann-benchmarks" / args.dataset
-    train = directory / "train.bin"
-    if not train.exists():
-        train = REPO / "data" / "ann-benchmarks" / args.dataset / "train.bin"
+    train = root / "ann-benchmarks" / args.dataset / "train.bin"
     if not train.exists():
         print(f"{args.dataset} downloaded but no train.bin found", file=sys.stderr)
         return 1
