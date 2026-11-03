@@ -199,6 +199,58 @@ Right now this repository keeps making that claim without settling it.
   queries x 10 results, through both `load_index` and `HNSWSegmentSearcher`.
   Both closures are in PR #98.
 
+## Second corpus: FAISS, ScaNN, and the ANN servers
+
+Read the same way, at pinned commits: FAISS `b80093c`, ScaNN `83f1e7b`, Qdrant
+`222b2e4`, LanceDB `8ee7698` with the `lance` engine at `66054f1`, pgvector
+`1d5ef0a`. Full reports, with file:line for every claim, are in
+`.agents/reports/competitor-faiss-scann-20261102.md` and
+`.agents/reports/competitor-servers-20261102.md`.
+
+Three things they do that this crate does not, in order of what they change:
+
+- **PQ 8-bit table path.** FAISS's FastScan is 4-bit only and its LUT is scaled
+  with `a = min(255/span, (65535 - 0.5M)/sum_span)`
+  (`faiss/utils/quantize_lut.cpp:63-73`); the headroom term is what keeps a
+  uint16 accumulator from overflowing across `M` terms. We quantise a LUT and
+  pack 4-bit already (`src/pq_simd.rs:515`); the missing piece is the overflow
+  budget per `M`, which is arithmetic, not architecture.
+- **PQ codes wider than 8 bits.** `code_size = (nbits*M + 7)/8` with `ksub =
+  1 << nbits` (`faiss/impl/ProductQuantizer.cpp:73-75`). Accepting `nbits` above
+  8 with bit-packed codes is a construction-time decision; rejecting unsupported
+  widths mid-training is not.
+- **Anisotropic noise shaping as a post-pass.** ScaNN's cost is
+  `eta * parallel + perpendicular` with a closed-form `eta`
+  (`scann/hashes/internal/stacked_quantizers.h:79-85`), and up to ten
+  improvement rounds per block (`:196-210`). It runs on codes that already
+  exist, so it is a flag on any IVF-PQ/AVQ index rather than a new family.
+
+Two things we now do too, plus one correction to the earlier reading:
+
+- **`ensure_topk_full`.** FAISS lifts the scan budget so a filter cannot leave
+  the result short (`faiss/IndexIVF.cpp:597`); Lance re-runs the query exactly
+  when the filtered path under-delivers (`hnsw/builder.rs:1734`). We returned
+  fewer than `k` hits in that case until PR #100, which adds the exact
+  fallback.
+- **Filter masks are materialised.** Lance builds a mask of matching row addresses before
+  touching the index (`lance/prefilter.rs:27-81`) and picks its path from that
+  mask's cardinality. Qdrant is the one that estimates cardinality before
+  materialising, using an Agresti-Coull interval over a 1000-id sample
+  (`qdrant/.../dispatch.rs:161-170`). Our 10% cutoff is the same threshold Lance
+  uses, so the threshold was never the gap; the missing fallback was.
+- **Annoy and hnswlib both allow in-place vector replacement; we do not.** That
+  remains the largest semantic difference, and it is a build-once design
+  decision, not an oversight.
+
+What not to copy from this group, because each is a documented trap: pgvector's
+session-wide `hnsw.ef_search` / `iterative_scan` GUCs (two queries in one
+statement cannot use different budgets), Lance's six overlapping probe knobs
+where any `search_effort` silently disables `nprobes`, Qdrant's 24-variant
+quantized-enum matrix, and pgvector's 10-heap-TID duplicate cap that silently
+drops extra rows. ScaNN ships no C++ tests at all, so nothing about its numeric
+kernels is evidence of correctness; only FAISS's and pgvector's assertions were
+treated as test evidence here.
+
 ## What we should not copy
 
 - `Status`/string errors. Our typed `RetrieveError` is a real advantage; the
