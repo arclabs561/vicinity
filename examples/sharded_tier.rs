@@ -233,7 +233,7 @@ fn main() {
     let build_start = Instant::now();
     let mut peak_rss: f64 = 0.0;
     let mut paths: Vec<PathBuf> = Vec::with_capacity(shards);
-    for shard in 0..shards {
+    for (shard, &shard_size) in sizes.iter().enumerate() {
         let params = HNSWParams {
             m: 16,
             ef_construction: 200,
@@ -263,7 +263,7 @@ fn main() {
         peak_rss = peak_rss.max(rss - baseline_rss);
         println!(
             "shard {shard}: {} vectors, rss +{:.0} MiB",
-            sizes[shard],
+            shard_size,
             rss - baseline_rss
         );
     }
