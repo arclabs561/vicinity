@@ -1,8 +1,8 @@
 //! Vector operations with SIMD acceleration via innr.
 //!
-//! innr provides runtime-dispatched SIMD (AVX-512, AVX2+FMA, NEON)
-//! with 4-way unrolled accumulators. Fallback when `innr` feature
-//! is disabled uses portable scalar code.
+//! innr provides runtime-dispatched SIMD (AVX-512, AVX2+FMA, NEON) through
+//! its default `simd` feature. Fallback when `innr` feature is disabled uses
+//! portable scalar code.
 //!
 //! This module is `pub(crate)` -- use [`crate::distance`] for the public API.
 //!
