@@ -185,6 +185,9 @@ struct Args {
     max_points: u64,
     budget_seconds: f64,
     gt_only: bool,
+    /// Generate the dataset and stop. Used by `scripts/prepare_data.py`, which
+    /// writes the checksum manifest without needing a second generator.
+    prepare_only: bool,
     /// `None` = verify when the tier is small enough to afford it.
     verify_gt: Option<bool>,
     reuse_gt: bool,
@@ -216,6 +219,7 @@ impl Default for Args {
             max_points: 20_000_000,
             budget_seconds: 3600.0,
             gt_only: false,
+            prepare_only: false,
             verify_gt: None,
             reuse_gt: true,
             persist: true,
@@ -334,6 +338,20 @@ fn run() -> Res<()> {
         bytes_to_mib(generation.bytes)
     );
     println!();
+
+    if args.prepare_only {
+        // Stop before ground truth: preparing data must not depend on the query
+        // set. The checksum manifest is written by scripts/prepare_data.py so
+        // the format's provenance lives in one place.
+        println!(
+            "prepared: {} ({:.1} MiB, {} rows, dim {})",
+            dataset_path.display(),
+            bytes_to_mib(std::fs::metadata(&dataset_path).map(|m| m.len()).unwrap_or(0)),
+            args.points,
+            args.dim
+        );
+        return Ok(());
+    }
 
     // Ground truth: cached across invocations, computed by a parallel shard
     // scan on a miss.
@@ -769,6 +787,7 @@ fn parse_args() -> Res<Args> {
             }
             "--out" => args.json = Some(PathBuf::from(take_value(&argv, &mut index, &flag)?)),
             "--gt-only" => args.gt_only = true,
+            "--prepare-only" => args.prepare_only = true,
             "--verify-gt" => args.verify_gt = Some(true),
             "--no-verify-gt" => args.verify_gt = Some(false),
             "--regenerate-gt" => args.reuse_gt = false,
@@ -844,6 +863,7 @@ fn print_usage() {
            --max-points <n>       hard ceiling (default 20000000)\n\
            --budget-seconds <s>   refuse an estimate above this (default 3600)\n\
            --gt-only              compute/reuse ground truth, then stop\n\
+           --prepare-only         write the dataset, then stop (scripts/prepare_data.py)\n\
            --regenerate-gt        ignore an existing cache and recompute\n\
            --verify-gt / --no-verify-gt  force/disable the f32+f64 cross-check\n\
            --no-persist           skip the postcard index snapshot (hnsw only;\n\

@@ -25,6 +25,9 @@ __pycache__/
 # QA reports (generated)
 qa/
 
+# Firecrawl's scrape cache
+.firecrawl/
+
 # Local archive (research notes, drafts)
 _archive/
 

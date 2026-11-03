@@ -14,6 +14,12 @@ against it.
   elsewhere), compares row by row, and exits non-zero when a gated metric
   regresses past its tolerance.
 
+## Preparing data
+
+Every dataset behind a row is produced by `scripts/prepare_data.py`; it records a
+sha256 manifest and `verify` recomputes it. See
+[`docs/data-preparation.md`](../docs/data-preparation.md).
+
 ## Protocol
 
 The harness is the single protocol every family is measured on:
