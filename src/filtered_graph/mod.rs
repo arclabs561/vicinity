@@ -370,7 +370,10 @@ impl FilteredGraphIndex {
     /// Search for the k nearest neighbors of `query` that satisfy `filter`.
     ///
     /// The strategy (graph beam search with post-filter vs brute-force over
-    /// matching IDs) is chosen automatically based on selectivity.
+    /// matching IDs) is chosen automatically based on selectivity, and the graph
+    /// branch falls back to the exact scan when its beam holds fewer than `k`
+    /// matching points. The result therefore holds `min(k, matches)` ids
+    /// whenever the index is built.
     pub fn search_filtered(
         &self,
         query: &[f32],
@@ -399,18 +402,9 @@ impl FilteredGraphIndex {
 
         let selectivity = matching.len() as f32 / self.num_vectors as f32;
 
-        let mut results: Vec<(u32, f32)> = if selectivity >= 0.10 {
-            // High selectivity: beam search, then retain only matching IDs.
-            let ef = self.params.ef_search.max(k * 4);
-            let candidates = self.beam_search(&qn, ef);
-            candidates
-                .into_iter()
-                .filter(|(id, _)| matching.contains(id))
-                .take(k)
-                .map(|(id, d)| (self.doc_ids[id as usize], d))
-                .collect()
-        } else {
-            // Low selectivity: brute-force over matching IDs only.
+        // Exact k-NN over the matching set. Used for the low-selectivity branch
+        // and as the fallback when the graph branch under-delivers.
+        let exact_over_matching = |matching: &HashSet<u32>| -> Vec<(u32, f32)> {
             let mut scored: Vec<(u32, f32)> = matching
                 .iter()
                 .map(|&id| {
@@ -424,6 +418,33 @@ impl FilteredGraphIndex {
                 .into_iter()
                 .map(|(id, d)| (self.doc_ids[id as usize], d))
                 .collect()
+        };
+
+        let mut results: Vec<(u32, f32)> = if selectivity >= 0.10 {
+            // High selectivity: beam search, then retain only matching IDs.
+            let ef = self.params.ef_search.max(k * 4);
+            let candidates = self.beam_search(&qn, ef);
+            let filtered: Vec<(u32, f32)> = candidates
+                .into_iter()
+                .filter(|(id, _)| matching.contains(id))
+                .take(k)
+                .map(|(id, d)| (self.doc_ids[id as usize], d))
+                .collect();
+            // A beam full of non-matching candidates underfills the result even
+            // when the matching set is large, which is what happens when the
+            // filter is anti-correlated with the query. FAISS lifts the scan
+            // budget for this (`IndexIVF.cpp:597`, `ensure_topk_full`); Lance
+            // re-runs the query exactly (`hnsw/builder.rs:1734`). The exact scan
+            // over the matching set costs `|matching|` distances and only runs
+            // when k live hits are not already in hand.
+            if filtered.len() < k && matching.len() > filtered.len() {
+                exact_over_matching(&matching)
+            } else {
+                filtered
+            }
+        } else {
+            // Low selectivity: brute-force over matching IDs only.
+            exact_over_matching(&matching)
         };
 
         // Ties must not depend on `HashSet` iteration order (which is seeded
@@ -1298,8 +1319,104 @@ mod tests {
         assert!(!results.is_empty());
     }
 
-    // ── Range filter (Lt / Gt on Int) ─────────────────────────────────────────
+    /// A filtered search must never return fewer than `k` hits when `k` matching
+    /// points exist.
+    ///
+    /// The graph branch runs a beam of `ef` and then discards non-matching
+    /// candidates, so a beam that is full of non-matching points can underfill
+    /// the result even though the matching set is large. FAISS names this
+    /// `ensure_topk_full` (`IndexIVF.cpp:597`) and Lance falls back to an exact
+    /// scan when the filtered path under-delivers (`hnsw/builder.rs:1734`). The
+    /// invariant is cheap to state: `len == min(k, matches)`.
+    #[test]
+    fn filtered_search_fills_k_when_matches_exist() {
+        let dim = 16;
+        let n = 600;
+        let data = make_vectors(n, dim, 7);
+        let params = FilteredGraphParams {
+            max_degree: 16,
+            ef_construction: 40,
+            ef_search: 40,
+            alpha: 1.2,
+        };
+        let mut idx = FilteredGraphIndex::new(dim, params).unwrap();
+        for i in 0..n {
+            let start = i * dim;
+            let mut attrs = HashMap::new();
+            // 1/50 is the low-selectivity branch, 1/7 the graph branch.
+            attrs.insert("bucket".to_string(), AttrValue::Int((i % 50) as i64));
+            attrs.insert("seventh".to_string(), AttrValue::Int((i % 7) as i64));
+            idx.add_slice(i as u32, &data[start..start + dim], attrs)
+                .unwrap();
+        }
+        idx.build().unwrap();
 
+        for (field, divisor) in [("bucket", 50usize), ("seventh", 7usize)] {
+            let matches = n / divisor;
+            let filter = Filter::Clause(Predicate::Eq(field.to_string(), AttrValue::Int(0)));
+            for k in [1usize, 10, 20] {
+                let results = idx.search_filtered(&data[0..dim], k, &filter).unwrap();
+                assert_eq!(
+                    results.len(),
+                    k.min(matches),
+                    "{field}=0 with k={k}: expected {} hits, got {}",
+                    k.min(matches),
+                    results.len()
+                );
+            }
+        }
+    }
+
+    /// The same invariant when the filter is anti-correlated with the query.
+    ///
+    /// Matching points sit in a separate, distant cluster, so the beam around
+    /// the query is full of non-matching candidates and the graph branch
+    /// under-delivers. That is the case the fallback exists for.
+    #[test]
+    fn filtered_search_fills_k_when_matches_are_far_from_the_query() {
+        let dim = 8;
+        let n = 600;
+        let far = 90; // 15% of the corpus, above the 10% graph threshold
+        let data = make_vectors(n, dim, 21);
+        let params = FilteredGraphParams {
+            max_degree: 16,
+            ef_construction: 40,
+            ef_search: 40,
+            alpha: 1.2,
+        };
+        let mut idx = FilteredGraphIndex::new(dim, params).unwrap();
+        for i in 0..n {
+            let start = i * dim;
+            let mut vector = data[start..start + dim].to_vec();
+            let mut attrs = HashMap::new();
+            if i < far {
+                for x in &mut vector {
+                    *x += 50.0;
+                }
+                attrs.insert("far".to_string(), AttrValue::Int(1));
+            } else {
+                attrs.insert("far".to_string(), AttrValue::Int(0));
+            }
+            idx.add_slice(i as u32, &vector, attrs).unwrap();
+        }
+        idx.build().unwrap();
+
+        let query = vec![0.0f32; dim];
+        let filter = Filter::Clause(Predicate::Eq("far".to_string(), AttrValue::Int(1)));
+        for k in [1usize, 10, 20] {
+            let results = idx.search_filtered(&query, k, &filter).unwrap();
+            assert_eq!(
+                results.len(),
+                k.min(far),
+                "far=1 with k={k}: expected {} hits, got {}",
+                k.min(far),
+                results.len()
+            );
+            assert!(results.iter().all(|(doc_id, _)| *doc_id < far as u32));
+        }
+    }
+
+    // ── Range filter (Lt / Gt on Int) ─────────────────────────────────────────
     #[test]
     fn range_filter() {
         let dim = 8;
