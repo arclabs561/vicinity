@@ -87,6 +87,10 @@ jobs:
           --test recall_ground_truth
           --test diskann_persistence_test
           --test search_regressions
+          --test persistence_robustness
+          --test prop_deletion
+          --test prop_persistence
+          --test eval_e2e
         env:
           RUSTFLAGS: ""
       # nextest does not support doctests yet (nextest-rs/nextest#16).

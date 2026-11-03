@@ -346,7 +346,11 @@ fn run() -> Res<()> {
         println!(
             "prepared: {} ({:.1} MiB, {} rows, dim {})",
             dataset_path.display(),
-            bytes_to_mib(std::fs::metadata(&dataset_path).map(|m| m.len()).unwrap_or(0)),
+            bytes_to_mib(
+                std::fs::metadata(&dataset_path)
+                    .map(|m| m.len())
+                    .unwrap_or(0)
+            ),
             args.points,
             args.dim
         );

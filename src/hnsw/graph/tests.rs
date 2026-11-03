@@ -1699,6 +1699,42 @@ fn test_delete_with_repair_excludes_from_results() {
     );
 }
 
+/// At full effort the graph search must equal the exact scan.
+///
+/// `ef >= n` visits every node, so the top-k ids must match brute force exactly.
+/// The audit found no test for this, which is why a filtered branch could return
+/// nothing without anything failing.
+#[test]
+fn search_at_full_effort_equals_the_exact_scan() {
+    // `ef = n` visits every node reachable from the entry point, so on the
+    // connected 200-point fixture it must reproduce brute force exactly.
+    // Brute force iterates *internal* ids and maps to doc ids: `build()`
+    // performs a locality reorder, so `get_vector(doc_id)` is not the vector
+    // that search ranks for that doc.
+    let (index, query) = build_test_index();
+    let n = index.num_vectors;
+    let k = 10;
+
+    let mut exact: Vec<(u32, f32)> = (0..n)
+        .map(|internal| {
+            (
+                index.doc_ids[internal],
+                crate::distance::cosine_distance(&query, index.get_vector(internal)),
+            )
+        })
+        .collect();
+    exact.sort_unstable_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+    let want: Vec<u32> = exact.iter().take(k).map(|(id, _)| *id).collect();
+
+    let got: Vec<u32> = index
+        .search(&query, k, n)
+        .unwrap()
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
+    assert_eq!(got, want, "ef = n must reproduce the exact top-{k}");
+}
+
 proptest::proptest! {
     #![proptest_config(proptest::prelude::ProptestConfig { cases: 16, ..Default::default() })]
 
