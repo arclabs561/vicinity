@@ -5,11 +5,15 @@ name: Mutants
 # (selectivity dispatch and the min(k, matches) contract), file_io (block-cache
 # accounting). Scoped by mutants.toml; eight shards keep each job under an hour.
 #
-# Weekly, never on pull requests: a full run is hours of compute and the signal
-# is a hole in the tests, not a wrong diff.
+# Monthly, never on pull requests: a full run is hours of compute and the signal
+# is a hole in the tests, not a wrong diff. Standard GitHub-hosted minutes are
+# free for a public repository, so the cost is wall-clock and runner occupancy,
+# not money; four shards keep that bounded. The cheaper place to run this is a
+# local `just mutants <shard>` on the 16-core workstation, which is where it
+# should be used before changing a kernel.
 on:
   schedule:
-    - cron: "23 6 * * 1"
+    - cron: "23 6 1 * *"
   workflow_dispatch:
 
 permissions:
@@ -19,11 +23,11 @@ jobs:
   mutants:
     name: Shard ${{ matrix.shard }}
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
-        shard: ["1/8", "2/8", "3/8", "4/8", "5/8", "6/8", "7/8", "8/8"]
+        shard: ["1/4", "2/4", "3/4", "4/4"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
