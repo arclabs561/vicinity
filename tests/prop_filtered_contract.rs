@@ -1,7 +1,7 @@
-//! Property tests for the two contracts the audit found unasserted.
+//! Property test for the filtered-search contract the audit found unasserted:
+//! `search_filtered` returns exactly `min(k, matches)` ids when the index is
+//! built, never a short result and never a non-matching one.
 //!
-//! 1. A filtered search returns exactly `min(k, matches)` ids when the index is
-//!    built, never a short result and never a non-matching one.
 //! The repair-degree property lives in `src/hnsw/graph/tests.rs`, where the
 //! adjacency is reachable; integration tests only see the public API.
 //!
