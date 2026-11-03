@@ -234,6 +234,28 @@ reaches 0.922 at 874 QPS on 1.18M x 100, and 1.000 at 1172 QPS on 60k x 784. The
 larger, narrower corpus is the harder one even at a tenth of the points, which is
 the recall-versus-LID effect the synthetic domains also show.
 
+### 15. hnswlib and USearch, same bytes at 100k and 1M
+
+[competitor-parity-hnswlib.svg](plots/atlas/competitor-parity-hnswlib.svg)
+
+The first row set where every column is the same protocol: same generated
+clustered 96-d corpus, same `M = 16`, `ef_construction = 200`, `k = 10`, one
+thread, exact top-10 ground truth, and `build_s` without serialisation on either
+side. Rows in
+[`hnswlib-parity-100k.jsonl`](../benchmarks/hnswlib-parity-100k.jsonl) and
+[`hnswlib-parity-1m.jsonl`](../benchmarks/hnswlib-parity-1m.jsonl).
+
+vicinity leads at every `ef` on both tiers: recall 0.450 vs 0.374 at `ef = 10`
+and 0.999 vs 0.997 at `ef = 400` at 100k, with p50 25 vs 36 µs and 264 vs 563 µs;
+at 1M, 0.185 vs 0.157 through 0.914 vs 0.882, with p50 39 vs 62 µs through 708 vs
+1270 µs. Build: 24.7 vs 29.0 s at 100k, 554.6 vs 735.2 s at 1M. USearch sits
+between them on recall at 100k (0.385 to 0.997) with its own 22.8 s build.
+
+The recall gap is 0.03 to 0.08 absolute; the p50 gap is not purely graph quality,
+because the pinned hnswlib commit has no NEON path and runs scalar on Apple
+Silicon while both Rust sides use NEON. Read the figure for shape, not for a
+speed claim, and read the rows for the numbers.
+
 ## Nuances we have paid for
 
 1. **Equal `ef` is not equal recall.** Only equal-recall rows compare across

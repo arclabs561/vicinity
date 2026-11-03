@@ -617,6 +617,58 @@ stops it and the number that would clear it.
 | 100M | RAM: 2.09 KiB/point measured at 1M gives 199 GiB for the HNSW build against 128 GiB installed, and the harness refuses with that number (ceiling ≈55M points). Disk is not the blocker any more: the 35.8 GiB corpus was generated on this volume and the 500-query exact scan over 100M rows took 45.8 s (1092 M comparisons/s). | >199 GiB of RAM, or a family whose build is out-of-core. Time is ≈4 h at the measured 1.2-1.6e-4 s/point; the 20M default already estimates 6899 s against a 3600 s budget. |
 | 1B | Disk: dataset 358 GiB + both indexes ≈934 GiB = 1.26 TB against a 7.3 TB volume with 174 GiB free. RAM: 2.09 KiB/point × 1B = 2.0 TiB for the build. Ids still fit (`u32` holds 1B). | 1.26 TB of fast disk and 2.0+ TiB of RAM, or an out-of-core builder plus a file-backed ground-truth scan. The scan itself is the cheap part: at the measured 1092 M rows/s it is ≈8 min. |
 
+## External libraries, one protocol
+
+Rows in [`hnswlib-parity-100k.jsonl`](hnswlib-parity-100k.jsonl) and
+[`hnswlib-parity-1m.jsonl`](hnswlib-parity-1m.jsonl). hnswlib is vendored at
+`ca426729609b3221563047ceb269cc1213e0d376` (Apache-2.0) through
+`tools/hnswlib-sys`; USearch is the crates.io release driven by
+`tools/parity-rows`. Both sides see the same generated corpus, one build each,
+`M = 16`, `ef_construction = 200`, `k = 10`, one thread, and an exact top-10 scan
+as ground truth. `build_s` is build only, with no serialisation on either side.
+
+`clustered`, 96-d, 100k vectors, 500 queries:
+
+| ef | vicinity recall | vicinity p50 µs | hnswlib recall | hnswlib p50 µs | USearch recall | USearch p50 µs |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 10 | 0.450 | 25 | 0.374 | 36 | 0.385 | 31 |
+| 20 | 0.615 | 38 | 0.544 | 54 | 0.552 | 50 |
+| 50 | 0.836 | 71 | 0.787 | 104 | 0.793 | 106 |
+| 100 | 0.953 | 116 | 0.923 | 185 | 0.924 | 182 |
+| 200 | 0.993 | 192 | 0.985 | 342 | 0.985 | 316 |
+| 400 | 0.999 | 264 | 0.997 | 563 | 0.997 | 544 |
+
+Build: vicinity 24.7 s, hnswlib 29.0 s, USearch 22.8 s.
+
+`clustered`, 96-d, 1M vectors, 200 queries (USearch skipped to stay inside the
+30-minute budget):
+
+| ef | vicinity recall | vicinity p50 µs | hnswlib recall | hnswlib p50 µs |
+| ---: | ---: | ---: | ---: | ---: |
+| 10 | 0.185 | 39 | 0.157 | 62 |
+| 20 | 0.300 | 53 | 0.250 | 98 |
+| 50 | 0.480 | 119 | 0.435 | 197 |
+| 100 | 0.651 | 250 | 0.608 | 354 |
+| 200 | 0.801 | 390 | 0.754 | 682 |
+| 400 | 0.914 | 708 | 0.882 | 1270 |
+
+Build: vicinity 554.6 s, hnswlib 735.2 s.
+
+The recall gap is **0.03 to 0.08 absolute in vicinity's favour at every `ef` on
+both tiers**, and the p50 gap grows with `ef` (1.4x at `ef = 10`, 2.1x at
+`ef = 400`). Two caveats keep this from being a clean win:
+
+- **This hnswlib commit has no NEON path.** On Apple Silicon it runs scalar
+  while both Rust sides use NEON, so part of the latency gap is vectorisation,
+  not graph quality. Recall is unaffected by that.
+- **One run per row on one host.** The 100k tier showed ~10% p50 drift between
+  runs, which is why the p50 column is reported and not QPS. Recall is stable to
+  3 decimal places across repeats.
+
+`mem_mib` and `dists_per_query` are null on both files. Sequential builds in one
+process make RSS deltas meaningless (`hnswlib` measured 0.0 MiB on a probe run),
+and vicinity's distance counter would add atomics to one side only.
+
 ## Rules
 
 - A family is only listed once it has a measured row in a run.
