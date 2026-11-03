@@ -1700,6 +1700,37 @@ fn test_delete_with_repair_excludes_from_results() {
 }
 
 #[test]
+fn repair_leaves_no_link_to_a_deleted_node() {
+    let (mut index, _q) = build_test_index();
+
+    let mut deleted = 0usize;
+    for doc_id in [3u32, 17, 42, 99, 150, 199] {
+        if index.delete_with_repair(doc_id).is_ok() {
+            deleted += 1;
+        }
+    }
+    assert!(
+        deleted >= 4,
+        "expected most deletes to succeed, got {deleted}"
+    );
+
+    // pgvector's vacuum asserts this after repair by re-walking the graph
+    // (`hnswvacuum.c:615-690`). A surviving link to a tombstoned node is not
+    // fatal, because search filters it, but it is dead weight that makes every
+    // later search traverse a node it cannot use.
+    for (layer_idx, layer) in index.layers.iter().enumerate() {
+        for node in 0..layer.len() as u32 {
+            for &neighbor in layer.get_neighbors(node).iter() {
+                assert!(
+                    !index.tombstones.is_deleted(neighbor as usize),
+                    "layer {layer_idx}: live node {node} still points at deleted {neighbor}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn test_delete_with_repair_maintains_recall() {
     let (mut index, q) = build_test_index();
     let k = 10;
