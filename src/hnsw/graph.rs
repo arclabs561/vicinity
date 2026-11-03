@@ -1284,6 +1284,7 @@ impl HNSWIndex {
         }
 
         let dist_fn = self.dist_fn();
+        let m = self.params.m;
         let m_max = self.params.m_max;
         let mut total_repairs = 0usize;
 
@@ -1320,6 +1321,11 @@ impl HNSWIndex {
             }
 
             // Phase 2: Find replacements
+            // The build allows `m_max` edges on layer 0 and `m` above it
+            // (`construction.rs:896`), so a repair must refill to the same
+            // degree. Using `m_max` on every layer let repaired upper layers
+            // hold twice the edges the build would ever create there.
+            let layer_degree = if layer_idx == 0 { m_max } else { m };
             let mut replacements: Vec<(u32, Vec<u32>)> = Vec::new();
             for (in_neighbor_id, remaining_neighbors) in &repair_tasks {
                 let in_vec = self.get_vector(*in_neighbor_id as usize);
@@ -1327,7 +1333,7 @@ impl HNSWIndex {
                     remaining_neighbors.iter().copied().collect();
 
                 // How many edges were lost?
-                let capacity = m_max.saturating_sub(remaining_neighbors.len());
+                let capacity = layer_degree.saturating_sub(remaining_neighbors.len());
                 let mut new_neighbors = remaining_neighbors.clone();
                 let mut added = 0usize;
 
@@ -3114,8 +3120,40 @@ impl HNSWIndex {
             })
             .collect();
 
-        results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
-        Ok(results.into_iter().take(k).collect())
+        // Ties must not depend on HashSet iteration order, which is seeded per
+        // process. Break them by doc id, as every other search path does.
+        results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+        let mut out: Vec<(u32, f32)> = results.into_iter().take(k).collect();
+
+        // The graph pass only sees what it visited, so a category whose nodes
+        // sit in a disconnected component can return fewer than k hits while k
+        // matching documents exist. Fall back to the exact scan in that case;
+        // it is the same contract the other filtered paths now guarantee.
+        if out.len() < k {
+            let mut seen: std::collections::HashSet<u32> =
+                out.iter().map(|(doc_id, _)| *doc_id).collect();
+            let mut rest: Vec<(u32, f32)> = (0..self.num_vectors as u32)
+                .filter(|&id| !self.tombstones.is_deleted(id as usize))
+                .filter(|&id| {
+                    self.category_assignments
+                        .get(id as usize)
+                        .and_then(|c| c.as_ref())
+                        == desired_category.as_ref()
+                })
+                .filter_map(|id| {
+                    let doc_id = self.doc_ids.get(id as usize).copied()?;
+                    if !seen.insert(doc_id) {
+                        return None;
+                    }
+                    Some((doc_id, dist_fn(query, self.get_vector(id as usize))))
+                })
+                .collect();
+            rest.sort_unstable_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+            out.extend(rest.into_iter().take(k - out.len()));
+            out.sort_unstable_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+        }
+
+        Ok(out)
     }
 
     /// Search with ACORN-style filtered traversal over the HNSW base graph.
