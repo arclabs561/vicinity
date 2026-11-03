@@ -83,7 +83,7 @@ we should consciously reject.
 | --- | --- | --- | --- | --- |
 | build into a file, bounded heap | no | no | **yes** | **no** |
 | replace vector for an existing id | **yes** (`updatePoint`) | `update` | no | **no** |
-| reuse deleted slots | **yes** | no | no | **no** |
+| reuse deleted slots | **yes** | no | no | **yes** (`InPlaceIndex`) |
 | pluggable stop condition | **yes** (virtual) | no | no | partial (`adaptive`, `adsampling`) |
 | per-search filter predicate | **yes** | yes | no | **yes** (`search_with_filter`, `search_acorn`) |
 | cancellable build | no | **yes** | no | **no** |
@@ -163,10 +163,14 @@ Right now this repository keeps making that claim without settling it.
    say "this id now has a new vector". The probabilistic one-and-two-hop repair
    is the part worth copying: it bounds the work per update, which is what makes
    updates cheaper than rebuilds.
-3. **Reuse deleted slots (hnswlib's `allow_replace_deleted`).** Our tombstones
-   are now correctly excluded from `ef`, but the slots are never reclaimed, so a
-   churning index grows without bound unless `delete_with_repair` is run. A
-   free-list is a small change with a large effect on long-lived deployments.
+3. **Reuse deleted slots (hnswlib's `allow_replace_deleted`).** Checked after
+   writing this list: `InPlaceIndex` already does it (`src/hnsw/inplace.rs:178`
+   pops a free slot on insert, `:370` pushes one on delete, and the free list is
+   validated on load at `:978`). What does not is the resident `HNSWIndex`, which
+   is build-once by construction: `add_slice` refuses after `build()`, so its
+   tombstones can only be reclaimed by `delete_with_repair`. That is a different
+   life-cycle, not a missing free list, and the row above is now accurate about
+   which family has which.
 4. **A cancellable build (usearch).** Long builds are opaque today. A callback
    that returns "continue or stop" costs little and makes the 10M tier usable
    interactively.
@@ -182,15 +186,18 @@ Right now this repository keeps making that claim without settling it.
   would catch a regression before a weekly job does.
 - **Replace/resize roundtrips**: we have no test that an id keeps working after
   its vector changes, because we cannot change it.
-- **Concurrent search over one index**: `threading_test.py` is 30 lines and
-  would have caught the `&mut self` cache limitation that the storage audit
-  documented from reading code.
+- **Concurrent search over one index**: annoy's `threading_test.py` is 30 lines
+  and would have caught the `&mut self` cache limitation that the storage audit
+  documented from reading code. Closed: `concurrent_search_over_one_index_returns_identical_results`
+  runs 8 threads x 32 searches over one shared `&HNSWIndex`.
 - **Exact result equality across a reload on the segment path.** We do assert
   this for `deg`, `dual_branch`, `inplace`, `sq4u`, `sq8u` and `symphony_qg`,
-  each with a `save_load_roundtrip_preserves_search` test. The segment writer, which is the path the
-  store and the large-scale harness use, checks two top-1 ids and the tombstone
-  flags, not the whole result set. That is the gap worth closing,
-  and it is one assertion, not a suite.
+  each with a `save_load_roundtrip_preserves_search` test. The segment writer,
+  which is the path the store and the large-scale harness use, checked two top-1
+  ids and the tombstone flags only. Closed:
+  `segment_reload_returns_identical_results` compares every id and distance of 40
+  queries x 10 results, through both `load_index` and `HNSWSegmentSearcher`.
+  Both closures are in PR #98.
 
 ## What we should not copy
 
