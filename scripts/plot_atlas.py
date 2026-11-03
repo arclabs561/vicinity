@@ -641,11 +641,11 @@ def fig_single_family(out: Path) -> None:
     for idx, (label, path) in enumerate(files.items()):
         if not path.exists():
             continue
-        rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
         rows = [
-            r
-            for r in rows
-            if not r.get("_meta") and r.get("recall_at_10") is not None
+            json.loads(line) for line in path.read_text().splitlines() if line.strip()
+        ]
+        rows = [
+            r for r in rows if not r.get("_meta") and r.get("recall_at_10") is not None
         ]
         if not rows:
             continue
@@ -691,19 +691,24 @@ def fig_layout(out: Path) -> None:
         if not path.exists():
             return
         loaded[label] = [
-            json.loads(line)
-            for line in path.read_text().splitlines()
-            if line.strip()
+            json.loads(line) for line in path.read_text().splitlines() if line.strip()
         ]
 
     fig, axes = plt.subplots(1, 2, figsize=(11, 4.4))
     ax = axes[0]
     names = list(loaded)
-    mem = [next(r for r in loaded[name] if not r.get("_meta"))["mem_mib"] for name in names]
+    mem = [
+        next(r for r in loaded[name] if not r.get("_meta"))["mem_mib"] for name in names
+    ]
     bars = ax.bar(names, mem, color=COLOR_CYCLE[: len(names)], width=0.5)
     for bar, value in zip(bars, mem, strict=True):
-        ax.annotate(f"{value:.0f} MiB", (bar.get_x() + bar.get_width() / 2, value),
-                    ha="center", va="bottom", fontsize=9)
+        ax.annotate(
+            f"{value:.0f} MiB",
+            (bar.get_x() + bar.get_width() / 2, value),
+            ha="center",
+            va="bottom",
+            fontsize=9,
+        )
     ax.set_ylabel("index memory (MiB), 1M points")
     ax.set_ylim(0, max(mem) * 1.18)
     ax.grid(axis="y", alpha=0.25)
@@ -824,6 +829,60 @@ def fig_coverage(rows: list[Row], out: Path) -> None:
     finish(fig, out)
 
 
+def fig_competitor_parity(parity: dict[str, list[Row]], out: Path) -> None:
+    """Recall against latency for hnswlib, USearch and vicinity on one protocol.
+
+    Both libraries saw the same vectors, M, ef_construction, k and query set, and
+    ground truth is an exact scan on each side. The x axis is p50 latency rather
+    than QPS because the rows come from one run per point on one host; a QPS axis
+    would invite reading throughput differences that are scheduler noise.
+    """
+    tiers = [name for name in parity if name.startswith("hnswlib-parity-")]
+    if not tiers:
+        return
+    fig, axes = plt.subplots(1, len(tiers), figsize=(11, 4.6))
+    if len(tiers) == 1:
+        axes = [axes]
+    colors = {"hnsw": "#1f77b4", "hnswlib": "#d55e00", "usearch": "#009e73"}
+    labels = {"hnsw": "vicinity hnsw", "hnswlib": "hnswlib", "usearch": "USearch"}
+    for ax, name in zip(axes, sorted(tiers), strict=True):
+        rows = [r for r in parity[name] if r.p50_us]
+        for family in sorted({r.family for r in rows}):
+            points = sorted(
+                (r for r in rows if r.family == family), key=lambda r: r.p50_us
+            )
+            ax.plot(
+                [p.p50_us for p in points],
+                [p.recall for p in points],
+                color=colors.get(family, "#7f7f7f"),
+                marker="o",
+                markersize=4,
+                linewidth=1.5,
+                label=labels.get(family, family),
+            )
+            for point in points:
+                ax.annotate(
+                    f"{point.knob_value:.0f}",
+                    (point.p50_us, point.recall),
+                    fontsize=6.5,
+                    xytext=(3, -6),
+                    textcoords="offset points",
+                    color=colors.get(family, "#7f7f7f"),
+                )
+        tier = name.rsplit("-", 1)[-1].removesuffix(".jsonl")
+        ax.set_xscale("log")
+        ax.set_xlabel("p50 latency, µs (log)")
+        ax.set_ylabel("recall@10")
+        ax.set_title(
+            subtitle(f"benchmarks/{name}", f"clustered 96-d, {tier}, one thread"),
+            fontsize=9,
+            loc="left",
+        )
+        ax.grid(alpha=0.25)
+        ax.legend(fontsize=7, frameon=False, loc="lower right")
+    finish(fig, out)
+
+
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     data = load_all()
@@ -857,6 +916,14 @@ def main() -> None:
     fig_single_family(OUT / "single-family-datasets.svg")
     fig_layout(OUT / "layout-upper-layers.svg")
     fig_seeds(OUT / "seed-variance.png")
+    fig_competitor_parity(
+        {
+            name: rows
+            for name, rows in data.items()
+            if name.startswith("hnswlib-parity-")
+        },
+        OUT / "competitor-parity-hnswlib.png",
+    )
 
 
 if __name__ == "__main__":

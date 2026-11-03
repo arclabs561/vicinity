@@ -1,0 +1,17 @@
+[package]
+name = "parity-rows"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Measurement harness: vicinity HNSW against hnswlib (and usearch) on one protocol"
+license = "Apache-2.0"
+
+# Own workspace root, like `tools/annoy-parity`. This crate links the
+# unpublished C++ shim, so it must never appear in `vicinity`'s manifest.
+[workspace]
+
+[dependencies]
+hnswlib-sys = { path = "../hnswlib-sys" }
+rand = "0.9"
+usearch = "=2.26.0"
+vicinity = { path = "../..", features = ["hnsw"] }
