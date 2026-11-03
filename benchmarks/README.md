@@ -668,9 +668,10 @@ Build: vicinity 24.7 s, hnswlib 29.0 s, USearch 22.8 s.
 
 Build: vicinity 554.6 s, hnswlib 735.2 s.
 
-The recall gap is **0.03 to 0.08 absolute in vicinity's favour at every `ef` on
-both tiers**, and the p50 gap grows with `ef` (1.4x at `ef = 10`, 2.1x at
-`ef = 400`). Two caveats keep this from being a clean win:
+The recall gap is **0.03 to 0.08 absolute in vicinity's favour through most of
+both sweeps**, shrinking to 0.0016 at the top of the 100k sweep (`ef = 400`: 0.9988
+against 0.9972), where both graphs are near the ceiling. The p50 gap grows
+with `ef` (1.4x at `ef = 10`, 2.1x at `ef = 400`). Two caveats keep this from being a clean win:
 
 - **This hnswlib commit has no NEON path.** On Apple Silicon it runs scalar
   while both Rust sides use NEON, so part of the latency gap is vectorisation,

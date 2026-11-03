@@ -2284,13 +2284,27 @@ fn write_jsonl(path: &Path, rows: &[Row], args: &Args, gt_cache: &Path, dataset:
     }
     let mut out = String::new();
     let families: Vec<&str> = args.families.iter().map(|family| family.name()).collect();
+    // Provenance the ratchet reads: the timing gate needs host, cores and the
+    // one-minute load to decide whether a timing comparison means anything.
+    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(0);
+    let load1 = std::fs::read_to_string("/proc/loadavg")
+        .ok()
+        .and_then(|text| text.split_whitespace().next()?.parse::<f64>().ok());
+    let host = std::env::var("RUNNER_OS")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .unwrap_or_else(|_| std::env::consts::OS.to_string());
     let _ = writeln!(
         out,
-        "{{\"_meta\":true,\"schema\":1,\"harness\":\"large_scale\",\"n\":{},\"dim\":{},\
+        "{{\"_meta\":true,\"schema\":1,\"harness\":\"large_scale\",\"host\":\"{host}\",\
+         \"cores\":{cores},\"load1\":{},\"n\":{},\"dim\":{},\
          \"k\":{},\"queries\":{},\"dataset\":\"{}\",\"tier\":\"{}\",\"seed\":\"0x{SEED:016X}\",\
          \"mmap\":true,\"large_scale\":true,\"batch\":{},\"families\":\"{}\",\
          \"diskann_cache_mib\":{},\"distance_stats\":{},\"compact_upper\":{},\"max_points\":{},\
          \"budget_seconds\":{},\"vicinity\":\"{}\",\"gt_cache\":\"{}\",\"data_file\":\"{}\"}}",
+        match load1 {
+            Some(value) => format!("{value:.2}"),
+            None => "null".to_string(),
+        },
         args.points,
         args.dim,
         args.k,
