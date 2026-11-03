@@ -40,8 +40,8 @@ we should consciously reject.
   deleted slots, including under concurrent inserts.
 - `bindings_test_resize.py`: capacity growth without losing the graph.
 - `bindings_test_pickle.py`: save/load roundtrip across processes.
-- `bindings_test_recall.py`: asserts a recall threshold, then saves the index,
-  reloads it, and asserts `recall_before == recall_after` exactly (`:98`). The
+- `bindings_test_recall.py`: asserts a recall threshold, then saves and reloads
+  the index, then asserts `recall_before == recall_after` exactly (`:98`). The
   saved file is the brute-force index rather than the graph, but the invariant is
   the right one: a reload must not change answers at all.
 
@@ -90,6 +90,66 @@ we should consciously reject.
 | capacity reserve with failure | **yes** | **yes** | no | no (Vec growth) |
 | typed errors | no (`Status` strings) | partial | no | **yes** |
 | one crate, many families | no | no | no | **yes** |
+
+## Second pass: the layouts, in bytes
+
+The capability list above is the shallow difference. The deeper one is how each
+implementation arranges memory, and it explains both our resident-memory number
+and our load cost.
+
+hnswlib allocates **one block per element**, sized from its own level
+(`hnswalg.h:126-129`, `:151`):
+
+| part | bytes at `d = 96`, `M = 16` |
+| --- | ---: |
+| layer-0 links (`maxM0 * 4 + 4`) | 132 |
+| vector | 384 |
+| label | 4 |
+| upper layers, amortised (`M*4+4` per node above level 0, `m_L = 0.36`) | ~24 |
+| **total** | **~544** |
+
+We hold **1292 B/point** at 1M `d = 96` (committed row `mem_mib` 1231.8), and
+the serialized form is 492 B/point. The gap is not the vector or the edges: it
+is that every layer allocates a 136-byte inline neighbour slot for *every* node,
+while hnswlib sizes the block from the node's own level. That is the same defect
+the storage audit measured at −55% when upper layers were frozen, seen from the
+other library's side.
+
+Two consequences follow, and they are the same consequence:
+
+1. **Loads.** hnswlib's file is its memory image: `loadIndex` reads the arrays and
+   searches them, no reconstruction (`hnswalg.h:783`). Our segment loader reads
+   dimension-major vectors and rebuilds AoS plus per-layer lists, which is why
+   the audit lists snapshot reload as an unmeasured cost axis. A level-sized or
+   CSR layout with a fixed record size could be mapped and used directly, which
+   would make restart a page-fault rather than a rebuild.
+2. **Writes.** hnswlib holds `std::vector<std::mutex> link_list_locks_` indexed
+   by element (`hnswalg.h:49`, `:103`) plus an atomic size, so `addPoint` is
+   safe from many threads. Our insert path takes `&mut self`; the streaming
+   coordinator serialises, and the parallel feature batches a build rather than
+   admitting concurrent writers. That is a design difference, not an oversight,
+   but it is why a server in front of this crate needs its own writer lock.
+
+One more technique is worth naming because it is unusual. Annoy reuses the vector
+slot of small internal nodes to hold the list of descendant ids
+(`annoylib.h:452-470`), with `K` computed from the node size. That trick saves
+`f * sizeof(T)` per small node. Not worth copying here, since our tree families
+do not store vectors at internal nodes at all.
+
+### Neighbour selection is at parity, and worth proving
+
+hnswlib's `getNeighborsByHeuristic2` (`hnswalg.h:475-507`) accepts a candidate
+only if no already-selected neighbour is closer to it than it is to the query,
+which is the relative-neighbourhood rule at `alpha = 1`, then optionally fills
+the remainder from the pruned list (`keepPrunedConnections`). We implement the
+same rule (`src/hnsw/construction.rs:27` `select_neighbors_rnd`), plus `alpha`
+relaxation (`:171`) and maximum-oriented diversification (`:89`).
+
+So we offer a superset, and have never shown that the base case reproduces the
+reference exactly. A parity test would settle it: build one fixed graph with both
+at `M = 16`, `ef_construction = 200`, then compare neighbour sets edge by edge.
+That turns "we implement the same rule" into "the rules produce the same graph".
+Right now this repository keeps making that claim without settling it.
 
 ## What to copy, in order
 
