@@ -680,17 +680,40 @@ where
         }
     });
 
+    // ACORN walks the graph and can only return what it reaches, so a filter
+    // whose matches sit outside the explored component leaves the result short
+    // even though the caller already handed us the matching ids. Filling from
+    // those ids is the same work the Low branch does, and the contract becomes
+    // `min(k, matching_ids.len())` whenever that list is supplied.
+    let fill_from_prefiltered = |mut results: Vec<(u32, f32)>| -> Vec<(u32, f32)> {
+        if results.len() >= k {
+            return results;
+        }
+        let Some(ids) = matching_ids else {
+            return results;
+        };
+        let mut candidates: Vec<(u32, f32)> =
+            ids.iter().map(|&id| (id, compute_distance(id))).collect();
+        candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+        candidates.truncate(k);
+        if candidates.len() > results.len() {
+            results = candidates;
+        }
+        results
+    };
+
     match regime {
         SelectivityRegime::High => {
             // Standard ACORN
-            acorn_search(
+            let results = acorn_search(
                 k,
                 &AcornConfig::default(),
                 filter,
                 get_neighbors,
-                compute_distance,
+                &compute_distance,
                 entry_point,
-            )
+            )?;
+            Ok(fill_from_prefiltered(results))
         }
         SelectivityRegime::Medium => {
             // ACORN with aggressive over-retrieval
@@ -700,14 +723,15 @@ where
                 max_two_hop_neighbors: 64,
                 ef_search: AcornConfig::default().ef_search * config.medium_ef_multiplier,
             };
-            acorn_search(
+            let results = acorn_search(
                 k,
                 &acorn_config,
                 filter,
                 get_neighbors,
-                compute_distance,
+                &compute_distance,
                 entry_point,
-            )
+            )?;
+            Ok(fill_from_prefiltered(results))
         }
         SelectivityRegime::Low => {
             // Low selectivity: brute-force scan over matching IDs
@@ -896,6 +920,35 @@ mod tests {
         for (id, _) in &results {
             assert!(*id < 5);
         }
+    }
+
+    #[test]
+    fn selectivity_search_fills_k_from_prefiltered_ids_when_acorn_underfills() {
+        let (neighbors, _) = mock_graph();
+        // Matches sit outside the graph's 10 nodes, so ACORN cannot reach one.
+        let filter = FnFilter(|id: u32| id >= 10);
+        let matching: Vec<u32> = (10..30).collect();
+
+        let results = selectivity_search(
+            5,
+            &SelectivityConfig {
+                force_regime: Some(SelectivityRegime::High),
+                ..Default::default()
+            },
+            &filter,
+            |id| neighbors.get(id as usize).cloned().unwrap_or_default(),
+            |id| id as f32 * 0.01,
+            0,
+            Some(&matching),
+        )
+        .unwrap();
+
+        assert_eq!(
+            results.len(),
+            5,
+            "the pre-filtered ids were supplied, so 5 of them must come back"
+        );
+        assert!(results.iter().all(|(id, _)| *id >= 10));
     }
 
     #[test]
