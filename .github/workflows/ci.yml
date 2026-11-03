@@ -74,6 +74,11 @@ jobs:
         run: cargo nextest run --no-default-features --features hnsw,sq8
       - name: Test (lemur)
         run: cargo nextest run --no-default-features --features lemur
+      # `--all-features` includes `python`, and pyo3 links libpython at test
+      # link time; the runner image has the interpreter but not the dev library,
+      # so the job failed with `unable to find library -lpython3.12`.
+      - name: Python headers for the pyo3 feature
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq python3-dev
       - name: Test (all features, lib only)
         run: cargo nextest run --lib --all-features
         env:
