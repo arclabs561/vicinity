@@ -2131,7 +2131,7 @@ fn run_sharded(path: &Path, queries: &[Vec<f32>], truth: &[Vec<u32>], args: &Arg
         if let (Some(before), Some(after)) = (rss_before, rss_mib()) {
             max_shard_rss = max_shard_rss.max(after - before);
         }
-        println!("shard {shard}: {} rows, build {build_s:.1}s", sizes[shard]);
+        println!("shard {shard}: {shard_size} rows, build {build_s:.1}s");
 
         for (p, _) in nprobes.iter().enumerate() {
             for (e, &ef) in args.ef.iter().enumerate() {
