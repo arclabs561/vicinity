@@ -16,6 +16,9 @@
 - [scale-and-parity-plan.md](scale-and-parity-plan.md): the competitive set in
   three categories, and the ordered plan for the scales and comparisons this
   repository cannot yet show.
+- [competitor-implementations.md](competitor-implementations.md): what hnswlib,
+  usearch and annoy actually do, what their tests assert, and which of those
+  techniques are worth copying here.
 - [benchmark-results.md](benchmark-results.md): recall/QPS tables
   and analysis across datasets.
 - [datasets.md](datasets.md): ANN benchmark datasets, download
