@@ -64,6 +64,12 @@ impl HNSWSegmentWriter {
     /// The segment is marked uncommitted before any file is touched and
     /// committed only after the last seal, so an interrupted save is refused by
     /// both readers rather than loaded as a mixed generation.
+    ///
+    /// Both metadata writes go through `atomic_write`, which on a filesystem is
+    /// durable: it syncs the temporary file, renames it, then syncs the parent
+    /// directory. The order is therefore durable 0, then the seven sealed files,
+    /// then durable 1. A reader that runs during a re-save sees an uncommitted
+    /// segment and fails; writes must not race reads on the same segment id.
     pub fn write_hnsw_index(&mut self, index: &HNSWIndex) -> PersistenceResult<()> {
         // Mark the segment unusable before touching any of its files. A crash
         // between two seals then leaves a segment the loader refuses, rather
@@ -802,6 +808,57 @@ mod tests {
         }
     }
 
+    /// A filesystem directory whose `atomic_write` fails on the Nth call, so a
+    /// test can stop the writer at the invalidation write or at the commit.
+    struct CommitFailsAfter {
+        inner: FsDirectory,
+        remaining: std::sync::atomic::AtomicUsize,
+    }
+
+    impl Directory for CommitFailsAfter {
+        fn create_file(&self, path: &str) -> PersistenceResult<Box<dyn Write + Send>> {
+            self.inner.create_file(path)
+        }
+        fn open_file(&self, path: &str) -> PersistenceResult<Box<dyn Read + Send>> {
+            self.inner.open_file(path)
+        }
+        fn exists(&self, path: &str) -> bool {
+            self.inner.exists(path)
+        }
+        fn delete(&self, path: &str) -> PersistenceResult<()> {
+            self.inner.delete(path)
+        }
+        fn atomic_rename(&self, from: &str, to: &str) -> PersistenceResult<()> {
+            self.inner.atomic_rename(from, to)
+        }
+        fn create_dir_all(&self, path: &str) -> PersistenceResult<()> {
+            self.inner.create_dir_all(path)
+        }
+        fn list_dir(&self, path: &str) -> PersistenceResult<Vec<String>> {
+            self.inner.list_dir(path)
+        }
+        fn append_file(&self, path: &str) -> PersistenceResult<Box<dyn Write + Send>> {
+            self.inner.append_file(path)
+        }
+        fn atomic_write(&self, path: &str, data: &[u8]) -> PersistenceResult<()> {
+            let remaining = self.remaining.load(std::sync::atomic::Ordering::Relaxed);
+            if remaining == 0 {
+                return Err(PersistenceError::NotSupported(
+                    "test: atomic_write budget exhausted".into(),
+                ));
+            }
+            self.remaining
+                .store(remaining - 1, std::sync::atomic::Ordering::Relaxed);
+            self.inner.atomic_write(path, data)
+        }
+        fn file_path(&self, path: &str) -> Option<std::path::PathBuf> {
+            self.inner.file_path(path)
+        }
+        fn durable_sync_file(&self, path: &str) -> PersistenceResult<()> {
+            self.inner.durable_sync_file(path)
+        }
+    }
+
     fn small_index(count: u32, dim: usize) -> HNSWIndex {
         let mut index = HNSWIndex::new(dim, 8, 8).unwrap();
         for id in 0..count {
@@ -852,6 +909,65 @@ mod tests {
                 if message.contains("did not complete")),
             "expected the commit-byte error, got {error:?}"
         );
+    }
+
+    #[test]
+    fn a_failed_commit_refuses_the_new_segment_and_keeps_the_old_one() {
+        // Committing is the last step. If the commit write itself fails after
+        // every file is sealed, the header must still read uncommitted: the new
+        // files are complete, but nothing may bless them without a durable
+        // commit. This is the failure mode a commit byte exists for.
+        let dir = tempfile::tempdir().unwrap();
+        let first = small_index(32, 8);
+        HNSWSegmentWriter::new(Box::new(FsDirectory::new(dir.path()).unwrap()), 9)
+            .write_hnsw_index(&first)
+            .unwrap();
+
+        let second = small_index(64, 8);
+        let mut writer = HNSWSegmentWriter::new(
+            Box::new(CommitFailsAfter {
+                inner: FsDirectory::new(dir.path()).unwrap(),
+                // one budgeted write: the invalidation succeeds, the commit fails
+                remaining: std::sync::atomic::AtomicUsize::new(1),
+            }),
+            9,
+        );
+        assert!(writer.write_hnsw_index(&second).is_err());
+
+        let error = HNSWSegmentReader::load(Box::new(FsDirectory::new(dir.path()).unwrap()), 9)
+            .err()
+            .expect("an uncommitted save must not load");
+        assert!(
+            matches!(error, PersistenceError::Format(ref message)
+                if message.contains("did not complete")),
+            "expected the commit-byte error, got {error:?}"
+        );
+    }
+
+    #[test]
+    fn a_failed_invalidation_leaves_the_previous_segment_readable() {
+        // The invalidation is the first write. If it fails, nothing else has been
+        // touched, so the previous generation must still load: a refused save
+        // must not destroy a working segment.
+        let dir = tempfile::tempdir().unwrap();
+        let first = small_index(32, 8);
+        HNSWSegmentWriter::new(Box::new(FsDirectory::new(dir.path()).unwrap()), 10)
+            .write_hnsw_index(&first)
+            .unwrap();
+
+        let second = small_index(64, 8);
+        let mut writer = HNSWSegmentWriter::new(
+            Box::new(CommitFailsAfter {
+                inner: FsDirectory::new(dir.path()).unwrap(),
+                remaining: std::sync::atomic::AtomicUsize::new(0),
+            }),
+            10,
+        );
+        assert!(writer.write_hnsw_index(&second).is_err());
+
+        let reader = HNSWSegmentReader::load(Box::new(FsDirectory::new(dir.path()).unwrap()), 10)
+            .expect("the previous generation must still load");
+        assert_eq!(reader.load_index().unwrap().num_vectors, 32);
     }
 
     #[test]
