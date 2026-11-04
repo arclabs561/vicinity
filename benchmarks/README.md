@@ -34,6 +34,13 @@ The harness is the single protocol every family is measured on:
   built or timed.
 - `p50/p95/p99` are per-query wall clock; `qps` is queries over the whole timed
   loop; five untimed warm-up queries run first.
+- `recall_ci_low` and `recall_ci_high` are a 95% bootstrap interval over the
+  query sample (1000 seeded resamples of the per-query hit counts). A single row
+  carries about a 0.02 half-width at 500 queries and `k=10`, so it answers "how
+  precisely does this query draw pin the recall", not "is row A better than row
+  B": two rows differ only when a paired interval over the same queries excludes
+  zero, which is the `+/- 0.0018` figure the parity section quotes. Rows recorded
+  before 2026-11-04 have no interval.
 - `1/ratio@10` is exact-scan p50 divided by the family p50, the time-based
   definition ann-benchmarks uses. Both sides are timed over the same query set
   (`500` by default), and `_meta.exact_queries` states the denominator's query

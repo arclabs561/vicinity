@@ -2732,6 +2732,12 @@ fn budget_refusal(args: &Args, started: Instant, family: &Family, ef: usize) -> 
 
 struct Stats {
     recall: f64,
+    /// 95% bootstrap interval over the query sample, at recall = hits/(queries*k).
+    ///
+    /// The point estimate alone hides how much of a difference a different draw
+    /// of 500 queries would show; two rows 0.004 apart are often one interval.
+    recall_ci_low: f64,
+    recall_ci_high: f64,
     p50: f64,
     p95: f64,
     p99: f64,
@@ -2755,6 +2761,38 @@ struct Stats {
 /// stopping between sweeps means the operator waits hours to learn it was too
 /// slow. A sweep that stops early returns `None`, so no partial-recall row is
 /// ever written.
+/// 95% bootstrap interval for recall over the query sample.
+///
+/// Resamples the per-query hit counts with replacement, 1000 times, and takes
+/// the 2.5th and 97.5th percentiles of the resampled mean. Seeded, so a row is
+/// reproducible; a query sample of 500 with `k = 10` gives a half-width of
+/// about 0.02, which is why a 0.004 difference between two rows is not a result.
+fn bootstrap_recall_ci(per_query_hits: &[u32], k: usize) -> (f64, f64) {
+    const RESAMPLES: usize = 1000;
+    if per_query_hits.is_empty() || k == 0 {
+        return (f64::NAN, f64::NAN);
+    }
+    let mut state = 0x9E37_79B9_7F4A_7C15u64;
+    let mut next = || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    let mut means = Vec::with_capacity(RESAMPLES);
+    for _ in 0..RESAMPLES {
+        let mut sum = 0u64;
+        for _ in 0..per_query_hits.len() {
+            sum += u64::from(per_query_hits[(next() >> 33) as usize % per_query_hits.len()]);
+        }
+        means.push(sum as f64 / (per_query_hits.len() * k) as f64);
+    }
+    means.sort_by(f64::total_cmp);
+    let low = means[(RESAMPLES as f64 * 0.025) as usize];
+    let high = means[((RESAMPLES as f64 * 0.975) as usize).min(RESAMPLES - 1)];
+    (low, high)
+}
+
 fn evaluate<F>(
     mut search: F,
     queries: &[Vec<f32>],
@@ -2771,6 +2809,7 @@ where
     }
 
     let mut latencies = Vec::with_capacity(queries.len());
+    let mut per_query_hits: Vec<u32> = Vec::with_capacity(queries.len());
     let mut hits = 0usize;
     let mut errors = 0usize;
     let mut first_error = None;
@@ -2783,11 +2822,13 @@ where
         let start = Instant::now();
         match search(query, k, ef) {
             Ok(results) => {
-                hits += results
+                let query_hits = results
                     .iter()
                     .take(k)
                     .filter(|(id, _)| expected.iter().take(k).any(|t| t == id))
                     .count();
+                hits += query_hits;
+                per_query_hits.push(query_hits as u32);
             }
             Err(error) => {
                 errors += 1;
@@ -2801,8 +2842,11 @@ where
     let total_s = loop_start.elapsed().as_secs_f64();
     let dists = vicinity::distance_stats::take_distance_count();
     let denominator = (queries.len() * k) as f64;
+    let (recall_ci_low, recall_ci_high) = bootstrap_recall_ci(&per_query_hits, k);
     Some(Stats {
         recall: hits as f64 / denominator,
+        recall_ci_low,
+        recall_ci_high,
         p50: percentile(&mut latencies.clone(), 50.0),
         p95: percentile(&mut latencies.clone(), 95.0),
         p99: percentile(&mut latencies, 99.0),
@@ -2837,6 +2881,8 @@ struct Row {
     build_m: Option<usize>,
     build_efc: Option<usize>,
     recall: f64,
+    recall_ci_low: f64,
+    recall_ci_high: f64,
     ratio: f64,
     p50: f64,
     p95: f64,
@@ -2894,6 +2940,8 @@ fn push_rows(
         build_m: report.build_m,
         build_efc: report.build_efc,
         recall: stats.recall,
+        recall_ci_low: stats.recall_ci_low,
+        recall_ci_high: stats.recall_ci_high,
         ratio: exact_timed / stats.p50.max(f64::MIN_POSITIVE),
         p50: stats.p50,
         p95: stats.p95,
@@ -2918,12 +2966,12 @@ fn print_rows(rows: &[Row], count: u64, dim: usize, queries: usize) {
     println!("## large_scale: n={count} dim={dim} queries={queries}");
     println!();
     println!(
-        "| family | build | knob | recall@10 | 1/ratio@10 | p50 us | p95 us | p99 us | QPS | \
-         build s | index mem MiB | RSS at query MiB | index disk MiB | dists/q |"
+        "| family | build | knob | recall@10 | 95% CI | 1/ratio@10 | p50 us | p95 us | p99 us | \
+         QPS | build s | index mem MiB | RSS at query MiB | index disk MiB | dists/q |"
     );
     println!(
         "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | \
-         ---: | ---: |"
+         ---: | ---: | ---: |"
     );
     for row in rows {
         let disk = if row.index_disk_mib.is_finite() {
@@ -2936,13 +2984,15 @@ fn print_rows(rows: &[Row], count: u64, dim: usize, queries: usize) {
             _ => "-".to_string(),
         };
         println!(
-            "| {} | {} | {}={} | {:.3} | {:.2} | {:.1} | {:.1} | {:.1} | {:.0} | {:.2} | {:.1} | \
-             {:.1} | {} | {} |",
+            "| {} | {} | {}={} | {:.3} | {:.3}-{:.3} | {:.2} | {:.1} | {:.1} | {:.1} | {:.0} | \
+             {:.2} | {:.1} | {:.1} | {} | {} |",
             row.family,
             build,
             row.knob,
             row.knob_value,
             row.recall,
+            row.recall_ci_low,
+            row.recall_ci_high,
             row.ratio,
             row.p50,
             row.p95,
@@ -3042,7 +3092,7 @@ fn write_jsonl(
             out,
             "{{\"family\":\"{}\",\"storage_mode\":\"{}\",\"dataset\":\"{}\",\"knob\":\"{}\",\"knob_value\":{},\
              \"build_m\":{},\"build_ef_construction\":{},\
-             \"recall_at_10\":{},\"recall\":{},\"inverse_ratio\":{},\"ratio\":{},\
+             \"recall_at_10\":{},\"recall\":{},\"recall_ci_low\":{},\"recall_ci_high\":{},\"inverse_ratio\":{},\"ratio\":{},\
              \"p50_us\":{},\"p95_us\":{},\"p99_us\":{},\"qps\":{},\"dists_per_query\":{},\
              \"build_s\":{},\"mem_mib\":{},\"rss_mib\":{},\"index_disk_mib\":{},\"persist_s\":{},\
              \"n\":{},\"dim\":{},\"gt_verified\":{},\"gt_cache\":\"{}\"}}",
@@ -3059,6 +3109,8 @@ fn write_jsonl(
                 .unwrap_or_else(|| "null".to_string()),
             json_num(row.recall, 4),
             json_num(row.recall, 4),
+            json_num(row.recall_ci_low, 4),
+            json_num(row.recall_ci_high, 4),
             json_num(row.ratio, 4),
             json_num(row.ratio, 4),
             json_num(row.p50, 1),
