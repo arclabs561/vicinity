@@ -127,7 +127,6 @@ const QUERY_SALT: u64 = 0x5155_4552_5953_0001;
 const HNSW_SEED: u64 = 42;
 /// Queries timed with the exact scan for `inverse_ratio`. Exact p50 barely
 /// moves across 16 queries, and 10M x 16 is already seconds.
-const EXACT_TIMED_QUERIES: usize = 16;
 const MIN_GT_QUERIES: usize = 200;
 const MAX_GT_QUERIES: usize = 1000;
 
@@ -1900,13 +1899,18 @@ fn brute_top_k(dataset: &DatasetFile, query: &[f32], k: usize) -> Vec<u32> {
 
 /// Exact-scan p50 over a bounded query sample, timed like a family query so
 /// `1/ratio` is time-based (ann-benchmarks' definition).
+/// Median exact-scan latency over the whole query set.
+///
+/// `1/ratio` divides a family's p50 by this number, so both sides must be timed
+/// on the same queries: a 16-query denominator against a 500-query family p50
+/// compares a stationary sample with a different one and moves `ratio` by
+/// whatever the query set's spread happens to be.
 fn exact_p50_us(dataset: &DatasetFile, queries: &[Vec<f32>], k: usize) -> f64 {
     for query in queries.iter().take(2) {
         let _ = brute_top_k(dataset, query, k);
     }
     let mut latencies: Vec<f64> = queries
         .iter()
-        .take(EXACT_TIMED_QUERIES)
         .map(|query| {
             let start = Instant::now();
             let _ = brute_top_k(dataset, query, k);
@@ -2739,7 +2743,8 @@ fn write_jsonl(path: &Path, rows: &[Row], args: &Args, gt_cache: &Path, dataset:
         out,
         "{{\"_meta\":true,\"schema\":1,\"harness\":\"large_scale\",\"host\":\"{host}\",\
          \"cores\":{cores},\"load1\":{},\"n\":{},\"dim\":{},\
-         \"k\":{},\"queries\":{},\"dataset\":\"{}\",\"tier\":\"{}\",\"seed\":\"0x{SEED:016X}\",\
+         \"k\":{},\"queries\":{},\"exact_queries\":{},\"dataset\":\"{}\",\"tier\":\"{}\",\
+         \"seed\":\"0x{SEED:016X}\",\
          \"mmap\":true,\"large_scale\":true,\"batch\":{},\"families\":\"{}\",\
          \"diskann_cache_mib\":{},\"distance_stats\":{},\"compact_upper\":{},\"max_points\":{},\
          \"budget_seconds\":{},\"vicinity\":\"{}\",\"gt_cache\":\"{}\",\"data_file\":\"{}\"}}",
@@ -2750,6 +2755,9 @@ fn write_jsonl(path: &Path, rows: &[Row], args: &Args, gt_cache: &Path, dataset:
         args.points,
         args.dim,
         args.k,
+        args.gt_queries,
+        // e.g. 500: every query in the set. Rows recorded before 2026-11-03
+        // carry no field and used 16.
         args.gt_queries,
         args.domain.name(),
         tier_label(args.points),

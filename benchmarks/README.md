@@ -35,7 +35,11 @@ The harness is the single protocol every family is measured on:
 - `p50/p95/p99` are per-query wall clock; `qps` is queries over the whole timed
   loop; five untimed warm-up queries run first.
 - `1/ratio@10` is exact-scan p50 divided by the family p50, the time-based
-  definition ann-benchmarks uses.
+  definition ann-benchmarks uses. Both sides are timed over the same query set
+  (`500` by default), and `_meta.exact_queries` states the denominator's query
+  count: the first rows recorded before 2026-11-03 used 16 queries against a
+  500-query family p50, which made the ratio a comparison of two different
+  samples.
 - `dists_per_query` is the count from `vicinity::distance_stats`, enabled with
   `--features distance-stats`. It is `null` when the feature is off and the
   ratchet does not gate it then. `scripts/ratchet.py` always enables it, so the
@@ -272,9 +276,11 @@ the array of lists holds; a reader who expects memory to track `m` will be
 wrong, and that is a property of the layout, not an accounting error.
 
 The rows were recorded while a 100M build held the machine (`load1` 82.9, see the
-`_meta` line). Recall and `1/ratio` are deterministic at a fixed graph and do not
-depend on that; `p50` and the tail columns in that file do. Re-run on an idle
-host before quoting a timing from it.
+`_meta` line). Recall is deterministic at a fixed graph and does not depend on
+that. `1/ratio` is a ratio of two timings: it cancels load that hits the exact
+scan and the graph equally, and the last-digit spread above (`1.40` to `1.48`)
+is what survives. `p50` and the tail columns in that file are not usable. Re-run
+on an idle host before quoting a timing from it.
 
 ## What this does not cover
 
