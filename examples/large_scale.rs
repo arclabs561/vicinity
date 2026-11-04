@@ -206,6 +206,10 @@ struct Args {
     /// the defaults cannot say what a different graph would have cost or bought.
     build_grid: Vec<(usize, usize)>,
     json: Option<PathBuf>,
+    /// Write the sampled query set in the dataset file format, so an external
+    /// harness (FAISS, a server) can measure the same queries instead of a
+    /// second draw from the same distribution.
+    dump_queries: Option<PathBuf>,
     self_test: bool,
 }
 
@@ -237,6 +241,7 @@ impl Default for Args {
             nprobe: vec![1, 2, 4],
             build_grid: Vec::new(),
             json: None,
+            dump_queries: None,
             self_test: false,
         }
     }
@@ -253,6 +258,9 @@ fn run() -> Res<()> {
     let ctx = DomainContext::new(args.domain, SEED, args.dim);
     let dataset_path = dataset_path(&root, args.domain, args.points, args.dim);
     let queries = generate_queries(&ctx, args.gt_queries);
+    if let Some(path) = &args.dump_queries {
+        write_query_set(path, &queries, args.dim)?;
+    }
     let query_hash = query_hash(&queries);
     let gt_path = gt_path(
         &root,
@@ -912,6 +920,9 @@ fn parse_args() -> Res<Args> {
                     .parse::<f64>()
                     .map_err(|_| format!("invalid --budget-seconds `{value}`"))?;
             }
+            "--dump-queries" => {
+                args.dump_queries = Some(PathBuf::from(take_value(&argv, &mut index, &flag)?));
+            }
             "--json" => {
                 // Optional path: a following non-flag token is the target.
                 args.json = match argv.get(index) {
@@ -1012,6 +1023,8 @@ fn print_usage() {
                                    refused with diskann in --families)\n\
            --batch <n>            parallel construction batch (default 4096; smaller\n\
                                   batches see more of the graph and raise recall)\n\
+           --dump-queries <path>  write the query set in the dataset format, so\n\
+                                  an external harness measures the same queries\n\
            --json [path]          write JSONL rows (default under <root>/rows/)\n\
            --self-test            resumable-generation and cache checks, then exit\n\
          \n\
@@ -1041,6 +1054,50 @@ fn data_root() -> PathBuf {
 fn dataset_path(root: &Path, domain: Domain, count: u64, dim: usize) -> PathBuf {
     root.join("datasets")
         .join(format!("{}-n{count}-d{dim}.bin", domain.name()))
+}
+
+/// Write the sampled query set in the same file format as a dataset.
+///
+/// A competitor row is only comparable if it ran the same queries, and a second
+/// draw from the same distribution is not the same query set: recall moves by
+/// the query sample. Handing the file to another harness is the cheap way to
+/// keep both sides honest.
+fn write_query_set(path: &Path, queries: &[Vec<f32>], dim: usize) -> Res<()> {
+    use std::io::Write as _;
+
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .map_err(|err| format!("cannot create {}: {err}", parent.display()))?;
+        }
+    }
+    let mut buffer = Vec::with_capacity(DATA_HEADER_BYTES as usize + queries.len() * dim * 4);
+    buffer.extend_from_slice(&MAGIC);
+    buffer.extend_from_slice(&(dim as u32).to_le_bytes());
+    buffer.extend_from_slice(&(queries.len() as u64).to_le_bytes());
+    for query in queries {
+        if query.len() != dim {
+            return Err(format!(
+                "query has {} values, expected dim={dim}",
+                query.len()
+            ));
+        }
+        for value in query {
+            buffer.extend_from_slice(&value.to_le_bytes());
+        }
+    }
+    let mut file =
+        File::create(path).map_err(|err| format!("cannot create {}: {err}", path.display()))?;
+    file.write_all(&buffer)
+        .map_err(|err| format!("cannot write {}: {err}", path.display()))?;
+    file.sync_data()
+        .map_err(|err| format!("cannot sync {}: {err}", path.display()))?;
+    println!(
+        "query set written: {} ({} queries, dim {dim})",
+        path.display(),
+        queries.len()
+    );
+    Ok(())
 }
 
 fn gt_path(

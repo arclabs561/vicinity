@@ -289,6 +289,58 @@ scan and the graph equally, and the last-digit spread above (`1.40` to `1.48`)
 is what survives. `p50` and the tail columns in that file are not usable. Re-run
 on an idle host before quoting a timing from it.
 
+## FAISS on the same corpus and queries
+
+The vendored `hnswlib` and `usearch` parity rows are on `clustered16`. FAISS is
+measured on the `large_scale` uniform 96-d corpus instead, using the query set
+that harness writes with `--dump-queries`, so both sides search the same 500
+queries rather than two draws from the same distribution:
+
+```bash
+# 1. Dump the query set (the harness builds the corpus and ground truth).
+./target/release/examples/large_scale --points 100k --families hnsw --gt-only \
+  --dump-queries /tmp/queries-100k.bin
+
+# 2. Measure FAISS on the same files.
+.venv/bin/python scripts/faiss_parity.py \
+  --data "$ANN_DATA_ROOT/datasets/uniform-n100000-d96.bin" \
+  --queries /tmp/queries-100k.bin \
+  --out benchmarks/faiss-parity-100k.jsonl
+
+# 3. Measure vicinity with the same ef sweep.
+./target/release/examples/large_scale --points 100k --families hnsw \
+  --ef 10,20,50,100,200,400 --json /tmp/ours-100k.jsonl
+```
+
+`faiss.omp_set_num_threads(1)` and one thread on our side; both inner product on
+L2-normalised vectors; `M=16`, `efConstruction=200`, `k=10`; FAISS 1.15.1.
+
+| ef | vicinity recall@10 | vicinity p50 | faiss recall@10 | faiss p50 |
+| ---: | ---: | ---: | ---: | ---: |
+| 10 | 0.097 | 40 us | 0.084 | 26 us |
+| 20 | 0.168 | 68 us | 0.143 | 38 us |
+| 50 | 0.339 | 153 us | 0.294 | 83 us |
+| 100 | 0.509 | 260 us | 0.463 | 162 us |
+| 200 | 0.705 | 492 us | 0.665 | 318 us |
+| 400 | 0.879 | 915 us | 0.852 | 643 us |
+
+Build: 6.05 s against 25.26 s, so 4.2x faster to build at the same `M` and
+`efConstruction`.
+
+Read that as it is: **we are faster to build and higher-recall at every matched
+`ef`, and slower per query by about 1.5x to 1.9x**. This is the first comparison
+where the difference is not a tie, and it points at the search inner loop, not at
+graph quality. Two caveats before anyone quotes it: both runs happened while a
+100M build held the machine (load1 85.3 here, 51.5 for FAISS, recorded in
+`_meta.sides`), and the FAISS latency includes one Python-level call per query.
+Re-measure both on an idle host before treating the factor as final.
+
+`faiss-ivfpq` rows in the same file are the FAISS side only: vicinity's `ivf_pq`
+is not wired into the tier harness, because `IVFPQIndex::add_slice` keeps a
+corpus-sized second copy for its k-means and the tier above 1M cannot afford it.
+Comparing quantised families at this tier is open work, and the file says so in
+`_meta` rather than leaving a one-sided table to be read as a result.
+
 ## What this does not cover
 
 - Absolute recall floors and correctness. Those stay in `cargo test` and the
