@@ -204,6 +204,35 @@ artifact (30 days). To move the baseline onto the runner's hardware:
 4. Commit it with the deltas, as above, and drop `--advisory-timing` from
    `.github/workflows/ratchet.yml` once the host matches.
 
+## Scale runs in Actions
+
+The `ratchet` job measures 10k points. The `bench-scale` workflow
+(`.github/workflows/bench-scale.yml`) measures the next tier up on the same
+runner image: 1M points, 96 dimensions, `hnsw`, at `ef=200,800`, and uploads the
+rows as the `scale-rows` artifact for 90 days.
+
+```bash
+# Reproduce the scheduled run locally, from an empty data root.
+ANN_DATA_ROOT=/tmp/bench-data cargo run --release --example large_scale \
+  --features "large-scale,hnsw,diskann" -- \
+  --points 1000000 --dim 96 --domain uniform --families hnsw \
+  --ef 200,800 --budget-seconds 5400 --json /tmp/scale-rows.jsonl
+
+python3 scripts/scale_gate.py --current /tmp/scale-rows.jsonl
+```
+
+`scripts/scale_gate.py` compares recall only, at a 0.005 absolute tolerance, and
+fails on a missing row as well as a regressed one: a family or knob silently
+dropping out is a gap the remaining rows cannot show. Timing is printed nowhere
+in the gate because a 4-vCPU shared runner cannot answer a latency question. The
+reference is `benchmarks/large-scale-1m-uniform.jsonl`, so re-recording it means
+replacing that file with the artifact rows and stating the deltas in the commit,
+exactly as for the ratchet baseline.
+
+Twice a month, not nightly: the 1M build costs about ten minutes on the runner,
+and recall at a fixed `ef` moves only when the build changes. Public-repository
+standard-runner minutes are free, so the cadence is about signal, not budget.
+
 ## What this does not cover
 
 - Absolute recall floors and correctness. Those stay in `cargo test` and the

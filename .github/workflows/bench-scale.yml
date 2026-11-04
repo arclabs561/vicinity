@@ -1,0 +1,97 @@
+name: Scale benchmark
+
+# A 1M-point run of the tier harness on a GitHub-hosted runner, gated on recall
+# and recorded as an artifact. Timings on a shared runner are advisory; recall
+# at a fixed knob is not, because the build is seeded.
+#
+# Twice a month rather than nightly: a 1M HNSW build costs about ten minutes on
+# a 4-vCPU runner, and the graph quality moves only when the code does. Public
+# repository, so standard-runner minutes are free; the schedule is about signal,
+# not budget.
+permissions:
+  contents: read
+
+on:
+  schedule:
+    # The 1st and 15th, after the weekly ratchet and well before its Monday run.
+    - cron: "41 6 1,15 * *"
+  workflow_dispatch:
+    inputs:
+      points:
+        description: Row count for the tier
+        default: "1000000"
+      dim:
+        description: Dimension
+        default: "96"
+      domain:
+        description: uniform or clustered
+        default: "uniform"
+      families:
+        description: Comma-separated harness families
+        default: "hnsw"
+
+concurrency:
+  group: bench-scale
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  # The harness writes corpora and ground truth here; the workspace drive is the
+  # only writable path on a hosted runner with enough room for a 1M x 96 corpus.
+  ANN_DATA_ROOT: ${{ github.workspace }}/.bench-data
+
+jobs:
+  scale:
+    name: 1M recall and build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: "stable"
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
+
+      - name: Build the tier harness
+        run: >
+          cargo build --release --example large_scale
+          --features "large-scale,hnsw,diskann"
+
+      - name: Run the tier
+        run: >
+          ./target/release/examples/large_scale
+          --points "${{ github.event.inputs.points || '1000000' }}"
+          --dim "${{ github.event.inputs.dim || '96' }}"
+          --domain "${{ github.event.inputs.domain || 'uniform' }}"
+          --families "${{ github.event.inputs.families || 'hnsw' }}"
+          --ef 200,800
+          --budget-seconds 5400
+          --json "$RUNNER_TEMP/scale-rows.jsonl"
+
+      - name: Gate recall against the committed reference
+        run: |
+          set -o pipefail
+          tier="$(basename "$RUNNER_TEMP/scale-rows.jsonl")"
+          echo "### Scale run ($tier)" >> "$GITHUB_STEP_SUMMARY"
+          echo >> "$GITHUB_STEP_SUMMARY"
+          if [ -f "benchmarks/large-scale-1m-uniform.jsonl" ]; then
+            python3 scripts/scale_gate.py \
+              --current "$RUNNER_TEMP/scale-rows.jsonl" \
+              --reference benchmarks/large-scale-1m-uniform.jsonl \
+              | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "no committed reference; recording only" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload measured rows
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: scale-rows
+          path: ${{ runner.temp }}/scale-rows.jsonl
+          if-no-files-found: warn
+          retention-days: 90
+
