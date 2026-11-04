@@ -543,7 +543,7 @@ measured 1M rows and say so.
 | 1M | 366 MiB measured | 470 MiB measured | 496 MiB measured | 2.9 GiB measured | 196 s (hnsw) / 282 s (both) measured | build cost and RSS become the interesting numbers; uniform recall collapses; the file path's miss rate becomes visible (81%) | that recall is tier-invariant; it is not (below) |
 | 3M | 1.1 GiB measured | 1.4 GiB measured | ~1.5 GiB est. | 6.9 GiB measured | 390 s measured (hnsw) | the collapse continues: 0.971 (100k) -> 0.649 (1M) -> 0.425 (3M) at the same ef=800; recall still crosses 0.95, at ~ef 8000 | DiskANN at 3M: not run (another ~1.5 GiB index and ~7 min of build for a family that is already 0.6 recall behind HNSW on clustered at 1M) |
 | 10M | 3.66 GiB measured | 4942 MiB measured | 4959 MiB measured | 14.5 GiB measured | 3763 s measured (both families) | the first tier where both indexes exceed a 64 MiB cache: the file path costs 9.6x at `ef = 3200`, and recall on `uniform` falls to 0.071 at `ef = 200` | behaviour once the index exceeds RAM; 100M still needs sharding |
-| 100M | 35.8 GiB measured (written here) | ~45 GiB est. | ~48 GiB est. | ~199 GiB est. | ~4 h est. | only on a host with >199 GiB RAM; the 500-query exact scan itself takes 45.8 s measured | single-machine behaviour above 1B |
+| 100M | 35.8 GiB measured (written here) | ~45 GiB est. per shard at 4 shards | not run | 36.3 GiB measured, one 25M shard | 13,146 s measured (10,400 s uncontended) | the corpus is buildable locally as four 25M shards; the single graph would need ~199 GiB, which is the number that made sharding the answer | full-corpus recall: probing all four shards needs all four resident |
 | 1B | 358 GiB est. | ~450 GiB est. | ~480 GiB est. | ~2.0 TiB est. | ~1.7 days est., if it fit | only with an out-of-core build (none exists here); ids fit u32 (1B < 2^32) | that any family in this crate can be built at this tier on one machine |
 
 The disk column is not the whole story: the dataset and both indexes need about
@@ -815,6 +815,37 @@ shards roughly doubles recall and costs about five times the latency: the same
 candidate budget buys more because it is spread over four independent graphs.
 That is the trade the 100M row will report, and it is the reason sharding is the
 local answer above 10M.
+
+## Sharded tier: 100M as 4 shards
+
+Rows in [`large-scale-100m-sharded.jsonl`](large-scale-100m-sharded.jsonl), from
+`large_scale --points 100m --shards 4 --nprobe 1,2 --ef 200,800`. Each of the
+four 25M-row shards is built alone, queried, and dropped; peak shard RSS is
+36,281 MiB and the build total is 13,146 s.
+
+| nprobe | ef | recall@10 | p50 us | fraction of corpus probed |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 200 | 0.024 | 835 | 25% |
+| 1 | 800 | 0.077 | 2798 | 25% |
+| 2 | 200 | 0.038 | 1532 | 50% |
+| 2 | 800 | 0.115 | 5551 | 50% |
+
+**This row does not measure 100M recall.** Probing one or two of four shards
+means three quarters or half of the corpus is unreachable, so the ceiling is that
+fraction of a single shard's recall, not 1.0. What it does measure is the build:
+2,534-2,644 s per 25M shard when the machine is otherwise idle (0.10-0.11
+ms/row), 2.9 h for the tier, at 36.3 GiB peak rather than the ~199 GiB a single
+graph would need. Probing all four shards needs all four resident, about 145 GiB
+of graph plus vectors, which is the memory the shards exist to avoid.
+
+Shard 0 took 5,343 s, roughly twice the others, because it overlapped two other
+benchmark runs on this host (a build-knob grid and a FAISS parity sweep). The
+uncontended figure is the mean of the three later shards. Recall is deterministic
+at a fixed graph and is unaffected by that load.
+
+The ground truth is an exact top-10 over the full 100M corpus, cached from the
+scan that took 45.8 s; it is not cross-checked by an independent scan, which the
+harness only does at 1M and below.
 
 ## Real corpus: SIFT-128 at 1M
 
