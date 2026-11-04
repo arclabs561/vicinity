@@ -322,31 +322,53 @@ queries rather than two draws from the same distribution:
 `faiss.omp_set_num_threads(1)` and one thread on our side; both inner product on
 L2-normalised vectors; `M=16`, `efConstruction=200`, `k=10`; FAISS 1.15.1.
 
+### 100k
+
 | ef | vicinity recall@10 | vicinity p50 | faiss recall@10 | faiss p50 |
 | ---: | ---: | ---: | ---: | ---: |
-| 10 | 0.097 | 40 us | 0.084 | 26 us |
-| 20 | 0.168 | 68 us | 0.143 | 38 us |
-| 50 | 0.339 | 153 us | 0.294 | 83 us |
-| 100 | 0.509 | 260 us | 0.463 | 162 us |
-| 200 | 0.705 | 492 us | 0.665 | 318 us |
-| 400 | 0.879 | 915 us | 0.852 | 643 us |
+| 10 | 0.097 | 29 us | 0.084 | 34 us |
+| 20 | 0.168 | 58 us | 0.143 | 55 us |
+| 50 | 0.339 | 115 us | 0.294 | 127 us |
+| 100 | 0.509 | 199 us | 0.463 | 231 us |
+| 200 | 0.705 | 372 us | 0.665 | 448 us |
+| 400 | 0.879 | 680 us | 0.852 | 944 us |
 
-Build: 6.05 s against 25.26 s, so 4.2x faster to build at the same `M` and
-`efConstruction`.
+Build: 2.87 s against 29.8 s, 10.4x.
 
-Read that as it is: **we are faster to build and higher-recall at every matched
-`ef`, and slower per query by about 1.5x to 1.9x**. This is the first comparison
-where the difference is not a tie, and it points at the search inner loop, not at
-graph quality. Two caveats before anyone quotes it: both runs happened while a
-100M build held the machine (load1 85.3 here, 51.5 for FAISS, recorded in
-`_meta.sides`), and the FAISS latency includes one Python-level call per query.
-Re-measure both on an idle host before treating the factor as final.
+### 1M
 
-`faiss-ivfpq` rows in the same file are the FAISS side only: vicinity's `ivf_pq`
-is not wired into the tier harness, because `IVFPQIndex::add_slice` keeps a
+| ef | vicinity recall@10 | vicinity p50 | faiss recall@10 | faiss p50 |
+| ---: | ---: | ---: | ---: | ---: |
+| 10 | 0.021 | 44 us | 0.023 | 39 us |
+| 20 | 0.042 | 76 us | 0.042 | 62 us |
+| 50 | 0.101 | 167 us | 0.090 | 138 us |
+| 100 | 0.177 | 314 us | 0.156 | 262 us |
+| 200 | 0.293 | 570 us | 0.261 | 525 us |
+| 400 | 0.461 | 1062 us | 0.407 | 1035 us |
+
+Build: 64.6 s against 469.9 s, 7.3x.
+
+At 100k we are faster than FAISS at every matched `ef` from 50 up and carry about
+0.03 more recall. At 1M FAISS is ahead on p50 at matched `ef` by 3-21%, but it is
+also behind on recall: at the same recall as our `ef=200` row (0.293) FAISS needs
+about `ef=245`, which costs it roughly 640 us against our 570 us. The honest
+summary at 1M is "about even per query at matched recall, 7.3x faster to build,
+higher recall at a given ef", not a win on latency.
+
+**Correction.** An earlier version of this file recorded both 100k runs under a
+concurrent 100M build (our side `load1` 85, FAISS 51) and concluded that we were
+1.5x to 1.9x slower per query. That was a property of the run, not the code: the
+file has been re-recorded on a lightly loaded host (see `_meta.sides`), and both
+sides now sit within a few percent of each other at 100k. Timings from a loaded
+host are not quotable, which is exactly why each side records its own `load1`.
+
+`faiss-ivfpq` rows in both files are the FAISS side only: vicinity's `ivf_pq` is
+not wired into the tier harness, because `IVFPQIndex::add_slice` keeps a
 corpus-sized second copy for its k-means and the tier above 1M cannot afford it.
-Comparing quantised families at this tier is open work, and the file says so in
-`_meta` rather than leaving a one-sided table to be read as a result.
+At 1M FAISS IVF-PQ reaches 0.293 recall at `nprobe=16`, 0.214 at `nprobe=8`, and
+0.144 at `nprobe=4`, at 455, 236 and 127 us. Comparing quantised families at
+these tiers is open work, and the files say so in `_meta` rather than leaving a
+one-sided table to be read as a result.
 
 ## What this does not cover
 
