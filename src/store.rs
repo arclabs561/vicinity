@@ -108,7 +108,17 @@ impl UpdatableIndex {
         m: usize,
         m_max: usize,
     ) -> PersistenceResult<Self> {
-        let inner = SegmentedStore::open(dir, VectorBacking::new(), flush_threshold)?;
+        // Sidecar and WAL writes default to Flush, which is a userspace boundary
+        // only: a power loss can drop an acknowledged add or delete. Fsync costs
+        // one sync per write and is only available on a filesystem-backed
+        // directory, so an in-memory directory keeps the old behaviour.
+        let mut options = segstore::Options::new(flush_threshold);
+        // Only `Some/None` matters here: it distinguishes a filesystem-backed
+        // directory from an in-memory one.
+        if dir.file_path("manifest.bin").is_some() {
+            options.sync = segstore::SyncPolicy::Fsync;
+        }
+        let inner = SegmentedStore::open_with_options(dir, VectorBacking::new(), options)?;
         Ok(Self {
             inner,
             dim,
