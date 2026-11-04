@@ -85,7 +85,7 @@ use crate::file_io::{CachedFile, FileCacheConfig, FileCacheStats};
 /// `persistence` feature (the format module is gated behind it).
 const HNSW_SEGMENT_MAGIC: [u8; 8] = *b"VCNHNSW\x01";
 /// Segment format version; kept in sync with `persistence::format::FORMAT_VERSION`.
-const FORMAT_VERSION: u32 = 1;
+const FORMAT_VERSION: u32 = 2;
 
 /// Number of neighbour distances computed before updating the heaps, matching
 /// the in-memory beam search's batching so push order is identical.
@@ -932,6 +932,24 @@ fn parse_metadata(bytes: &[u8]) -> Result<(usize, usize, bool), RetrieveError> {
         let dimension = u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]) as usize;
         let num_vectors = u32::from_le_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]) as usize;
         let built = bytes[20] != 0;
+        // v2 adds a commit byte. A 0 there means the writer was interrupted
+        // between marking the segment stale and sealing the last file, so the
+        // other files may be from a different save.
+        if version >= 2 {
+            match bytes.get(21) {
+                Some(0) => {
+                    return Err(RetrieveError::FormatError(
+                        "segment write did not complete; the last save was interrupted".into(),
+                    ))
+                }
+                Some(_) => {}
+                None => {
+                    return Err(RetrieveError::FormatError(
+                        "v2 metadata.bin is missing its commit byte".into(),
+                    ))
+                }
+            }
+        }
         validate_metadata(dimension, num_vectors)?;
         return Ok((dimension, num_vectors, built));
     }
@@ -1349,6 +1367,7 @@ mod tests {
         metadata.extend_from_slice(&(index.dimension as u32).to_le_bytes());
         metadata.extend_from_slice(&(index.num_vectors as u32).to_le_bytes());
         metadata.push(u8::from(index.is_built()));
+        metadata.push(1); // committed
         std::fs::write(segment.join("metadata.bin"), metadata).unwrap();
 
         let mut params = Vec::new();

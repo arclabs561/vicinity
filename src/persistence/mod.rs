@@ -18,6 +18,10 @@
 //!
 //! - Segments written by 0.6.x (no magic) load transparently via a legacy
 //!   v0 decode path.
+//! - v2 headers append a commit byte. A writer clears it before touching any
+//!   segment file and sets it only after the last file is sealed, so an
+//!   interrupted save is refused instead of pairing the previous metadata with
+//!   new vectors. v1 headers have no such byte and still load.
 //! - A version newer than the running crate supports is rejected with
 //!   [`PersistenceError::Format`]; old crates never silently misread new
 //!   files.

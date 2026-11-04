@@ -350,7 +350,7 @@ mod segment_binary {
 
         #[test]
         fn proptest_one_byte_corruption_never_panics(
-            byte_offset in 0usize..21,  // metadata.bin is 21 bytes (magic8 + ver4 + dim4 + nv4 + built1)
+            byte_offset in 0usize..22,  // metadata.bin v2: magic8 + ver4 + dim4 + nv4 + built1 + committed1
             flip_mask in 1u8..=255u8,   // non-zero to guarantee a change
         ) {
             let (mem, raw) = write_segment();
