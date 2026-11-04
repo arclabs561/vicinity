@@ -18,6 +18,12 @@ These source changes are not assigned to a package release here.
 
 ## [Unreleased]
 
+### Changed
+
+- **Dev dependency: `criterion` 0.5 -> 0.8.** Benchmarks only; no public API
+  change. `cargo check --benches --all-features` and a full pass of
+  `hnsw_search` succeed on the new version.
+
 ### Removed
 
 - **`fs4`.** Generation publication locks use `File::try_lock`, which is in std
