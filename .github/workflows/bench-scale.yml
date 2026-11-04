@@ -60,6 +60,9 @@ jobs:
           cargo build --release --example large_scale
           --features "large-scale,hnsw,diskann"
 
+      # The sweep must cover every row in the committed reference:
+      # scripts/scale_gate.py fails on a reference row the run does not produce,
+      # because a family silently dropping out is a gap no metric shows.
       - name: Run the tier
         run: >
           ./target/release/examples/large_scale
@@ -67,7 +70,7 @@ jobs:
           --dim "${{ github.event.inputs.dim || '96' }}"
           --domain "${{ github.event.inputs.domain || 'uniform' }}"
           --families "${{ github.event.inputs.families || 'hnsw' }}"
-          --ef 200,800
+          --ef 200,1600,3200,4800,6400
           --budget-seconds 5400
           --json "$RUNNER_TEMP/scale-rows.jsonl"
 
