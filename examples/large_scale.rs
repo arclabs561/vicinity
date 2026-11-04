@@ -316,7 +316,9 @@ fn run() -> Res<()> {
     if let Some(refusal) = memory_refusal(&args) {
         return Err(refusal);
     }
-    if estimate.total > args.budget_seconds {
+    // `--prepare-only` writes the corpus and stops before any build, so the
+    // build estimate cannot make it refuse.
+    if estimate.total > args.budget_seconds && !args.prepare_only {
         return Err(format!(
             "refusing: time, not memory or disk. The estimated {:.0}s (generation {:.0}s, ground \
              truth {:.0}s, builds {:.0}s, persist {:.0}s) exceeds --budget-seconds {:.0}s. Raise \
@@ -2333,18 +2335,28 @@ fn memory_refusal(args: &Args) -> Option<String> {
         }
     }
     let per_point = build_peak_kib_per_point(largest);
-    let needed = args.points as f64 * per_point * 1024.0;
+    // Sharded builds hold one shard at a time, so the peak is the shard's size,
+    // not the tier's. Refusing 100M because the single graph would need 199 GiB
+    // is wrong when the run is 4 shards of 25M.
+    let resident_rows = if args.shards > 1 {
+        args.points.div_ceil(args.shards as u64)
+    } else {
+        args.points
+    };
+    let needed = resident_rows as f64 * per_point * 1024.0;
     let usable = physical as f64 * 0.85;
     if needed <= usable {
         return None;
     }
     Some(format!(
         "refusing: memory, not time or disk. The {} build peaks at about {:.0} GiB \
-         ({per_point:.2} KiB/point measured at 1M) and this host has {:.0} GiB, of which the \
-         guardrail allows {:.0} GiB; the largest tier that fits is about {:.0}M points. Lower \
-         --points, or select diskann only ({:.2} KiB/point).",
+         ({per_point:.2} KiB/point measured at 1M, {} row(s) resident) and this host has \
+         {:.0} GiB, of which the guardrail allows {:.0} GiB; the largest tier that fits is \
+         about {:.0}M points. Lower --points, raise --shards, or select diskann only \
+         ({:.2} KiB/point).",
         largest.name(),
         bytes_to_mib(needed as u64) / 1024.0,
+        resident_rows,
         bytes_to_mib(physical) / 1024.0,
         bytes_to_mib(usable as u64) / 1024.0,
         usable / (per_point * 1024.0) / 1e6,
