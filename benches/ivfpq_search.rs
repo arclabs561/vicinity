@@ -4,6 +4,7 @@
 //! Keep this target separate from the ANN dataset example so profiling search
 //! does not include HDF5 loading or k-means training.
 
+#[cfg(feature = "ivf_pq")]
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 #[cfg(feature = "ivf_pq")]
 use rand::prelude::*;
