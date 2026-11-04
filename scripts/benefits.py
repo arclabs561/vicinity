@@ -82,7 +82,10 @@ def leader(rows, key, higher_is_better, transform=None):
     scored = []
     for row in rows:
         value = transform(row) if transform else row.get(key)
-        if value is None:
+        # A recorded 0.0 on a measured axis is an accounting artifact (the index
+        # had not been built when the sample was taken), not the smallest
+        # possible index. Treat it as missing so it cannot win a minimum.
+        if value is None or value == 0:
             continue
         scored.append((value, row))
     if not scored:

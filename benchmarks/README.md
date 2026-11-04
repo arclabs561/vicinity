@@ -334,7 +334,10 @@ temp directory. The dataset format is self-describing (`b"VICDS01\0"`, `dim: u32
 ground-truth cache is keyed by `(domain, count, dim, k, query count, FNV-1a of
 the query bytes)`. A key mismatch in the file header is an error, never a silent
 reuse. `--verify-gt` cross-checks a sample against both an f32 and an f64 brute
-force scan and prints the top-10 overlap; it is on by default.
+force scan and prints the top-10 overlap. It is on by default only up to 1M
+(`examples/large_scale.rs`); the committed 3M and 10M rows carry
+`gt_verified:false`, so their recall rests on the cached scan alone. Pass
+`--verify-gt` explicitly for those tiers if you need the cross-check.
 
 ### Which families can run here
 
