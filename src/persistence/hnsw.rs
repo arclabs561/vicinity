@@ -19,6 +19,10 @@ use crate::hnsw::{HNSWIndex, HNSWParams, NeighborhoodDiversification, SeedSelect
 
 /// HNSW segment writer for graph persistence.
 #[cfg(feature = "hnsw")]
+/// Leading marker on a v3 params file. Without a prefix, a truncated file is
+/// indistinguishable from the 24-byte v1 layout and loads as a Cosine index.
+const PARAMS_MAGIC: &[u8; 4] = b"HNP3";
+
 pub struct HNSWSegmentWriter {
     directory: Box<dyn Directory>,
     segment_id: u64,
@@ -44,9 +48,30 @@ impl HNSWSegmentWriter {
     /// - `layer_assignments.bin`: Layer assignment for each vector
     /// - `params.bin`: HNSW parameters
     /// - `metadata.bin`: Index metadata (dimension, num_vectors, etc.)
+    /// Seal a fully written temporary file into place.
+    ///
+    /// `flush()` only pushes bytes into the OS, and a rename only changes a
+    /// directory entry: a crash between them can leave a correctly named file
+    /// whose data blocks were never written, and a crash after the rename can
+    /// lose the name itself. Both are synced here, through the directory backend
+    /// so an in-memory backend stays a no-op instead of failing.
+    fn seal(&self, tmp: &str, final_path: &str) -> PersistenceResult<()> {
+        self.directory.durable_sync_file(tmp)?;
+        self.directory.atomic_rename_durable(tmp, final_path)
+    }
+
     pub fn write_hnsw_index(&mut self, index: &HNSWIndex) -> PersistenceResult<()> {
         let segment_dir = format!("segments/segment_hnsw_{}", self.segment_id);
         self.directory.create_dir_all(&segment_dir)?;
+
+        // A re-save writes the SoA layout only. A sidecar left from an earlier
+        // `write_hnsw_index_aos` would still be found by the file searcher,
+        // which prefers it, so the searcher would serve the previous index's
+        // vectors while `load_index` served the new ones.
+        let stale_aos = format!("{segment_dir}/vectors_aos.bin");
+        if self.directory.exists(&stale_aos) {
+            self.directory.delete(&stale_aos)?;
+        }
 
         // Write vectors in SoA layout (same as dense segment).
         //
@@ -54,7 +79,8 @@ impl HNSWSegmentWriter {
         // but on disk we store SoA for cache/SIMD-friendly access and consistency with
         // `DenseSegmentWriter`.
         let vectors_path = format!("{}/vectors.bin", segment_dir);
-        let mut vectors_file = self.directory.create_file(&vectors_path)?;
+        let vectors_path_tmp = format!("{vectors_path}.tmp");
+        let mut vectors_file = self.directory.create_file(&vectors_path_tmp)?;
         for d in 0..index.dimension {
             for v_idx in 0..index.num_vectors {
                 let aos_idx = v_idx * index.dimension + d;
@@ -62,35 +88,47 @@ impl HNSWSegmentWriter {
             }
         }
         vectors_file.flush()?;
+        drop(vectors_file);
+        self.seal(&vectors_path_tmp, &vectors_path)?;
 
         // Write doc_ids (external IDs aligned with internal insertion order).
         //
         // This is the critical "KeyedVectors separation" bit: it ensures searches
         // on a loaded index return the same external IDs that were originally added.
         let doc_ids_path = format!("{}/doc_ids.bin", segment_dir);
-        let mut doc_ids_file = self.directory.create_file(&doc_ids_path)?;
+        let doc_ids_path_tmp = format!("{doc_ids_path}.tmp");
+        let mut doc_ids_file = self.directory.create_file(&doc_ids_path_tmp)?;
         for &doc_id in &index.doc_ids {
             doc_ids_file.write_all(&doc_id.to_le_bytes())?;
         }
         doc_ids_file.flush()?;
+        drop(doc_ids_file);
+        self.seal(&doc_ids_path_tmp, &doc_ids_path)?;
 
         // Write tombstone flags (one byte per internal id).
         let tombstones_path = format!("{}/tombstones.bin", segment_dir);
-        let mut tombstones_file = self.directory.create_file(&tombstones_path)?;
+        let tombstones_path_tmp = format!("{tombstones_path}.tmp");
+        let mut tombstones_file = self.directory.create_file(&tombstones_path_tmp)?;
         tombstones_file.write_all(&index.tombstone_flags())?;
         tombstones_file.flush()?;
+        drop(tombstones_file);
+        self.seal(&tombstones_path_tmp, &tombstones_path)?;
 
         // Write layer assignments
         let assignments_path = format!("{}/layer_assignments.bin", segment_dir);
-        let mut assignments_file = self.directory.create_file(&assignments_path)?;
+        let assignments_path_tmp = format!("{assignments_path}.tmp");
+        let mut assignments_file = self.directory.create_file(&assignments_path_tmp)?;
         for &assignment in &index.layer_assignments {
             assignments_file.write_all(&[assignment])?;
         }
         assignments_file.flush()?;
+        drop(assignments_file);
+        self.seal(&assignments_path_tmp, &assignments_path)?;
 
         // Write graph layers
         let layers_path = format!("{}/layers.bin", segment_dir);
-        let mut layers_file = self.directory.create_file(&layers_path)?;
+        let layers_path_tmp = format!("{layers_path}.tmp");
+        let mut layers_file = self.directory.create_file(&layers_path_tmp)?;
 
         // Write number of layers
         layers_file.write_all(&(index.layers.len() as u32).to_le_bytes())?;
@@ -113,10 +151,14 @@ impl HNSWSegmentWriter {
             }
         }
         layers_file.flush()?;
+        drop(layers_file);
+        self.seal(&layers_path_tmp, &layers_path)?;
 
         // Write parameters
         let params_path = format!("{}/params.bin", segment_dir);
-        let mut params_file = self.directory.create_file(&params_path)?;
+        let params_path_tmp = format!("{params_path}.tmp");
+        let mut params_file = self.directory.create_file(&params_path_tmp)?;
+        params_file.write_all(PARAMS_MAGIC)?;
         params_file.write_all(&(index.params.m as u32).to_le_bytes())?;
         params_file.write_all(&(index.params.m_max as u32).to_le_bytes())?;
         params_file.write_all(&index.params.m_l.to_le_bytes())?;
@@ -138,6 +180,8 @@ impl HNSWSegmentWriter {
             0
         }])?;
         params_file.flush()?;
+        drop(params_file);
+        self.seal(&params_path_tmp, &params_path)?;
 
         // Write metadata.
         //
@@ -151,13 +195,16 @@ impl HNSWSegmentWriter {
         // Legacy v0 (vicinity 0.6.x): no magic/version prefix; the first 4
         // bytes are the dimension u32.
         let metadata_path = format!("{}/metadata.bin", segment_dir);
-        let mut metadata_file = self.directory.create_file(&metadata_path)?;
+        let metadata_path_tmp = format!("{metadata_path}.tmp");
+        let mut metadata_file = self.directory.create_file(&metadata_path_tmp)?;
         metadata_file.write_all(&HNSW_SEGMENT_MAGIC)?;
         metadata_file.write_all(&FORMAT_VERSION.to_le_bytes())?;
         metadata_file.write_all(&(index.dimension as u32).to_le_bytes())?;
         metadata_file.write_all(&(index.num_vectors as u32).to_le_bytes())?;
         metadata_file.write_all(&[if index.is_built() { 1 } else { 0 }])?;
         metadata_file.flush()?;
+        drop(metadata_file);
+        self.seal(&metadata_path_tmp, &metadata_path)?;
 
         Ok(())
     }
@@ -311,25 +358,50 @@ impl HNSWSegmentReader {
             ));
         }
 
-        // Load parameters
+        // Load parameters. Read the whole file first: a truncation at exactly
+        // the 24-byte v1 length used to look like a legacy file and silently
+        // default the metric to Cosine.
         let params_path = format!("{}/params.bin", segment_dir);
-        let mut params_file = directory.open_file(&params_path)?;
-        let mut m_bytes = [0u8; 4];
-        let mut m_max_bytes = [0u8; 4];
-        let mut m_l_bytes = [0u8; 8];
-        let mut ef_construction_bytes = [0u8; 4];
-        let mut ef_search_bytes = [0u8; 4];
+        let params_bytes = {
+            let mut file = directory.open_file(&params_path)?;
+            let mut buffer = Vec::new();
+            file.read_to_end(&mut buffer)?;
+            buffer
+        };
+        let prefixed = params_bytes.starts_with(PARAMS_MAGIC);
+        let (body_len, bytes) = if prefixed {
+            let body = params_bytes.len() - PARAMS_MAGIC.len();
+            if !(26..=27).contains(&body) {
+                return Err(crate::persistence::error::PersistenceError::Format(
+                    format!(
+                        "params.bin has the v3 marker but {body} bytes of body; expected 26 or 27"
+                    ),
+                ));
+            }
+            (body, &params_bytes[PARAMS_MAGIC.len()..])
+        } else {
+            if !(24..=27).contains(&params_bytes.len()) {
+                return Err(crate::persistence::error::PersistenceError::Format(
+                    format!(
+                        "params.bin is {} bytes; expected 24-27 (legacy)",
+                        params_bytes.len()
+                    ),
+                ));
+            }
+            (params_bytes.len(), &params_bytes[..])
+        };
+        let _ = body_len;
+        let m_bytes: [u8; 4] = bytes[0..4].try_into().expect("length checked");
+        let m_max_bytes: [u8; 4] = bytes[4..8].try_into().expect("length checked");
+        let m_l_bytes: [u8; 8] = bytes[8..16].try_into().expect("length checked");
+        let ef_construction_bytes: [u8; 4] = bytes[16..20].try_into().expect("length checked");
+        let ef_search_bytes: [u8; 4] = bytes[20..24].try_into().expect("length checked");
 
-        params_file.read_exact(&mut m_bytes)?;
-        params_file.read_exact(&mut m_max_bytes)?;
-        params_file.read_exact(&mut m_l_bytes)?;
-        params_file.read_exact(&mut ef_construction_bytes)?;
-        params_file.read_exact(&mut ef_search_bytes)?;
-
-        // v2 fields: metric + auto_normalize (optional, backward-compat with v1 files)
-        let mut metric_byte = [0u8; 1];
-        let metric = if params_file.read_exact(&mut metric_byte).is_ok() {
-            match metric_byte[0] {
+        // v2 fields: metric + auto_normalize (optional, backward-compat with v1
+        // files). Their absence is only accepted on a 24-byte body, i.e. a real
+        // v1 file, never on a truncated v2 one.
+        let metric = match bytes.get(24) {
+            Some(byte) => match byte {
                 0 => crate::distance::DistanceMetric::L2,
                 1 => crate::distance::DistanceMetric::Cosine,
                 2 => crate::distance::DistanceMetric::Angular,
@@ -339,21 +411,14 @@ impl HNSWSegmentReader {
                         format!("unknown distance metric: {}", other),
                     ));
                 }
-            }
-        } else {
+            },
             // Legacy v1 file without metric byte: default to Cosine
-            crate::distance::DistanceMetric::Cosine
+            None => crate::distance::DistanceMetric::Cosine,
         };
-
-        let mut auto_norm_byte = [0u8; 1];
-        let auto_normalize =
-            params_file.read_exact(&mut auto_norm_byte).is_ok() && auto_norm_byte[0] != 0;
+        let auto_normalize = bytes.get(25).is_some_and(|byte| *byte != 0);
 
         #[cfg(feature = "compact-hnsw")]
-        let compact_upper_layers = {
-            let mut compact_byte = [0u8; 1];
-            params_file.read_exact(&mut compact_byte).is_ok() && compact_byte[0] != 0
-        };
+        let compact_upper_layers = bytes.get(26).is_some_and(|byte| *byte != 0);
 
         let params = HNSWParams {
             m: u32::from_le_bytes(m_bytes) as usize,
@@ -526,12 +591,91 @@ impl HNSWSegmentReader {
 #[cfg(feature = "hnsw")]
 mod tests {
     use super::*;
-    use crate::persistence::directory::MemoryDirectory;
+    use crate::persistence::directory::{Directory, FsDirectory, MemoryDirectory};
     use crate::persistence::error::PersistenceError;
 
     fn write_metadata(mem: &MemoryDirectory, bytes: &[u8]) {
         mem.atomic_write("segments/segment_hnsw_0/metadata.bin", bytes)
             .expect("write metadata");
+    }
+
+    /// A filesystem directory whose `fsync` fails, standing in for a disk that
+    /// cannot guarantee durability.
+    struct UnsyncedDirectory {
+        inner: FsDirectory,
+    }
+
+    impl Directory for UnsyncedDirectory {
+        fn create_file(&self, path: &str) -> PersistenceResult<Box<dyn Write + Send>> {
+            self.inner.create_file(path)
+        }
+        fn open_file(&self, path: &str) -> PersistenceResult<Box<dyn Read + Send>> {
+            self.inner.open_file(path)
+        }
+        fn exists(&self, path: &str) -> bool {
+            self.inner.exists(path)
+        }
+        fn delete(&self, path: &str) -> PersistenceResult<()> {
+            self.inner.delete(path)
+        }
+        fn atomic_rename(&self, from: &str, to: &str) -> PersistenceResult<()> {
+            self.inner.atomic_rename(from, to)
+        }
+        fn create_dir_all(&self, path: &str) -> PersistenceResult<()> {
+            self.inner.create_dir_all(path)
+        }
+        fn list_dir(&self, path: &str) -> PersistenceResult<Vec<String>> {
+            self.inner.list_dir(path)
+        }
+        fn append_file(&self, path: &str) -> PersistenceResult<Box<dyn Write + Send>> {
+            self.inner.append_file(path)
+        }
+        fn atomic_write(&self, path: &str, data: &[u8]) -> PersistenceResult<()> {
+            self.inner.atomic_write(path, data)
+        }
+        fn file_path(&self, path: &str) -> Option<std::path::PathBuf> {
+            self.inner.file_path(path)
+        }
+        fn durable_sync_file(&self, _path: &str) -> PersistenceResult<()> {
+            Err(PersistenceError::NotSupported(
+                "test: fsync disabled".into(),
+            ))
+        }
+    }
+
+    #[test]
+    fn write_refuses_to_publish_a_file_that_could_not_be_synced() {
+        let mut index = HNSWIndex::new(4, 8, 8).unwrap();
+        for i in 0..8u32 {
+            let vector = crate::distance::normalize(
+                &(0..4).map(|d| (i * 7 + d) as f32 / 8.0).collect::<Vec<_>>(),
+            );
+            index.add(i, vector).unwrap();
+        }
+        index.build().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut writer = HNSWSegmentWriter::new(
+            Box::new(UnsyncedDirectory {
+                inner: FsDirectory::new(dir.path()).unwrap(),
+            }),
+            5,
+        );
+        let error = writer
+            .write_hnsw_index(&index)
+            .err()
+            .expect("a failed fsync must fail the write");
+
+        assert!(
+            matches!(error, PersistenceError::NotSupported(_)),
+            "{error:?}"
+        );
+        assert!(
+            !dir.path()
+                .join("segments/segment_hnsw_5/vectors.bin")
+                .exists(),
+            "the temp file must not be renamed into place before it is durable"
+        );
     }
 
     #[test]
@@ -751,6 +895,89 @@ mod tests {
             .unwrap()
             .iter()
             .all(|&(doc_id, _)| doc_id != 137));
+    }
+
+    #[test]
+    fn truncated_params_bin_is_rejected() {
+        use crate::persistence::directory::FsDirectory;
+
+        let dimension = 4;
+        let mut index = HNSWIndex::with_params(
+            dimension,
+            HNSWParams {
+                m: 8,
+                m_max: 16,
+                metric: crate::distance::DistanceMetric::L2,
+                ..HNSWParams::default()
+            },
+        )
+        .unwrap();
+        for id in 0..16u32 {
+            let vector = vec![id as f32, 1.0, 0.0, 0.0];
+            index.add(id, vector).unwrap();
+        }
+        index.build().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        HNSWSegmentWriter::new(Box::new(FsDirectory::new(dir.path()).unwrap()), 21)
+            .write_hnsw_index(&index)
+            .unwrap();
+
+        // A v2/v3 params file truncated at exactly the v1 body length used to
+        // load as a Cosine index instead of failing.
+        let params = dir.path().join("segments/segment_hnsw_21/params.bin");
+        let bytes = std::fs::read(&params).unwrap();
+        assert!(bytes.len() > 26, "writer should append a sentinel");
+        std::fs::write(&params, &bytes[..24]).unwrap();
+
+        let error = HNSWSegmentReader::load(Box::new(FsDirectory::new(dir.path()).unwrap()), 21)
+            .err()
+            .expect("a truncated params file must not load");
+        let typed: crate::RetrieveError = error.into();
+        assert!(
+            matches!(typed, crate::RetrieveError::FormatError(_)),
+            "expected a format error, got {typed:?}"
+        );
+    }
+
+    #[test]
+    fn resaving_without_the_aos_layout_removes_the_stale_sidecar() {
+        use crate::persistence::directory::FsDirectory;
+
+        let dimension = 8;
+        let mut index = HNSWIndex::with_params(
+            dimension,
+            HNSWParams {
+                m: 8,
+                m_max: 16,
+                metric: crate::distance::DistanceMetric::L2,
+                ..HNSWParams::default()
+            },
+        )
+        .unwrap();
+        for id in 0..32u32 {
+            let vector: Vec<f32> = (0..dimension).map(|d| (id as usize + d) as f32).collect();
+            index.add(id, vector).unwrap();
+        }
+        index.build().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut writer =
+            HNSWSegmentWriter::new(Box::new(FsDirectory::new(dir.path()).unwrap()), 22);
+        writer.write_hnsw_index_aos(&index).unwrap();
+        // Same segment id, SoA layout only: the sidecar must not survive.
+        writer.write_hnsw_index(&index).unwrap();
+
+        let segment = dir.path().join("segments/segment_hnsw_22");
+        let mut searcher = crate::hnsw::HNSWSegmentSearcher::open(
+            &segment,
+            crate::hnsw::FileCacheConfig::with_budget(1 << 20),
+        )
+        .unwrap();
+        assert!(
+            searcher.uses_soa_fallback(),
+            "a stale AoS sidecar would make the searcher serve the old vectors"
+        );
     }
 
     #[test]
