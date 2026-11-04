@@ -18,6 +18,13 @@ These source changes are not assigned to a package release here.
 
 ## [Unreleased]
 
+### Removed
+
+- **`fs4`.** Generation publication locks use `File::try_lock`, which is in std
+  since 1.89 and the crate's MSRV is 1.94. The dependency and its two feature
+  entries are gone; `TryLockError::WouldBlock` replaces fs4's `Ok(false)` for
+  contention.
+
 ### Changed
 
 - **On-disk segment format v2.** `metadata.bin` appends a commit byte. The

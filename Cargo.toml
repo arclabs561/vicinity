@@ -91,7 +91,6 @@ postcard = { version = "1.0", optional = true, features = [
 ] }
 durability = { version = "0.9", optional = true }
 segstore = { version = "0.7.3", optional = true }
-fs4 = { version = "0.13", optional = true }
 
 
 # NEON `tbl` for the 4-bit FastScan kernel without `unsafe` in this crate.
@@ -104,7 +103,7 @@ getrandom = { version = "0.3", features = ["wasm_js"] }
 
 [features]
 default = ["hnsw", "innr"]
-persistence = ["serde", "dep:serde_json", "dep:postcard", "dep:durability", "dep:fs4"]
+persistence = ["serde", "dep:serde_json", "dep:postcard", "dep:durability"]
 serde = ["dep:serde", "dep:serde_json", "smallvec/serde"]
 hnsw = ["innr"]
 # Freezes HNSW upper layers into compact eligible-node CSR storage after build.
@@ -123,7 +122,7 @@ ivf_pq = [
   "dep:serde_json",
   "smallvec/serde",
 ]
-diskann = ["dep:serde", "dep:serde_json", "dep:fs4"]
+diskann = ["dep:serde", "dep:serde_json"]
 ivf_avq = ["dep:clump", "dep:serde", "dep:serde_json"]
 sng = ["dep:serde", "dep:serde_json"]
 fresh_graph = ["dep:serde", "dep:serde_json"]
