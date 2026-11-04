@@ -572,7 +572,7 @@ measured 1M rows and say so.
 | 1M | 366 MiB measured | 470 MiB measured | 496 MiB measured | 2.9 GiB measured | 196 s (hnsw) / 282 s (both) measured | build cost and RSS become the interesting numbers; uniform recall collapses; the file path's miss rate becomes visible (81%) | that recall is tier-invariant; it is not (below) |
 | 3M | 1.1 GiB measured | 1.4 GiB measured | ~1.5 GiB est. | 6.9 GiB measured | 390 s measured (hnsw) | the collapse continues: 0.971 (100k) -> 0.649 (1M) -> 0.425 (3M) at the same ef=800; recall still crosses 0.95, at ~ef 8000 | DiskANN at 3M: not run (another ~1.5 GiB index and ~7 min of build for a family that is already 0.6 recall behind HNSW on clustered at 1M) |
 | 10M | 3.66 GiB measured | 4942 MiB measured | 4959 MiB measured | 14.5 GiB measured | 3763 s measured (both families) | the first tier where both indexes exceed a 64 MiB cache: the file path costs 9.6x at `ef = 3200`, and recall on `uniform` falls to 0.071 at `ef = 200` | behaviour once the index exceeds RAM; 100M still needs sharding |
-| 100M | 35.8 GiB measured (written here) | ~45 GiB est. per shard at 4 shards | not run | 36.3 GiB measured, one 25M shard | 13,146 s measured (10,400 s uncontended) | the corpus is buildable locally as four 25M shards; the single graph would need ~199 GiB, which is the number that made sharding the answer | full-corpus recall: probing all four shards needs all four resident |
+| 100M | 35.8 GiB measured (written here) | ~45 GiB est. per shard at 4 shards | not run | 36.3 GiB measured, one 25M shard | 13,146 s measured (10,400 s uncontended) | the corpus is buildable locally as four 25M shards; the single graph would need ~199 GiB, which is the number that made sharding the answer | full-corpus recall at 100M: the committed row probes 1-2 of 4 shards; the 10M full-coverage rows measure the protocol |
 | 1B | 358 GiB est. | ~450 GiB est. | ~480 GiB est. | ~2.0 TiB est. | ~1.7 days est., if it fit | only with an out-of-core build (none exists here); ids fit u32 (1B < 2^32) | that any family in this crate can be built at this tier on one machine |
 
 The disk column is not the whole story: the dataset and both indexes need about
@@ -839,11 +839,39 @@ machine that cannot hold the 14.5 GiB single graph.
 | 2 | 800 | 0.298 | 7099 |
 | 4 | 800 | 0.470 | 13906 |
 
-Against the single graph at the same `ef` (0.234 at 2722 µs), probing four
-shards roughly doubles recall and costs about five times the latency: the same
-candidate budget buys more because it is spread over four independent graphs.
-That is the trade the 100M row will report, and it is the reason sharding is the
-local answer above 10M.
+Against the single graph at the same per-shard `ef` (0.234 at 2722 µs), probing
+four shards roughly doubles recall and costs about five times the latency: each
+shard runs its own candidate search over an independent graph, so the extra
+recall is bought with four independent candidate searches rather than a larger
+single search. That is the trade the sharded tier reports, and it is the reason
+sharding is the local answer above 10M.
+
+### Full-coverage 10M sharded rows
+
+Rows in
+[`large-scale-10m-sharded-full.jsonl`](large-scale-10m-sharded-full.jsonl), from
+`large_scale --shards 16 --nprobe 2,4,8,16`. Total build time 653 s; peak
+per-shard RSS 974 MiB. The harness queries each shard while resident and merges
+the per-query top-k, so `nprobe=16` is the all-shard ANN result without 16
+resident shards.
+
+| nprobe | ef | recall@10 | p50 µs |
+| ---: | ---: | ---: | ---: |
+| 2 | 200 | 0.169 | 1110 |
+| 2 | 800 | 0.299 | 3957 |
+| 4 | 200 | 0.263 | 2237 |
+| 4 | 800 | 0.471 | 7997 |
+| 8 | 200 | 0.379 | 4462 |
+| 8 | 800 | 0.680 | 16069 |
+| 16 | 200 | 0.465 | 8978 |
+| 16 | 800 | 0.829 | 32474 |
+
+At ef=800, `nprobe=16` gives recall@10 0.8294 at p50 32.474 ms, versus 0.234 at
+2.722 ms for the single graph. This is a same-ef comparison, not a matched-latency
+or matched-work comparison: each sharded query performs 16 serial searches. In
+these rows, recall increases with both ef and nprobe, including before full
+probing. `nprobe=16` provides all-shard candidate coverage but does not guarantee
+exact recall. These rows establish no latency advantage.
 
 ## Sharded tier: 100M as 4 shards
 
@@ -864,8 +892,14 @@ means three quarters or half of the corpus is unreachable, so the ceiling is tha
 fraction of a single shard's recall, not 1.0. What it does measure is the build:
 2,534-2,644 s per 25M shard when the machine is otherwise idle (0.10-0.11
 ms/row), 2.9 h for the tier, at 36.3 GiB peak rather than the ~199 GiB a single
-graph would need. Probing all four shards needs all four resident, about 145 GiB
-of graph plus vectors, which is the memory the shards exist to avoid.
+graph would need.
+
+A full-coverage row does not need all four shards resident: the harness queries
+one resident shard at a time and merges each query's top-k across the probed
+shards, so `--nprobe 4` is the all-shard ANN result at the sum of the per-shard
+search times. The committed row probes 1-2 of 4 and is build-only for a protocol
+reason (latency), not a memory one. The 10M full-coverage rows measure this
+protocol.
 
 Shard 0 took 5,343 s, roughly twice the others, because it overlapped two other
 benchmark runs on this host (a build-knob grid and a FAISS parity sweep). The

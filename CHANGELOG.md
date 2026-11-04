@@ -37,8 +37,9 @@ These source changes are not assigned to a package release here.
   writer clears it before touching any segment file and sets it only after the
   last file is sealed, so an interrupted save is refused with a `Format` error
   instead of pairing the previous `metadata.bin` with new vectors. v1 segments
-  still load; a crate older than this change rejects a v2 segment rather than
-  misreading it, which is the existing version-guard contract.
+  still load. Version 0.12 rejects 0.13 v2 segments at the existing version
+  guard. After 0.13 segments have been written, running 0.12 requires a
+  0.12-compatible index, either restored from before the upgrade or rebuilt.
 
 ## [0.12.0] - 2026-11-02
 
