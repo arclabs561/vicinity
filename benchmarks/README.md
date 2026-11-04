@@ -47,6 +47,13 @@ The harness is the single protocol every family is measured on:
   timings stay comparable.
 - `build_s` and `mem_mib` describe the build that produced the row; `mem_mib`
   is resident-set growth measured with `ps`, and is `null` when unavailable.
+- `_meta.difficulty` carries what the dataset contributes to a recall number:
+  `relative_contrast` (mean sample distance over nearest-neighbour distance),
+  `tie_density_at_k` (share of sampled queries whose k-th and (k+1)-th
+  neighbours are equally distant, so the k-th slot is a coin toss),
+  `query_centroid_cos` and `row_centroid_cos` (a gap between them is the query
+  set sitting off-centre, i.e. OOD shift), with the sample sizes next to the
+  values. Recall without these is a number about an unnamed dataset.
 
 ## The JSONL row
 

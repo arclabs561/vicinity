@@ -388,6 +388,17 @@ fn run() -> Res<()> {
     if verify {
         verify_ground_truth(&dataset, &queries, &truth, args.k)?;
     }
+    let difficulty = difficulty_stats(&dataset, &queries, &truth, args.k);
+    println!(
+        "dataset difficulty ({} sample rows, {} tie queries): relative contrast {:.3}, tie \
+         density at k {:.3}, query/row centroid cosine {:.3}/{:.3} (a gap here is OOD shift)",
+        difficulty.sample_rows,
+        difficulty.tie_queries,
+        difficulty.relative_contrast,
+        difficulty.tie_density_at_k,
+        difficulty.query_centroid_cos,
+        difficulty.row_centroid_cos,
+    );
     drop(dataset);
 
     if args.gt_only {
@@ -704,7 +715,14 @@ fn run() -> Res<()> {
                 );
             }
         }
-        write_jsonl(&json_path, &rows, &args, &gt_path, dataset_path.as_path())?;
+        write_jsonl(
+            &json_path,
+            &rows,
+            &args,
+            &gt_path,
+            dataset_path.as_path(),
+            &difficulty,
+        )?;
         println!(
             "rows written: {} ({} family/families)",
             rows.len(),
@@ -713,7 +731,14 @@ fn run() -> Res<()> {
     }
 
     print_rows(&rows, args.points, args.dim, args.gt_queries);
-    write_jsonl(&json_path, &rows, &args, &gt_path, dataset_path.as_path())?;
+    write_jsonl(
+        &json_path,
+        &rows,
+        &args,
+        &gt_path,
+        dataset_path.as_path(),
+        &difficulty,
+    )?;
     println!(
         "wall clock: {:.1}s; total dataset+index on disk: {:.1} MiB",
         started.elapsed().as_secs_f64(),
@@ -1613,6 +1638,162 @@ impl TopK {
     }
 }
 
+/// What the dataset contributes to a recall number.
+///
+/// A recall row is uninterpretable on its own: uniform 96-d at 1M reaches 0.29 at
+/// `ef=200` where SIFT-128 reaches 0.87 at `ef=63`. These are the three
+/// statistics that separate "the index is weak" from "the data is hard", and
+/// they belong in the row's provenance rather than in a side table nobody joins.
+struct Difficulty {
+    /// Mean sample distance over nearest-neighbour distance. Higher is easier.
+    relative_contrast: f64,
+    /// Share of sampled queries whose k-th and (k+1)-th neighbours are equally
+    /// distant, so the k-th slot is a coin toss between two ids.
+    tie_density_at_k: f64,
+    /// Mean cosine of a query to the corpus centroid.
+    query_centroid_cos: f64,
+    /// The same for a corpus row; a large gap means the queries sit off-centre.
+    row_centroid_cos: f64,
+    tie_queries: usize,
+    sample_rows: usize,
+}
+
+fn cos_similarity(a: &[f32], b: &[f32]) -> f64 {
+    let mut dot = 0f64;
+    let mut na = 0f64;
+    let mut nb = 0f64;
+    for (x, y) in a.iter().zip(b) {
+        dot += f64::from(*x) * f64::from(*y);
+        na += f64::from(*x) * f64::from(*x);
+        nb += f64::from(*y) * f64::from(*y);
+    }
+    let denominator = (na * nb).sqrt();
+    if denominator == 0.0 {
+        0.0
+    } else {
+        dot / denominator
+    }
+}
+
+/// Measure dataset difficulty on a stride sample plus a few exact scans.
+///
+/// `tie_density_at_k` needs the (k+1)-th distance, which only a scan can give, so
+/// it is measured on a handful of queries and the count is recorded next to the
+/// value. The centroid and contrast statistics use a stride sample of the corpus
+/// and a query count both stated in `_meta`.
+fn difficulty_stats(
+    dataset: &DatasetFile,
+    queries: &[Vec<f32>],
+    truth: &[Vec<u32>],
+    k: usize,
+) -> Difficulty {
+    const SAMPLE_ROWS: usize = 4096;
+    const CENTROID_QUERIES: usize = 50;
+    const SMALL_TIER_QUERIES: usize = 8;
+    const LARGE_TIER_QUERIES: usize = 2;
+
+    let count = dataset.count();
+    let dim = dataset.dim();
+    let sample_rows = SAMPLE_ROWS.min(count as usize).max(1);
+    let stride = (count as usize / sample_rows).max(1);
+    let sample: Vec<&[f32]> = (0..sample_rows)
+        .map(|index| dataset.row((index * stride) as u64))
+        .collect();
+
+    let mut centroid = vec![0f64; dim];
+    for row in &sample {
+        for (slot, value) in centroid.iter_mut().zip(row.iter()) {
+            *slot += f64::from(*value);
+        }
+    }
+    let centroid: Vec<f32> = centroid
+        .iter()
+        .map(|value| (value / sample.len() as f64) as f32)
+        .collect();
+
+    let centroid_queries = queries.len().min(CENTROID_QUERIES);
+    let query_centroid_cos = if centroid_queries == 0 {
+        f64::NAN
+    } else {
+        queries
+            .iter()
+            .take(centroid_queries)
+            .map(|query| cos_similarity(query, &centroid))
+            .sum::<f64>()
+            / centroid_queries as f64
+    };
+    let row_centroid_cos = sample
+        .iter()
+        .map(|row| cos_similarity(row, &centroid))
+        .sum::<f64>()
+        / sample.len() as f64;
+
+    let contrast_queries = queries.len().min(CENTROID_QUERIES);
+    let mut contrast = 0f64;
+    for (index, query) in queries.iter().take(contrast_queries).enumerate() {
+        let mean_similarity = sample
+            .iter()
+            .map(|row| cos_similarity(query, row))
+            .sum::<f64>()
+            / sample.len() as f64;
+        let nearest = truth
+            .get(index)
+            .and_then(|ids| ids.first())
+            .map(|&id| 1.0 - cos_similarity(query, dataset.row(u64::from(id))))
+            .unwrap_or(f64::NAN);
+        let mean_distance = 1.0 - mean_similarity;
+        if nearest.is_finite() && nearest > f64::MIN_POSITIVE {
+            contrast += mean_distance / nearest;
+        }
+    }
+    let relative_contrast = if contrast_queries == 0 {
+        f64::NAN
+    } else {
+        contrast / contrast_queries as f64
+    };
+
+    let tie_queries = if count <= 1_000_000 {
+        SMALL_TIER_QUERIES
+    } else {
+        LARGE_TIER_QUERIES
+    }
+    .min(queries.len());
+    let mut ties = 0usize;
+    let mut measured = 0usize;
+    for query in queries.iter().take(tie_queries) {
+        if (k as u64) + 1 > count {
+            break;
+        }
+        let mut top = TopK::new(k + 1);
+        for row in 0..count {
+            top.push(cos_similarity(query, dataset.row(row)), row as u32);
+        }
+        if top.items.len() == k + 1 {
+            measured += 1;
+            let kth = top.items[k - 1].0;
+            let next = top.items[k].0;
+            // Equal within f32 resolution of the score itself: the ids are
+            // interchangeable for a recall count.
+            if (kth - next).abs() <= 1e-6 * kth.abs().max(f64::MIN_POSITIVE) {
+                ties += 1;
+            }
+        }
+    }
+
+    Difficulty {
+        relative_contrast,
+        tie_density_at_k: if measured == 0 {
+            f64::NAN
+        } else {
+            ties as f64 / measured as f64
+        },
+        query_centroid_cos,
+        row_centroid_cos,
+        tie_queries: measured,
+        sample_rows: sample.len(),
+    }
+}
+
 fn query_hash(queries: &[Vec<f32>]) -> u64 {
     let mut hash = 0xcbf2_9ce4_8422_2325u64; // FNV-1a 64 offset basis
     for query in queries {
@@ -2295,11 +2476,23 @@ fn run_sharded(path: &Path, queries: &[Vec<f32>], truth: &[Vec<u32>], args: &Arg
     print!("{table}");
 
     if let Some(path) = &args.json {
+        // The sharded path writes its own line, so it needs its own provenance:
+        // without host/cores/load1 a 10M or 100M row cannot be compared with
+        // anything, and load1 is what says whether a timing means anything.
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(0);
+        let load1 = match load1() {
+            Some(value) => format!("{value:.2}"),
+            None => "null".to_string(),
+        };
         let meta = format!(
             "{{\"_meta\":true,\"schema\":1,\"harness\":\"large_scale_sharded\",\
+             \"host\":\"{}\",\"cores\":{cores},\"load1\":{load1},\
              \"n\":{count},\"dim\":{dim},\"k\":{},\"queries\":{},\"dataset\":\"{}\",\
              \"tier\":\"{}\",\"shards\":{shards},\"seed\":\"0x{HNSW_SEED:016X}\",\
              \"distance_stats\":false,\"partition\":\"kmeans on a stride sample\"}}\n",
+            host_name(),
             args.k,
             queries.len(),
             args.domain.name(),
@@ -2719,7 +2912,14 @@ fn print_rows(rows: &[Row], count: u64, dim: usize, queries: usize) {
     println!();
 }
 
-fn write_jsonl(path: &Path, rows: &[Row], args: &Args, gt_cache: &Path, dataset: &Path) -> Res<()> {
+fn write_jsonl(
+    path: &Path,
+    rows: &[Row],
+    args: &Args,
+    gt_cache: &Path,
+    dataset: &Path,
+    difficulty: &Difficulty,
+) -> Res<()> {
     use std::fmt::Write as _;
 
     if let Some(parent) = path.parent() {
@@ -2736,15 +2936,13 @@ fn write_jsonl(path: &Path, rows: &[Row], args: &Args, gt_cache: &Path, dataset:
         .map(|n| n.get())
         .unwrap_or(0);
     let load1 = load1();
-    let host = std::env::var("RUNNER_OS")
-        .or_else(|_| std::env::var("HOSTNAME"))
-        .unwrap_or_else(|_| std::env::consts::OS.to_string());
+    let host = host_name();
     let _ = writeln!(
         out,
         "{{\"_meta\":true,\"schema\":1,\"harness\":\"large_scale\",\"host\":\"{host}\",\
          \"cores\":{cores},\"load1\":{},\"n\":{},\"dim\":{},\
          \"k\":{},\"queries\":{},\"exact_queries\":{},\"dataset\":\"{}\",\"tier\":\"{}\",\
-         \"seed\":\"0x{SEED:016X}\",\
+         \"seed\":\"0x{SEED:016X}\",\"difficulty\":{},\
          \"mmap\":true,\"large_scale\":true,\"batch\":{},\"families\":\"{}\",\
          \"diskann_cache_mib\":{},\"distance_stats\":{},\"compact_upper\":{},\"max_points\":{},\
          \"budget_seconds\":{},\"vicinity\":\"{}\",\"gt_cache\":\"{}\",\"data_file\":\"{}\"}}",
@@ -2761,6 +2959,16 @@ fn write_jsonl(path: &Path, rows: &[Row], args: &Args, gt_cache: &Path, dataset:
         args.gt_queries,
         args.domain.name(),
         tier_label(args.points),
+        format!(
+            "{{\"relative_contrast\":{},\"tie_density_at_k\":{},\"query_centroid_cos\":{},\
+             \"row_centroid_cos\":{},\"tie_queries\":{},\"sample_rows\":{}}}",
+            json_num(difficulty.relative_contrast, 4),
+            json_num(difficulty.tie_density_at_k, 4),
+            json_num(difficulty.query_centroid_cos, 4),
+            json_num(difficulty.row_centroid_cos, 4),
+            difficulty.tie_queries,
+            difficulty.sample_rows,
+        ),
         effective_batch(args),
         families.join(","),
         args.diskann_cache_mib,
@@ -2848,6 +3056,13 @@ fn percentile(samples: &mut [f64], p: f64) -> f64 {
 /// The ratchet refuses to compare timings recorded under heavy load, so a
 /// missing value is not neutral. `/proc/loadavg` does not exist on macOS, where
 /// `sysctl vm.loadavg` reports the same number as `"{ 1.23 1.45 1.67 }"`.
+/// Runner or host name, for the provenance line.
+fn host_name() -> String {
+    std::env::var("RUNNER_OS")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .unwrap_or_else(|_| std::env::consts::OS.to_string())
+}
+
 fn load1() -> Option<f64> {
     if let Ok(text) = std::fs::read_to_string("/proc/loadavg") {
         if let Some(value) = text
