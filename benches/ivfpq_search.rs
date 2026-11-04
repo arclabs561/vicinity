@@ -4,14 +4,15 @@
 //! Keep this target separate from the ANN dataset example so profiling search
 //! does not include HDF5 loading or k-means training.
 
-#[cfg(feature = "ivf_pq")]
-use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 #[cfg(feature = "ivf_pq")]
 use rand::prelude::*;
 #[cfg(all(feature = "ivf_pq", feature = "benchmark"))]
 use stats_alloc::{Region, StatsAlloc, INSTRUMENTED_SYSTEM};
 #[cfg(all(feature = "ivf_pq", feature = "benchmark"))]
 use std::alloc::System;
+#[cfg(feature = "ivf_pq")]
+use std::hint::black_box;
 #[cfg(all(feature = "ivf_pq", feature = "benchmark"))]
 use vicinity::ivf_pq::IVFPQSearchProfile;
 #[cfg(feature = "ivf_pq")]

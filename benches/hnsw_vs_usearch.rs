@@ -27,8 +27,9 @@
 
 use std::time::{Duration, Instant};
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use rand::prelude::*;
+use std::hint::black_box;
 use usearch::{Index, IndexOptions, MetricKind, ScalarKind};
 use vicinity::distance::cosine_distance_normalized;
 use vicinity::hnsw::{HNSWIndex, HNSWParams};

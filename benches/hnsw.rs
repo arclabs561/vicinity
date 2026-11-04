@@ -4,8 +4,9 @@
 //! These benchmarks measure end-to-end performance on synthetic data
 //! using the real `HNSWIndex` implementation.
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use rand::prelude::*;
+use std::hint::black_box;
 use vicinity::hnsw::HNSWIndex;
 
 // === Synthetic Data Generation ===

@@ -7,9 +7,10 @@
 //! - How does query time scale with dimension?
 //! - At what n does brute force become slower than ANN?
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
+use std::hint::black_box;
 use vicinity::hnsw::HNSWIndex;
 
 fn l2_distance_squared(a: &[f32], b: &[f32]) -> f32 {
