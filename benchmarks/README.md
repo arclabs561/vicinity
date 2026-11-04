@@ -657,6 +657,25 @@ aligned partition costs about five times more to scan than the anti one on this
 host, and absolute times moved by 3-4x between runs under load. Compare the two
 modes by recall at the same run, not by absolute microseconds across runs.
 
+## Sharded tier: 10M as 16 shards
+
+Rows in [`large-scale-10m-sharded.jsonl`](large-scale-10m-sharded.jsonl), from
+`large_scale --shards 16 --nprobe 1,2,4`. Each shard is built alone and dropped;
+peak shard RSS is 1011 MiB and the whole build is 2819 s, so the tier fits a
+machine that cannot hold the 14.5 GiB single graph.
+
+| nprobe | ef | recall@10 | p50 µs |
+| ---: | ---: | ---: | ---: |
+| 1 | 800 | 0.179 | 2876 |
+| 2 | 800 | 0.298 | 7099 |
+| 4 | 800 | 0.470 | 13906 |
+
+Against the single graph at the same `ef` (0.234 at 2722 µs), probing four
+shards roughly doubles recall and costs about five times the latency: the same
+candidate budget buys more because it is spread over four independent graphs.
+That is the trade the 100M row will report, and it is the reason sharding is the
+local answer above 10M.
+
 ## Real corpus: SIFT-128 at 1M
 
 Rows in [`sift-128-hnsw-1m.jsonl`](sift-128-hnsw-1m.jsonl), measured with

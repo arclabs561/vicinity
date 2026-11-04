@@ -1,0 +1,7 @@
+{"_meta":true,"schema":1,"harness":"large_scale_sharded","n":10000000,"dim":96,"k":10,"queries":500,"dataset":"uniform","tier":"10m","shards":16,"seed":"0x000000000000002A","distance_stats":false,"partition":"kmeans on a stride sample"}
+{"family":"hnsw-sharded","storage_mode":"resident","dataset":"uniform@10m","knob":"nprobe","knob_value":1,"recall":0.0988,"p50_us":816.4,"build_s":238.7,"shards":16,"ef":200,"n":10000000,"dim":96}
+{"family":"hnsw-sharded","storage_mode":"resident","dataset":"uniform@10m","knob":"nprobe","knob_value":1,"recall":0.1786,"p50_us":2875.7,"build_s":238.7,"shards":16,"ef":800,"n":10000000,"dim":96}
+{"family":"hnsw-sharded","storage_mode":"resident","dataset":"uniform@10m","knob":"nprobe","knob_value":2,"recall":0.1668,"p50_us":1690.6,"build_s":238.7,"shards":16,"ef":200,"n":10000000,"dim":96}
+{"family":"hnsw-sharded","storage_mode":"resident","dataset":"uniform@10m","knob":"nprobe","knob_value":2,"recall":0.2980,"p50_us":7098.7,"build_s":238.7,"shards":16,"ef":800,"n":10000000,"dim":96}
+{"family":"hnsw-sharded","storage_mode":"resident","dataset":"uniform@10m","knob":"nprobe","knob_value":4,"recall":0.2578,"p50_us":4237.7,"build_s":238.7,"shards":16,"ef":200,"n":10000000,"dim":96}
+{"family":"hnsw-sharded","storage_mode":"resident","dataset":"uniform@10m","knob":"nprobe","knob_value":4,"recall":0.4700,"p50_us":13906.3,"build_s":238.7,"shards":16,"ef":800,"n":10000000,"dim":96}
