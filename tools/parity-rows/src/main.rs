@@ -442,6 +442,29 @@ fn assemble(label: String, base: Vec<Vec<f32>>, queries: Vec<Vec<f32>>) -> Datas
 
 // ── output ──────────────────────────────────────────────────────────────────
 
+/// One-minute load average. `/proc/loadavg` is Linux-only; macOS reports the same
+/// number through `sysctl -n vm.loadavg` as `"{ 1.23 1.45 1.67 }"`.
+fn load_average() -> Option<f64> {
+    if let Ok(text) = std::fs::read_to_string("/proc/loadavg") {
+        if let Some(value) = text
+            .split_whitespace()
+            .next()
+            .and_then(|value| value.parse::<f64>().ok())
+        {
+            return Some(value);
+        }
+    }
+    let output = std::process::Command::new("sysctl")
+        .args(["-n", "vm.loadavg"])
+        .output()
+        .ok()?;
+    let text = String::from_utf8(output.stdout).ok()?;
+    text.trim_matches(|c: char| c.is_whitespace() || c == '{' || c == '}')
+        .split_whitespace()
+        .next()
+        .and_then(|value| value.parse::<f64>().ok())
+}
+
 fn write_jsonl(path: &str, rows: &[Row], dataset: &Dataset) -> std::io::Result<()> {
     fn num(value: f64, precision: usize) -> String {
         if value.is_finite() {
@@ -455,16 +478,42 @@ fn write_jsonl(path: &str, rows: &[Row], dataset: &Dataset) -> std::io::Result<(
     }
 
     let mut out = String::new();
+    // Provenance first: a parity row without host, cores and load1 cannot be
+    // compared with a re-run, and these files are the evidence for the parity
+    // claims in the README. Both field spellings are emitted because
+    // `all_families`/`large_scale` write `recall_at_10`/`inverse_ratio` while
+    // older parity rows were read as `recall`/`ratio`.
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(0);
+    let load1 = load_average();
+    let host = std::env::var("RUNNER_OS")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .unwrap_or_else(|_| std::env::consts::OS.to_string());
+    let _ = writeln!(
+        out,
+        "{{\"_meta\":true,\"schema\":1,\"harness\":\"parity-rows\",\"host\":\"{host}\",\
+         \"cores\":{cores},\"load1\":{},\"n\":{},\"dim\":{DIM},\"k\":{K},\"queries\":{},\
+         \"dataset\":\"{}\",\"lid\":{},\"exact_p50_us\":{},\"build\":{{\"m\":16,\
+         \"ef_construction\":200}},\"vicinity\":\"working tree\"}}",
+        load1.map_or_else(|| "null".to_string(), |value| format!("{value:.2}")),
+        dataset.base.len(),
+        dataset.queries.len(),
+        dataset.label,
+        num(dataset.lid, 3),
+        num(dataset.exact_p50_us, 1),
+    );
     for row in rows {
         let _ = writeln!(
             out,
             "{{\"family\":\"{}\",\"dataset\":\"{}\",\"knob\":\"ef_search\",\"knob_value\":{},\
-             \"recall\":{},\"p50_us\":{},\"p95_us\":{},\"p99_us\":{},\
+             \"recall\":{},\"recall_at_10\":{},\"p50_us\":{},\"p95_us\":{},\"p99_us\":{},\
              \"qps\":{},\"dists_per_query\":null,\"build_s\":{},\"mem_mib\":{},\
-             \"ratio\":{},\"dim\":{},\"lid\":{}}}",
+             \"ratio\":{},\"inverse_ratio\":{},\"dim\":{},\"lid\":{}}}",
             row.family,
             dataset.label,
             row.ef,
+            num(row.recall, 4),
             num(row.recall, 4),
             num(row.p50, 1),
             num(row.p95, 1),
@@ -472,6 +521,7 @@ fn write_jsonl(path: &str, rows: &[Row], dataset: &Dataset) -> std::io::Result<(
             num(row.qps, 1),
             num(row.build_s, 4),
             mem(row.mem_mib),
+            num(row.ratio, 4),
             num(row.ratio, 4),
             DIM,
             num(dataset.lid, 3),

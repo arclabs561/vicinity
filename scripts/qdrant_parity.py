@@ -1,4 +1,4 @@
-import json, math, sys, time, urllib.request
+import json, math, platform, sys, time, urllib.request
 
 BASE = "http://127.0.0.1:6333"
 DIM, N, NQ, K = 96, 100_000, 200, 10
@@ -83,6 +83,7 @@ def main():
         lat.sort()
         rows.append({"family": "qdrant", "dataset": f"uniform@{N}", "knob": "ef_search",
                      "knob_value": ef, "recall": hits / (NQ * K),
+                     "recall_at_10": hits / (NQ * K),
                      "p50_us": round(lat[len(lat) // 2], 1),
                      "p95_us": round(lat[int(len(lat) * 0.95)], 1),
                      "p99_us": round(lat[int(len(lat) * 0.99)], 1),
@@ -91,7 +92,26 @@ def main():
         print(json.dumps(rows[-1]), flush=True)
 
     if out_path:
+        # Provenance first, including the two facts that make these numbers
+        # different from an embedded row: latency carries one HTTP round trip
+        # per query, and recall is against this script's exact scan.
+        meta = {
+            "_meta": True,
+            "schema": 1,
+            "harness": "qdrant_parity",
+            "host": platform.node(),
+            "n": N,
+            "dim": DIM,
+            "k": K,
+            "queries": NQ,
+            "ef_sweep": EFS,
+            "exact_queries": NQ,
+            "latency": "client-side per query, includes one HTTP round trip",
+            "server": "qdrant, hnsw_ef per request, exact=false",
+            "vicinity": "measured separately in qdrant-parity-100k-vicinity.jsonl",
+        }
         with open(out_path, "w", encoding="utf-8") as f:
+            f.write(json.dumps(meta, sort_keys=True) + "\n")
             for row in rows:
                 f.write(json.dumps(row, sort_keys=True) + "\n")
         print(f"wrote {len(rows)} rows to {out_path}", file=sys.stderr)
