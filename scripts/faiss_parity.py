@@ -84,26 +84,50 @@ def exact_top_k(corpus: np.ndarray, queries: np.ndarray, k: int) -> np.ndarray:
     return truth
 
 
-def measure(search, queries: np.ndarray, truth: np.ndarray, k: int):
-    """Warm up, then one timed pass. Returns (recall, p50, p95, p99, qps)."""
+def measure(search, queries: np.ndarray, truth: np.ndarray, k: int, repeat: int = 1):
+    """Warm up, then `repeat` timed passes.
+
+    Returns (recall, p50, p95, p99, qps). Recall is identical across passes at a
+    fixed index, so it is taken from the last one; the quantiles are the median
+    across passes, which is what a single pass cannot give: five tail
+    observations at 500 queries make a one-pass p99 unstable.
+    """
     for query in queries[:5]:
         search(query, k)
-    latencies = np.empty(len(queries), dtype=np.float64)
-    hits = 0
-    for index, query in enumerate(queries):
+    passes: list[tuple[float, np.ndarray, int]] = []
+    for _ in range(max(1, repeat)):
+        latencies = np.empty(len(queries), dtype=np.float64)
+        hits = 0
+        for index, query in enumerate(queries):
+            start = time.perf_counter()
+            _, ids = search(query, k)
+            ids = np.asarray(ids).reshape(-1)
+            latencies[index] = (time.perf_counter() - start) * 1e6
+            hits += len(set(ids.tolist()) & set(truth[index].tolist()))
+        passes.append((hits / (len(queries) * k), np.sort(latencies), hits))
+    recall = passes[-1][0]
+    p50 = float(np.median([float(np.percentile(lat, 50)) for _, lat, _ in passes]))
+    p95 = float(np.median([float(np.percentile(lat, 95)) for _, lat, _ in passes]))
+    p99 = float(np.median([float(np.percentile(lat, 99)) for _, lat, _ in passes]))
+    qps = float(np.median([len(queries) / (lat.sum() / 1e6) for _, lat, _ in passes]))
+    return recall, p50, p95, p99, qps
+
+
+def call_floor_us(faiss, queries: np.ndarray, dim: int, k: int) -> float:
+    """Per-call Python + FFI floor: the same call against a one-vector index.
+
+    Every FAISS row is measured through one Python call per query, so the row
+    carries this floor. Recording it lets a reader see how much of a 100 us row
+    is the call rather than the search.
+    """
+    tiny = faiss.IndexFlatIP(dim)
+    tiny.add(np.zeros((1, dim), dtype=np.float32))
+    samples = []
+    for query in queries:
         start = time.perf_counter()
-        _, ids = search(query, k)
-        ids = np.asarray(ids).reshape(-1)
-        latencies[index] = (time.perf_counter() - start) * 1e6
-        hits += len(set(ids.tolist()) & set(truth[index].tolist()))
-    latencies.sort()
-    return (
-        hits / (len(queries) * k),
-        float(np.percentile(latencies, 50)),
-        float(np.percentile(latencies, 95)),
-        float(np.percentile(latencies, 99)),
-        float(len(queries) / (latencies.sum() / 1e6)),
-    )
+        tiny.search(query.reshape(1, -1), k)
+        samples.append((time.perf_counter() - start) * 1e6)
+    return float(np.median(samples))
 
 
 def row(
@@ -119,6 +143,7 @@ def row(
         "recall": round(recall, 4),
         "recall_at_10": round(recall, 4),
         "p50_us": round(p50, 1),
+        "p50_us_minus_floor": round(max(p50 - meta.get("call_floor_us", 0.0), 0.0), 1),
         "p95_us": round(p95, 1),
         "p99_us": round(p99, 1),
         "qps": round(qps, 1),
@@ -149,6 +174,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--nprobe", default="1,2,4,8,16")
     parser.add_argument(
         "--families", default="faiss-hnsw,faiss-ivfpq", help="comma-separated subset"
+    )
+    parser.add_argument(
+        "--repeat",
+        type=int,
+        default=1,
+        help="timed passes per knob value; quantiles are the median across passes",
     )
     parser.add_argument("--hnsw-m", type=int, default=16)
     parser.add_argument("--hnsw-ef-construction", type=int, default=200)
@@ -188,6 +219,8 @@ def main(argv: list[str] | None = None) -> int:
         exact_latencies.append((time.perf_counter() - start) * 1e6)
     exact_p50 = float(np.percentile(exact_latencies, 50))
 
+    floor = call_floor_us(faiss, queries, dim, args.k)
+    print(f"call floor: {floor:.1f} us per query", file=sys.stderr)
     dataset_label = f"uniform@{n // 1000}k" if n % 1000 == 0 else f"uniform@{n}"
     meta = {
         "_meta": True,
@@ -203,6 +236,13 @@ def main(argv: list[str] | None = None) -> int:
         "exact_queries": int(len(queries)),
         "dataset": dataset_label,
         "faiss": getattr(faiss, "__version__", "unknown"),
+        "call_floor_us": round(floor, 1),
+        "repeat": max(1, args.repeat),
+        "caveat": (
+            "call_floor_us is the same Python call against a one-vector index. Every "
+            "FAISS latency here includes it, so p50_us_minus_floor estimates the search "
+            "alone; the raw p50 is what the call actually costs a caller."
+        ),
         "exact_p50_us": round(exact_p50, 1),
         "metric": "inner product on L2-normalised vectors",
         "threads": 1,
@@ -224,6 +264,7 @@ def main(argv: list[str] | None = None) -> int:
                 queries,
                 truth,
                 args.k,
+                args.repeat,
             )
             rows.append(
                 row(
@@ -277,6 +318,7 @@ def main(argv: list[str] | None = None) -> int:
                         queries,
                         truth,
                         args.k,
+                        args.repeat,
                     )
                     rows.append(
                         row(

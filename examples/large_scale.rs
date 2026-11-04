@@ -127,6 +127,10 @@ const QUERY_SALT: u64 = 0x5155_4552_5953_0001;
 const HNSW_SEED: u64 = 42;
 /// Queries timed with the exact scan for `inverse_ratio`. Exact p50 barely
 /// moves across 16 queries, and 10M x 16 is already seconds.
+/// Exact rerank pool for IVF-PQ. Plain `search` ranks by PQ-approximated
+/// distances, which is not the documented path; 100 matches the family's
+/// own benchmark setting.
+const IVF_PQ_RERANK_POOL: usize = 100;
 const MIN_GT_QUERIES: usize = 200;
 const MAX_GT_QUERIES: usize = 1000;
 
@@ -149,6 +153,7 @@ fn main() {
 enum Family {
     Hnsw,
     Diskann,
+    IvfPq,
 }
 
 impl Family {
@@ -156,8 +161,9 @@ impl Family {
         match text {
             "hnsw" => Ok(Self::Hnsw),
             "diskann" => Ok(Self::Diskann),
+            "ivf_pq" | "ivfpq" => Ok(Self::IvfPq),
             other => Err(format!(
-                "unknown family `{other}`; families wired at this tier: hnsw,diskann"
+                "unknown family `{other}`; families wired at this tier: hnsw,diskann,ivf_pq"
             )),
         }
     }
@@ -166,6 +172,7 @@ impl Family {
         match self {
             Self::Hnsw => "hnsw",
             Self::Diskann => "diskann",
+            Self::IvfPq => "ivf_pq",
         }
     }
 }
@@ -313,12 +320,14 @@ fn run() -> Res<()> {
     let estimate = estimate(&args, args.points - completed, gt_path.exists());
     println!(
         "estimated wall clock ~{:.0}s (generation {:.0}s, ground truth {:.0}s, hnsw build {:.0}s, \
-         diskann build {:.0}s, persist {:.0}s) against --budget-seconds {:.0}s",
+         diskann build {:.0}s, ivf_pq build {:.0}s, persist {:.0}s) against --budget-seconds \
+         {:.0}s",
         estimate.total,
         estimate.generation,
         estimate.ground_truth,
         estimate.hnsw_build,
         estimate.diskann_build,
+        estimate.ivf_pq_build,
         estimate.persist,
         args.budget_seconds
     );
@@ -338,7 +347,7 @@ fn run() -> Res<()> {
             estimate.total,
             estimate.generation,
             estimate.ground_truth,
-            estimate.hnsw_build + estimate.diskann_build,
+            estimate.hnsw_build + estimate.diskann_build + estimate.ivf_pq_build,
             estimate.persist,
             args.budget_seconds,
             args.gt_queries
@@ -564,6 +573,64 @@ fn run() -> Res<()> {
                             exact_timed,
                         );
                     }
+                }
+            }
+            Family::IvfPq => {
+                let rss_before = rss_mib();
+                let build_start = Instant::now();
+                let mut index = build_ivf_pq(&dataset_path, args.points, args.dim)?;
+                let build_s = build_start.elapsed().as_secs_f64();
+                let rss_after = rss_mib();
+                println!(
+                    "ivf_pq build: {build_s:.1}s; RSS before {:.1} MiB, after {:.1} MiB                      (in-RAM; add_slice keeps a full f32 copy of the corpus for k-means)",
+                    rss_before.unwrap_or(f64::NAN),
+                    rss_after.unwrap_or(f64::NAN),
+                );
+                // No durable format is wired at this tier. FAISS measures this
+                // family resident, so the row reports NaN rather than an
+                // estimate that would read as a disk measurement.
+                let report = BuildReport {
+                    build_m: None,
+                    build_efc: None,
+                    build_s,
+                    mem_mib: bytes_to_mib(index.memory_usage().total() as u64),
+                    rss_mib: rss_after.unwrap_or(f64::NAN),
+                    index_disk_mib: f64::NAN,
+                    persist_s: 0.0,
+                };
+                for &nprobe in &args.nprobe {
+                    if let Some(refusal) = budget_refusal(&args, started, family, nprobe) {
+                        println!("{refusal}");
+                        break 'families;
+                    }
+                    index.set_nprobe(nprobe);
+                    let Some(stats) = evaluate(
+                        |query, k, _| {
+                            index
+                                .search_reranked(query, k, IVF_PQ_RERANK_POOL)
+                                .map_err(string_err)
+                        },
+                        &queries,
+                        &truth,
+                        args.k,
+                        nprobe,
+                        Some(deadline),
+                    ) else {
+                        println!("{BUDGET_HIT}");
+                        break 'families;
+                    };
+                    push_rows(
+                        &mut rows,
+                        family.name(),
+                        "nprobe",
+                        nprobe,
+                        stats,
+                        &report,
+                        &args,
+                        verify,
+                        &gt_path,
+                        exact_timed,
+                    );
                 }
             }
             Family::Diskann => {
@@ -1004,8 +1071,8 @@ fn print_usage() {
            --k <k>                neighbours (default 10)\n\
            --gt-queries <q>       sampled query set, 200..=1000 (default 500)\n\
            --ef <a,b,c>           ef_search sweep (default 50,100,200)\n\
-           --families <a,b>       families to build and measure: hnsw,diskann\n\
-                                  (default both)\n\
+           --families <a,b>       families to build and measure: hnsw,diskann,ivf_pq\n\
+                                  (default hnsw,diskann)\n\
            --diskann-cache-mib <n>  block cache for the file-backed diskann\n\
                                   searcher; 0 disables it (default 64)\n\
            --max-points <n>       hard ceiling (default 20000000)\n\
@@ -1545,6 +1612,8 @@ fn index_disk_estimate(families: &[Family], dataset_bytes: u64) -> u64 {
         .map(|family| match family {
             Family::Hnsw => dataset_bytes.saturating_mul(126) / 100,
             Family::Diskann => dataset_bytes.saturating_mul(135) / 100,
+            // Not persisted at this tier, so it needs no index space.
+            Family::IvfPq => 0,
         })
         .fold(0u64, |sum, bytes| sum.saturating_add(bytes))
 }
@@ -2237,6 +2306,42 @@ fn persist_index(index: &vicinity::hnsw::HNSWIndex, path: &Path) -> Res<u64> {
 /// searcher can read (`save` → `DiskANNSearcher`). `VamanaIndex` has no
 /// `add_slice`, so it cannot ingest a mapped row without allocating a copy per
 /// row, and it has no file-backed searcher at all.
+fn build_ivf_pq(path: &Path, count: u64, dim: usize) -> Res<vicinity::ivf_pq::IVFPQIndex> {
+    use vicinity::ivf_pq::{IVFPQIndex, IVFPQParams};
+
+    let dataset = DatasetFile::open(path)?;
+    if dataset.count() != count || dataset.dim() != dim {
+        return Err(format!(
+            "dataset opened as dim={} count={}, expected dim={dim} count={count}",
+            dataset.dim(),
+            dataset.count()
+        ));
+    }
+    // Match the FAISS comparison: 256 inverted lists, 16 subquantizers, 8-bit
+    // codes. `num_codebooks` must divide the dimension.
+    if !dim.is_multiple_of(16) {
+        return Err(format!(
+            "ivf_pq needs a dimension divisible by 16 (got {dim})"
+        ));
+    }
+    let params = IVFPQParams {
+        num_clusters: 256,
+        nprobe: 4,
+        num_codebooks: 16,
+        codebook_size: 256,
+        seed: 42,
+        ..IVFPQParams::default()
+    };
+    let mut index = IVFPQIndex::new(dim, params).map_err(string_err)?;
+    for row_index in 0..count {
+        index
+            .add_slice(row_index as u32, dataset.row(row_index))
+            .map_err(string_err)?;
+    }
+    index.build().map_err(string_err)?;
+    Ok(index)
+}
+
 fn build_diskann(
     path: &Path,
     count: u64,
@@ -2643,6 +2748,10 @@ fn build_peak_kib_per_point(family: Family) -> f64 {
     match family {
         Family::Hnsw => 2.09,
         Family::Diskann => 1.21,
+        // `add_slice` keeps a full f32 copy of the corpus for k-means training
+        // (0.375 KiB/point at d=96), plus one u8 code per subquantizer and the
+        // centroids. 0.8 leaves room without pretending it streams.
+        Family::IvfPq => 0.8,
     }
 }
 
@@ -3046,6 +3155,11 @@ fn write_jsonl(
     let host = host_name();
     // Bound before the writeln: formatting it inside the args list is a
     // `format!` inside a format (clippy::format_in_format_args).
+    let ivf_pq_meta = if args.families.contains(&Family::IvfPq) {
+        "{\"num_clusters\":256,\"num_codebooks\":16,\"codebook_size\":256,\"rerank_pool\":100}"
+    } else {
+        "null"
+    };
     let difficulty_json = format!(
         "{{\"relative_contrast\":{},\"tie_density_at_k\":{},\"query_centroid_cos\":{},\
          \"row_centroid_cos\":{},\"tie_queries\":{},\"sample_rows\":{}}}",
@@ -3061,7 +3175,7 @@ fn write_jsonl(
         "{{\"_meta\":true,\"schema\":1,\"harness\":\"large_scale\",\"host\":\"{host}\",\
          \"cores\":{cores},\"load1\":{},\"n\":{},\"dim\":{},\
          \"k\":{},\"queries\":{},\"exact_queries\":{},\"dataset\":\"{}\",\"tier\":\"{}\",\
-         \"seed\":\"0x{SEED:016X}\",\"difficulty\":{},\
+         \"seed\":\"0x{SEED:016X}\",\"ivf_pq\":{},\"difficulty\":{},\
          \"mmap\":true,\"large_scale\":true,\"batch\":{},\"families\":\"{}\",\
          \"diskann_cache_mib\":{},\"distance_stats\":{},\"compact_upper\":{},\"max_points\":{},\
          \"budget_seconds\":{},\"vicinity\":\"{}\",\"gt_cache\":\"{}\",\"data_file\":\"{}\"}}",
@@ -3078,6 +3192,7 @@ fn write_jsonl(
         args.gt_queries,
         args.domain.name(),
         tier_label(args.points),
+        ivf_pq_meta,
         difficulty_json,
         effective_batch(args),
         families.join(","),
@@ -3220,6 +3335,7 @@ fn string_err<E: std::fmt::Display>(error: E) -> String {
 // ---------------------------------------------------------------------------
 
 struct Estimate {
+    ivf_pq_build: f64,
     generation: f64,
     ground_truth: f64,
     hnsw_build: f64,
@@ -3256,19 +3372,28 @@ fn estimate(args: &Args, remaining_rows: u64, gt_cached: bool) -> Estimate {
     } else {
         0.0
     };
+    let ivf_pq_build = if builds && args.families.contains(&Family::IvfPq) {
+        // k-means over the full corpus copy, 256 clusters. A 100k build took
+        // 274 s on a host at load1 54; the coefficient is set above even that
+        // so a loaded host is refused rather than surprised.
+        args.points as f64 * 3.0e-3
+    } else {
+        0.0
+    };
     let persist_per_family = (args.points as f64 * args.dim as f64 * 4.0) / 300e6;
     let persist = if args.persist && builds {
         persist_per_family * args.families.len() as f64
     } else {
         0.0
     };
-    let build = hnsw_build + diskann_build;
+    let build = hnsw_build + diskann_build + ivf_pq_build;
     let total = generation + ground_truth + build + persist;
     Estimate {
         generation,
         ground_truth,
         hnsw_build,
         diskann_build,
+        ivf_pq_build,
         persist,
         total,
     }
