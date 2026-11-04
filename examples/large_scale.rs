@@ -202,6 +202,10 @@ struct Args {
     shards: usize,
     /// Partitions to probe per query in sharded mode (nearest centroid first).
     nprobe: Vec<usize>,
+    /// HNSW build-knob matrix, as `m/ef_construction` pairs. Empty builds once at
+    /// the library defaults, which is what the committed rows measure; a row at
+    /// the defaults cannot say what a different graph would have cost or bought.
+    build_grid: Vec<(usize, usize)>,
     json: Option<PathBuf>,
     self_test: bool,
 }
@@ -232,6 +236,7 @@ impl Default for Args {
             batch: 4096,
             shards: 1,
             nprobe: vec![1, 2, 4],
+            build_grid: Vec::new(),
             json: None,
             self_test: false,
         }
@@ -431,76 +436,116 @@ fn run() -> Res<()> {
     'families: for family in &args.families {
         match family {
             Family::Hnsw => {
-                let rss_before = rss_mib();
-                let build_start = Instant::now();
-                let index = build_hnsw(&dataset_path, args.points, args.dim, batch)?;
-                let build_s = build_start.elapsed().as_secs_f64();
-                let rss_after = rss_mib();
-                println!(
-                    "hnsw build: {build_s:.1}s; RSS before {:.1} MiB, after {:.1} MiB (dataset \
-                     unmapped before both samples)",
-                    rss_before.unwrap_or(f64::NAN),
-                    rss_after.unwrap_or(f64::NAN),
-                );
-                let (index_disk_mib, persist_s) = if args.persist {
-                    let persist_start = Instant::now();
-                    let bytes = persist_index(&index, &hnsw_path)?;
-                    let persist_s = persist_start.elapsed().as_secs_f64();
-                    let mib = bytes_to_mib(bytes);
-                    println!(
-                        "hnsw index persisted: {} ({mib:.1} MiB) in {persist_s:.1}s",
-                        hnsw_path.display()
-                    );
-                    (mib, persist_s)
+                // An empty grid is one build at the library defaults, which is
+                // what the committed rows measure. A grid rebuilds the graph per
+                // (m, ef_construction) pair and repeats the ef sweep, because a
+                // row at the defaults cannot say what another graph would have
+                // cost or bought.
+                let builds: Vec<(usize, usize)> = if args.build_grid.is_empty() {
+                    let defaults = vicinity::hnsw::HNSWParams::default();
+                    vec![(defaults.m, defaults.ef_construction)]
                 } else {
-                    println!(
-                        "hnsw index not persisted (--no-persist); resident-size estimate {:.1} \
-                         MiB (not an on-disk measurement)",
-                        bytes_to_mib(index.memory_usage().total() as u64)
-                    );
-                    // No file was written, so the on-disk size is unmeasured.
-                    // Emitting the resident estimate under this column would
-                    // read as a disk measurement.
-                    (f64::NAN, 0.0)
+                    args.build_grid.clone()
                 };
-                let report = BuildReport {
-                    build_s,
-                    mem_mib: bytes_to_mib(index.memory_usage().total() as u64),
-                    rss_mib: rss_after.unwrap_or(f64::NAN),
-                    index_disk_mib,
-                    persist_s,
-                };
-                if report.index_disk_mib.is_finite() {
-                    index_disk_mib_total += report.index_disk_mib;
-                }
-                for &ef in &args.ef {
-                    if let Some(refusal) = budget_refusal(&args, started, family, ef) {
-                        println!("{refusal}");
-                        break 'families;
+                let mut next_build_s = estimate.hnsw_build.max(1.0);
+                'build: for (build_m, build_efc) in builds {
+                    if started.elapsed().as_secs_f64() + next_build_s > args.budget_seconds {
+                        println!(
+                            "stopping before the m={build_m} ef_construction={build_efc} build: \
+                             {next_build_s:.0}s is not enough budget for another graph"
+                        );
+                        break 'build;
                     }
-                    let Some(stats) = evaluate(
-                        |query, k, ef| index.search(query, k, ef).map_err(string_err),
-                        &queries,
-                        &truth,
-                        args.k,
-                        ef,
-                        Some(deadline),
-                    ) else {
-                        println!("{BUDGET_HIT}");
-                        break 'families;
-                    };
-                    push_rows(
-                        &mut rows,
-                        family.name(),
-                        "ef_search",
-                        ef,
-                        stats,
-                        &report,
-                        &args,
-                        verify,
-                        &gt_path,
-                        exact_timed,
+                    let rss_before = rss_mib();
+                    let build_start = Instant::now();
+                    let index = build_hnsw(
+                        &dataset_path,
+                        args.points,
+                        args.dim,
+                        batch,
+                        build_m,
+                        build_efc,
+                    )?;
+                    let build_s = build_start.elapsed().as_secs_f64();
+                    next_build_s = build_s;
+                    let rss_after = rss_mib();
+                    println!(
+                        "hnsw build (m={build_m}, ef_construction={build_efc}): {build_s:.1}s; RSS \
+                         before {:.1} MiB, after {:.1} MiB (dataset unmapped before both samples)",
+                        rss_before.unwrap_or(f64::NAN),
+                        rss_after.unwrap_or(f64::NAN),
                     );
+                    // A grid rebuilds the graph per pair, so persisting each one
+                    // writes `grid.len()` indexes to answer a recall question.
+                    // Only the default single build is persisted.
+                    let (index_disk_mib, persist_s) = if args.persist && args.build_grid.is_empty()
+                    {
+                        let persist_start = Instant::now();
+                        let bytes = persist_index(&index, &hnsw_path)?;
+                        let persist_s = persist_start.elapsed().as_secs_f64();
+                        let mib = bytes_to_mib(bytes);
+                        println!(
+                            "hnsw index persisted: {} ({mib:.1} MiB) in {persist_s:.1}s",
+                            hnsw_path.display()
+                        );
+                        (mib, persist_s)
+                    } else {
+                        println!(
+                            "hnsw index not persisted ({}); resident-size estimate {:.1} MiB \
+                             (not an on-disk measurement)",
+                            if args.persist {
+                                "--build-grid does not persist"
+                            } else {
+                                "--no-persist"
+                            },
+                            bytes_to_mib(index.memory_usage().total() as u64)
+                        );
+                        // No file was written, so the on-disk size is unmeasured.
+                        // Emitting the resident estimate under this column would
+                        // read as a disk measurement.
+                        (f64::NAN, 0.0)
+                    };
+                    let report = BuildReport {
+                        build_m: Some(build_m),
+                        build_efc: Some(build_efc),
+                        build_s,
+                        mem_mib: bytes_to_mib(index.memory_usage().total() as u64),
+                        rss_mib: rss_after.unwrap_or(f64::NAN),
+                        index_disk_mib,
+                        persist_s,
+                    };
+                    if report.index_disk_mib.is_finite() {
+                        index_disk_mib_total += report.index_disk_mib;
+                    }
+                    for &ef in &args.ef {
+                        if let Some(refusal) = budget_refusal(&args, started, family, ef) {
+                            println!("{refusal}");
+                            break 'families;
+                        }
+                        let Some(stats) = evaluate(
+                            |query, k, ef| index.search(query, k, ef).map_err(string_err),
+                            &queries,
+                            &truth,
+                            args.k,
+                            ef,
+                            Some(deadline),
+                        ) else {
+                            println!("{BUDGET_HIT}");
+                            break 'families;
+                        };
+                        push_rows(
+                            &mut rows,
+                            family.name(),
+                            "ef_search",
+                            ef,
+                            stats,
+                            &report,
+                            &args,
+                            verify,
+                            &gt_path,
+                            exact_timed,
+                        );
+                    }
                 }
             }
             Family::Diskann => {
@@ -529,6 +574,10 @@ fn run() -> Res<()> {
                     diskann_dir.display()
                 );
                 let report = BuildReport {
+                    // Vamana has no `m`/`ef_construction` pair; its knobs are
+                    // `r`/`l`/`alpha`, and none is swept here.
+                    build_m: None,
+                    build_efc: None,
                     build_s,
                     mem_mib: bytes_to_mib(index.size_bytes() as u64),
                     rss_mib: rss_after.unwrap_or(f64::NAN),
@@ -733,6 +782,24 @@ fn validate(args: &Args) -> Res<()> {
     if !(args.budget_seconds.is_finite() && args.budget_seconds > 0.0) {
         return Err("--budget-seconds must be a positive finite number".to_string());
     }
+    if !args.build_grid.is_empty() {
+        if args.shards > 1 {
+            return Err(
+                "--build-grid cannot be combined with --shards: the sharded path builds one \
+                 graph per shard from its own copy of the parameters, so a HNSW build pair has \
+                 no single graph to apply to."
+                    .to_string(),
+            );
+        }
+        if !args.families.contains(&Family::Hnsw) {
+            return Err(
+                "--build-grid only applies to hnsw; drop it or add hnsw to --families".to_string(),
+            );
+        }
+        if args.build_grid.iter().any(|&(m, efc)| m == 0 || efc == 0) {
+            return Err("--build-grid: m and ef_construction must both be positive".to_string());
+        }
+    }
     Ok(())
 }
 
@@ -794,6 +861,20 @@ fn parse_args() -> Res<Args> {
                     return Err("--families must name at least one family".to_string());
                 }
                 args.families = families;
+            }
+            "--build-grid" => {
+                let value = take_value(&argv, &mut index, &flag)?;
+                args.build_grid = value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|token| !token.is_empty())
+                    .map(|token| {
+                        let (m, efc) = token.split_once('/').ok_or_else(|| {
+                            format!("--build-grid: `{token}` is not m/ef_construction")
+                        })?;
+                        Ok((parse_usize(m)?, parse_usize(efc)?))
+                    })
+                    .collect::<Res<Vec<(usize, usize)>>>()?;
             }
             "--diskann-cache-mib" => {
                 args.diskann_cache_mib = parse_usize(&take_value(&argv, &mut index, &flag)?)?;
@@ -898,6 +979,9 @@ fn print_usage() {
            --prepare-only         write the dataset, then stop (scripts/prepare_data.py)\n\
            --shards K             build K shards, one resident at a time (default 1)\n\
            --nprobe a,b,c         shards probed per query in sharded mode\n\
+           --build-grid m/e,m/e   rebuild hnsw per (m, ef_construction) pair and\n\
+                                  repeat the ef sweep; empty builds once at the\n\
+                                  library defaults (e.g. 8/100,16/200,32/400)\n\
            --regenerate-gt        ignore an existing cache and recompute\n\
            --verify-gt / --no-verify-gt  force/disable the f32+f64 cross-check\n\
            --no-persist           skip the postcard index snapshot (hnsw only;\n\
@@ -1836,7 +1920,14 @@ fn exact_p50_us(dataset: &DatasetFile, queries: &[Vec<f32>], k: usize) -> f64 {
 // Index build, persistence and measurement
 // ---------------------------------------------------------------------------
 
-fn build_hnsw(path: &Path, count: u64, dim: usize, batch: usize) -> Res<vicinity::hnsw::HNSWIndex> {
+fn build_hnsw(
+    path: &Path,
+    count: u64,
+    dim: usize,
+    batch: usize,
+    m: usize,
+    ef_construction: usize,
+) -> Res<vicinity::hnsw::HNSWIndex> {
     use vicinity::distance::DistanceMetric;
     use vicinity::hnsw::{HNSWIndex, HNSWParams};
 
@@ -1851,6 +1942,11 @@ fn build_hnsw(path: &Path, count: u64, dim: usize, batch: usize) -> Res<vicinity
     let params = HNSWParams {
         metric: DistanceMetric::Cosine,
         seed: Some(HNSW_SEED),
+        // Passed explicitly rather than left to `HNSWParams::default()`: the
+        // build grid sweeps these, and a sweep whose baseline is implicit drifts
+        // the moment the library default changes.
+        m,
+        ef_construction,
         // Upper layers hold 1/16, 1/256 ... of the nodes, but the default
         // layout allocates a full-width neighbour slot for every node in every
         // layer. Freezing them into eligible-node CSR is the storage change
@@ -2482,6 +2578,10 @@ struct Row {
     dataset: String,
     knob: &'static str,
     knob_value: usize,
+    /// Build knobs this row's graph was built with. Always set for HNSW, `None`
+    /// for a family whose graph has no equivalent pair.
+    build_m: Option<usize>,
+    build_efc: Option<usize>,
     recall: f64,
     ratio: f64,
     p50: f64,
@@ -2505,6 +2605,8 @@ struct Row {
 /// Where a build put its measurements. One per family per run; every row from
 /// that family carries the same values.
 struct BuildReport {
+    build_m: Option<usize>,
+    build_efc: Option<usize>,
     build_s: f64,
     mem_mib: f64,
     rss_mib: f64,
@@ -2535,6 +2637,8 @@ fn push_rows(
         dataset: format!("{}@{}", args.domain.name(), tier_label(args.points)),
         knob,
         knob_value,
+        build_m: report.build_m,
+        build_efc: report.build_efc,
         recall: stats.recall,
         ratio: exact_timed / stats.p50.max(f64::MIN_POSITIVE),
         p50: stats.p50,
@@ -2560,12 +2664,12 @@ fn print_rows(rows: &[Row], count: u64, dim: usize, queries: usize) {
     println!("## large_scale: n={count} dim={dim} queries={queries}");
     println!();
     println!(
-        "| family | knob | recall@10 | 1/ratio@10 | p50 us | p95 us | p99 us | QPS | build s | \
-         index mem MiB | RSS at query MiB | index disk MiB | dists/q |"
+        "| family | build | knob | recall@10 | 1/ratio@10 | p50 us | p95 us | p99 us | QPS | \
+         build s | index mem MiB | RSS at query MiB | index disk MiB | dists/q |"
     );
     println!(
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | \
-         ---: |"
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | \
+         ---: | ---: |"
     );
     for row in rows {
         let disk = if row.index_disk_mib.is_finite() {
@@ -2573,10 +2677,15 @@ fn print_rows(rows: &[Row], count: u64, dim: usize, queries: usize) {
         } else {
             "-".to_string()
         };
+        let build = match (row.build_m, row.build_efc) {
+            (Some(m), Some(efc)) => format!("m={m} efc={efc}"),
+            _ => "-".to_string(),
+        };
         println!(
-            "| {} | {}={} | {:.3} | {:.2} | {:.1} | {:.1} | {:.1} | {:.0} | {:.2} | {:.1} | \
+            "| {} | {} | {}={} | {:.3} | {:.2} | {:.1} | {:.1} | {:.1} | {:.0} | {:.2} | {:.1} | \
              {:.1} | {} | {} |",
             row.family,
+            build,
             row.knob,
             row.knob_value,
             row.recall,
@@ -2622,9 +2731,7 @@ fn write_jsonl(path: &Path, rows: &[Row], args: &Args, gt_cache: &Path, dataset:
     let cores = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(0);
-    let load1 = std::fs::read_to_string("/proc/loadavg")
-        .ok()
-        .and_then(|text| text.split_whitespace().next()?.parse::<f64>().ok());
+    let load1 = load1();
     let host = std::env::var("RUNNER_OS")
         .or_else(|_| std::env::var("HOSTNAME"))
         .unwrap_or_else(|_| std::env::consts::OS.to_string());
@@ -2661,6 +2768,7 @@ fn write_jsonl(path: &Path, rows: &[Row], args: &Args, gt_cache: &Path, dataset:
         let _ = writeln!(
             out,
             "{{\"family\":\"{}\",\"storage_mode\":\"{}\",\"dataset\":\"{}\",\"knob\":\"{}\",\"knob_value\":{},\
+             \"build_m\":{},\"build_ef_construction\":{},\
              \"recall_at_10\":{},\"recall\":{},\"inverse_ratio\":{},\"ratio\":{},\
              \"p50_us\":{},\"p95_us\":{},\"p99_us\":{},\"qps\":{},\"dists_per_query\":{},\
              \"build_s\":{},\"mem_mib\":{},\"rss_mib\":{},\"index_disk_mib\":{},\"persist_s\":{},\
@@ -2670,6 +2778,12 @@ fn write_jsonl(path: &Path, rows: &[Row], args: &Args, gt_cache: &Path, dataset:
             row.dataset,
             row.knob,
             row.knob_value,
+            row.build_m
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string()),
+            row.build_efc
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string()),
             json_num(row.recall, 4),
             json_num(row.recall, 4),
             json_num(row.ratio, 4),
@@ -2719,6 +2833,32 @@ fn percentile(samples: &mut [f64], p: f64) -> f64 {
     samples.sort_by(f64::total_cmp);
     let rank = ((p / 100.0) * samples.len() as f64).ceil() as usize;
     samples[rank.saturating_sub(1).min(samples.len() - 1)]
+}
+
+/// One-minute load average, for the provenance line.
+///
+/// The ratchet refuses to compare timings recorded under heavy load, so a
+/// missing value is not neutral. `/proc/loadavg` does not exist on macOS, where
+/// `sysctl vm.loadavg` reports the same number as `"{ 1.23 1.45 1.67 }"`.
+fn load1() -> Option<f64> {
+    if let Ok(text) = std::fs::read_to_string("/proc/loadavg") {
+        if let Some(value) = text
+            .split_whitespace()
+            .next()
+            .and_then(|value| value.parse::<f64>().ok())
+        {
+            return Some(value);
+        }
+    }
+    let output = std::process::Command::new("sysctl")
+        .args(["-n", "vm.loadavg"])
+        .output()
+        .ok()?;
+    let text = String::from_utf8(output.stdout).ok()?;
+    text.trim_matches(|c: char| c.is_whitespace() || c == '{' || c == '}')
+        .split_whitespace()
+        .next()
+        .and_then(|value| value.parse::<f64>().ok())
 }
 
 fn rss_mib() -> Option<f64> {
