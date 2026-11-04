@@ -965,11 +965,28 @@ fn validate_metadata(dimension: usize, num_vectors: usize) -> Result<(), Retriev
 }
 
 fn parse_params(bytes: &[u8]) -> Result<ParsedParams, RetrieveError> {
-    if bytes.len() < 24 {
-        return Err(RetrieveError::FormatError(
-            "params.bin too short for the HNSW parameter header".into(),
-        ));
-    }
+    // A v3 params file starts with a marker; a legacy one starts directly with
+    // the `m` field. Without this, a truncated v3 file reads `m_l` as the metric
+    // byte and can load as the wrong metric instead of failing.
+    const PARAMS_MAGIC: &[u8; 4] = b"HNP3";
+    let bytes = if bytes.starts_with(PARAMS_MAGIC) {
+        let body = &bytes[PARAMS_MAGIC.len()..];
+        if !(26..=27).contains(&body.len()) {
+            return Err(RetrieveError::FormatError(format!(
+                "params.bin has the v3 marker but {} bytes of body; expected 26 or 27",
+                body.len()
+            )));
+        }
+        body
+    } else {
+        if !(24..=27).contains(&bytes.len()) {
+            return Err(RetrieveError::FormatError(format!(
+                "params.bin is {} bytes; expected 24-27 (legacy)",
+                bytes.len()
+            )));
+        }
+        bytes
+    };
     // m(4) m_max(4) m_l(8) ef_construction(4) ef_search(4), then optional
     // metric(1), auto_normalize(1), and compact_upper_layers(1).
     let metric = match bytes.get(24).copied() {
@@ -1548,6 +1565,63 @@ mod tests {
             matches!(error, RetrieveError::Unsupported { .. }),
             "expected Unsupported, got {error:?}"
         );
+    }
+
+    #[test]
+    fn truncated_v3_params_is_rejected_at_open() {
+        // A v3 params file is the marker plus a 26- or 27-byte body. Truncated to
+        // marker + 24 bytes it used to pass the "at least 24 bytes" check and read
+        // the metric from offset 24, which in a marker-prefixed file is the top
+        // byte of `m_l`. The metric is a small number there, so the file loaded as
+        // an index of the wrong metric instead of failing.
+        let index = build_index(64, 8, DistanceMetric::L2, false);
+        let dir = tempfile::tempdir().unwrap();
+        write_segment(dir.path(), &index, true);
+        let segment = dir.path().join("segments/segment_hnsw_0");
+
+        let mut params = Vec::new();
+        params.extend_from_slice(b"HNP3");
+        params.extend_from_slice(&(index.params.m as u32).to_le_bytes());
+        params.extend_from_slice(&(index.params.m_max as u32).to_le_bytes());
+        params.extend_from_slice(&index.params.m_l.to_le_bytes());
+        std::fs::write(segment.join("params.bin"), &params).unwrap();
+
+        let error = HNSWSegmentSearcher::open(&segment, FileCacheConfig::default())
+            .err()
+            .expect("a v3 marker with a 24-byte body must be rejected");
+        assert!(
+            matches!(error, RetrieveError::FormatError(ref message)
+                if message.contains("v3 marker") && message.contains("expected 26 or 27")),
+            "expected FormatError naming the v3 body length, got {error:?}"
+        );
+    }
+
+    #[test]
+    fn v3_params_with_marker_parses_the_metric_after_the_body_prefix() {
+        // Cosine with auto_normalize: the builder normalizes each row, so the
+        // stored metric byte 1 is honest and the index builds without the
+        // L2-normalization panic that un-normalized cosine rows raise.
+        let index = build_index(64, 8, DistanceMetric::Cosine, true);
+        let dir = tempfile::tempdir().unwrap();
+        write_segment(dir.path(), &index, true);
+        let segment = dir.path().join("segments/segment_hnsw_0");
+
+        // Marker + 26-byte body: the metric byte sits at body offset 24, which is
+        // file offset 28. Reading offset 24 would take the top byte of `m_l`.
+        let mut params = Vec::new();
+        params.extend_from_slice(b"HNP3");
+        params.extend_from_slice(&(index.params.m as u32).to_le_bytes());
+        params.extend_from_slice(&(index.params.m_max as u32).to_le_bytes());
+        params.extend_from_slice(&index.params.m_l.to_le_bytes());
+        params.extend_from_slice(&(index.params.ef_construction as u32).to_le_bytes());
+        params.extend_from_slice(&(index.params.ef_search as u32).to_le_bytes());
+        params.push(1); // Cosine
+        params.push(1); // auto_normalize
+        std::fs::write(segment.join("params.bin"), &params).unwrap();
+
+        let searcher = HNSWSegmentSearcher::open(&segment, FileCacheConfig::default())
+            .expect("marker + 26-byte body must parse");
+        assert_eq!(searcher.metric(), DistanceMetric::Cosine);
     }
 
     #[test]
