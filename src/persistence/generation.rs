@@ -166,17 +166,17 @@ impl PublicationLock {
             .create(true)
             .truncate(false)
             .open(&path)?;
-        use fs4::fs_std::FileExt;
         let contended = || PersistenceError::LockFailed {
             resource: path.display().to_string(),
             reason: "another generation publisher holds the advisory lock".into(),
         };
-        // fs4 0.13 reports contention as `Ok(false)`, not as a WouldBlock error.
-        match file.try_lock_exclusive() {
-            Ok(true) => Ok(Self { file }),
-            Ok(false) => Err(contended()),
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Err(contended()),
-            Err(error) => Err(PersistenceError::Io(error)),
+        // `File::try_lock` is in std since 1.89 and the crate's MSRV is above
+        // that, so the fs4 dependency is gone. Only `WouldBlock` is a contention
+        // failure; an I/O error opening or locking the file stays an I/O error.
+        match file.try_lock() {
+            Ok(()) => Ok(Self { file }),
+            Err(std::fs::TryLockError::WouldBlock) => Err(contended()),
+            Err(std::fs::TryLockError::Error(error)) => Err(PersistenceError::Io(error)),
         }
     }
 }

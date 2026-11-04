@@ -6,9 +6,10 @@
 //! used by in-memory HNSW so the visited-tracker policy remains visible in
 //! profiles.
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use rand::prelude::*;
 use std::collections::HashSet;
+use std::hint::black_box;
 use vicinity::distance::{cosine_distance_normalized, normalize};
 use vicinity::hnsw::{acorn_search_with_node_count_stats, AcornConfig, FnFilter};
 

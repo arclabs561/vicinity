@@ -4,10 +4,11 @@
 //! Keep this target separate from `benches/hnsw.rs` so profiling filtered
 //! search runs does not include setup for construction benchmarks.
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use rand::prelude::*;
 use stats_alloc::{Region, StatsAlloc, INSTRUMENTED_SYSTEM};
 use std::alloc::System;
+use std::hint::black_box;
 #[cfg(feature = "benchmark")]
 use vicinity::hnsw::{reset_search_counters, take_search_counters, HnswSearchCounters};
 use vicinity::hnsw::{HNSWIndex, HNSWParams};

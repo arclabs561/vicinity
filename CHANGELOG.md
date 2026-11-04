@@ -20,6 +20,19 @@ These source changes are not assigned to a package release here.
 
 ### Changed
 
+- **Dev dependency: `criterion` 0.5 -> 0.8.** Benchmarks only; no public API
+  change. `cargo check --benches --all-features` and a full pass of
+  `hnsw_search` succeed on the new version.
+
+### Removed
+
+- **`fs4`.** Generation publication locks use `File::try_lock`, which is in std
+  since 1.89 and the crate's MSRV is 1.94. The dependency and its two feature
+  entries are gone; `TryLockError::WouldBlock` replaces fs4's `Ok(false)` for
+  contention.
+
+### Changed
+
 - **On-disk segment format v2.** `metadata.bin` appends a commit byte. The
   writer clears it before touching any segment file and sets it only after the
   last file is sealed, so an interrupted save is refused with a `Format` error

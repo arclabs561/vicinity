@@ -3,8 +3,9 @@
 //! These benchmarks measure the core distance functions that dominate
 //! ANN search performance.
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use rand::prelude::*;
+use std::hint::black_box;
 use vicinity::distance::{
     cosine_distance, cosine_distance_normalized, inner_product_distance, l2_distance,
     l2_distance_squared,

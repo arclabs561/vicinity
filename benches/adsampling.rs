@@ -4,8 +4,9 @@
 //! Measures: rotate_query (O(D^2) per query), dist_comp (partial distance),
 //! and search_hnsw end-to-end at multiple dimensionalities.
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use rand::prelude::*;
+use std::hint::black_box;
 use vicinity::adsampling::{ADSamplingParams, ADSamplingState};
 use vicinity::hnsw::HNSWIndex;
 

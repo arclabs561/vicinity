@@ -4,10 +4,11 @@
 //! Measures the fundamental ANN tradeoff: how much accuracy do you sacrifice for speed?
 //! Generates recall@k curves at various ef_search settings.
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use std::collections::HashSet;
+use std::hint::black_box;
 use vicinity::hnsw::HNSWIndex;
 
 fn l2_distance_squared(a: &[f32], b: &[f32]) -> f32 {
