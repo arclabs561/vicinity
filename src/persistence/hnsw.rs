@@ -17,12 +17,12 @@ use crate::hnsw::graph::{Layer, NeighborList};
 #[cfg(feature = "hnsw")]
 use crate::hnsw::{HNSWIndex, HNSWParams, NeighborhoodDiversification, SeedSelectionStrategy};
 
-/// HNSW segment writer for graph persistence.
-#[cfg(feature = "hnsw")]
 /// Leading marker on a v3 params file. Without a prefix, a truncated file is
 /// indistinguishable from the 24-byte v1 layout and loads as a Cosine index.
 const PARAMS_MAGIC: &[u8; 4] = b"HNP3";
 
+/// HNSW segment writer for graph persistence.
+#[cfg(feature = "hnsw")]
 pub struct HNSWSegmentWriter {
     directory: Box<dyn Directory>,
     segment_id: u64,
@@ -38,16 +38,6 @@ impl HNSWSegmentWriter {
         }
     }
 
-    /// Write an HNSW index to disk.
-    ///
-    /// Format:
-    /// - `vectors.bin`: Vector data (SoA layout, same as dense segment)
-    /// - `doc_ids.bin`: External doc_ids aligned with internal indices
-    /// - `tombstones.bin`: One byte per internal id, `1` for soft-deleted
-    /// - `layers.bin`: Graph layers (serialized neighbor lists)
-    /// - `layer_assignments.bin`: Layer assignment for each vector
-    /// - `params.bin`: HNSW parameters
-    /// - `metadata.bin`: Index metadata (dimension, num_vectors, etc.)
     /// Seal a fully written temporary file into place.
     ///
     /// `flush()` only pushes bytes into the OS, and a rename only changes a
@@ -60,6 +50,20 @@ impl HNSWSegmentWriter {
         self.directory.atomic_rename_durable(tmp, final_path)
     }
 
+    /// Write an HNSW index to disk.
+    ///
+    /// Format:
+    /// - `vectors.bin`: Vector data (SoA layout, same as dense segment)
+    /// - `doc_ids.bin`: External doc_ids aligned with internal indices
+    /// - `tombstones.bin`: One byte per internal id, `1` for soft-deleted
+    /// - `layers.bin`: Graph layers (serialized neighbor lists)
+    /// - `layer_assignments.bin`: Layer assignment for each vector
+    /// - `params.bin`: HNSW parameters
+    /// - `metadata.bin`: Index metadata (dimension, num_vectors, commit byte)
+    ///
+    /// The segment is marked uncommitted before any file is touched and
+    /// committed only after the last seal, so an interrupted save is refused by
+    /// both readers rather than loaded as a mixed generation.
     pub fn write_hnsw_index(&mut self, index: &HNSWIndex) -> PersistenceResult<()> {
         // Mark the segment unusable before touching any of its files. A crash
         // between two seals then leaves a segment the loader refuses, rather
@@ -439,11 +443,33 @@ impl HNSWSegmentReader {
             (params_bytes.len(), &params_bytes[..])
         };
         let _ = body_len;
-        let m_bytes: [u8; 4] = bytes[0..4].try_into().expect("length checked");
-        let m_max_bytes: [u8; 4] = bytes[4..8].try_into().expect("length checked");
-        let m_l_bytes: [u8; 8] = bytes[8..16].try_into().expect("length checked");
-        let ef_construction_bytes: [u8; 4] = bytes[16..20].try_into().expect("length checked");
-        let ef_search_bytes: [u8; 4] = bytes[20..24].try_into().expect("length checked");
+        // The length was checked above, but a recoverable error beats a panic in
+        // a loader: a crafted file must never take the process down.
+        let field = |at: usize, width: usize| -> PersistenceResult<&[u8]> {
+            bytes.get(at..at + width).ok_or_else(|| {
+                crate::persistence::error::PersistenceError::Format(format!(
+                    "params.bin is {} bytes, too short for the field at offset {at}",
+                    bytes.len()
+                ))
+            })
+        };
+        let m_bytes: [u8; 4] = field(0, 4)?.try_into().map_err(|_| {
+            crate::persistence::error::PersistenceError::Format("params.bin m field".into())
+        })?;
+        let m_max_bytes: [u8; 4] = field(4, 4)?.try_into().map_err(|_| {
+            crate::persistence::error::PersistenceError::Format("params.bin m_max field".into())
+        })?;
+        let m_l_bytes: [u8; 8] = field(8, 8)?.try_into().map_err(|_| {
+            crate::persistence::error::PersistenceError::Format("params.bin m_l field".into())
+        })?;
+        let ef_construction_bytes: [u8; 4] = field(16, 4)?.try_into().map_err(|_| {
+            crate::persistence::error::PersistenceError::Format(
+                "params.bin ef_construction field".into(),
+            )
+        })?;
+        let ef_search_bytes: [u8; 4] = field(20, 4)?.try_into().map_err(|_| {
+            crate::persistence::error::PersistenceError::Format("params.bin ef_search field".into())
+        })?;
 
         // v2 fields: metric + auto_normalize (optional, backward-compat with v1
         // files). Their absence is only accepted on a 24-byte body, i.e. a real
@@ -711,8 +737,7 @@ mod tests {
         );
         let error = writer
             .write_hnsw_index(&index)
-            .err()
-            .expect("a failed fsync must fail the write");
+            .expect_err("a failed fsync must fail the write");
 
         assert!(
             matches!(error, PersistenceError::NotSupported(_)),
@@ -1144,7 +1169,7 @@ mod tests {
         writer.write_hnsw_index(&index).unwrap();
 
         let segment = dir.path().join("segments/segment_hnsw_22");
-        let mut searcher = crate::hnsw::HNSWSegmentSearcher::open(
+        let searcher = crate::hnsw::HNSWSegmentSearcher::open(
             &segment,
             crate::hnsw::FileCacheConfig::with_budget(1 << 20),
         )

@@ -3044,6 +3044,18 @@ fn write_jsonl(
         .unwrap_or(0);
     let load1 = load1();
     let host = host_name();
+    // Bound before the writeln: formatting it inside the args list is a
+    // `format!` inside a format (clippy::format_in_format_args).
+    let difficulty_json = format!(
+        "{{\"relative_contrast\":{},\"tie_density_at_k\":{},\"query_centroid_cos\":{},\
+         \"row_centroid_cos\":{},\"tie_queries\":{},\"sample_rows\":{}}}",
+        json_num(difficulty.relative_contrast, 4),
+        json_num(difficulty.tie_density_at_k, 4),
+        json_num(difficulty.query_centroid_cos, 4),
+        json_num(difficulty.row_centroid_cos, 4),
+        difficulty.tie_queries,
+        difficulty.sample_rows,
+    );
     let _ = writeln!(
         out,
         "{{\"_meta\":true,\"schema\":1,\"harness\":\"large_scale\",\"host\":\"{host}\",\
@@ -3066,16 +3078,7 @@ fn write_jsonl(
         args.gt_queries,
         args.domain.name(),
         tier_label(args.points),
-        format!(
-            "{{\"relative_contrast\":{},\"tie_density_at_k\":{},\"query_centroid_cos\":{},\
-             \"row_centroid_cos\":{},\"tie_queries\":{},\"sample_rows\":{}}}",
-            json_num(difficulty.relative_contrast, 4),
-            json_num(difficulty.tie_density_at_k, 4),
-            json_num(difficulty.query_centroid_cos, 4),
-            json_num(difficulty.row_centroid_cos, 4),
-            difficulty.tie_queries,
-            difficulty.sample_rows,
-        ),
+        difficulty_json,
         effective_batch(args),
         families.join(","),
         args.diskann_cache_mib,
