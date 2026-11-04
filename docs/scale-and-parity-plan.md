@@ -12,8 +12,8 @@ self-comparison everywhere else.
 
 | question | why not |
 | --- | --- |
-| Is our HNSW faster than hnswlib? | No row exists. hnswlib appears in this repo only as a source of bug reports. |
-| Is it faster than FAISS-IVF / Glass / ScaNN at 1M+? | No row, and no binding for any of them. |
+| Is our HNSW faster than hnswlib? | Rows exist on `clustered16` at 100k and 1M (`benchmarks/hnswlib-parity-*.jsonl`), and against FAISS on the `uniform` corpus (`benchmarks/faiss-parity-*.jsonl`). Neither is a claim about every dataset. |
+| Is it faster than FAISS-IVF / Glass / ScaNN at 1M+? | FAISS HNSW and IVF-PQ now have rows at 100k and 1M; FAISS IVF-PQ has no vicinity counterpart at a tier (our `ivf_pq` is not wired). Glass and ScaNN have no binding. |
 | Does it hold at 10M and 100M? | 100M is extrapolated: ~200 GiB build peak against 128 GiB installed, so no run exists. |
 | Is it competitive when queries carry predicates? | Measured only against our own families; the 2026 baselines (FAVOR, EMA, RNSG) were never run. |
 | What happens under updates or concurrency? | No row carries an update rate or a concurrent-reader latency. |
@@ -73,7 +73,9 @@ libraries" means "faster than the two we happened to bind".
   sampled queries at 100k and above, reported as recall against p50.
 - Bind **FAISS** (`ivf_pq` at least) and **ScaNN** (via its Python package) on
   the same harness, because HNSW-only parity leaves the quantised families
-  uncompared.
+  uncompared. FAISS HNSW and IVF-PQ are bound (`scripts/faiss_parity.py`, rows
+  at 100k and 1M); the local counterpart for IVF-PQ is still missing, so that
+  half of the table is one-sided and labelled as such.
 - **Gate**: a committed row per library per tier at 100k, 1M and (if it fits)
   3M, with the same `M`, `ef_construction` and `ef_search` sweep and build time
   included. No row, no claim.
