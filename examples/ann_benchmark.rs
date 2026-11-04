@@ -3786,9 +3786,9 @@ fn run(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
     set_run_identity(cfg.seed, cfg.repeat);
 
     if !Path::new(&cfg.data_dir).join("train.bin").exists() {
-        eprintln!("Dataset not found at: {}/train.bin", cfg.data_dir);
+        eprintln!("skipping: dataset not found at {}/train.bin", cfg.data_dir);
         eprintln!("Run: uv run scripts/download_ann_benchmarks.py <dataset>");
-        std::process::exit(1);
+        return Ok(());
     }
 
     if !cfg.json {

@@ -85,6 +85,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or("unknown");
     let jsonl_out = format!("docs/{dataset_name}.jsonl");
 
+    if !std::path::Path::new(data_dir).join("train.bin").exists() {
+        eprintln!("skipping: dataset not found at {data_dir}/train.bin");
+        eprintln!("Run: uv run scripts/download_ann_benchmarks.py glove-25-angular");
+        return Ok(());
+    }
+
     println!("Loading {dataset_name} data...");
     let (train, dim) = common::load_vectors(&format!("{data_dir}/train.bin"))?;
     let (test, _) = common::load_vectors(&format!("{data_dir}/test.bin"))?;

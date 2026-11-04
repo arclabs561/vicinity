@@ -45,8 +45,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("==================================\n");
 
     // Try multiple possible locations for data
-    let data_dir = find_data_dir().unwrap_or_else(|| {
-        eprintln!("GloVe-25 data not found. To generate:");
+    let Some(data_dir) = find_data_dir() else {
+        eprintln!("skipping: GloVe-25 data not found. To generate:");
         eprintln!();
         eprintln!(
             "  1. Download: curl -o glove.hdf5 http://ann-benchmarks.com/glove-25-angular.hdf5"
@@ -54,8 +54,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("  2. Convert: uv run scripts/download_ann_benchmarks.py glove-25-angular");
         eprintln!();
         eprintln!("Or run with synthetic data: cargo run --example hnsw_benchmark --release");
-        std::process::exit(1);
-    });
+        return Ok(());
+    };
 
     println!("Data directory: {}", data_dir);
     println!(

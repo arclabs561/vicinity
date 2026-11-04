@@ -3,6 +3,41 @@
 Run from the repository root. Use `--release` for benchmark and numeric
 examples unless a command says otherwise.
 
+These examples are demonstrations and measurement harnesses, not benchmark
+evidence. Numbers they print depend on the host, the build flags, and the
+dataset; see `docs/benchmark-results.md` for recorded runs and their conditions.
+
+## Where to start
+
+| I want to... | Run |
+|---|---|
+| Build an HNSW index and search it | `01_basic_search` |
+| Check recall against exact search | `02_measure_recall` |
+| Get the cosine input contract right | `05_normalization_matters` |
+| Save an index and load it back | `06_save_and_load` (features `hnsw,serde`) |
+| Use vicinity as the retrieval step of a RAG pipeline | `embedding_pipeline` |
+| Fuse BM25 and vector scores | `hybrid_search` |
+| Rerank ANN results for diversity | `retrieve_and_rerank` |
+| Keep an index durable and updatable | `updatable_store` (feature `store`) |
+| Compress vectors with IVF-PQ | `ivf_pq_demo` (feature `ivf_pq`) |
+| Benchmark on bundled data, no downloads | `03_quick_benchmark` |
+
+```sh
+cargo run --example 01_basic_search --release
+cargo run --example 02_measure_recall --release
+cargo run --example 05_normalization_matters --release
+cargo run --example 06_save_and_load --features hnsw,serde
+cargo run --example embedding_pipeline --release
+cargo run --example hybrid_search --release
+cargo run --example retrieve_and_rerank --release
+cargo run --example updatable_store --features store
+cargo run --example ivf_pq_demo --release --features ivf_pq
+VICINITY_DATASET=quick cargo run --example 03_quick_benchmark --release
+```
+
+`hnsw` is a default feature. Every example is registered in `Cargo.toml` with
+its `required-features`; the Features column below names any beyond `hnsw`.
+
 ## Core
 
 Synthetic-data examples that run without downloads.
@@ -20,6 +55,26 @@ cargo run --example 02_measure_recall --release
 cargo run --example 03_quick_benchmark --release                       # bench: 10K x 384
 VICINITY_DATASET=quick cargo run --example 03_quick_benchmark --release     # CI: 2K x 128
 cargo run --example 05_normalization_matters --release
+```
+
+## API Usage
+
+| Example | Features | Covers |
+|---------|----------|--------|
+| `06_save_and_load` | `serde` | Save an HNSW index to disk and load it back |
+| `embedding_pipeline` | | Mock embedder, HNSW index, query-time retrieval of documents |
+| `hybrid_search` | | BM25 text scores and HNSW vector scores fused with Reciprocal Rank Fusion |
+| `retrieve_and_rerank` | | HNSW top-k followed by MMR diversity reranking (`rankops`) |
+| `updatable_store` | `store` | Durable, updatable multi-segment HNSW search |
+| `wasm_search` | | The HNSW build/search path a browser wrapper uses; also checks on `wasm32-unknown-unknown` |
+
+```sh
+cargo run --example 06_save_and_load --features hnsw,serde
+cargo run --example embedding_pipeline --release
+cargo run --example hybrid_search --release
+cargo run --example retrieve_and_rerank --release
+cargo run --example updatable_store --features store
+cargo run --example wasm_search --release
 ```
 
 ## Synthetic Workflows
@@ -84,12 +139,17 @@ VICINITY_DATASET=hard cargo run --example 03_quick_benchmark --release     # str
 | `sift_benchmark` | SIFT-128 | 1M | 128 | Euclidean | 501MB |
 | `hnsw_benchmark` | Synthetic | config | config | config | - |
 
-Both have synthetic fallbacks if data isn't available.
+Without its data, `glove_benchmark` prints how to fetch it and exits 0.
+`sift_benchmark` does not load the HDF5 file yet (no HDF5 dependency); it runs a
+synthetic 128-d L2 demo whether or not the file is present.
+`glove_all_algos` writes JSONL for `plot_comparison.py` and also skips with
+exit 0 when `data/ann-benchmarks/glove-25-angular/train.bin` is absent.
 
 ```sh
 # Real datasets (requires download)
 cargo run --example glove_benchmark --release -- --full
 cargo run --example sift_benchmark --release --features hnsw
+cargo run --example glove_all_algos --release --features "hnsw,nsw,ivf_pq,vamana,ivf_avq,diskann,kdtree,balltree,rptree" -- --algo all
 ```
 
 ### Standard ANN Benchmark Datasets
@@ -162,6 +222,35 @@ At 25 dimensions, ADSampling, FINGER, SymphonyQG, and SQ4U are diagnostic
 comparisons rather than optimization targets. Re-run on GloVe-100+ or GIST-960
 before treating those rows as architecture guidance.
 
+## Benchmarks and Evals
+
+Measurement harnesses on synthetic or generated data. Each prints its protocol
+with its numbers; read the file's doc comment before comparing runs.
+
+| Example | Features | Measures |
+|---------|----------|----------|
+| `04_rigorous_benchmark` | | Multi-run HNSW recall/QPS with confidence intervals over multiscale data; skips with exit 0 until `scripts/generate_multiscale_data.py` has run |
+| `all_families` | many (see file) | Every index family on the same seven synthetic domains, ground truth, and timing loop; `ANN_FVECS=<path>` swaps in a `.fvecs` file |
+| `large_scale` | `large-scale,diskann` | HNSW and DiskANN beyond 10M points with on-disk data, cached ground truth, and resource guardrails |
+| `sharded_tier` | `persistence` | Recall and cost of `K` file-backed HNSW shards queried `nprobe` at a time |
+| `filtered_alignment` | `filtered_graph` | Filtered-search overfetch at equal selectivity but different filter/query alignment |
+| `inplace_construction` | | `InPlaceIndex` build against HNSW at equal search budget |
+| `rabitq_rotation_ablation` | `ivf_rabitq` | IVF-RaBitQ recall@10 with and without the rotation at fixed candidate budget |
+| `rp_forest_search_k` | `rptree` | RP-forest recall@10 and latency on uniform and clustered data |
+| `store_reopen_diagnostics` | `store` | Sidecar-first snapshot reopen versus rebuild for the segstore-backed store |
+
+```sh
+uvx --with numpy python scripts/generate_multiscale_data.py --scale S
+cargo run --example 04_rigorous_benchmark --release -- --scale S
+cargo run --release --example rp_forest_search_k --features rptree
+cargo run --release --example rabitq_rotation_ablation --features ivf_rabitq
+cargo run --release --example inplace_construction
+cargo run --release --example filtered_alignment --features hnsw,filtered_graph
+cargo run --release --example store_reopen_diagnostics --features store
+cargo run --release --example sharded_tier --features hnsw,persistence
+cargo run --release --example large_scale --features large-scale,hnsw,diskann -- --help
+```
+
 ## Research Variants
 
 Graph-based ANN variants and clustering examples.
@@ -198,3 +287,10 @@ for ex in 01_basic_search 02_measure_recall semantic_search_demo; do
     cargo run --example $ex --release
 done
 ```
+
+## Shared Code
+
+`examples/common/` holds vector and neighbor loaders shared by the benchmark
+examples, and `examples/ann_benchmark/` holds the `ann_benchmark` runner's
+submodules. Both are example-only utilities, not public API.
+`examples/python/` holds the Python binding examples.
