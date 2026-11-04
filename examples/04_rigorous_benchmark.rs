@@ -655,7 +655,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
 
     // Find data directory
-    let data_dir = find_data_dir()?;
+    let Some(data_dir) = find_data_dir() else {
+        eprintln!("skipping: multiscale data not found. Run: uvx --with numpy python scripts/generate_multiscale_data.py");
+        return Ok(());
+    };
     println!("Data directory: {}", data_dir.display());
 
     // Run benchmark
@@ -690,7 +693,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn find_data_dir() -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+fn find_data_dir() -> Option<std::path::PathBuf> {
     let paths = [
         "data/multiscale",
         "vicinity/data/multiscale",
@@ -701,9 +704,9 @@ fn find_data_dir() -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
     for path in &paths {
         let p = Path::new(path);
         if p.exists() && p.is_dir() {
-            return Ok(p.to_path_buf());
+            return Some(p.to_path_buf());
         }
     }
 
-    Err("Multiscale data not found. Run: uvx --with numpy python scripts/generate_multiscale_data.py".into())
+    None
 }
