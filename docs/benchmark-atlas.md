@@ -213,16 +213,20 @@ is 470 MiB, which is what the compact layout approaches.
 
 The only result set here with external libraries and repeats on the same corpus
 and query set: Fashion-MNIST at 20k x 784, k = 10, three runs per algorithm.
-`hnsw` recall 0.984 ± 0.020 at ~17.0k QPS, `usearch` 0.986 ± 0.018 at ~6.4k,
-`hnsw_rs` 0.969 ± 0.022 at ~4.3k, `brute` 1.000 at 433. Index footprint 72, 128
-and 68 MiB.
+`hnsw` peaks at recall 0.984 and ~17.0k QPS, `usearch` 0.986 at 6.4k,
+`hnsw_rs` 0.969 at 4.3k, and `brute` 1.000 at 433. Index footprint 72, 128 and 68 MiB.
 
-Two cautions are visible in the error bars: repeated QPS on this host spreads by
-±45%, so the *ordering* on speed is indicative while the recall ordering is
-stable, and the heap figures are library-reported estimates rather than measured
-allocations. The right panel pairs each algorithm's heap estimate with its
-serialized size, which is the only place in the repo where both exist for
-external code.
+The error bars in that figure are the `ef` sweep pooled per algorithm, not
+run-to-run spread: the plot script collects every `ef` row before drawing, so the
+±0.020 band around `hnsw` is the width of its own sweep. At a fixed `ef` the
+run-to-run spread is 0.000 on recall. Read the bars as sweep width, and take
+stability from the QPS caution below, not from the recall bars.
+
+Two cautions hold regardless. Repeated QPS on this host spreads by ±45%, so the
+*ordering* on speed is indicative while the recall ordering is stable. And the
+heap figures are library-reported estimates rather than measured allocations.
+The right panel pairs each algorithm's heap estimate with its serialized size,
+which is the only place in the repo where both exist for external code.
 
 ### 14. One family across two datasets
 
@@ -245,15 +249,16 @@ side. Rows in
 [`hnswlib-parity-100k.jsonl`](../benchmarks/hnswlib-parity-100k.jsonl) and
 [`hnswlib-parity-1m.jsonl`](../benchmarks/hnswlib-parity-1m.jsonl).
 
-vicinity leads at every `ef` on both tiers: recall 0.450 vs 0.374 at `ef = 10`
+vicinity leads through the sweep on both tiers, with the top of the 100k sweep a
+statistical tie: recall 0.450 vs 0.374 at `ef = 10`
 and 0.999 vs 0.997 at `ef = 400` at 100k, with p50 25 vs 36 µs and 264 vs 563 µs;
 at 1M, 0.185 vs 0.157 through 0.914 vs 0.882, with p50 39 vs 62 µs through 708 vs
 1270 µs. Build: 24.7 vs 29.0 s at 100k, 554.6 vs 735.2 s at 1M. USearch sits
 between them on recall at 100k (0.385 to 0.997) with its own 22.8 s build.
 
 The recall gap is 0.03 to 0.08 absolute through most of the sweep, narrowing to
-0.0016 at `ef = 400` at 100k where both are near the ceiling; the p50 gap is not
-purely graph quality,
+0.0016 at `ef = 400` at 100k, which is inside the +/-0.0018 interval at that n and
+should be read as a tie; the p50 gap is not purely graph quality,
 because the pinned hnswlib commit has no NEON path and runs scalar on Apple
 Silicon while both Rust sides use NEON. Read the figure for shape, not for a
 speed claim, and read the rows for the numbers.
