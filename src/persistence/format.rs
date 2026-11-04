@@ -18,7 +18,13 @@ pub const HNSW_SEGMENT_MAGIC: [u8; 8] = *b"VCNHNSW\x01";
 ///
 /// Increment this when the on-disk layout changes in a backward-incompatible
 /// way. The loader rejects files whose version exceeds this constant.
-pub const FORMAT_VERSION: u32 = 1;
+///
+/// - v1: magic, version, dimension, num_vectors, is_built (21 bytes).
+/// - v2: the same, plus a `committed` byte (22 bytes). A writer sets it to 0
+///   before touching any other file and to 1 only after every file is sealed,
+///   so a crash mid-save leaves a segment the loader refuses instead of one that
+///   pairs an old `metadata.bin` with new vectors.
+pub const FORMAT_VERSION: u32 = 2;
 
 /// Graph-level WAL entries for streaming HNSW updates.
 ///

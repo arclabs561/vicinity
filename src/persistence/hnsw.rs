@@ -61,6 +61,20 @@ impl HNSWSegmentWriter {
     }
 
     pub fn write_hnsw_index(&mut self, index: &HNSWIndex) -> PersistenceResult<()> {
+        // Mark the segment unusable before touching any of its files. A crash
+        // between two seals then leaves a segment the loader refuses, rather
+        // than the previous metadata paired with the new vectors.
+        self.invalidate_segment(index)?;
+        self.write_index_files(index)?;
+        self.write_metadata(index, true)
+    }
+
+    /// Write every segment file except `metadata.bin`.
+    ///
+    /// Split out so the AoS sidecar can be sealed before the commit byte is
+    /// set: `write_hnsw_index_aos` must not publish a commit that does not cover
+    /// the file the searcher prefers.
+    fn write_index_files(&mut self, index: &HNSWIndex) -> PersistenceResult<()> {
         let segment_dir = format!("segments/segment_hnsw_{}", self.segment_id);
         self.directory.create_dir_all(&segment_dir)?;
 
@@ -183,30 +197,43 @@ impl HNSWSegmentWriter {
         drop(params_file);
         self.seal(&params_path_tmp, &params_path)?;
 
-        // Write metadata.
-        //
-        // Layout (v1):
-        //   [0..8]   HNSW_SEGMENT_MAGIC  (8 bytes, "VCNHNSW\x01")
-        //   [8..12]  FORMAT_VERSION      (u32 LE)
-        //   [12..16] dimension           (u32 LE)
-        //   [16..20] num_vectors         (u32 LE)
-        //   [20]     is_built            (u8 flag)
-        //
-        // Legacy v0 (vicinity 0.6.x): no magic/version prefix; the first 4
-        // bytes are the dimension u32.
-        let metadata_path = format!("{}/metadata.bin", segment_dir);
-        let metadata_path_tmp = format!("{metadata_path}.tmp");
-        let mut metadata_file = self.directory.create_file(&metadata_path_tmp)?;
-        metadata_file.write_all(&HNSW_SEGMENT_MAGIC)?;
-        metadata_file.write_all(&FORMAT_VERSION.to_le_bytes())?;
-        metadata_file.write_all(&(index.dimension as u32).to_le_bytes())?;
-        metadata_file.write_all(&(index.num_vectors as u32).to_le_bytes())?;
-        metadata_file.write_all(&[if index.is_built() { 1 } else { 0 }])?;
-        metadata_file.flush()?;
-        drop(metadata_file);
-        self.seal(&metadata_path_tmp, &metadata_path)?;
-
         Ok(())
+    }
+
+    /// Write `metadata.bin` with `committed` in the v2 commit byte.
+    ///
+    /// Written with `atomic_write` rather than the temp+seal pair: the
+    /// invalidation must replace the previous metadata before any data file
+    /// changes, and the final commit must be one durable rename.
+    ///
+    /// Layout (v2):
+    ///   [0..8]   HNSW_SEGMENT_MAGIC  (8 bytes, "VCNHNSW\x01")
+    ///   [8..12]  FORMAT_VERSION      (u32 LE)
+    ///   [12..16] dimension           (u32 LE)
+    ///   [16..20] num_vectors         (u32 LE)
+    ///   [20]     is_built            (u8 flag)
+    ///   [21]     committed           (u8 flag; 1 means every file is sealed)
+    ///
+    /// v1 files have no commit byte. Legacy v0 (vicinity 0.6.x) has no magic or
+    /// version either: the first 4 bytes are the dimension.
+    fn write_metadata(&mut self, index: &HNSWIndex, committed: bool) -> PersistenceResult<()> {
+        let segment_dir = format!("segments/segment_hnsw_{}", self.segment_id);
+        let mut metadata = Vec::with_capacity(22);
+        metadata.extend_from_slice(&HNSW_SEGMENT_MAGIC);
+        metadata.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
+        metadata.extend_from_slice(&(index.dimension as u32).to_le_bytes());
+        metadata.extend_from_slice(&(index.num_vectors as u32).to_le_bytes());
+        metadata.push(u8::from(index.is_built()));
+        metadata.push(u8::from(committed));
+        self.directory
+            .atomic_write(&format!("{segment_dir}/metadata.bin"), &metadata)
+    }
+
+    /// Replace the segment's metadata with an uncommitted header.
+    fn invalidate_segment(&mut self, index: &HNSWIndex) -> PersistenceResult<()> {
+        let segment_dir = format!("segments/segment_hnsw_{}", self.segment_id);
+        self.directory.create_dir_all(&segment_dir)?;
+        self.write_metadata(index, false)
     }
 
     /// Write an HNSW index plus the AoS vector sidecar.
@@ -221,18 +248,23 @@ impl HNSWSegmentWriter {
     /// The sidecar duplicates the vector bytes (the same data as `vectors.bin`
     /// in a different order) in exchange for cache-friendly reads.
     pub fn write_hnsw_index_aos(&mut self, index: &HNSWIndex) -> PersistenceResult<()> {
-        self.write_hnsw_index(index)?;
+        self.invalidate_segment(index)?;
+        self.write_index_files(index)?;
 
         let segment_dir = format!("segments/segment_hnsw_{}", self.segment_id);
         let aos_path = format!("{}/vectors_aos.bin", segment_dir);
-        let mut aos_file = self.directory.create_file(&aos_path)?;
+        let aos_path_tmp = format!("{aos_path}.tmp");
+        let mut aos_file = self.directory.create_file(&aos_path_tmp)?;
         // `HNSWIndex::vectors` is already AoS in internal id order, which is
         // the order the searcher needs for layer neighbour ids.
         for value in &index.vectors {
             aos_file.write_all(&value.to_le_bytes())?;
         }
         aos_file.flush()?;
-        Ok(())
+        drop(aos_file);
+        self.seal(&aos_path_tmp, &aos_path)?;
+
+        self.write_metadata(index, true)
     }
 }
 
@@ -291,6 +323,22 @@ impl HNSWSegmentReader {
             metadata_file.read_exact(&mut dim_bytes)?;
             metadata_file.read_exact(&mut num_vec_bytes)?;
             metadata_file.read_exact(&mut built_byte)?;
+            // v2 appends a commit byte. Zero means the last save stopped between
+            // two files, so the surviving files are not one generation.
+            if version >= 2 {
+                let mut commit_byte = [0u8; 1];
+                metadata_file.read_exact(&mut commit_byte).map_err(|_| {
+                    crate::persistence::error::PersistenceError::Format(
+                        "v2 metadata.bin is missing its commit byte".into(),
+                    )
+                })?;
+                if commit_byte[0] == 0 {
+                    return Err(crate::persistence::error::PersistenceError::Format(
+                        "segment write did not complete; the last save was interrupted between                          two files, so the segment mixes generations and must be rebuilt"
+                            .into(),
+                    ));
+                }
+            }
             (
                 u32::from_le_bytes(dim_bytes) as usize,
                 u32::from_le_bytes(num_vec_bytes) as usize,
@@ -676,6 +724,133 @@ mod tests {
                 .exists(),
             "the temp file must not be renamed into place before it is durable"
         );
+    }
+
+    /// A filesystem directory whose `durable_sync_file` fails on the Nth call,
+    /// so a save can be stopped between two files.
+    struct SealFailsAfter {
+        inner: FsDirectory,
+        remaining: std::sync::atomic::AtomicUsize,
+    }
+
+    impl Directory for SealFailsAfter {
+        fn create_file(&self, path: &str) -> PersistenceResult<Box<dyn Write + Send>> {
+            self.inner.create_file(path)
+        }
+        fn open_file(&self, path: &str) -> PersistenceResult<Box<dyn Read + Send>> {
+            self.inner.open_file(path)
+        }
+        fn exists(&self, path: &str) -> bool {
+            self.inner.exists(path)
+        }
+        fn delete(&self, path: &str) -> PersistenceResult<()> {
+            self.inner.delete(path)
+        }
+        fn atomic_rename(&self, from: &str, to: &str) -> PersistenceResult<()> {
+            self.inner.atomic_rename(from, to)
+        }
+        fn create_dir_all(&self, path: &str) -> PersistenceResult<()> {
+            self.inner.create_dir_all(path)
+        }
+        fn list_dir(&self, path: &str) -> PersistenceResult<Vec<String>> {
+            self.inner.list_dir(path)
+        }
+        fn append_file(&self, path: &str) -> PersistenceResult<Box<dyn Write + Send>> {
+            self.inner.append_file(path)
+        }
+        fn atomic_write(&self, path: &str, data: &[u8]) -> PersistenceResult<()> {
+            self.inner.atomic_write(path, data)
+        }
+        fn file_path(&self, path: &str) -> Option<std::path::PathBuf> {
+            self.inner.file_path(path)
+        }
+        fn durable_sync_file(&self, path: &str) -> PersistenceResult<()> {
+            let remaining = self.remaining.load(std::sync::atomic::Ordering::Relaxed);
+            if remaining == 0 {
+                return Err(PersistenceError::NotSupported(
+                    "test: fsync budget exhausted".into(),
+                ));
+            }
+            self.remaining
+                .store(remaining - 1, std::sync::atomic::Ordering::Relaxed);
+            self.inner.durable_sync_file(path)
+        }
+    }
+
+    fn small_index(count: u32, dim: usize) -> HNSWIndex {
+        let mut index = HNSWIndex::new(dim, 8, 8).unwrap();
+        for id in 0..count {
+            let vector = crate::distance::normalize(
+                &(0..dim)
+                    .map(|d| ((id as usize * 31 + d * 17) % 97) as f32 / 97.0 + 0.01)
+                    .collect::<Vec<_>>(),
+            );
+            index.add(id, vector).unwrap();
+        }
+        index.build().unwrap();
+        index
+    }
+
+    #[test]
+    fn interrupted_resave_is_refused_instead_of_mixing_generations() {
+        // A save that stops between two files must leave metadata marked
+        // uncommitted. The loader then refuses the segment: with the old
+        // metadata still valid it would pair the previous row count with the new
+        // vectors, and `read_exact` would accept the new prefix silently.
+        let dir = tempfile::tempdir().unwrap();
+        let first = small_index(64, 8);
+        HNSWSegmentWriter::new(Box::new(FsDirectory::new(dir.path()).unwrap()), 7)
+            .write_hnsw_index(&first)
+            .unwrap();
+
+        let second = small_index(128, 8);
+        let mut failing = HNSWSegmentWriter::new(
+            Box::new(SealFailsAfter {
+                inner: FsDirectory::new(dir.path()).unwrap(),
+                remaining: std::sync::atomic::AtomicUsize::new(3),
+            }),
+            7,
+        );
+        assert!(
+            failing.write_hnsw_index(&second).is_err(),
+            "the third seal must fail"
+        );
+
+        // vectors.bin was sealed from `second` before the failure, so the old
+        // file set is already mixed. Loading must error, not serve 64 vectors of
+        // a 128-vector index.
+        let error = HNSWSegmentReader::load(Box::new(FsDirectory::new(dir.path()).unwrap()), 7)
+            .err()
+            .expect("an interrupted save must not load");
+        assert!(
+            matches!(error, PersistenceError::Format(ref message)
+                if message.contains("did not complete")),
+            "expected the commit-byte error, got {error:?}"
+        );
+    }
+
+    #[test]
+    fn v1_metadata_without_a_commit_byte_still_loads() {
+        // Files written before the commit byte must keep loading: the byte is
+        // only required when the header says v2.
+        let dir = tempfile::tempdir().unwrap();
+        let index = small_index(32, 8);
+        HNSWSegmentWriter::new(Box::new(FsDirectory::new(dir.path()).unwrap()), 8)
+            .write_hnsw_index(&index)
+            .unwrap();
+
+        let metadata_path = dir.path().join("segments/segment_hnsw_8/metadata.bin");
+        let mut v1 = Vec::new();
+        v1.extend_from_slice(&HNSW_SEGMENT_MAGIC);
+        v1.extend_from_slice(&1u32.to_le_bytes());
+        v1.extend_from_slice(&(index.dimension as u32).to_le_bytes());
+        v1.extend_from_slice(&(index.num_vectors as u32).to_le_bytes());
+        v1.push(u8::from(index.is_built()));
+        std::fs::write(&metadata_path, v1).unwrap();
+
+        let reader = HNSWSegmentReader::load(Box::new(FsDirectory::new(dir.path()).unwrap()), 8)
+            .expect("a v1 header has no commit byte to check");
+        assert_eq!(reader.load_index().unwrap().num_vectors, 32);
     }
 
     #[test]
