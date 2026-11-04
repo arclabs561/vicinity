@@ -233,6 +233,49 @@ Twice a month, not nightly: the 1M build costs about ten minutes on the runner,
 and recall at a fixed `ef` moves only when the build changes. Public-repository
 standard-runner minutes are free, so the cadence is about signal, not budget.
 
+## Build knobs, not only `ef`
+
+Every row above sweeps `ef_search` at one build. That cannot say whether the
+build defaults are leaving recall on the table, so `large_scale --build-grid`
+rebuilds the graph per `m/ef_construction` pair and repeats the same sweep:
+
+```bash
+cargo run --release --example large_scale \
+  --features "large-scale,hnsw,diskann" -- \
+  --points 100k --families hnsw \
+  --build-grid 8/200,16/100,16/200,16/400,32/200,32/400 \
+  --ef 100,200,800 --json benchmarks/build-grid-100k.jsonl
+```
+
+100k points, 96 dimensions, uniform, 500 queries, `ef=200`
+(`benchmarks/build-grid-100k.jsonl`):
+
+| m | ef_construction | recall@10 | 1/ratio | build s |
+| ---: | ---: | ---: | ---: | ---: |
+| 8 | 200 | 0.708 | 1.44 | 7.0 |
+| 16 | 100 | 0.680 | 1.48 | 5.0 |
+| 16 | 200 | 0.705 | 1.44 | 5.8 |
+| 16 | 400 | 0.722 | 1.44 | 8.0 |
+| 32 | 200 | 0.705 | 1.44 | 4.9 |
+| 32 | 400 | 0.721 | 1.40 | 8.1 |
+
+The spread is 0.042 across a 4x range of `m` and `ef_construction`, and most of
+it is `ef_construction`: `m=8` matches `m=32`, and doubling `m` buys nothing at
+this tier. A claim of the form "our graph is better than theirs" therefore has
+to be made at matched `ef`, with the build pair named, because a different
+build pair at the same `ef` moves recall less than a run-to-run swap of the
+query set would.
+
+`index mem MiB` is identical across all six builds. Neighbour slots are inline
+and fixed width, so `m` changes how much is stored per slot, not how many slots
+the array of lists holds; a reader who expects memory to track `m` will be
+wrong, and that is a property of the layout, not an accounting error.
+
+The rows were recorded while a 100M build held the machine (`load1` 82.9, see the
+`_meta` line). Recall and `1/ratio` are deterministic at a fixed graph and do not
+depend on that; `p50` and the tail columns in that file do. Re-run on an idle
+host before quoting a timing from it.
+
 ## What this does not cover
 
 - Absolute recall floors and correctness. Those stay in `cargo test` and the
