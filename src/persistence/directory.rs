@@ -33,6 +33,25 @@ pub trait Directory: Send + Sync {
     fn atomic_write(&self, path: &str, data: &[u8]) -> PersistenceResult<()>;
     /// Return the underlying filesystem path, if backed by one.
     fn file_path(&self, path: &str) -> Option<PathBuf>;
+
+    /// Make the contents of an already-written file durable on stable storage.
+    ///
+    /// Default: a no-op, which is correct for an in-memory backend. A filesystem
+    /// backend must override this with an `fsync`: `flush()` only hands bytes to
+    /// the OS, so a power loss after it can leave the final name pointing at a
+    /// file whose data pages were never written.
+    fn durable_sync_file(&self, _path: &str) -> PersistenceResult<()> {
+        Ok(())
+    }
+
+    /// Atomically rename a file and make the new directory entry durable.
+    ///
+    /// Default: [`Self::atomic_rename`], which is enough for an in-memory
+    /// backend. A filesystem backend must also sync the parent directory, or the
+    /// rename itself can be lost.
+    fn atomic_rename_durable(&self, from: &str, to: &str) -> PersistenceResult<()> {
+        self.atomic_rename(from, to)
+    }
 }
 
 #[cfg(not(feature = "persistence"))]
@@ -262,6 +281,16 @@ mod enabled {
         }
         fn file_path(&self, path: &str) -> Option<PathBuf> {
             self.inner.file_path(path)
+        }
+        fn durable_sync_file(&self, path: &str) -> PersistenceResult<()> {
+            self.inner
+                .durable_sync_file(path)
+                .map_err(PersistenceError::from)
+        }
+        fn atomic_rename_durable(&self, from: &str, to: &str) -> PersistenceResult<()> {
+            self.inner
+                .atomic_rename_durable(from, to)
+                .map_err(PersistenceError::from)
         }
     }
 
