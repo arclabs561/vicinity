@@ -17,12 +17,12 @@ use crate::hnsw::graph::{Layer, NeighborList};
 #[cfg(feature = "hnsw")]
 use crate::hnsw::{HNSWIndex, HNSWParams, NeighborhoodDiversification, SeedSelectionStrategy};
 
-/// HNSW segment writer for graph persistence.
-#[cfg(feature = "hnsw")]
 /// Leading marker on a v3 params file. Without a prefix, a truncated file is
 /// indistinguishable from the 24-byte v1 layout and loads as a Cosine index.
 const PARAMS_MAGIC: &[u8; 4] = b"HNP3";
 
+/// HNSW segment writer for graph persistence.
+#[cfg(feature = "hnsw")]
 pub struct HNSWSegmentWriter {
     directory: Box<dyn Directory>,
     segment_id: u64,
@@ -38,16 +38,6 @@ impl HNSWSegmentWriter {
         }
     }
 
-    /// Write an HNSW index to disk.
-    ///
-    /// Format:
-    /// - `vectors.bin`: Vector data (SoA layout, same as dense segment)
-    /// - `doc_ids.bin`: External doc_ids aligned with internal indices
-    /// - `tombstones.bin`: One byte per internal id, `1` for soft-deleted
-    /// - `layers.bin`: Graph layers (serialized neighbor lists)
-    /// - `layer_assignments.bin`: Layer assignment for each vector
-    /// - `params.bin`: HNSW parameters
-    /// - `metadata.bin`: Index metadata (dimension, num_vectors, etc.)
     /// Seal a fully written temporary file into place.
     ///
     /// `flush()` only pushes bytes into the OS, and a rename only changes a
@@ -60,6 +50,20 @@ impl HNSWSegmentWriter {
         self.directory.atomic_rename_durable(tmp, final_path)
     }
 
+    /// Write an HNSW index to disk.
+    ///
+    /// Format:
+    /// - `vectors.bin`: Vector data (SoA layout, same as dense segment)
+    /// - `doc_ids.bin`: External doc_ids aligned with internal indices
+    /// - `tombstones.bin`: One byte per internal id, `1` for soft-deleted
+    /// - `layers.bin`: Graph layers (serialized neighbor lists)
+    /// - `layer_assignments.bin`: Layer assignment for each vector
+    /// - `params.bin`: HNSW parameters
+    /// - `metadata.bin`: Index metadata (dimension, num_vectors, commit byte)
+    ///
+    /// The segment is marked uncommitted before any file is touched and
+    /// committed only after the last seal, so an interrupted save is refused by
+    /// both readers rather than loaded as a mixed generation.
     pub fn write_hnsw_index(&mut self, index: &HNSWIndex) -> PersistenceResult<()> {
         // Mark the segment unusable before touching any of its files. A crash
         // between two seals then leaves a segment the loader refuses, rather
