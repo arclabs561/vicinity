@@ -90,7 +90,7 @@ postcard = { version = "1.0", optional = true, features = [
   "use-std",
 ] }
 durability = { version = "0.9", optional = true }
-segstore = { version = "0.7.3", optional = true }
+segstore = { version = "0.8.0", optional = true }
 
 
 # NEON `tbl` for the 4-bit FastScan kernel without `unsafe` in this crate.
