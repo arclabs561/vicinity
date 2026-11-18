@@ -430,8 +430,8 @@ impl SparseMipsIndex {
     fn find_entry_point(&self) -> u32 {
         let mut best = 0u32;
         let mut best_norm = self.vectors[0].norm();
-        for i in 1..self.num_vectors {
-            let n = self.vectors[i].norm();
+        for (i, vector) in self.vectors[..self.num_vectors].iter().enumerate().skip(1) {
+            let n = vector.norm();
             if n > best_norm {
                 best_norm = n;
                 best = i as u32;

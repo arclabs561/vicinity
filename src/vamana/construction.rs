@@ -28,7 +28,7 @@ fn initialize_random_graph(index: &mut VamanaIndex) -> Result<(), RetrieveError>
         None => Box::new(rand::rng()),
     };
 
-    for i in 0..n {
+    for (i, slot) in index.neighbors[..n].iter_mut().enumerate() {
         let k = min_degree.min(n - 1);
         // Rejection sampling: draw random IDs until we have k distinct ones != i.
         // Expected draws per slot ≈ n/(n-k) ≈ 1 for k << n.  O(k) expected total.
@@ -42,7 +42,7 @@ fn initialize_random_graph(index: &mut VamanaIndex) -> Result<(), RetrieveError>
                 neighbors.push(j);
             }
         }
-        index.neighbors[i] = neighbors;
+        *slot = neighbors;
     }
 
     Ok(())
