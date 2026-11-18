@@ -27,11 +27,8 @@ pub fn recall_at_k(ground_truth: &[u32], retrieved: &[u32], k: usize) -> f32 {
     }
 
     let effective_k = k.min(ground_truth.len());
-    if effective_k == 0 {
-        return 0.0;
-    }
     let gt_set: HashSet<u32> = ground_truth.iter().take(effective_k).copied().collect();
-    let retrieved_set: HashSet<u32> = retrieved.iter().take(effective_k).copied().collect();
+    let retrieved_set: HashSet<u32> = retrieved.iter().take(k).copied().collect();
 
     let intersection = gt_set.intersection(&retrieved_set).count();
     intersection as f32 / effective_k as f32
@@ -51,15 +48,17 @@ pub fn recall_at_k(ground_truth: &[u32], retrieved: &[u32], k: usize) -> f32 {
 ///
 /// Precision value in [0.0, 1.0]
 pub fn precision_at_k(ground_truth: &[u32], retrieved: &[u32], k: usize) -> f32 {
-    if retrieved.is_empty() {
+    let returned = retrieved.len().min(k);
+    if returned == 0 {
         return 0.0;
     }
 
-    let gt_set: HashSet<u32> = ground_truth.iter().take(k).copied().collect();
-    let retrieved_k: Vec<u32> = retrieved.iter().take(k).copied().collect();
-
-    let hits = retrieved_k.iter().filter(|id| gt_set.contains(id)).count();
-    hits as f32 / retrieved_k.len() as f32
+    let mut relevant: HashSet<u32> = ground_truth.iter().take(k).copied().collect();
+    let hits = retrieved[..returned]
+        .iter()
+        .filter(|id| relevant.remove(*id))
+        .count();
+    hits as f32 / returned as f32
 }
 
 /// Compute mean recall across multiple queries.
@@ -73,11 +72,11 @@ pub fn mean_recall_checked(
     retrievals: &[Vec<u32>],
     k: usize,
 ) -> Result<f32, &'static str> {
-    if ground_truths.is_empty() {
-        return Ok(0.0);
-    }
     if ground_truths.len() != retrievals.len() {
         return Err("ground-truth and retrieval query counts differ");
+    }
+    if ground_truths.is_empty() {
+        return Ok(0.0);
     }
 
     let total: f32 = ground_truths
@@ -250,6 +249,19 @@ mod tests {
         let gt = vec![1, 2, 3, 4, 5];
         let retrieved = vec![1, 2, 6, 7, 8];
         assert!((precision_at_k(&gt, &retrieved, 5) - 0.4).abs() < 0.001);
+    }
+
+    #[test]
+    fn cutoffs_keep_ranks_and_credit_each_neighbor_once() {
+        assert_eq!(precision_at_k(&[1], &[1], 0), 0.0);
+        assert_eq!(precision_at_k(&[1, 2], &[1, 1], 2), 0.5);
+        assert_eq!(recall_at_k(&[1], &[2, 1], 2), 1.0);
+    }
+
+    #[test]
+    fn empty_ground_truth_batch_still_checks_query_count() {
+        assert!(mean_recall_checked(&[], &[vec![1]], 1).is_err());
+        assert_eq!(mean_recall_checked(&[], &[], 1), Ok(0.0));
     }
 
     #[test]

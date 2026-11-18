@@ -577,10 +577,7 @@ impl ExpectedResult {
                 }
             }
         }
-        if json_string_field(line, "storage_mode").as_deref() != Some(self.storage_mode) {
-            return false;
-        }
-        true
+        json_string_field(line, "storage_mode").as_deref() == Some(self.storage_mode)
     }
 }
 
