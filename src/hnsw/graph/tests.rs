@@ -1586,6 +1586,38 @@ fn test_layer_assignment_matches_layers() {
     }
 }
 
+/// A query whose distance to every other query is NaN or infinite used to
+/// leave the chain builder without a next query and index with `usize::MAX`.
+#[test]
+fn test_batch_search_mqo_non_finite_query_does_not_panic() {
+    let (index, _) = build_test_index();
+    let dim = index.dimension;
+    let finite = vec![0.25f32; dim];
+    for bad in [
+        vec![f32::NAN; dim],
+        vec![3.0e38f32; dim],
+        vec![f32::INFINITY; dim],
+    ] {
+        for queries in [
+            vec![finite.as_slice(), bad.as_slice()],
+            vec![bad.as_slice(), finite.as_slice(), finite.as_slice()],
+            vec![
+                finite.as_slice(),
+                bad.as_slice(),
+                bad.as_slice(),
+                finite.as_slice(),
+            ],
+        ] {
+            let n = queries.len();
+            // The call may return results or an error for the bad query; it
+            // must not panic, and a success has one result list per query.
+            if let Ok(results) = index.batch_search_mqo(&queries, 5, 32) {
+                assert_eq!(results.len(), n);
+            }
+        }
+    }
+}
+
 /// `batch_search_mqo` must return results in input-query order and find at
 /// least as good a nearest neighbour as individual `search` calls.
 #[test]

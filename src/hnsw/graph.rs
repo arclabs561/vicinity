@@ -2870,6 +2870,16 @@ impl HNSWIndex {
                     best_idx = j;
                 }
             }
+            // Every remaining distance was NaN or infinite (a non-finite
+            // query, or one whose distances overflow), so nothing compared
+            // below `best_dist`. Take the first unvisited query; its search
+            // then behaves as `search` does for the same vector.
+            if best_idx == usize::MAX {
+                match visited_queries.iter().position(|v| !v) {
+                    Some(j) => best_idx = j,
+                    None => break,
+                }
+            }
             chain.push(best_idx);
             visited_queries[best_idx] = true;
         }

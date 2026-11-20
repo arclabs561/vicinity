@@ -128,7 +128,11 @@ impl KDTreeIndex {
             });
         }
 
-        self.vectors.extend_from_slice(&embedding);
+        // Distances are `1 - dot`, which is cosine distance only for unit
+        // vectors, and the pruning bounds assume unit vectors too. Store the
+        // normalized vector, as the other cosine indexes do.
+        self.vectors
+            .extend_from_slice(&crate::distance::normalize(&embedding));
         self.doc_ids.push(doc_id);
         self.num_vectors += 1;
         Ok(())
@@ -299,6 +303,7 @@ impl KDTreeIndex {
         })?;
 
         let dist_fn = crate::distance::cosine_distance_normalized;
+        let query = &crate::distance::normalize(query)[..];
 
         // Use a max-heap of size k to track the k best results.
         // worst_dist starts at infinity so the first k points are always accepted.
@@ -314,10 +319,12 @@ impl KDTreeIndex {
 
     /// Search recursively with pruning.
     ///
-    /// Prune the far subtree when the squared coordinate difference along the
-    /// split dimension exceeds `worst_dist`. This is exact for L2; for cosine
-    /// on normalized vectors it is a valid lower bound (coordinate difference
-    /// <= L2 distance <= cosine distance for unit vectors).
+    /// Every point `x` in the far subtree differs from the query by at least
+    /// `diff` along the split dimension, so `||q - x||^2 >= diff^2`. For unit
+    /// vectors `||q - x||^2 = 2 * (1 - q.x)`, twice the cosine distance the
+    /// results are ranked by. The far subtree can therefore be skipped only
+    /// when `diff^2 >= 2 * worst_dist`. Comparing `diff^2` with `worst_dist`
+    /// directly prunes subtrees that can still hold a nearer point.
     fn search_recursive(
         &self,
         node: &KDNode,
@@ -374,10 +381,10 @@ impl KDTreeIndex {
 
                 self.search_recursive(near, query, k, results, worst_dist, dist_fn);
 
-                // Prune: skip far subtree if the split-plane distance exceeds worst_dist.
-                // diff^2 is a lower bound on the L2 distance to any point in the far subtree.
+                // Prune the far subtree only when it cannot hold a nearer point
+                // (see the doc comment for the factor of 2).
                 let split_dist = diff * diff;
-                if split_dist < *worst_dist || results.len() < k {
+                if split_dist < 2.0 * *worst_dist || results.len() < k {
                     self.search_recursive(far, query, k, results, worst_dist, dist_fn);
                 }
             }
@@ -421,6 +428,116 @@ mod tests {
         }
         index.build().unwrap();
         index
+    }
+
+    fn lcg_vectors(n: usize, dim: usize, seed: u64, unit: bool) -> Vec<Vec<f32>> {
+        let mut state = seed;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((state >> 40) as f32 / (1u64 << 24) as f32) * 2.0 - 1.0
+        };
+        (0..n)
+            .map(|_| {
+                let v: Vec<f32> = (0..dim).map(|_| next()).collect();
+                if unit {
+                    crate::distance::normalize(&v)
+                } else {
+                    // Lengths from about 0.1 to 10.
+                    let scale = 10f32.powf(next());
+                    v.iter().map(|x| x * scale).collect()
+                }
+            })
+            .collect()
+    }
+
+    fn brute_force(data: &[Vec<f32>], query: &[f32], k: usize) -> Vec<f32> {
+        let q = crate::distance::normalize(query);
+        let mut d: Vec<f32> = data
+            .iter()
+            .map(|v| {
+                1.0 - crate::distance::normalize(v)
+                    .iter()
+                    .zip(&q)
+                    .map(|(a, b)| a * b)
+                    .sum::<f32>()
+            })
+            .collect();
+        d.sort_unstable_by(|a, b| a.total_cmp(b));
+        d.truncate(k);
+        d
+    }
+
+    /// The tree is documented as exact. With small leaves the pruning bound
+    /// decides most of the search; comparing `diff^2` with the cosine
+    /// distance (half the squared L2 distance) pruned true neighbours.
+    #[test]
+    fn search_matches_brute_force_on_unit_vectors() {
+        for (n, dim, seed) in [(200usize, 3usize, 2u64), (600, 6, 7), (400, 4, 11)] {
+            let data = lcg_vectors(n, dim, seed, true);
+            let params = KDTreeParams {
+                max_leaf_size: 2,
+                ..KDTreeParams::default()
+            };
+            let mut index = KDTreeIndex::new(dim, params).unwrap();
+            for (i, v) in data.iter().enumerate() {
+                index.add(i as u32, v.clone()).unwrap();
+            }
+            index.build().unwrap();
+            for query in lcg_vectors(40, dim, seed + 100, true) {
+                let got: Vec<f32> = index
+                    .search(&query, 10)
+                    .unwrap()
+                    .iter()
+                    .map(|r| r.1)
+                    .collect();
+                let want = brute_force(&data, &query, 10);
+                for (g, w) in got.iter().zip(&want) {
+                    assert!(
+                        (g - w).abs() < 1e-5,
+                        "n={n} dim={dim}: got {got:?}, want {want:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Vectors of any length are ranked by angle, and an exact match comes
+    /// first with distance 0.
+    #[test]
+    fn non_unit_vectors_are_ranked_by_cosine() {
+        let mut index = KDTreeIndex::new(2, KDTreeParams::default()).unwrap();
+        index.add(0, vec![1.0, 0.0]).unwrap();
+        index.add(1, vec![10.0, 1.0]).unwrap();
+        index.add(2, vec![0.0, 1.0]).unwrap();
+        index.build().unwrap();
+        let results = index.search(&[5.0, 0.0], 3).unwrap();
+        assert_eq!(
+            results.iter().map(|r| r.0).collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+        assert!(results[0].1.abs() < 1e-6);
+        assert!(results.iter().all(|r| r.1 >= -1e-6), "{results:?}");
+
+        let data = lcg_vectors(300, 4, 5, false);
+        let mut index = KDTreeIndex::new(4, KDTreeParams::default()).unwrap();
+        for (i, v) in data.iter().enumerate() {
+            index.add(i as u32, v.clone()).unwrap();
+        }
+        index.build().unwrap();
+        for query in lcg_vectors(20, 4, 99, false) {
+            let got: Vec<f32> = index
+                .search(&query, 5)
+                .unwrap()
+                .iter()
+                .map(|r| r.1)
+                .collect();
+            let want = brute_force(&data, &query, 5);
+            for (g, w) in got.iter().zip(&want) {
+                assert!((g - w).abs() < 1e-5, "got {got:?}, want {want:?}");
+            }
+        }
     }
 
     #[test]
