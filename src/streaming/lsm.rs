@@ -626,12 +626,29 @@ impl LsmIndex {
                 #[cfg(feature = "hnsw")]
                 {
                     if let Some(ref hnsw) = level.hnsw {
-                        let ef = ef_search.max(k);
-                        match hnsw.search(query, k, ef) {
-                            Ok(results) => {
-                                results.into_iter().filter(|(id, _)| keep(*id)).collect()
+                        // Deletes are recorded in the LSM's own maps, not in
+                        // the level's HNSW, so the graph can return ids that
+                        // are dead. Asking for exactly k and filtering
+                        // afterwards returned fewer than k, or nothing when
+                        // the k nearest had all been deleted. Widen the
+                        // request until k live results are found or the level
+                        // is exhausted.
+                        let mut fetch = k.max(1);
+                        loop {
+                            let ef = ef_search.max(fetch);
+                            let Ok(results) = hnsw.search(query, fetch, ef) else {
+                                break Vec::new();
+                            };
+                            let returned = results.len();
+                            let live: Vec<(u32, f32)> = results
+                                .into_iter()
+                                .filter(|(id, _)| keep(*id))
+                                .take(k)
+                                .collect();
+                            if live.len() >= k || returned < fetch || fetch >= level.count {
+                                break live;
                             }
-                            Err(_) => Vec::new(),
+                            fetch = fetch.saturating_mul(2).min(level.count);
                         }
                     } else {
                         // Fallback to brute-force if HNSW not built
@@ -1116,6 +1133,42 @@ mod tests {
         (0..dim)
             .map(|i| (seed as f32 * 0.1 + i as f32 * 0.01).sin())
             .collect()
+    }
+
+    #[test]
+    fn deleting_the_nearest_neighbours_still_returns_k_live_results() {
+        let dim = 8;
+        let mut index = LsmIndex::new(make_config(dim));
+        for i in 0..300u32 {
+            index.insert(i, make_vector(dim, i)).unwrap();
+        }
+        index.compact().unwrap();
+
+        let query = make_vector(dim, 7);
+        let k = 10;
+        let nearest: Vec<u32> = index
+            .search(&query, k)
+            .unwrap()
+            .iter()
+            .map(|r| r.0)
+            .collect();
+        assert_eq!(nearest.len(), k);
+        for id in &nearest {
+            index.delete(*id);
+        }
+
+        let after = index.search(&query, k).unwrap();
+        assert_eq!(
+            after.len(),
+            k,
+            "got {} of {k} with 290 live vectors",
+            after.len()
+        );
+        assert!(after.iter().all(|(id, _)| !nearest.contains(id)));
+        let mut ids: Vec<u32> = after.iter().map(|r| r.0).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), k);
     }
 
     #[test]
