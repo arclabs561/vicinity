@@ -352,7 +352,7 @@ impl HNSWSegmentSearcher {
         }
 
         // ── entry point: first node with the highest layer assignment ───────
-        let (entry_point, entry_layer) = compute_entry_point(&layer_assignments);
+        let (entry_point, entry_layer) = compute_entry_point(&layer_assignments, &tombstones);
 
         let mut stats = scan.stats;
         stats.offsets_bytes = scan.base_offsets.len() * 4
@@ -1159,15 +1159,26 @@ fn scan_layers(
     })
 }
 
-fn compute_entry_point(layer_assignments: &[u8]) -> (u32, usize) {
-    let mut entry = 0u32;
-    let mut layer = 0u8;
-    for (index, &assignment) in layer_assignments.iter().enumerate() {
-        if assignment > layer {
-            layer = assignment;
-            entry = index as u32;
+/// First live node with the highest layer assignment.
+///
+/// A tombstoned node may have had its edges removed by `delete_with_repair`,
+/// so starting a search from it finds nothing. `tombstones` is empty for
+/// legacy segments, in which case every node counts as live. If every node is
+/// tombstoned, the first node with the highest layer is returned.
+fn compute_entry_point(layer_assignments: &[u8], tombstones: &[u8]) -> (u32, usize) {
+    let highest = |live_only: bool| -> Option<(u32, u8)> {
+        let mut best: Option<(u32, u8)> = None;
+        for (index, &assignment) in layer_assignments.iter().enumerate() {
+            if live_only && tombstones.get(index).is_some_and(|&flag| flag != 0) {
+                continue;
+            }
+            if best.is_none_or(|(_, layer)| assignment > layer) {
+                best = Some((index as u32, assignment));
+            }
         }
-    }
+        best
+    };
+    let (entry, layer) = highest(true).or_else(|| highest(false)).unwrap_or((0, 0));
     (entry, layer as usize)
 }
 

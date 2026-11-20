@@ -61,6 +61,10 @@ pub struct StreamingCoordinator<I> {
     total_inserts: u64,
     total_deletes: u64,
     total_compactions: u64,
+    /// Ids replaced through `update` since the last compaction. The main index
+    /// may still hold their old vector: search hides it, and compaction deletes
+    /// it before inserting the new one.
+    replaced: std::collections::HashSet<u32>,
 }
 
 impl<I> StreamingCoordinator<I> {
@@ -78,6 +82,7 @@ impl<I> StreamingCoordinator<I> {
             total_inserts: 0,
             total_deletes: 0,
             total_compactions: 0,
+            replaced: std::collections::HashSet::new(),
         }
     }
 
@@ -149,7 +154,14 @@ impl<I: IndexOps> StreamingCoordinator<I> {
 
     /// Delete a vector with auto-compaction.
     pub fn delete(&mut self, id: u32) -> Result<()> {
+        // Deleting a buffered vector only drops it from the buffer. If that
+        // vector came from `update`, the main index may still hold the old
+        // copy, which needs a pending delete of its own.
+        let buffered = self.buffer.get(id).is_some();
         self.buffer.delete(id);
+        if buffered && self.replaced.contains(&id) {
+            self.buffer.delete(id);
+        }
         self.total_deletes += 1;
 
         if self.config.auto_compact && self.buffer.needs_compaction() {
@@ -161,8 +173,12 @@ impl<I: IndexOps> StreamingCoordinator<I> {
 
     /// Update a vector (atomic delete + insert) with auto-compaction.
     pub fn update(&mut self, id: u32, vector: Vec<f32>) -> Result<()> {
+        // `buffer.insert` clears the pending delete that `buffer.delete` just
+        // queued, so the buffer alone no longer records that the main index
+        // may hold an older copy. Remember it here.
         self.buffer.delete(id);
         self.buffer.insert(id, vector)?;
+        self.replaced.insert(id);
         self.total_inserts += 1;
         self.total_deletes += 1;
 
@@ -177,8 +193,20 @@ impl<I: IndexOps> StreamingCoordinator<I> {
     pub fn compact(&mut self) -> Result<UpdateStats> {
         let start = Instant::now();
         let (inserts, deletes) = self.buffer.drain();
+        let replaced = std::mem::take(&mut self.replaced);
 
         let mut stats = UpdateStats::default();
+
+        // Remove the old copy of every updated id that is about to be
+        // re-inserted. The id may never have reached the main index (inserted
+        // and updated within one buffer generation), so a failed delete here
+        // is not an error. Without this, an index that rejects duplicate ids
+        // dropped the update, and one that accepts them kept both vectors.
+        for id in replaced {
+            if inserts.contains_key(&id) && !deletes.contains(&id) {
+                let _ = self.index.delete(id);
+            }
+        }
 
         // Apply deletes first
         for id in deletes {
@@ -236,18 +264,22 @@ impl<I: IndexOps> StreamingCoordinator<I> {
         let buffer_results = self.buffer.search(query, k);
         let mut main_results = self.index.search(query, k * 2)?; // Overfetch to account for deletes
 
-        // Filter deletes from main results
-        main_results.retain(|(id, _)| !self.buffer.is_deleted(*id));
+        // Filter deletes from main results, and any id the buffer also holds:
+        // the buffered vector is the newer one, and the main index's stale
+        // copy must not compete with it.
+        main_results
+            .retain(|(id, _)| !self.buffer.is_deleted(*id) && self.buffer.get(*id).is_none());
 
         // Merge results
         let mut combined = buffer_results;
         combined.extend(main_results);
         combined.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
-        combined.truncate(k);
 
-        // Deduplicate (prefer lower distance)
+        // Deduplicate before truncating, so a duplicate cannot take one of
+        // the k places.
         let mut seen = std::collections::HashSet::new();
         combined.retain(|(id, _)| seen.insert(*id));
+        combined.truncate(k);
 
         Ok(combined)
     }
@@ -332,6 +364,97 @@ mod tests {
         let mut config = StreamingConfig::default();
         config.buffer.distance_metric = crate::distance::DistanceMetric::L2;
         config
+    }
+
+    /// Like `MockIndex`, but refuses an id it already holds, as an index
+    /// without overwrite semantics does.
+    struct StrictIndex(MockIndex);
+
+    impl IndexOps for StrictIndex {
+        fn insert(&mut self, id: u32, vector: Vec<f32>) -> Result<()> {
+            if self.0.vectors.contains_key(&id) {
+                return Err(crate::RetrieveError::InvalidParameter(format!(
+                    "duplicate id {id}"
+                )));
+            }
+            self.0.insert(id, vector)
+        }
+
+        fn delete(&mut self, id: u32) -> Result<()> {
+            match self.0.vectors.remove(&id) {
+                Some(_) => Ok(()),
+                None => Err(crate::RetrieveError::InvalidParameter(format!(
+                    "unknown id {id}"
+                ))),
+            }
+        }
+
+        fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u32, f32)>> {
+            self.0.search(query, k)
+        }
+
+        fn distance_metric(&self) -> crate::distance::DistanceMetric {
+            self.0.distance_metric()
+        }
+    }
+
+    #[test]
+    fn update_hides_the_old_vector_and_survives_compaction() {
+        let mut streaming =
+            StreamingCoordinator::with_config(StrictIndex(MockIndex::new()), mock_config());
+        streaming.insert(1, vec![1.0, 0.0]).unwrap();
+        streaming.insert(2, vec![0.0, 1.0]).unwrap();
+        streaming.insert(3, vec![-1.0, 0.0]).unwrap();
+        streaming.compact().unwrap();
+
+        streaming.update(1, vec![0.0, -1.0]).unwrap();
+
+        // Before compaction: the main index still holds [1, 0] for id 1.
+        let near_old = streaming.search(&[1.0, 0.0], 2).unwrap();
+        assert_eq!(near_old.len(), 2, "{near_old:?}");
+        assert!(
+            near_old.iter().all(|(id, dist)| *id != 1 || *dist > 1.0),
+            "stale vector for id 1 was returned: {near_old:?}"
+        );
+        let near_new = streaming.search(&[0.0, -1.0], 1).unwrap();
+        assert_eq!(near_new[0].0, 1);
+        assert!(near_new[0].1 < 1e-6);
+
+        // Compaction replaces the old copy and reports no error.
+        let stats = streaming.compact().unwrap();
+        assert_eq!(stats.errors, 0);
+        let near_new = streaming.search(&[0.0, -1.0], 1).unwrap();
+        assert_eq!(near_new[0].0, 1);
+        assert!(near_new[0].1 < 1e-6);
+        let near_old = streaming.search(&[1.0, 0.0], 3).unwrap();
+        assert_eq!(near_old.len(), 3);
+        assert!(near_old.iter().all(|(_, dist)| *dist > 1.0), "{near_old:?}");
+    }
+
+    #[test]
+    fn update_of_an_id_never_compacted_is_not_an_error() {
+        let mut streaming =
+            StreamingCoordinator::with_config(StrictIndex(MockIndex::new()), mock_config());
+        streaming.insert(1, vec![1.0, 0.0]).unwrap();
+        streaming.update(1, vec![0.0, 1.0]).unwrap();
+        let stats = streaming.compact().unwrap();
+        assert_eq!(stats.errors, 0);
+        assert_eq!(stats.inserts_applied, 1);
+        assert_eq!(streaming.search(&[0.0, 1.0], 1).unwrap()[0].0, 1);
+    }
+
+    #[test]
+    fn update_then_delete_removes_the_id_everywhere() {
+        let mut streaming =
+            StreamingCoordinator::with_config(StrictIndex(MockIndex::new()), mock_config());
+        streaming.insert(1, vec![1.0, 0.0]).unwrap();
+        streaming.insert(2, vec![0.0, 1.0]).unwrap();
+        streaming.compact().unwrap();
+        streaming.update(1, vec![0.5, 0.5]).unwrap();
+        streaming.delete(1).unwrap();
+        streaming.compact().unwrap();
+        let all = streaming.search(&[1.0, 0.0], 5).unwrap();
+        assert_eq!(all.iter().map(|r| r.0).collect::<Vec<_>>(), vec![2]);
     }
 
     #[test]

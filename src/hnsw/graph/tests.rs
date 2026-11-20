@@ -573,6 +573,46 @@ fn test_search_acorn_requires_filtering_metadata() {
     ));
 }
 
+/// `delete_with_repair` strips the deleted node's edges and moves the cached
+/// entry point, but the cache is not serialized. A reload must not pick the
+/// edgeless tombstoned node again.
+#[cfg(feature = "serde")]
+#[test]
+fn reload_after_deleting_the_entry_point_still_searches() {
+    let (mut index, q) = build_test_index();
+    let k = 10;
+    let ef = 100;
+
+    let (entry_internal, _) = index.entry_point().unwrap();
+    let entry_doc = index.doc_id(entry_internal).unwrap();
+    index.delete_with_repair(entry_doc).unwrap();
+
+    let in_memory = index.search(&q, k, ef).unwrap();
+    assert_eq!(in_memory.len(), k);
+
+    let mut buf = Vec::new();
+    index.save_to_writer(&mut buf).unwrap();
+    let loaded = HNSWIndex::load_from_reader(buf.as_slice()).unwrap();
+
+    let (reloaded_entry, _) = loaded.entry_point().unwrap();
+    assert_ne!(
+        reloaded_entry, entry_internal,
+        "entry point is the deleted node"
+    );
+    let reloaded = loaded.search(&q, k, ef).unwrap();
+    assert_eq!(
+        reloaded.len(),
+        k,
+        "reloaded index returned {} results",
+        reloaded.len()
+    );
+    assert!(reloaded.iter().all(|(id, _)| *id != entry_doc));
+    assert_eq!(
+        reloaded.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+        in_memory.iter().map(|(id, _)| *id).collect::<Vec<_>>()
+    );
+}
+
 #[cfg(feature = "serde")]
 #[test]
 fn test_hnsw_save_load_roundtrip() {
