@@ -122,7 +122,11 @@ impl BallTreeIndex {
             });
         }
 
-        self.vectors.extend_from_slice(&embedding);
+        // Distances are `1 - dot`, which is cosine distance only for unit
+        // vectors, and the pruning bounds assume unit vectors too. Store the
+        // normalized vector, as the other cosine indexes do.
+        self.vectors
+            .extend_from_slice(&crate::distance::normalize(&embedding));
         self.doc_ids.push(doc_id);
         self.num_vectors += 1;
         Ok(())
@@ -353,6 +357,7 @@ impl BallTreeIndex {
 
         // Use a bounded priority queue for k-nearest neighbors
         // Store (distance, index) pairs, sorted by distance descending (max-heap behavior)
+        let query = &crate::distance::normalize(query)[..];
         let mut best_k: Vec<(f32, u32)> = Vec::with_capacity(k);
         let mut best_dist = f32::INFINITY; // Current k-th best distance (pruning threshold)
 
@@ -537,6 +542,25 @@ mod tests {
         }
         index.build().unwrap();
         index
+    }
+
+    /// Vectors of any length are ranked by angle, and an exact match comes
+    /// first with distance 0. Without normalizing, `[10, 1]` outranked the
+    /// exact match `[1, 0]` with a distance of -9.
+    #[test]
+    fn non_unit_vectors_are_ranked_by_cosine() {
+        let mut index = BallTreeIndex::new(2, BallTreeParams::default()).unwrap();
+        index.add(0, vec![1.0, 0.0]).unwrap();
+        index.add(1, vec![10.0, 1.0]).unwrap();
+        index.add(2, vec![0.0, 1.0]).unwrap();
+        index.build().unwrap();
+        let results = index.search(&[5.0, 0.0], 3).unwrap();
+        assert_eq!(
+            results.iter().map(|r| r.0).collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+        assert!(results[0].1.abs() < 1e-6);
+        assert!(results.iter().all(|r| r.1 >= -1e-6), "{results:?}");
     }
 
     #[test]
