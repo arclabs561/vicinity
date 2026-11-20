@@ -3630,15 +3630,24 @@ impl HNSWIndex {
         if self.num_vectors == 0 {
             return None;
         }
-        let mut entry_point = 0u32;
-        let mut entry_layer = 0u8;
-        for (idx, &layer) in self.layer_assignments.iter().enumerate() {
-            if layer > entry_layer {
-                entry_point = idx as u32;
-                entry_layer = layer;
+        // Prefer a live node. `delete_with_repair` clears every edge of the node
+        // it removes, so a tombstoned node chosen here would leave search with
+        // nowhere to go. This runs on every load, where the cached entry point
+        // (not serialized) is rebuilt and the tombstones are already known.
+        let highest = |live_only: bool| -> Option<u32> {
+            let mut best: Option<(u32, u8)> = None;
+            for (idx, &layer) in self.layer_assignments.iter().enumerate() {
+                if live_only && self.tombstones.is_deleted(idx) {
+                    continue;
+                }
+                if best.is_none_or(|(_, best_layer)| layer > best_layer) {
+                    best = Some((idx as u32, layer));
+                }
             }
-        }
-        Some(entry_point)
+            best.map(|(idx, _)| idx)
+        };
+        // With every node deleted any node will do: searches return nothing.
+        highest(true).or_else(|| highest(false))
     }
 }
 
