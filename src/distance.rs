@@ -152,6 +152,14 @@ mod tests {
     }
 
     #[test]
+    fn cosine_distance_handles_large_finite_coordinates() {
+        let a = [1e20, 0.0];
+        assert_eq!(cosine_distance(&a, &a), 0.0);
+        assert_eq!(cosine_distance(&a, &[-1e20, 0.0]), 2.0);
+        assert_eq!(cosine_distance(&a, &[0.0, 1e20]), 1.0);
+    }
+
+    #[test]
     fn cosine_distance_normalized_matches_dot() {
         let a = normalize(&[3.0_f32, 4.0]);
         let b = normalize(&[6.0_f32, 8.0]);

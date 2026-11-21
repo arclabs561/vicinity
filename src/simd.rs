@@ -101,11 +101,17 @@ mod fallback {
     #[inline]
     #[must_use]
     pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
-        let d = dot(a, b);
-        let na = norm(a);
-        let nb = norm(b);
-        if na > NORM_EPSILON && nb > NORM_EPSILON {
-            d / (na * nb)
+        // Squaring a finite f32 can overflow before the quotient is taken.
+        let (mut ab, mut aa, mut bb) = (0.0, 0.0, 0.0);
+        for (&x, &y) in a.iter().zip(b) {
+            let (x, y) = (f64::from(x), f64::from(y));
+            ab += x * y;
+            aa += x * x;
+            bb += y * y;
+        }
+        let eps_sq = f64::from(NORM_EPSILON).powi(2);
+        if aa > eps_sq && bb > eps_sq {
+            (ab / (aa.sqrt() * bb.sqrt())) as f32
         } else {
             0.0
         }
