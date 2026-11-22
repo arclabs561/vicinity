@@ -150,11 +150,7 @@ impl SAQQuantizer {
 
             // Spherical k-means weights each training direction equally.
             let normalized: Vec<Vec<f32>> = (0..num_vectors)
-                .map(|i| {
-                    crate::distance::normalize(
-                        &get_vector(vectors, self.dimension, i)[*start..*end],
-                    )
-                })
+                .map(|i| unit_direction(&get_vector(vectors, self.dimension, i)[*start..*end]))
                 .collect();
             let mut codebook: Vec<Vec<f32>> = Vec::with_capacity(codebook_size);
             if let Some(first) = normalized.first() {
@@ -210,7 +206,7 @@ impl SAQQuantizer {
                     if counts[code] == 0 {
                         continue;
                     }
-                    let updated = crate::distance::normalize(sum);
+                    let updated = unit_direction(sum);
                     if updated != codebook[code] {
                         codebook[code] = updated;
                         changed = true;
@@ -232,7 +228,7 @@ impl SAQQuantizer {
         let mut codes = Vec::new();
 
         for (segment_idx, (start, end)) in self.segment_bounds.iter().enumerate() {
-            let segment = crate::distance::normalize(&vector[*start..*end]);
+            let segment = unit_direction(&vector[*start..*end]);
             let codebook = &self.codebooks[segment_idx];
 
             // Find closest codeword
@@ -260,7 +256,7 @@ impl SAQQuantizer {
         for (segment_idx, (start, end)) in self.segment_bounds.iter().enumerate() {
             if let Some(code_vec) = codes.get(segment_idx) {
                 if let Some(&code) = code_vec.first() {
-                    let query_segment = crate::distance::normalize(&query[*start..*end]);
+                    let query_segment = unit_direction(&query[*start..*end]);
                     if (code as usize) < self.codebooks[segment_idx].len() {
                         let codeword = &self.codebooks[segment_idx][code as usize];
                         total_dist += cosine_distance_normalized(&query_segment, codeword);
@@ -271,6 +267,23 @@ impl SAQQuantizer {
 
         total_dist
     }
+}
+
+/// Every finite nonzero f32 vector has a direction, including subnormals.
+/// Its squared components and their sum fit in f64 for any addressable slice.
+fn unit_direction(values: &[f32]) -> Vec<f32> {
+    let norm = values
+        .iter()
+        .map(|&x| f64::from(x).powi(2))
+        .sum::<f64>()
+        .sqrt();
+    if norm == 0.0 {
+        return vec![0.0; values.len()];
+    }
+    values
+        .iter()
+        .map(|&x| (f64::from(x) / norm) as f32)
+        .collect()
 }
 
 /// Get vector from SoA storage.
@@ -379,7 +392,7 @@ mod tests {
 
     #[test]
     fn finite_rescaling_preserves_directions() {
-        for x in [1.0, f32::MAX] {
+        for x in [f32::from_bits(1), f32::MIN_POSITIVE, 1.0, f32::MAX] {
             let mut q = SAQQuantizer::new(2, 1, 1).unwrap();
             q.fit(&[x, 0., x, 0., 0., x, 0., x], 4).unwrap();
             let a = q.quantize(&[x, 0.]);
