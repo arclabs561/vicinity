@@ -18,10 +18,23 @@ rebuild.
 One [protocol](docs/benchmark-atlas.md#protocol) measures all of them at the
 same sizes, so comparisons are between families rather than between benchmarks.
 
+## Rust quick start
+
+With Rust 1.94 or newer, create a binary crate:
+
+```sh
+cargo new vicinity-demo
+cd vicinity-demo
+```
+
+Add `vicinity` to the existing `[dependencies]` table in `Cargo.toml`:
+
 ```toml
 [dependencies]
-vicinity = { version = "0.12.0", features = ["hnsw", "serde"] }   # serde adds save_to_file/load_from_file
+vicinity = "0.12.0"
 ```
+
+Save this in `src/main.rs` and run `cargo run`:
 
 ```rust
 use vicinity::hnsw::HNSWIndex;
@@ -52,7 +65,9 @@ fn main() -> vicinity::Result<()> {
 
 Results carry the IDs you supplied and the distance; lower is closer.
 `distance::DistanceMetric` selects L2, angular or inner product. Cosine assumes
-unit-norm vectors unless you set `auto_normalize(true)`.
+unit-norm vectors unless you set `auto_normalize(true)`. The
+[examples guide](examples/README.md) includes runnable search, recall and
+persistence examples.
 
 ## What it does that the usual answer does not
 
@@ -226,7 +241,17 @@ print(ids.tolist())
 ```
 
 [`examples/python/02_batch_and_recall.py`](examples/python/02_batch_and_recall.py)
-shows batch search and recall measurement.
+shows batch search and recall measurement with the published wheel.
+
+To try the IVF-PQ adapter alongside HNSW, clone this repository and run the
+harness example from its root with uv and Rust 1.94 or newer:
+
+```sh
+uv run examples/python/03_ann_benchmarks_harness.py
+```
+
+The first run builds the extension from the checkout. Each adapter prints a
+batch shape of `(50, 10)` for 50 queries requesting 10 neighbors each.
 
 ## Features
 

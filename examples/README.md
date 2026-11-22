@@ -288,9 +288,18 @@ for ex in 01_basic_search 02_measure_recall semantic_search_demo; do
 done
 ```
 
+## Python examples
+
+From the repository root, choose a script to run with uv:
+
+| Command | What to look for |
+|---|---|
+| `uv run examples/python/01_text_similarity.py` | Four text queries return matching sentences. The first run downloads a pretrained model and its dependencies. |
+| `uv run examples/python/02_batch_and_recall.py` | Six search widths are scored against exact neighbors on 2,000 vectors. Append `--full` for the 50,000-vector workload. |
+| `uv run examples/python/03_ann_benchmarks_harness.py` | HNSW and IVF-PQ each return 50 rows of 10 IDs. Requires Rust 1.94 or newer to build the checkout’s Python bindings. |
+
 ## Shared Code
 
 `examples/common/` holds vector and neighbor loaders shared by the benchmark
 examples, and `examples/ann_benchmark/` holds the `ann_benchmark` runner's
 submodules. Both are example-only utilities, not public API.
-`examples/python/` holds the Python binding examples.

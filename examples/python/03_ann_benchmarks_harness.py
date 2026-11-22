@@ -1,6 +1,9 @@
 # /// script
 # requires-python = ">=3.10"
 # dependencies = ["pyvicinity", "numpy"]
+#
+# [tool.uv.sources]
+# pyvicinity = { path = "../.." }
 # ///
 """Drop pyvicinity into the ann-benchmarks harness contract.
 
@@ -9,6 +12,9 @@ big-ann-benchmarks / VIBE expects a class with ``fit``, ``query``, and
 ``batch_query`` methods. ``pyvicinity.ann_benchmarks`` provides HNSW and
 IVF-PQ wrappers for that contract. This example exercises the full harness
 flow against a 5k synthetic corpus.
+
+Run from a checkout with uv and Rust 1.94 or newer. The first run builds
+the Python extension from this checkout.
 
 Run with:
 
