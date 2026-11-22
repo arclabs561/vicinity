@@ -150,6 +150,18 @@ pub fn normalize(v: &[f32]) -> Vec<f32> {
 mod tests {
     use super::*;
 
+    #[cfg(not(feature = "innr"))]
+    #[test]
+    fn scalar_l2_orders_distances_whose_squares_are_out_of_range() {
+        for magnitude in [1e20_f32, 1e-30] {
+            let near = DistanceMetric::L2.distance(&[0.0], &[magnitude]);
+            let far = DistanceMetric::L2.distance(&[0.0], &[2.0 * magnitude]);
+            assert_eq!(near, magnitude);
+            assert_eq!(far, 2.0 * magnitude);
+        }
+        assert!(l2_distance(&[-f32::MAX], &[f32::MAX]).is_infinite());
+    }
+
     #[test]
     fn cosine_distance_is_zero_for_identical() {
         let a = [1.0_f32, 2.0, 3.0];

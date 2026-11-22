@@ -121,7 +121,16 @@ mod fallback {
     #[inline]
     #[must_use]
     pub fn l2_distance(a: &[f32], b: &[f32]) -> f32 {
-        l2_distance_squared(a, b).sqrt()
+        let squared = l2_distance_squared(a, b);
+        if squared.is_normal() {
+            return squared.sqrt();
+        }
+        // The square can overflow or round to zero while the distance fits.
+        a.iter()
+            .zip(b)
+            .map(|(&x, &y)| (f64::from(x) - f64::from(y)).powi(2))
+            .sum::<f64>()
+            .sqrt() as f32
     }
 
     /// Squared L2 distance between two f32 slices.
