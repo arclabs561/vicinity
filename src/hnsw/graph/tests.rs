@@ -1771,15 +1771,9 @@ fn test_delete_with_repair_excludes_from_results() {
     );
 }
 
-/// At full effort the graph search must equal the exact scan.
-///
-/// `ef >= n` visits every node, so the top-k ids must match brute force exactly.
-/// The audit found no test for this, which is why a filtered branch could return
-/// nothing without anything failing.
+/// On this connected fixture a full-width search agrees with a corpus scan.
 #[test]
-fn search_at_full_effort_equals_the_exact_scan() {
-    // `ef = n` visits every node reachable from the entry point, so on the
-    // connected 200-point fixture it must reproduce brute force exactly.
+fn full_width_search_matches_exact_scan_on_connected_fixture() {
     // Brute force iterates *internal* ids and maps to doc ids: `build()`
     // performs a locality reorder, so `get_vector(doc_id)` is not the vector
     // that search ranks for that doc.

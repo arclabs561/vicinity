@@ -2457,14 +2457,15 @@ impl HNSWIndex {
     /// * `k` - Number of neighbors to return
     /// * `ef` - Search width (higher = better recall, slower). Values below
     ///   `k` are silently raised to `k`, since beam search returns at most
-    ///   `ef` candidates.
+    ///   `ef` candidates. Even a width equal to the corpus size searches
+    ///   only the graph nodes reachable from the chosen entry point.
     ///
     /// # Returns
     ///
     /// Vector of `(doc_id, distance)` pairs, sorted by distance ascending.
-    /// May contain fewer than `k` entries: when `k` exceeds the number of
-    /// indexed vectors, and after [`Self::delete`] (tombstoned entries are
-    /// filtered from the candidate set). `k = 0` returns an empty vec.
+    /// Returns fewer than `k` entries when fewer than `k` live vectors are
+    /// reachable. Deleted entries are excluded (see [`Self::delete`]).
+    /// `k = 0` returns an empty vec.
     ///
     /// # Errors
     ///

@@ -6,10 +6,11 @@ HNSW is the default. Behind feature flags sit compression families (IVF-PQ,
 IVF-AVQ, RaBitQ), graph builders (Vamana, DiskANN), the NSW line (NSG, NSW, SNG),
 random-projection trees, ball and k-d trees, LSH, and binary or 4-bit codes.
 
-Three of those families are **exact**, not approximate: the k-d tree and the ball
-tree return the true top-k by pruning, and HNSW at `ef >= n` reproduces brute
-force. They are slower per query and often smaller to build, which is why they
-appear in the atlas cost figures rather than the recall frontier.
+The k-d tree and ball tree prune an exact search over normalized vectors. HNSW
+searches a graph. Even at `ef >= n`, a nearest neighbor can be unreachable
+from the search entry point. For ground truth, scan the corpus under the same
+metric. The [full-width HNSW example](docs/benchmark-atlas.md#checking-full-width-hnsw)
+compares both paths on 14 points.
 
 Two paths cover what plain HNSW cannot. A filtered graph answers predicate
 queries without leaving the graph, and an in-place index takes updates without a

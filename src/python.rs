@@ -331,7 +331,7 @@ impl PyHNSWIndex {
     ///
     /// Returns:
     ///     Tuple ``(ids, distances)`` of 1-D arrays. Length is at most k;
-    ///     fewer if the index has fewer than k vectors. ``ids`` are int64
+    ///     fewer if the search cannot reach k live vectors. ``ids`` are int64
     ///     (faiss-compatible).
     #[pyo3(signature = (query, k, ef=None))]
     fn search<'py>(
