@@ -45,7 +45,7 @@ Synthetic-data examples that run without downloads.
 | Example | Lines | Covers |
 |---------|-------|-----------------|
 | `01_basic_search` | 62 | Minimal HNSW: add vectors, search |
-| `02_measure_recall` | 91 | How to validate an ANN index |
+| `02_measure_recall` | 87 | Recall at five search widths against exact neighbors for held-out queries |
 | `03_quick_benchmark` | 345 | Benchmark with bundled data (no downloads) |
 | `05_normalization_matters` | 145 | Cosine input contract and `auto_normalize(true)` |
 

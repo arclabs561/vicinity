@@ -7,6 +7,7 @@
 //! cargo run --example 02_measure_recall --release
 //! ```
 
+use rand::{rngs::StdRng, Rng, SeedableRng};
 use std::collections::HashSet;
 use vicinity::hnsw::HNSWIndex;
 
@@ -15,11 +16,21 @@ fn main() -> vicinity::Result<()> {
     let n = 1000;
     let k = 10;
 
-    // Generate normalized random vectors
-    let vectors: Vec<Vec<f32>> = (0..n).map(|i| normalize(&random_vec(dim, i))).collect();
+    // Draw queries separately so a query cannot match itself in the index.
+    let mut rng = StdRng::seed_from_u64(42);
+    let mut sample = || {
+        let values: Vec<f32> = (0..dim).map(|_| rng.random_range(-1.0..1.0)).collect();
+        normalize(&values)
+    };
+    let vectors: Vec<_> = (0..n).map(|_| sample()).collect();
+    let queries: Vec<_> = (0..50).map(|_| sample()).collect();
+    let truth: Vec<HashSet<u32>> = queries
+        .iter()
+        .map(|q| brute_force_knn(q, &vectors, k).into_iter().collect())
+        .collect();
 
     // Build index
-    let mut index = HNSWIndex::new(dim, 16, 32)?;
+    let mut index = HNSWIndex::builder(dim).m(16).seed(42).build()?;
     for (id, vec) in vectors.iter().enumerate() {
         index.add(id as u32, vec.clone())?;
     }
@@ -32,15 +43,7 @@ fn main() -> vicinity::Result<()> {
 
     for ef in [10, 20, 50, 100, 200] {
         let mut total_recall = 0.0;
-        let n_queries = 50;
-
-        for q in 0..n_queries {
-            let query = &vectors[(q * 17) % n]; // Sample queries
-
-            // Ground truth: brute force
-            let gt = brute_force_knn(query, &vectors, k);
-            let gt_ids: HashSet<u32> = gt.into_iter().collect();
-
+        for (query, gt_ids) in queries.iter().zip(&truth) {
             // Approximate: HNSW
             let approx = index.search(query, k, ef)?;
             let approx_ids: HashSet<u32> = approx.iter().map(|(id, _)| *id).collect();
@@ -50,23 +53,16 @@ fn main() -> vicinity::Result<()> {
             total_recall += recall;
         }
 
-        let avg_recall = total_recall / n_queries as f32;
+        let avg_recall = total_recall / queries.len() as f32;
         println!("{:>8}  {:>9.1}%", ef, avg_recall * 100.0);
     }
 
-    println!("\nIn this run, ef controls the recall/speed tradeoff.");
-    println!("Higher ef = better recall, but slower queries.");
+    println!("\nLarger ef explores more candidates. Once recall reaches 100%, it cannot improve further.");
 
     Ok(())
 }
 
 // --- Helpers ---
-
-fn random_vec(dim: usize, seed: usize) -> Vec<f32> {
-    (0..dim)
-        .map(|i| ((seed * 31 + i * 17) as f32 * 0.001).sin())
-        .collect()
-}
 
 fn normalize(v: &[f32]) -> Vec<f32> {
     let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
