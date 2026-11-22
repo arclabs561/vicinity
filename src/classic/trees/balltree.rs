@@ -564,6 +564,20 @@ mod tests {
     }
 
     #[test]
+    fn large_finite_vectors_keep_their_direction() {
+        let mut index = BallTreeIndex::new(2, BallTreeParams::default()).unwrap();
+        index.add(1, vec![1.0, 0.0]).unwrap();
+        index.add(2, vec![f32::MAX, f32::MAX]).unwrap();
+        index.build().unwrap();
+
+        for query in [[1.0, 1.0], [f32::MAX, f32::MAX]] {
+            let hits = index.search(&query, 1).unwrap();
+            assert_eq!(hits[0].0, 2);
+            assert!(hits[0].1.abs() < 1e-6);
+        }
+    }
+
+    #[test]
     fn search_returns_external_doc_ids() {
         let index = build_index();
         let results = index.search(&[4.0, 8.0, 1.0], 3).unwrap();

@@ -137,6 +137,12 @@ pub fn normalize(v: &[f32]) -> Vec<f32> {
     if n < 1e-10 {
         return vec![0.0; v.len()];
     }
+    if n.is_infinite() {
+        // The norm of a finite vector can exceed f32::MAX even though its
+        // unit direction is representable.
+        let norm = v.iter().map(|&x| f64::from(x).powi(2)).sum::<f64>().sqrt();
+        return v.iter().map(|&x| (f64::from(x) / norm) as f32).collect();
+    }
     v.iter().map(|x| x / n).collect()
 }
 
