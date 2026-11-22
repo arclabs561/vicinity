@@ -222,6 +222,11 @@ path = "examples/filtered_alignment.rs"
 required-features = ["hnsw", "filtered_graph"]
 
 [[example]]
+name = "filtered_neighbors"
+path = "examples/filtered_neighbors.rs"
+required-features = ["filtered_graph"]
+
+[[example]]
 name = "sharded_tier"
 path = "examples/sharded_tier.rs"
 required-features = ["hnsw", "persistence"]

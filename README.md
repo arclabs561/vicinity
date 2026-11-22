@@ -72,10 +72,22 @@ persistence examples.
 
 ## What it does that the usual answer does not
 
-**Filtered search stays on the graph.** `hnsw::search_acorn` expands two hops
-through a predicate instead of filtering after the fact, and
-`filtered_graph::search_filtered` picks between a beam and an exact scan of the
-inverted list depending on selectivity.
+**Search within a collection.** The [filtered neighbors example](examples/filtered_neighbors.rs)
+uses `FilteredGraphIndex::search_filtered` with an integer metadata predicate.
+Run this command from the repository root.
+
+```sh
+cargo run --release --example filtered_neighbors --features filtered_graph
+```
+
+The two nearest unfiltered documents belong to collection 1. Collection 2 has
+three equidistant documents. Asking for two returns `[10, 50]`, and asking
+for five returns `[10, 50, 90]`. Collection 3 has no matches and returns `[]`.
+
+The filtered graph selects a beam or an exact scan of the matching IDs based on
+selectivity. A beam with too few matches falls back to the scan. HNSW's
+`search_acorn` uses a different strategy, expanding second-hop neighbors
+during traversal.
 
 On 20k random points at 20% selectivity (one point in five passes the predicate),
 recall@10 is 1.000 for a pre-filtered
