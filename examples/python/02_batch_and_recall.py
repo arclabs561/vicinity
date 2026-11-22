@@ -16,10 +16,13 @@ controls the speed/recall tradeoff and the curve shape is similar.
 Run with:
 
     uv run examples/python/02_batch_and_recall.py
+
+Use `--full` to measure the larger 50,000-vector corpus.
 """
 
 from __future__ import annotations
 
+import argparse
 import time
 
 import numpy as np
@@ -33,8 +36,16 @@ def brute_force_topk(corpus: np.ndarray, queries: np.ndarray, k: int) -> np.ndar
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Measure HNSW recall against exact search."
+    )
+    parser.add_argument(
+        "--full", action="store_true", help="use 50,000 vectors and 500 queries"
+    )
+    args = parser.parse_args()
     rng = np.random.default_rng(0)
-    n, nq, dim, k = 50_000, 500, 64, 10
+    n, nq = (50_000, 500) if args.full else (2_000, 50)
+    dim, k = 64, 10
 
     print(f"corpus: n={n} dim={dim}  queries: {nq}  k={k}")
     corpus = rng.standard_normal((n, dim), dtype=np.float32)

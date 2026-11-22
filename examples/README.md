@@ -45,7 +45,7 @@ Synthetic-data examples that run without downloads.
 | Example | Lines | Covers |
 |---------|-------|-----------------|
 | `01_basic_search` | 62 | Minimal HNSW: add vectors, search |
-| `02_measure_recall` | 91 | How to validate an ANN index |
+| `02_measure_recall` | 87 | Recall at five search widths against exact neighbors for held-out queries |
 | `03_quick_benchmark` | 345 | Benchmark with bundled data (no downloads) |
 | `05_normalization_matters` | 145 | Cosine input contract and `auto_normalize(true)` |
 
@@ -288,9 +288,18 @@ for ex in 01_basic_search 02_measure_recall semantic_search_demo; do
 done
 ```
 
+## Python examples
+
+From the repository root, choose a script to run with uv:
+
+| Command | What to look for |
+|---|---|
+| `uv run examples/python/01_text_similarity.py` | Four text queries return matching sentences. The first run downloads a pretrained model and its dependencies. |
+| `uv run examples/python/02_batch_and_recall.py` | Six search widths are scored against exact neighbors on 2,000 vectors. Append `--full` for the 50,000-vector workload. |
+| `uv run examples/python/03_ann_benchmarks_harness.py` | HNSW and IVF-PQ each return 50 rows of 10 IDs. Requires Rust 1.94 or newer to build the checkout’s Python bindings. |
+
 ## Shared Code
 
 `examples/common/` holds vector and neighbor loaders shared by the benchmark
 examples, and `examples/ann_benchmark/` holds the `ann_benchmark` runner's
 submodules. Both are example-only utilities, not public API.
-`examples/python/` holds the Python binding examples.

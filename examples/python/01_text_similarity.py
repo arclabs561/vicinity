@@ -4,13 +4,22 @@
 #   "pyvicinity",
 #   "numpy",
 #   "sentence-transformers>=3.0",
+#   "torch",
 # ]
+#
+# [tool.uv.sources]
+# torch = { index = "pytorch-cpu", marker = "sys_platform == 'linux'" }
+#
+# [[tool.uv.index]]
+# name = "pytorch-cpu"
+# url = "https://download.pytorch.org/whl/cpu"
+# explicit = true
 # ///
 """Semantic search over a small text corpus -- the canonical ANN use case.
 
 Embeds 24 short sentences with a tiny pretrained model (all-MiniLM-L6-v2,
-~22MB), indexes them with HNSW, and runs a few real queries. First run
-will download the model; subsequent runs use the cache.
+~91 MB of model weights), indexes them with HNSW, and runs four queries.
+The first run downloads the model. Subsequent runs use the cache.
 
 Run with:
 
