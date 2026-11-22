@@ -130,7 +130,10 @@ const HNSW_SEED: u64 = 42;
 /// Exact rerank pool for IVF-PQ. Plain `search` ranks by PQ-approximated
 /// distances, which is not the documented path; 100 matches the family's
 /// own benchmark setting.
+#[cfg(feature = "ivf_pq")]
 const IVF_PQ_RERANK_POOL: usize = 100;
+#[cfg(not(feature = "ivf_pq"))]
+const IVF_PQ_DISABLED: &str = "--families ivf_pq requires adding ivf_pq to Cargo --features";
 const MIN_GT_QUERIES: usize = 200;
 const MAX_GT_QUERIES: usize = 1000;
 
@@ -161,6 +164,9 @@ impl Family {
         match text {
             "hnsw" => Ok(Self::Hnsw),
             "diskann" => Ok(Self::Diskann),
+            #[cfg(not(feature = "ivf_pq"))]
+            "ivf_pq" | "ivfpq" => Err(IVF_PQ_DISABLED.to_string()),
+            #[cfg(feature = "ivf_pq")]
             "ivf_pq" | "ivfpq" => Ok(Self::IvfPq),
             other => Err(format!(
                 "unknown family `{other}`; families wired at this tier: hnsw,diskann,ivf_pq"
@@ -575,6 +581,9 @@ fn run() -> Res<()> {
                     }
                 }
             }
+            #[cfg(not(feature = "ivf_pq"))]
+            Family::IvfPq => return Err(IVF_PQ_DISABLED.to_string()),
+            #[cfg(feature = "ivf_pq")]
             Family::IvfPq => {
                 let rss_before = rss_mib();
                 let build_start = Instant::now();
@@ -1072,7 +1081,7 @@ fn print_usage() {
            --gt-queries <q>       sampled query set, 200..=1000 (default 500)\n\
            --ef <a,b,c>           ef_search sweep (default 50,100,200)\n\
            --families <a,b>       families to build and measure: hnsw,diskann,ivf_pq\n\
-                                  (default hnsw,diskann)\n\
+                                  (default hnsw,diskann; ivf_pq needs the ivf_pq Cargo feature)\n\
            --diskann-cache-mib <n>  block cache for the file-backed diskann\n\
                                   searcher; 0 disables it (default 64)\n\
            --max-points <n>       hard ceiling (default 20000000)\n\
@@ -2306,6 +2315,7 @@ fn persist_index(index: &vicinity::hnsw::HNSWIndex, path: &Path) -> Res<u64> {
 /// searcher can read (`save` → `DiskANNSearcher`). `VamanaIndex` has no
 /// `add_slice`, so it cannot ingest a mapped row without allocating a copy per
 /// row, and it has no file-backed searcher at all.
+#[cfg(feature = "ivf_pq")]
 fn build_ivf_pq(path: &Path, count: u64, dim: usize) -> Res<vicinity::ivf_pq::IVFPQIndex> {
     use vicinity::ivf_pq::{IVFPQIndex, IVFPQParams};
 
