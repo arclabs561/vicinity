@@ -698,3 +698,24 @@ def test_ivfpq_file_searcher_mmap_argument_warns_and_still_loads(tmp_path) -> No
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         IVFPQFileSearcher.load(path)
+
+
+@pytest.mark.parametrize("wrapper_name", ["VicinityHNSW", "VicinityIVFPQ"])
+@pytest.mark.parametrize(
+    ("platform", "raw_peak"), [("linux", 2048), ("darwin", 2 * 1024 * 1024)]
+)
+def test_wrapper_reports_peak_memory_in_kib(
+    monkeypatch: pytest.MonkeyPatch, wrapper_name: str, platform: str, raw_peak: int
+) -> None:
+    import sys
+    from types import SimpleNamespace
+
+    resource = pytest.importorskip("resource")
+    from pyvicinity import ann_benchmarks
+
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setattr(
+        resource, "getrusage", lambda who: SimpleNamespace(ru_maxrss=raw_peak)
+    )
+    wrapper = getattr(ann_benchmarks, wrapper_name)("cosine", {})
+    assert wrapper.get_memory_usage() == 2048

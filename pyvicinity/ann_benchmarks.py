@@ -28,6 +28,7 @@ Standalone use::
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Mapping
 from typing import Any, cast
 
@@ -109,12 +110,8 @@ class VicinityHNSW:
         return {}
 
     def get_memory_usage(self) -> float | None:
-        """Return RSS in KB if ``resource`` is available, else ``None``."""
-        try:
-            import resource
-        except ImportError:
-            return None
-        return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+        """Return process peak RSS in KiB when available."""
+        return _peak_rss_kib()
 
     def done(self) -> None:
         """Release the index. Optional hook called by some harnesses."""
@@ -221,12 +218,8 @@ class VicinityIVFPQ:
         return {}
 
     def get_memory_usage(self) -> float | None:
-        """Return RSS in KB if ``resource`` is available, else ``None``."""
-        try:
-            import resource
-        except ImportError:
-            return None
-        return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+        """Return process peak RSS in KiB when available."""
+        return _peak_rss_kib()
 
     def done(self) -> None:
         """Release the index. Optional hook called by some harnesses."""
@@ -248,6 +241,15 @@ class VicinityIVFPQ:
             f"nprobe={self._nprobe},"
             f"rerank_pool={self._rerank_pool})"
         )
+
+
+def _peak_rss_kib() -> float | None:
+    try:
+        import resource
+    except ImportError:
+        return None
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    return peak / 1024 if sys.platform == "darwin" else float(peak)
 
 
 def _parse_metric(metric: str) -> DistanceMetric:
