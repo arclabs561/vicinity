@@ -14,8 +14,8 @@
 //! - Li et al. (2026): "SAQ: Pushing the Limits of Vector Quantization through
 //!   Code Adjustment and Dimension Segmentation" - <https://arxiv.org/abs/2509.12086>
 
-use crate::RetrieveError;
 use crate::distance::cosine_distance_normalized;
+use crate::RetrieveError;
 
 /// SAQ quantizer with per-segment codebooks.
 pub struct SAQQuantizer {
@@ -176,7 +176,11 @@ impl SAQQuantizer {
                             .iter()
                             .enumerate()
                             .fold((0, f32::NEG_INFINITY), |best, (i, &d)| {
-                                if d > best.1 { (i, d) } else { best }
+                                if d > best.1 {
+                                    (i, d)
+                                } else {
+                                    best
+                                }
                             });
                     let next = normalized[far].clone();
                     for (d, v) in nearest.iter_mut().zip(normalized.iter()) {
