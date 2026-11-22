@@ -373,7 +373,8 @@ impl FilteredGraphIndex {
     /// matching IDs) is chosen automatically based on selectivity, and the graph
     /// branch falls back to the exact scan when its beam holds fewer than `k`
     /// matching points. The result therefore holds `min(k, matches)` ids
-    /// whenever the index is built.
+    /// whenever the index is built. Equal-distance candidates are ordered by
+    /// ascending external document ID before the top-k cutoff.
     pub fn search_filtered(
         &self,
         query: &[f32],
@@ -396,38 +397,30 @@ impl FilteredGraphIndex {
         let qn = normalize(query);
         let matching = self.evaluate_filter(filter);
 
-        if matching.is_empty() {
+        let k = k.min(matching.len());
+        if k == 0 {
             return Ok(Vec::new());
         }
 
         let selectivity = matching.len() as f32 / self.num_vectors as f32;
 
-        // Exact k-NN over the matching set. Used for the low-selectivity branch
-        // and as the fallback when the graph branch under-delivers.
-        let exact_over_matching = |matching: &HashSet<u32>| -> Vec<(u32, f32)> {
-            let mut scored: Vec<(u32, f32)> = matching
+        let score_matching = || {
+            matching
                 .iter()
-                .map(|&id| {
-                    let d = cosine_distance_normalized(&qn, self.get_vector(id as usize));
-                    (id, d)
+                .map(|&internal| {
+                    let distance =
+                        cosine_distance_normalized(&qn, self.get_vector(internal as usize));
+                    (self.doc_ids[internal as usize], distance)
                 })
-                .collect();
-            scored.sort_unstable_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
-            scored.truncate(k);
-            scored
-                .into_iter()
-                .map(|(id, d)| (self.doc_ids[id as usize], d))
-                .collect()
+                .collect::<Vec<_>>()
         };
 
-        let mut results: Vec<(u32, f32)> = if selectivity >= 0.10 {
-            // High selectivity: beam search, then retain only matching IDs.
-            let ef = self.params.ef_search.max(k * 4);
-            let candidates = self.beam_search(&qn, ef);
-            let filtered: Vec<(u32, f32)> = candidates
+        let mut results = if selectivity >= 0.10 {
+            let ef = self.params.ef_search.max(k.saturating_mul(4));
+            let filtered: Vec<_> = self
+                .beam_search(&qn, ef)
                 .into_iter()
                 .filter(|(id, _)| matching.contains(id))
-                .take(k)
                 .map(|(id, d)| (self.doc_ids[id as usize], d))
                 .collect();
             // A beam full of non-matching candidates underfills the result even
@@ -437,20 +430,23 @@ impl FilteredGraphIndex {
             // re-runs the query exactly (`hnsw/builder.rs:1734`). The exact scan
             // over the matching set costs `|matching|` distances and only runs
             // when k live hits are not already in hand.
-            if filtered.len() < k && matching.len() > filtered.len() {
-                exact_over_matching(&matching)
+            if filtered.len() < k {
+                score_matching()
             } else {
                 filtered
             }
         } else {
             // Low selectivity: brute-force over matching IDs only.
-            exact_over_matching(&matching)
+            score_matching()
         };
 
-        // Ties must not depend on `HashSet` iteration order (which is seeded
-        // per process) or on which branch ran: break them by doc_id, as the
-        // other index families do.
-        results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+        let by_distance_then_id =
+            |a: &(u32, f32), b: &(u32, f32)| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0));
+        if results.len() > k {
+            results.select_nth_unstable_by(k, by_distance_then_id);
+            results.truncate(k);
+        }
+        results.sort_unstable_by(by_distance_then_id);
         Ok(results)
     }
 
@@ -1264,6 +1260,48 @@ mod tests {
         idx
     }
 
+    #[test]
+    fn filtered_top_k_breaks_boundary_ties_by_external_id() {
+        // Three eligible duplicates are farther away than every distractor.
+        // With 20 or 40 total points they exercise the beam and scan branches.
+        for n in [20, 40] {
+            let mut index = FilteredGraphIndex::new(2, FilteredGraphParams::default()).unwrap();
+            let rows = [(90, true), (10, true), (50, true)]
+                .into_iter()
+                .chain((3..n).map(|i| (1000 + i, false)));
+            for (id, eligible) in rows {
+                let vector = if eligible { [0.0, 1.0] } else { [1.0, 0.0] };
+                index
+                    .add_slice(
+                        id,
+                        &vector,
+                        HashMap::from([("eligible".into(), AttrValue::Bool(eligible))]),
+                    )
+                    .unwrap();
+            }
+            index.build().unwrap();
+            let query = [1.0, 0.0];
+            let filter = Filter::Clause(Predicate::Eq("eligible".into(), AttrValue::Bool(true)));
+            assert!(index
+                .search(&query, 2)
+                .unwrap()
+                .iter()
+                .all(|(id, _)| *id >= 1000));
+            let expected = [(10, 1.0), (50, 1.0), (90, 1.0)];
+            for k in [0, 1, 2, 3, 5] {
+                assert_eq!(
+                    index.search_filtered(&query, k, &filter).unwrap(),
+                    expected[..k.min(3)]
+                );
+            }
+            let absent = Filter::Clause(Predicate::Eq("missing".into(), AttrValue::Bool(true)));
+            assert!(index
+                .search_filtered(&query, 5, &absent)
+                .unwrap()
+                .is_empty());
+        }
+    }
+
     // ── Unfiltered search ────────────────────────────────────────────────────
 
     #[test]
@@ -1951,26 +1989,17 @@ mod tests {
             );
         }
 
-        /// (b) At least `min(k, matches)` results come back when the beam
-        /// covers the whole graph (`ef_search == n`), so post-filtering cannot
-        /// silently starve the result set.
-        ///
-        /// This floor is *not* guaranteed for narrower beams: post-filtering a
-        /// bounded beam can return fewer results than match, and even none.
-        /// Measured counterexample while writing this test — n=37, dim=2,
-        /// `ef_search=1`, k=1, `And(In(bucket,[5]), Eq(flag,1))` with 4 matches
-        /// — returned 0 results. That is inherent to post-filtering (the
-        /// reason ACORN/Filtered-DiskANN build predicate-aware traversal), so
-        /// it is reported rather than asserted here.
+        /// When the beam underfills, the scan supplies the remaining matches.
         #[test]
-        fn filtered_result_count_floor_when_beam_covers_graph(
+        fn filtered_result_count_matches_eligible_population(
             dim in 2usize..=8,
             n in 8usize..=60,
             shape in shape_strategy(),
             seed in any::<u64>(),
-            k in 1usize..=10,
+            ef_search in 1usize..=60,
+            k in 0usize..=10,
         ) {
-            let data = build_dataset(n, dim, n, seed, 0);
+            let data = build_dataset(n, dim, ef_search, seed, 0);
             let filter = shape.to_filter();
             let query = random_query(dim, seed);
             let results = data.index.search_filtered(&query, k, &filter).unwrap();
@@ -1979,15 +2008,15 @@ mod tests {
                 .filter(|&i| shape.matches(data.bucket[i], data.flag[i]))
                 .count();
             prop_assert!(
-                results.len() >= k.min(matches),
-                "returned {} results, expected at least min(k={}, matches={}) = {} \
+                results.len() == k.min(matches),
+                "returned {} results, expected min(k={}, matches={}) = {} \
                  (n={}, ef_search={})",
                 results.len(),
                 k,
                 matches,
                 k.min(matches),
                 n,
-                n
+                ef_search
             );
         }
 

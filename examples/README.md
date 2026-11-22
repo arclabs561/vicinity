@@ -12,6 +12,7 @@ dataset; see `docs/benchmark-results.md` for recorded runs and their conditions.
 | I want to... | Run |
 |---|---|
 | Build an HNSW index and search it | `01_basic_search` |
+| Return nearest documents within a collection | `filtered_neighbors` (feature `filtered_graph`) |
 | Check recall against exact search | `02_measure_recall` |
 | Get the cosine input contract right | `05_normalization_matters` |
 | Save an index and load it back | `06_save_and_load` (features `hnsw,serde`) |
@@ -24,6 +25,7 @@ dataset; see `docs/benchmark-results.md` for recorded runs and their conditions.
 
 ```sh
 cargo run --example 01_basic_search --release
+cargo run --example filtered_neighbors --release --features filtered_graph
 cargo run --example 02_measure_recall --release
 cargo run --example 05_normalization_matters --release
 cargo run --example 06_save_and_load --features hnsw,serde
