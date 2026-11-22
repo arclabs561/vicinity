@@ -54,7 +54,7 @@ class VicinityHNSW:
         self._batch_results: Int64Array | None = None
 
     def fit(self, X: Float32Array) -> None:
-        """Build the index from training data."""
+        """Replace the index and clear cached batch results after a successful build."""
         if X.ndim != 2:
             msg = f"fit() expects a 2-D array, got shape {X.shape}"
             raise ValueError(msg)
@@ -64,7 +64,7 @@ class VicinityHNSW:
         # Angular/cosine harnesses commonly pass un-normalized inputs.
         auto_norm = self._metric_name.lower() in ("angular", "cosine")
 
-        self._index = HNSWIndex(
+        index = HNSWIndex(
             dim=dim,
             m=self._m,
             ef_construction=self._ef_construction,
@@ -72,8 +72,10 @@ class VicinityHNSW:
             metric=self._metric,
             auto_normalize=auto_norm,
         )
-        self._index.add_items(X)
-        self._index.build()
+        index.add_items(X)
+        index.build()
+        self._index = index
+        self._batch_results = None
 
     def set_query_arguments(self, ef_search: int) -> None:
         """Set ef_search for subsequent queries."""
@@ -148,14 +150,14 @@ class VicinityIVFPQ:
         self._batch_results: Int64Array | None = None
 
     def fit(self, X: Float32Array) -> None:
-        """Build the index from training data."""
+        """Replace the index and clear cached batch results after a successful build."""
         if X.ndim != 2:
             msg = f"fit() expects a 2-D array, got shape {X.shape}"
             raise ValueError(msg)
         _n, dim = X.shape
         X = np.ascontiguousarray(X, dtype=np.float32)
 
-        self._index = IVFPQIndex(
+        index = IVFPQIndex(
             dim=dim,
             num_clusters=self._num_clusters,
             num_codebooks=self._num_codebooks,
@@ -164,11 +166,13 @@ class VicinityIVFPQ:
             use_opq=self._use_opq,
             seed=self._seed,
         )
-        self._index.add_items(X)
-        self._index.build(
+        index.add_items(X)
+        index.build(
             training_sample_size=self._training_sample_size,
             kmeans_max_iter=self._kmeans_max_iter,
         )
+        self._index = index
+        self._batch_results = None
 
     def set_query_arguments(
         self,

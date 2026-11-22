@@ -376,6 +376,28 @@ def test_seed_reproducibility() -> None:
     np.testing.assert_allclose(a_d, b_d, rtol=1e-6)
 
 
+@pytest.mark.parametrize("wrapper_name", ["VicinityHNSW", "VicinityIVFPQ"])
+def test_wrapper_refit_keeps_results_tied_to_the_built_index(wrapper_name: str) -> None:
+    from pyvicinity import ann_benchmarks
+
+    vectors = np.random.default_rng(42).standard_normal((16, 4), dtype=np.float32)
+    params = {"num_clusters": 2, "codebook_size": 4, "nprobe": 2, "rerank_pool": 16}
+    wrapper = getattr(ann_benchmarks, wrapper_name)("cosine", params)
+    wrapper.fit(vectors)
+    wrapper.batch_query(vectors[:1], 1)
+
+    with pytest.raises(ValueError, match="empty"):
+        wrapper.fit(vectors[:0])
+    np.testing.assert_array_equal(wrapper.query(vectors[0], 1), [0])
+    np.testing.assert_array_equal(wrapper.get_batch_results(), [[0]])
+
+    wrapper.fit(vectors[::-1])
+    with pytest.raises(RuntimeError, match="batch_query"):
+        wrapper.get_batch_results()
+    wrapper.batch_query(vectors[:1], 1)
+    np.testing.assert_array_equal(wrapper.get_batch_results(), [[15]])
+
+
 def test_ann_benchmarks_wrapper_smoke() -> None:
     from pyvicinity.ann_benchmarks import VicinityHNSW
 
