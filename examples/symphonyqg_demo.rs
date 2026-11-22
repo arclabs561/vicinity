@@ -65,22 +65,22 @@ fn main() -> vicinity::Result<()> {
         .map(|q| brute_force_k_nearest(&vectors, q, k))
         .collect();
 
-    // --- Exact HNSW search (baseline) ----------------------------------------
+    // --- Full-precision HNSW search (baseline) ----------------------------------------
 
-    let exact_start = Instant::now();
-    let exact_results: Vec<Vec<(u32, f32)>> = queries
+    let baseline_start = Instant::now();
+    let baseline_results: Vec<Vec<(u32, f32)>> = queries
         .iter()
         .map(|q| index.search(q, k, ef).unwrap())
         .collect();
-    let exact_elapsed = exact_start.elapsed();
+    let baseline_elapsed = baseline_start.elapsed();
 
-    let exact_recall = recall_at_k(&exact_results, &gt, k);
-    let exact_qps = n_queries as f64 / exact_elapsed.as_secs_f64();
+    let baseline_recall = recall_at_k(&baseline_results, &gt, k);
+    let baseline_qps = n_queries as f64 / baseline_elapsed.as_secs_f64();
 
     println!(
-        "\nExact HNSW (ef={ef}):       recall@{k} = {:.1}%  ({:.0} QPS)",
-        exact_recall * 100.0,
-        exact_qps
+        "\nFull-precision HNSW (ef={ef}):       recall@{k} = {:.1}%  ({:.0} QPS)",
+        baseline_recall * 100.0,
+        baseline_qps
     );
 
     // --- Quantized HNSW search -----------------------------------------------
@@ -174,16 +174,16 @@ fn main() -> vicinity::Result<()> {
     println!("\nSummary");
     println!("-------");
     println!(
-        "  Reranked QPS speedup over exact: {:.2}x",
-        quant_qps / exact_qps
+        "  Reranked QPS speedup over full-precision HNSW: {:.2}x",
+        quant_qps / baseline_qps
     );
     println!(
-        "  Beam-only QPS speedup over exact: {:.2}x",
-        norank_qps / exact_qps
+        "  Beam-only QPS speedup over full-precision HNSW: {:.2}x",
+        norank_qps / baseline_qps
     );
     println!(
-        "  Recall: exact={:.1}%  reranked={:.1}%  beam-only={:.1}%",
-        exact_recall * 100.0,
+        "  Recall: full-precision HNSW={:.1}%  reranked={:.1}%  beam-only={:.1}%",
+        baseline_recall * 100.0,
         quant_recall * 100.0,
         norank_recall * 100.0,
     );

@@ -69,6 +69,46 @@ library's in-memory speed; it cannot tell you what happens when the index no
 longer fits, and it has no notion of a result that got slower since last week.
 Both are questions with answers here.
 
+### Checking full-width HNSW
+
+HNSW expands the neighbors of visited nodes. Increasing `ef` enlarges the
+candidate set, but an unreachable vector cannot enter it. In the original
+algorithm this is the neighbor-expansion loop in SEARCH-LAYER (Algorithm 2).
+[Malkov and Yashunin](https://arxiv.org/abs/1603.09320) ·
+[hnswlib search loop](https://github.com/nmslib/hnswlib/blob/ca426729609b3221563047ceb269cc1213e0d376/hnswlib/hnswalg.h#L368-L406)
+
+After `pip install pyvicinity`, run this Euclidean example. Each of the 14
+queries is offset from a distinct integer training point. The exact reference
+computes distances to all 14 vectors. In Rust the
+[`compute_ground_truth` helper](../src/benchmark/evaluation.rs) implements
+the same scan with the `benchmark` feature and `DistanceMetric::L2`.
+
+```python
+import numpy as np
+from pyvicinity import DistanceMetric, HNSWIndex
+
+vectors = np.random.default_rng(63).integers(-10, 11, size=(14, 2)).astype(np.float32)
+queries = vectors + np.float32(0.125)
+distances = np.linalg.norm(queries[:, None, :] - vectors[None, :, :], axis=2)
+truth = distances.argmin(axis=1)
+
+for m in (2, 4):
+    index = HNSWIndex(dim=2, metric=DistanceMetric.L2, m=m, ef_construction=8, seed=42)
+    index.add_items(vectors)
+    index.build()
+    ids, _ = index.batch_search(queries, k=1, ef=len(vectors))
+    hits = np.count_nonzero(ids[:, 0] == truth)
+    print(f"M={m}: {hits}/{len(queries)} nearest IDs, query 1 returned {ids[1, 0]}")
+```
+
+With pyvicinity 0.8.0 on Linux, `M=2` recovered 13/14 nearest IDs and
+returned ID 10 for query 1 at L2 distance 12.38068. The exact neighbor was ID 1
+at distance 0.17678. Asking that graph for all 14 IDs for query 1 returned
+13 and omitted ID 1. Changing only `M` to 4 recovered 14/14 nearest IDs.
+These recall values apply to this fixture. Every nearest
+neighbor here is unique, and the miss also exceeds the 0.001 distance
+tolerance used by the [ANN-Benchmarks scorer](https://github.com/erikbern/ann-benchmarks/blob/main/ann_benchmarks/plotting/metrics.py#L6-L30).
+
 ## Figures
 
 ### 1–2. Every family at 10k

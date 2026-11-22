@@ -106,7 +106,6 @@ fn layer_traversal_is_top_to_bottom() {
     // Search with high ef to ensure we explore properly
     // If layers are traversed wrong, recall will be very low
     let query = &vectors[250]; // middle of index
-                               // Use ef = n to guarantee exhaustive search if needed
     let results = index.search(query, 50, n).unwrap();
 
     // Self should be in results (exact match exists)
