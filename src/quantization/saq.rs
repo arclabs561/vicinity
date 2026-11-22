@@ -148,20 +148,13 @@ impl SAQQuantizer {
             let segment_dim = end - start;
             let codebook_size = 2usize.pow(self.bits_per_segment[segment_idx].min(8) as u32);
 
-            // Extract subvectors for this segment
-            let mut subvectors = Vec::new();
-            for i in 0..num_vectors {
-                let vec = get_vector(vectors, self.dimension, i);
-                subvectors.push(vec[*start..*end].to_vec());
-            }
-
-            // Spherical k-means (codewords are unit vectors, assignment by cosine
-            // distance, matching `quantize`). Deterministic farthest-point init:
-            // start from the first subvector, then repeatedly add the subvector
-            // farthest from every codeword chosen so far.
-            let normalized: Vec<Vec<f32>> = subvectors
-                .iter()
-                .map(|sub| crate::distance::normalize(sub))
+            // Spherical k-means weights each training direction equally.
+            let normalized: Vec<Vec<f32>> = (0..num_vectors)
+                .map(|i| {
+                    crate::distance::normalize(
+                        &get_vector(vectors, self.dimension, i)[*start..*end],
+                    )
+                })
                 .collect();
             let mut codebook: Vec<Vec<f32>> = Vec::with_capacity(codebook_size);
             if let Some(first) = normalized.first() {
@@ -196,7 +189,7 @@ impl SAQQuantizer {
             for _ in 0..KMEANS_ITERS {
                 let mut sums = vec![vec![0.0f32; segment_dim]; codebook_size];
                 let mut counts = vec![0usize; codebook_size];
-                for sub in &subvectors {
+                for sub in &normalized {
                     let mut best = 0;
                     let mut best_dist = f32::INFINITY;
                     for (code, codeword) in codebook.iter().enumerate() {
@@ -239,7 +232,7 @@ impl SAQQuantizer {
         let mut codes = Vec::new();
 
         for (segment_idx, (start, end)) in self.segment_bounds.iter().enumerate() {
-            let segment = &vector[*start..*end];
+            let segment = crate::distance::normalize(&vector[*start..*end]);
             let codebook = &self.codebooks[segment_idx];
 
             // Find closest codeword
@@ -247,7 +240,7 @@ impl SAQQuantizer {
             let mut best_dist = f32::INFINITY;
 
             for (code, codeword) in codebook.iter().enumerate() {
-                let dist = cosine_distance_normalized(segment, codeword);
+                let dist = cosine_distance_normalized(&segment, codeword);
                 if dist < best_dist {
                     best_dist = dist;
                     best_code = code.min(255) as u8;
@@ -267,10 +260,10 @@ impl SAQQuantizer {
         for (segment_idx, (start, end)) in self.segment_bounds.iter().enumerate() {
             if let Some(code_vec) = codes.get(segment_idx) {
                 if let Some(&code) = code_vec.first() {
-                    let query_segment = &query[*start..*end];
+                    let query_segment = crate::distance::normalize(&query[*start..*end]);
                     if (code as usize) < self.codebooks[segment_idx].len() {
                         let codeword = &self.codebooks[segment_idx][code as usize];
-                        total_dist += cosine_distance_normalized(query_segment, codeword);
+                        total_dist += cosine_distance_normalized(&query_segment, codeword);
                     }
                 }
             }
@@ -382,6 +375,19 @@ mod tests {
         assert_eq!(q.bits_per_segment, vec![0, 4]);
         q.fit(&[100.0, 1.0, 100.0, 1.0], 2).unwrap();
         assert_eq!(q.bits_per_segment, vec![2, 2]);
+    }
+
+    #[test]
+    fn finite_rescaling_preserves_directions() {
+        for x in [1.0, f32::MAX] {
+            let mut q = SAQQuantizer::new(2, 1, 1).unwrap();
+            q.fit(&[x, 0., x, 0., 0., x, 0., x], 4).unwrap();
+            let a = q.quantize(&[x, 0.]);
+            let b = q.quantize(&[0., x]);
+            assert_ne!(a, b);
+            assert_eq!(q.approximate_distance(&[x, 0.], &a), 0.0);
+            assert_eq!(q.approximate_distance(&[0., x], &b), 0.0);
+        }
     }
 
     #[test]
