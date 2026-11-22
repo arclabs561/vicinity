@@ -14,8 +14,8 @@
 //! - Li et al. (2026): "SAQ: Pushing the Limits of Vector Quantization through
 //!   Code Adjustment and Dimension Segmentation" - <https://arxiv.org/abs/2509.12086>
 
-use crate::distance::cosine_distance_normalized;
 use crate::RetrieveError;
+use crate::distance::cosine_distance_normalized;
 
 /// SAQ quantizer with per-segment codebooks.
 pub struct SAQQuantizer {
@@ -78,7 +78,7 @@ impl SAQQuantizer {
                 expected: "nonempty buffer matching dimension times num_vectors",
             });
         }
-        self.optimize_segmentation(vectors, num_vectors)?;
+        self.optimize_segmentation(vectors)?;
 
         // Stage 3: Train codebooks for each segment
         self.train_codebooks(vectors, num_vectors)?;
@@ -87,39 +87,43 @@ impl SAQQuantizer {
     }
 
     /// Allocate bits to the fixed segments in proportion to their variance.
-    fn optimize_segmentation(
-        &mut self,
-        vectors: &[f32],
-        num_vectors: usize,
-    ) -> Result<(), RetrieveError> {
+    fn optimize_segmentation(&mut self, vectors: &[f32]) -> Result<(), RetrieveError> {
         let total_bits: usize = self.bits_per_segment.iter().sum();
 
-        // Calculate variance per segment to allocate more bits to high-variance segments
-        let mut segment_variances = Vec::new();
-        for (start, end) in &self.segment_bounds {
-            let mut variance = 0.0;
-            for i in 0..num_vectors {
-                let vec = get_vector(vectors, self.dimension, i);
-                let segment = &vec[*start..*end];
-                let mean: f32 = segment.iter().sum::<f32>() / segment.len() as f32;
-                let var: f32 =
-                    segment.iter().map(|&x| (x - mean).powi(2)).sum::<f32>() / segment.len() as f32;
-                variance += var;
+        // Welford's update measures variation across observations for each coordinate.
+        // All segments have the same length and sample count, so sums of squared
+        // deviations give the same proportions as their mean variances.
+        let mut means = vec![0.0_f64; self.dimension];
+        let mut segment_variances = vec![0.0_f64; self.num_segments];
+        let width = self.dimension / self.num_segments;
+        for (row, vector) in vectors.chunks_exact(self.dimension).enumerate() {
+            for (column, (&value, mean)) in vector.iter().zip(&mut means).enumerate() {
+                let value = f64::from(value);
+                if !value.is_finite() {
+                    return Err(RetrieveError::InvalidConfig {
+                        field: "training vectors",
+                        expected: "finite coordinates",
+                    });
+                }
+                let delta = value - *mean;
+                *mean += delta / (row + 1) as f64;
+                segment_variances[column / width] += delta * (value - *mean);
             }
-            variance /= num_vectors as f32;
-            segment_variances.push(variance);
         }
-
-        // Allocate bits proportionally to variance (prioritize high-impact segments)
-        let total_variance: f32 = segment_variances.iter().sum();
-        if total_variance > 0.0 {
+        let total_variance: f64 = segment_variances.iter().sum();
+        if total_variance == 0.0 {
+            for (i, bits) in self.bits_per_segment.iter_mut().enumerate() {
+                *bits = total_bits / self.num_segments
+                    + usize::from(i < total_bits % self.num_segments);
+            }
+        } else {
             // Each segment has eight possible one-bit increments. Choose the
             // increments furthest below the segment's quota, breaking ties by index.
             let mut increments = Vec::with_capacity(self.num_segments * 8);
             for (index, variance) in segment_variances.iter().enumerate() {
-                let quota = variance / total_variance * total_bits as f32;
+                let quota = variance / total_variance * total_bits as f64;
                 for used in 0..8 {
-                    increments.push((quota - used as f32, index));
+                    increments.push((quota - used as f64, index));
                 }
             }
             increments.sort_unstable_by(|(a, i), (b, j)| b.total_cmp(a).then(i.cmp(j)));
@@ -172,11 +176,7 @@ impl SAQQuantizer {
                             .iter()
                             .enumerate()
                             .fold((0, f32::NEG_INFINITY), |best, (i, &d)| {
-                                if d > best.1 {
-                                    (i, d)
-                                } else {
-                                    best
-                                }
+                                if d > best.1 { (i, d) } else { best }
                             });
                     let next = normalized[far].clone();
                     for (d, v) in nearest.iter_mut().zip(normalized.iter()) {
@@ -355,12 +355,29 @@ mod tests {
         let mut q = SAQQuantizer::new(6, 3, 5).unwrap();
         assert_eq!(q.bits_per_segment.iter().sum::<usize>(), 5);
         for _ in 0..3 {
-            q.fit(&[0.0, 0.0, -1.0, 1.0, -1.0, 1.0], 1).unwrap();
+            q.fit(
+                &[
+                    0.0, 0.0, -1.0, 1.0, -1.0, 1.0, 0.0, 0.0, 1.0, -1.0, 1.0, -1.0,
+                ],
+                2,
+            )
+            .unwrap();
             assert_eq!(q.bits_per_segment.iter().sum::<usize>(), 5);
             assert_eq!(q.bits_per_segment[0], 0);
         }
         assert!(q.fit(&[], 0).is_err());
         assert!(q.fit(&[0.0], 1).is_err());
+    }
+
+    #[test]
+    fn scalar_segments_track_variation_across_rows_and_reset_on_constant_data() {
+        let mut q = SAQQuantizer::new(2, 2, 4).unwrap();
+        q.fit(&[100.0, -1.0, 100.0, 1.0], 2).unwrap();
+        assert_eq!(q.bits_per_segment, vec![0, 4]);
+        assert!(q.fit(&[0.0, f32::NAN], 1).is_err());
+        assert_eq!(q.bits_per_segment, vec![0, 4]);
+        q.fit(&[100.0, 1.0, 100.0, 1.0], 2).unwrap();
+        assert_eq!(q.bits_per_segment, vec![2, 2]);
     }
 
     #[test]
