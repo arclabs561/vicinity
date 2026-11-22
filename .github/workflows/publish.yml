@@ -31,6 +31,8 @@ jobs:
         with:
           toolchain: "stable"
       - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
+      - name: cargo-semver-checks
+        uses: obi1kenobi/cargo-semver-checks-action@6b69fcf40e9b5fb17adeb57e4b6ecd020649a239 # v2.9
       - name: Authenticate (Trusted Publishing)
         id: auth
         # Pin to a specific tag: rust-lang/crates-io-auth-action does not
@@ -56,6 +58,3 @@ jobs:
           fi
         env:
           GH_TOKEN: ${{ github.token }}
-
-      - name: cargo-semver-checks
-        uses: obi1kenobi/cargo-semver-checks-action@6b69fcf40e9b5fb17adeb57e4b6ecd020649a239 # v2.9
