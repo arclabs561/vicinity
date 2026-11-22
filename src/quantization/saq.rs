@@ -1,8 +1,7 @@
 //! SAQ (Segmented Adaptive Quantization) implementation.
 //!
 //! SAQ-style segmented adaptive quantization helper with direct dimension
-//! segmentation, variance-weighted bit allocation, and code adjustment with
-//! coordinate-descent refinement.
+//! segmentation and variance-weighted bit allocation.
 //!
 //! Treat this as experimental until local quantization-error, encoding
 //! throughput, and downstream recall rows justify it against the other
@@ -18,15 +17,13 @@
 use crate::distance::cosine_distance_normalized;
 use crate::RetrieveError;
 
-/// SAQ quantizer with dimension segmentation and code adjustment.
+/// SAQ quantizer with per-segment codebooks.
 pub struct SAQQuantizer {
     dimension: usize,
     num_segments: usize,
     bits_per_segment: Vec<usize>,        // Bit allocation per segment
     codebooks: Vec<Vec<Vec<f32>>>,       // [segment][codeword][dimension]
     segment_bounds: Vec<(usize, usize)>, // (start, end) for each segment
-    #[allow(dead_code)]
-    pca_matrix: Option<Vec<Vec<f32>>>, // Reserved for future PCA projection.
 }
 
 impl SAQQuantizer {
@@ -51,7 +48,11 @@ impl SAQQuantizer {
         }
 
         // Initial bit allocation (will be optimized)
-        let bits_per_segment = vec![total_bits / num_segments; num_segments];
+        // Codes are u8. Preserve the remainder when dividing the usable budget.
+        let budget = total_bits.min(num_segments.saturating_mul(8));
+        let bits_per_segment = (0..num_segments)
+            .map(|i| budget / num_segments + usize::from(i < budget % num_segments))
+            .collect();
 
         // Segment bounds
         let segment_dim = dimension / num_segments;
@@ -66,16 +67,17 @@ impl SAQQuantizer {
             bits_per_segment,
             codebooks: Vec::new(),
             segment_bounds,
-            pca_matrix: None,
         })
     }
 
-    /// Train quantizer on vectors with optimal bit allocation.
+    /// Train per-segment codebooks under the configured bit budget.
     pub fn fit(&mut self, vectors: &[f32], num_vectors: usize) -> Result<(), RetrieveError> {
-        // Stage 1: PCA projection (optional, for better segmentation)
-        // For now, skip PCA and use direct dimension segmentation
-
-        // Stage 2: Optimize dimension segmentation and bit allocation using DP
+        if num_vectors == 0 || self.dimension.checked_mul(num_vectors) != Some(vectors.len()) {
+            return Err(RetrieveError::InvalidConfig {
+                field: "training vectors",
+                expected: "nonempty buffer matching dimension times num_vectors",
+            });
+        }
         self.optimize_segmentation(vectors, num_vectors)?;
 
         // Stage 3: Train codebooks for each segment
@@ -84,16 +86,12 @@ impl SAQQuantizer {
         Ok(())
     }
 
-    /// Optimize dimension segmentation and bit allocation using dynamic programming.
+    /// Allocate bits to the fixed segments in proportion to their variance.
     fn optimize_segmentation(
         &mut self,
         vectors: &[f32],
         num_vectors: usize,
     ) -> Result<(), RetrieveError> {
-        // Simplified version: prioritize leading dimensions with larger magnitudes
-        // Full implementation would use dynamic programming as in the paper
-
-        let _segment_dim = self.dimension / self.num_segments; // For future uniform segment allocation
         let total_bits: usize = self.bits_per_segment.iter().sum();
 
         // Calculate variance per segment to allocate more bits to high-variance segments
@@ -115,29 +113,19 @@ impl SAQQuantizer {
         // Allocate bits proportionally to variance (prioritize high-impact segments)
         let total_variance: f32 = segment_variances.iter().sum();
         if total_variance > 0.0 {
-            self.bits_per_segment = segment_variances
-                .iter()
-                .map(|&var| {
-                    let ratio = var / total_variance;
-                    (ratio * total_bits as f32).ceil() as usize
-                })
-                .collect();
-
-            // Ensure we don't exceed total bits
-            let allocated: usize = self.bits_per_segment.iter().sum();
-            if allocated > total_bits {
-                let diff = allocated - total_bits;
-                // Reduce from segments with least variance
-                let mut sorted_indices: Vec<usize> = (0..self.num_segments).collect();
-                sorted_indices.sort_unstable_by(|&a, &b| {
-                    segment_variances[a].total_cmp(&segment_variances[b])
-                });
-
-                for &idx in sorted_indices.iter().take(diff) {
-                    if self.bits_per_segment[idx] > 0 {
-                        self.bits_per_segment[idx] -= 1;
-                    }
+            // Each segment has eight possible one-bit increments. Choose the
+            // increments furthest below the segment's quota, breaking ties by index.
+            let mut increments = Vec::with_capacity(self.num_segments * 8);
+            for (index, variance) in segment_variances.iter().enumerate() {
+                let quota = variance / total_variance * total_bits as f32;
+                for used in 0..8 {
+                    increments.push((quota - used as f32, index));
                 }
+            }
+            increments.sort_unstable_by(|(a, i), (b, j)| b.total_cmp(a).then(i.cmp(j)));
+            self.bits_per_segment.fill(0);
+            for (_, index) in increments.into_iter().take(total_bits) {
+                self.bits_per_segment[index] += 1;
             }
         }
 
@@ -242,9 +230,7 @@ impl SAQQuantizer {
         Ok(())
     }
 
-    /// Quantize a vector using code adjustment.
-    ///
-    /// Uses coordinate-descent-like refinement to avoid exhaustive enumeration.
+    /// Select the closest codeword in each segment. Ties use the first index.
     pub fn quantize(&self, vector: &[f32]) -> Vec<Vec<u8>> {
         let mut codes = Vec::new();
 
@@ -264,43 +250,10 @@ impl SAQQuantizer {
                 }
             }
 
-            // Code adjustment: refine using coordinate-descent
-            let refined_code = self.refine_code(segment, codebook, best_code);
-            codes.push(vec![refined_code]);
+            codes.push(vec![best_code]);
         }
 
         codes
-    }
-
-    /// Refine quantization code using coordinate-descent.
-    fn refine_code(&self, segment: &[f32], codebook: &[Vec<f32>], initial_code: u8) -> u8 {
-        // Simplified coordinate-descent: check nearby codes
-        let mut best_code = initial_code;
-        let mut best_dist = f32::INFINITY;
-
-        // Check initial code
-        if (initial_code as usize) < codebook.len() {
-            best_dist = cosine_distance_normalized(segment, &codebook[initial_code as usize]);
-        }
-
-        // Check neighbors (coordinate-descent refinement)
-        let check_range = 3u8;
-        let start = initial_code.saturating_sub(check_range);
-        let end = initial_code
-            .saturating_add(check_range)
-            .min(codebook.len() as u8);
-
-        for code in start..=end {
-            if (code as usize) < codebook.len() {
-                let dist = cosine_distance_normalized(segment, &codebook[code as usize]);
-                if dist < best_dist {
-                    best_dist = dist;
-                    best_code = code;
-                }
-            }
-        }
-
-        best_code
     }
 
     /// Compute approximate distance using quantized codes.
@@ -395,6 +348,19 @@ mod tests {
         let mut again = SAQQuantizer::new(dim, 2, 4).unwrap();
         again.fit(&data, n).unwrap();
         assert_eq!(q.codebooks, again.codebooks);
+    }
+
+    #[test]
+    fn allocation_preserves_remainder_and_never_exceeds_the_budget_after_refits() {
+        let mut q = SAQQuantizer::new(6, 3, 5).unwrap();
+        assert_eq!(q.bits_per_segment.iter().sum::<usize>(), 5);
+        for _ in 0..3 {
+            q.fit(&[0.0, 0.0, -1.0, 1.0, -1.0, 1.0], 1).unwrap();
+            assert_eq!(q.bits_per_segment.iter().sum::<usize>(), 5);
+            assert_eq!(q.bits_per_segment[0], 0);
+        }
+        assert!(q.fit(&[], 0).is_err());
+        assert!(q.fit(&[0.0], 1).is_err());
     }
 
     #[test]
