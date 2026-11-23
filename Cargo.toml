@@ -89,7 +89,7 @@ postcard = { version = "1.0", optional = true, features = [
   "alloc",
   "use-std",
 ] }
-durability = { version = "0.9", optional = true }
+durability = { version = "0.10", optional = true }
 segstore = { version = "0.7.3", optional = true }
 
 
