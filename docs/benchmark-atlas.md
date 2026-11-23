@@ -401,6 +401,40 @@ not found. This family's case is build cost and mutability, not query latency.
 - **Energy per query.** Not measured at all, and the 2026 survey puts it in the
   first tier at 10M+.
 
+## Reading the filtered-alignment run
+
+The [checked-in 100k run](../benchmarks/filtered-alignment-100k.jsonl)
+uses 96-dimensional vectors, 100 generated queries, and recall@10.
+The [harness](../examples/filtered_alignment.rs) chooses the nearest or
+farthest centroid's bucket for each query. Bucket sizes vary, so the two
+workloads differ in both geometry and average filter selectivity.
+
+| Workload | Mean selectivity | Filtered graph recall@10 | Best post-filter recall@10 in the recorded sweep |
+| --- | ---: | ---: | ---: |
+| Aligned | 5.59% | 0.9728 | 0.6163 |
+| Anti-aligned | 2.96% | 0.9919 | 0.0000 |
+
+The JSONL repeats the filtered graph at its fixed `ef_search = 100` for
+each row pair. The recorded `ef` varies the HNSW search breadth and candidate
+limit only. Read the graph rows as repeats of one configuration.
+
+Schema 1 copies post-filter `overfetch` to both rows in each pair. It sums
+requested candidates divided by eligible candidates for queries with a
+nonzero eligible count, then divides by the original query count. A zero
+can therefore mean that every post-filter query found no eligible candidates.
+The eligible-count failure rate and each query's actual candidate count
+would make those cases visible in a future run.
+
+The row metadata calls the generator `clustered16 sigma 0.25`. In the
+recorded harness the perturbation is bounded and one-sided. Shifting the
+64-bit state by 33 and scaling by the 32-bit maximum produces values
+between approximately −1 and 0 before the 0.25 multiplier. The parameter
+describes a multiplier, and the samples are not Gaussian.
+
+To estimate the effect of alignment, hold eligible counts fixed per query
+and keep the corpus and queries the same across modes. Compare each backend
+at matched recall against the exact filtered reference.
+
 ## Reproducing
 
 ```sh
