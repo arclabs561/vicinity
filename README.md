@@ -32,7 +32,7 @@ Add `vicinity` to the existing `[dependencies]` table in `Cargo.toml`:
 
 ```toml
 [dependencies]
-vicinity = "0.12.0"
+vicinity = "0.13.0"
 ```
 
 Save this in `src/main.rs` and run `cargo run`:
