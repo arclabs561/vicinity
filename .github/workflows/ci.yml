@@ -244,6 +244,8 @@ jobs:
           tool: cargo-hack
       - name: Compile each feature (no dev-deps)
         run: cargo hack check --each-feature --no-dev-deps --exclude-features persistence
+      - name: Compile the documented large-scale example
+        run: cargo check --example large_scale --features large-scale,hnsw,diskann
   # Cross-compilation check for different targets
   cross-compile:
     name: Cross-compile (${{ matrix.target }})
