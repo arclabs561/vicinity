@@ -184,7 +184,7 @@ proptest = "1.5"
 tempfile = "3"
 anyhow = "1.0"
 rankops = "0.1.5"
-hnsw_rs = "=0.3.4"
+hnsw_rs = "=0.3.5"
 usearch = "=2.26.6"
 
 [[bin]]
