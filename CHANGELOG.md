@@ -18,6 +18,8 @@ These source changes are not assigned to a package release here.
 
 ## [Unreleased]
 
+## [0.13.0]
+
 ### Changed
 
 - **Dev dependency: `criterion` 0.5 -> 0.8.** Benchmarks only; no public API

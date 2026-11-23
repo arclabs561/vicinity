@@ -373,8 +373,9 @@ impl FilteredGraphIndex {
     /// matching IDs) is chosen automatically based on selectivity, and the graph
     /// branch falls back to the exact scan when its beam holds fewer than `k`
     /// matching points. The result therefore holds `min(k, matches)` ids
-    /// whenever the index is built. Equal-distance candidates are ordered by
-    /// ascending external document ID before the top-k cutoff.
+    /// whenever the index is built. Equal distances among the candidates visited
+    /// by the beam (or all matching IDs for an exact scan) prefer smaller
+    /// external document IDs. A bounded beam can miss matching points.
     pub fn search_filtered(
         &self,
         query: &[f32],
@@ -850,7 +851,7 @@ impl FilteredGraphIndex {
         // every visited candidate in a Vec and re-sorted it on each pop, which
         // costs O(visited * candidates log candidates) and measured ~1 s per
         // query at ef=1600.
-        let mut best: BinaryHeap<(FloatOrd, u32)> = BinaryHeap::new();
+        let mut best: BinaryHeap<(FloatOrd, u32, u32)> = BinaryHeap::new();
         // Keep a wider pool than `ef`: callers post-filter this set, and a beam
         // capped at exactly `ef` loses recall as soon as a predicate rejects a
         // few of its members.
@@ -858,12 +859,12 @@ impl FilteredGraphIndex {
 
         let entry_dist = cosine_distance_normalized(query, self.get_vector(entry as usize));
         frontier.push(std::cmp::Reverse((FloatOrd(entry_dist), entry)));
-        best.push((FloatOrd(entry_dist), entry));
+        best.push((FloatOrd(entry_dist), self.doc_ids[entry as usize], entry));
 
         while let Some(std::cmp::Reverse((FloatOrd(current_dist), current_id))) = frontier.pop() {
             // Nothing reachable can beat the current worst member of a full set.
             if best.len() >= pool {
-                if let Some((worst, _)) = best.peek() {
+                if let Some((worst, _, _)) = best.peek() {
                     if current_dist > worst.0 {
                         break;
                     }
@@ -874,12 +875,12 @@ impl FilteredGraphIndex {
                 if visited.mark(nb) {
                     let d = cosine_distance_normalized(query, self.get_vector(nb as usize));
                     frontier.push(std::cmp::Reverse((FloatOrd(d), nb)));
+                    let candidate = (FloatOrd(d), self.doc_ids[nb as usize], nb);
                     if best.len() < pool {
-                        best.push((FloatOrd(d), nb));
-                    } else if let Some((worst, _)) = best.peek() {
-                        if d < worst.0 {
-                            best.pop();
-                            best.push((FloatOrd(d), nb));
+                        best.push(candidate);
+                    } else if let Some(mut worst) = best.peek_mut() {
+                        if candidate < *worst {
+                            *worst = candidate;
                         }
                     }
                 }
@@ -890,12 +891,10 @@ impl FilteredGraphIndex {
             }
         }
 
-        let mut candidates: Vec<(u32, f32)> = best
+        best.into_sorted_vec()
             .into_iter()
-            .map(|(FloatOrd(distance), id)| (id, distance))
-            .collect();
-        candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
-        candidates
+            .map(|(FloatOrd(distance), _, internal)| (internal, distance))
+            .collect()
     }
 
     // ── Vector access ─────────────────────────────────────────────────────────
@@ -1258,6 +1257,24 @@ mod tests {
         }
         idx.build().unwrap();
         idx
+    }
+
+    #[test]
+    fn full_beam_retains_smallest_external_ids_among_visited_ties() {
+        let mut index = FilteredGraphIndex::new(2, Default::default()).unwrap();
+        for id in (0..20).rev() {
+            index.add_slice(id, &[1.0, 0.0], HashMap::new()).unwrap();
+        }
+        // A single hop visits every point and overfills the four-entry pool.
+        index.medoid = 0;
+        index.neighbors = vec![SmallVec::new(); 20];
+        index.neighbors[0] = (1..20).collect();
+        let ids: Vec<_> = index
+            .beam_search(&[1.0, 0.0], 1)
+            .into_iter()
+            .map(|(internal, _)| index.doc_ids[internal as usize])
+            .collect();
+        assert_eq!(ids, [0, 1, 2, 3]);
     }
 
     #[test]
